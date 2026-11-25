@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from slayer import cli
 from slayer.api.server import QueryRequest, create_app
 from slayer.core.query import QueryRefinement, SlayerQuery, refine_query
 from slayer.core.models import DatasourceConfig
@@ -163,6 +164,15 @@ class TestMcpQuery:
         server = create_mcp_server(storage=await scenario_store(str(tmp_path)))
         text = await _call(server, name="query", arguments={"query": LOCAL_DAY, "format": "json"})
         assert local_days(mcp_payload(text)["data"]) == LOCAL_DAY_ROWS
+        assert mcp_payload(text)["time_zone"] == LOCAL_DAY["time_zone"]
+
+    @pytest.mark.parametrize(("fmt", "line"), [("csv", "# time zone: {}"), ("markdown", "Time zone: {}")])
+    async def test_text_formats_name_the_zone(self, tmp_path: Path, fmt: str, line: str) -> None:
+        server = create_mcp_server(storage=await scenario_store(str(tmp_path)))
+        text = await _call(server, name="query", arguments={"query": LOCAL_DAY, "format": fmt})
+        assert line.format(LOCAL_DAY["time_zone"]) in text.splitlines()
+        plain = {k: v for k, v in LOCAL_DAY.items() if k != "time_zone"}
+        assert "time zone" not in (await _call(server, name="query", arguments={"query": plain, "format": fmt})).lower()
 
     def test_query_tool_schema_advertises_the_zone(self, tmp_path: Path) -> None:
         tools = {t.name: t for t in asyncio.run(create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path))).list_tools())}
@@ -216,6 +226,14 @@ class TestDatasourceZoneSurfaces:
             unchanged = await _datasource(storage, "gds")
             assert unchanged is not None
             assert unchanged.time_zone == TOKYO
+        await _call(server, name="edit_datasource", arguments={"name": "gds", "description": "d"})
+        kept = await _datasource(storage, "gds")
+        assert kept is not None
+        assert kept.time_zone == TOKYO
+        await _call(server, name="edit_datasource", arguments={"name": "gds", "time_zone": None})
+        cleared = await _datasource(storage, "gds")
+        assert cleared is not None
+        assert cleared.time_zone is None
 
     def test_cli_create(self, tmp_path: Path) -> None:
         base = str(tmp_path)
@@ -236,6 +254,16 @@ class TestDatasourceZoneSurfaces:
         assert result.returncode != 0
         assert UNKNOWN in result.stdout + result.stderr
         assert asyncio.run(YAMLStorage(base_dir=base).get_datasource("bad")) is None
+
+    def test_cli_demo_refuses_an_unknown_zone_before_building(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(cli, "build_jaffle_shop", lambda **_: pytest.fail("the demo must not be built"))
+        store = str(tmp_path / "store")
+        result = run_cli_in_process(["datasources", "--storage", store, "create", "demo", "--time-zone", UNKNOWN])
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert UNKNOWN in result.stderr
+        assert asyncio.run(YAMLStorage(base_dir=store).list_datasources()) == []
 
     def test_rest_create_round_trips(self, tmp_path: Path) -> None:
         client = TestClient(create_app(storage=YAMLStorage(base_dir=str(tmp_path))))

@@ -269,6 +269,17 @@ class ClickhouseDialect(SqlDialect):
                 exp.Anonymous(this="toString", expressions=[value]), exp.Literal.number(6), zone_name(source)])
         return exp.Anonymous(this="toTimeZone", expressions=[value, zone_name(target)])
 
+    def zoned_timestamp_cast(self, value: Expression) -> Optional[Expression]:
+        """``toDateTime64(v, 6, Q)``: a plain cast drops the zone and with it the wall clock."""
+        return self.promote_to_timestamp(value) if self.time_zone is not None else None
+
+    def civil_read(self, value: Expression) -> Expression:
+        """Under a zone, ``DateTime64(6, Q)`` of the same wall clock: ClickHouse compares timestamps as instants."""
+        if self.time_zone is None:
+            return value
+        return exp.Anonymous(this="toDateTime64", expressions=[
+            exp.Anonymous(this="toString", expressions=[value]), exp.Literal.number(6), exp.Literal.string(self.time_zone)])
+
     def instant_literal(self, value: datetime) -> Optional[Expression]:
         return exp.Anonymous(this="toDateTime64", expressions=[
             exp.Literal.string(iso_text(value)), exp.Literal.number(6), exp.Literal.string("UTC")])

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from functools import lru_cache
+from typing import Optional
 from zoneinfo import ZoneInfo, available_timezones
 
-from slayer.core.errors import TimeZoneError
+from slayer.core.errors import TimeDimensionFieldError, TimeZoneError
 
 #: A field's marker for zone-free civil time: never converted.
 CIVIL = "civil"
@@ -47,3 +49,19 @@ def wall_clock(instant: datetime, zone: str | None) -> datetime:
         return instant if instant.tzinfo is None else instant.astimezone().replace(tzinfo=None)
     aware = instant if instant.tzinfo is not None else instant.astimezone()
     return aware.astimezone(ZoneInfo(zone)).replace(tzinfo=None)
+
+
+def check_bucketed_zones(*, name: str, zone: Optional[str], bucketed_zones: Sequence[tuple[str, str]]) -> None:
+    """A leaf bucketed in another zone re-buckets only in that zone."""
+    if zone is None:
+        return
+    for leaf, bucketed in bucketed_zones:
+        if bucketed == zone:
+            continue
+        field = "field" if leaf == name else f"field {leaf!r}"
+        raise TimeDimensionFieldError(
+            summary=f"Cannot re-bucket in {zone}: the {field} is already bucketed in {bucketed}, and a "
+            f"{bucketed} bucket start is not a {zone} bucket boundary.",
+            location=f"time dimension {name!r}",
+            suggestion=f"Bucket the raw field instead, or run the stage that buckets it in {zone}.",
+        )

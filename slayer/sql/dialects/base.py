@@ -983,6 +983,15 @@ class SqlDialect(BaseModel):
             return self
         return self.model_copy(update={"time_zone": zone, "zone_now": now if zone is not None else None})
 
+    def zoned_timestamp_cast(self, value: Expression) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
+        """A declared timestamp cast under this stage's zone when a plain ``CAST`` would lose it; ``None``: plain."""
+        return None
+
+    def civil_read(self, value: Expression) -> Expression:
+        """A ``DateTime`` read as stored under this stage's zone (``civil`` or undeclared), its wall clock kept in the
+        type converted values have; default: as stored."""
+        return value
+
     def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:  # NOSONAR(S1172) — hook signature
         """``value`` as naive ``target`` wall clock: from naive ``source`` wall clock, or from an instant (``source``
         ``None``). Default: refused, a Tier-2 database cannot convert."""
@@ -998,6 +1007,10 @@ class SqlDialect(BaseModel):
     def instant_literal(self, value: datetime) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
         """The UTC instant ``value`` (naive) in the database's instant type; ``None`` when it cannot be written."""
         return None
+
+    def converted_zones(self, statement: Expr, *, zones: Iterable[str]) -> list[str]:  # NOSONAR(S1172) — hook signature
+        """Of the stage ``zones``, those ``statement`` converts to; default: all of them."""
+        return sorted(zones)
 
     def zone_probe(self, zone: ZoneInfo) -> Optional[exp.Select]:  # NOSONAR(S1172) — hook signature
         """A statement whose one value is NULL when the server cannot resolve ``zone``; ``None``: no check needed."""

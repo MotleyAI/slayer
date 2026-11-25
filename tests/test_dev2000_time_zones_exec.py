@@ -147,3 +147,10 @@ async def test_zoned_cast_is_converted_at_the_cast() -> None:
         resp = await engine.execute(q(time_zone=TOKYO, dimensions=[
             d("CAST('2025-01-01 00:00:00+00:00' AS TIMESTAMPTZ)", "v")]))
     assert naive(resp.data[0]["v"]) == datetime(2025, 1, 1, 9, 0)
+
+
+async def test_zoned_json_try_cast_is_converted_at_the_cast() -> None:
+    async with tz_engine("duckdb") as engine:
+        resp = await engine.execute(q(time_zone=TOKYO, dimensions=[
+            d("""TRY_CAST(json_value('["2025-01-01 00:00:00+00:00"]', '$[0]') AS TIMESTAMPTZ)""", "v")]))
+    assert naive(resp.data[0]["v"]) == datetime(2025, 1, 1, 9, 0), resp.sql

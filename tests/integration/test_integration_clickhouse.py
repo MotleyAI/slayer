@@ -28,7 +28,7 @@ import uuid
 from typing import Any
 import warnings
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -2368,6 +2368,11 @@ def clickhouse_tz_env(clickhouse_container, tmp_path) -> Generator[SlayerQueryEn
         _drop_module_db(clickhouse_container, db_name)
 
 
+def _wall(value: Any) -> datetime:
+    """A ``DateTime64`` value's wall clock in its own zone, whether the driver returns it zoned or naive."""
+    return value.replace(tzinfo=None) if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+
+
 def _wall_day(value: Any):
     """A ``DateTime64(6, Q)`` bucket's Q wall-clock day, whether the driver returns it zoned or naive."""
     if isinstance(value, datetime) and value.tzinfo is not None:
@@ -2405,6 +2410,32 @@ class TestClickHouseTimeZones:
         assert got == {tz_local(2, TZ_NY).date(): 20.0, tz_local(3, TZ_NY).date(): 30.0}, resp.sql
         assert resp.sql is not None
         assert _TZ_LITERAL in resp.sql, resp.sql
+
+    async def test_a_converted_value_meets_a_civil_one_as_wall_clocks(self, clickhouse_tz_env: SlayerQueryEngine) -> None:
+        resp = await clickhouse_tz_env.execute(SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TZ_NY,
+            "dimensions": ["orders.id", {"field": "greatest(orders.ordered_at, orders.local_slot)", "alias": "v"}],
+            "filter": ["orders.ordered_at < orders.local_slot"],
+        }))
+        got = {int(r["orders.id"]): _wall(r["v"]) for r in resp.data}
+        slots = {i: datetime.fromisoformat(TZ_ROWS[i][2]) for i in TZ_ROWS}
+        assert got == {i: slots[i] for i in TZ_ROWS if tz_local(i, TZ_NY) < slots[i]}, resp.sql
+
+    async def test_derived_timestamps_keep_the_query_zone_wall_clock(self, clickhouse_tz_env: SlayerQueryEngine) -> None:
+        later = [DatasetField.model_validate({"name": f"{src}_later", "expression": f"{src} + INTERVAL 1 HOUR",
+                                              "datatype": datatype})
+                 for src, datatype in (("ordered_at", "DateTime"), ("paid_at", "DateTimeTz"))]
+        await clickhouse_tz_env.storage.save_dataset(tz_orders_dataset(extra_fields=later))
+        resp = await clickhouse_tz_env.execute(SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TZ_NY,
+            "dimensions": ["orders.id", "orders.ordered_at_later", "orders.paid_at_later"],
+        }))
+        # Hours added across a DST transition differ by dialect (elapsed here, wall clock on DuckDB): away from one.
+        expected = {i: tz_local(i, TZ_NY) + timedelta(hours=1) for i in TZ_ROWS
+                    if (tz_local(i, TZ_NY) + timedelta(hours=1)).date() != date(2025, 3, 9)}
+        for name in ("ordered_at_later", "paid_at_later"):
+            got = {int(r["orders.id"]): _wall(r[f"orders.{name}"]) for r in resp.data}
+            assert {i: v for i, v in got.items() if i in expected} == expected, resp.sql
 
     async def test_instant_typing_changes_nothing_without_a_zone(self, clickhouse_tz_env: SlayerQueryEngine) -> None:
         for zoned, naive in zip(instant_typing_queries("orders"), instant_typing_queries("orders_naive")):

@@ -1378,7 +1378,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     # Datasource management
 
     @tool()
-    async def create_datasource(
+    async def create_datasource(  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
         name: Annotated[str, Field(description="Unique datasource name.")],
         type: Annotated[str, Field(description="Database type: postgres, mysql, sqlite, bigquery, snowflake, ...")],
         host: Annotated[str | None, Field(description="Database host (default localhost).")] = None,
@@ -1562,6 +1562,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     @tool()
     async def edit_datasource(
         name: Annotated[str, Field(description="Datasource to update.")],
+        *,
         description: Annotated[str | None, Field(description="New datasource description.")] = None,
         granularities: Annotated[list[CustomGranularity] | None, Field(
             description=(
@@ -1570,8 +1571,12 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             ),
         )] = None,
         time_zone: Annotated[str | None, Field(
-            description="IANA zone its DateTime columns are stored in, e.g. 'UTC'; a field's own time_zone wins.",
-        )] = None,
+            default_factory=_unset,
+            description=(
+                "IANA zone its DateTime columns are stored in, e.g. 'UTC'; a field's own time_zone wins. "
+                "null clears it."
+            ),
+        )],
     ) -> str:
         """Update a datasource's metadata."""
         ds = await storage.get_datasource(name)
@@ -1585,7 +1590,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         if granularities is not None:
             update["granularities"] = granularities
         ds = ds.model_copy(update=update)
-        if time_zone is not None:
+        if time_zone is not _UNSET:
             try:
                 ds.time_zone = time_zone
             except ValueError as exc:
@@ -2016,6 +2021,8 @@ def _json_metadata(result: SlayerResponse) -> dict[str, Any]:
             meta["population"] = result.population
         meta["population_inferred"] = True
         meta["row_sources"] = list(result.row_sources)
+    if result.time_zone is not None:
+        meta["time_zone"] = result.time_zone
     return meta
 
 
@@ -2027,6 +2034,7 @@ def _text_envelope(result: SlayerResponse, fmt: str, body: str) -> str:
         return (
             _population_comment(population)
             + ("" if not sources else f"# row sources: {', '.join(sources)}\n")
+            + ("" if result.time_zone is None else f"# time zone: {result.time_zone}\n")
             + _csv_attribute_comments(result)
             + _csv_warning_comments(result)
             + body
@@ -2036,6 +2044,7 @@ def _text_envelope(result: SlayerResponse, fmt: str, body: str) -> str:
         + _attributes_footer(result.attributes)
         + _population_footer(population)
         + _row_sources_footer(sources, after_population=population is not None)
+        + ("" if result.time_zone is None else f"\n\nTime zone: {result.time_zone}")
         + _format_warnings(result)
     )
 

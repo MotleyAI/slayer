@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from slayer.core import slayer_extension as ext
 from slayer.core.enums import JoinType, RelationshipCardinality
+from slayer.core.errors import TimeZoneError
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.granularity import CustomGranularity
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset
@@ -92,7 +93,14 @@ def apply_field_entry(field: DatasetField, entry: Entry | None, *, notes: list[E
                                                          "allowed_aggregations")):
         notes.append(ExtensionNote(kind="field", entity=field.name, message=f"{label}: {STALE}; its definition is "
                                    "read from the document"))
-    return field.model_copy(update=update)
+    out = field.model_copy(update=update)
+    try:
+        out.check_time_zone()
+    except TimeZoneError as exc:
+        notes.append(ExtensionNote(kind="field", entity=field.name, message=f"{label}: its SLAYER time_zone is "
+                                   f"dropped: {exc}"))
+        out = out.model_copy(update={"time_zone": None})
+    return out
 
 
 def apply_dataset_entry(dataset: SlayerDataset, entry: Entry | None, *, notes: list[ExtensionNote],

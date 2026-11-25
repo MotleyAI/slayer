@@ -9,6 +9,7 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.errors import TimeZoneError
+from slayer.sql.dialects import get_dialect
 
 from tests._dev2000_emission_fixtures import (
     INSTANT_DEPTH,
@@ -23,7 +24,7 @@ from tests._dev2000_emission_fixtures import (
     render,
     zoned_query,
 )
-from tests._dev2000_fixtures import d, m
+from tests._dev2000_fixtures import NY, TOKYO, d, m
 
 FIELDS = {"ordered_at": NAIVE_DEPTH, "paid_at": INSTANT_DEPTH}
 #: An IANA zone with no CLDR windowsZones mapping (confirm against the vendored table).
@@ -109,6 +110,17 @@ async def test_sql_server_uses_windows_zone_names_only() -> None:
     assert "datetime2" in sql.lower(), sql
 
 
+@pytest.mark.parametrize(("zone", "windows"), [
+    ("Asia/Almaty", "West Asia Standard Time"),  # CLDR 46+: Kazakhstan on UTC+5 since 2024-03-01
+    ("Asia/Bishkek", "Central Asia Standard Time"),
+    ("America/Vancouver", "Pacific Standard Time"),  # not British Columbia Standard Time, a 2025 Windows zone
+    ("America/Edmonton", "Mountain Standard Time"),
+])
+async def test_sql_server_windows_zone_ids(zone: str, windows: str) -> None:
+    sql = await render("tsql", zoned_query(zone=zone, **_queries("ordered_at")["bucket"]))
+    assert f"'{windows}'" in sql, sql
+
+
 async def test_sql_server_unmapped_zone_is_a_typed_error() -> None:
     query = zoned_query(zone=UNMAPPED, **_queries("ordered_at")["bucket"])
     with pytest.raises(TimeZoneError, match=re.escape(UNMAPPED)):
@@ -129,6 +141,26 @@ async def test_tier2_renders_without_a_conversion(dialect: str) -> None:
         time_dimensions=[{"field": "orders.order_day", "granularity": "month"}], metrics=[m("count(orders.*)", "n")],
     ))
     assert "local_slot" in sql, sql
+
+
+@pytest.mark.parametrize("name", ["ordered_at", "paid_at"])
+async def test_trino_conversions_keep_microseconds(name: str) -> None:
+    sql = await render("trino", zoned_query(**_queries(name)["projection"]))
+    casts = [c.to.sql("trino") for c in parse(sql, "trino").find_all(exp.Cast)
+             if isinstance(c.this, exp.AtTimeZone)]
+    assert casts, sql
+    assert set(casts) == {"TIMESTAMP(6)"}, sql
+
+
+async def test_mysql_probes_only_zones_the_statement_converts_to() -> None:
+    mysql = get_dialect("mysql")
+    converting = parse(await render("mysql", zoned_query(**_queries("ordered_at")["bucket"])), "mysql")
+    assert mysql.converted_zones(converting, zones={NY, TOKYO}) == [NY]
+    civil = parse(await render("mysql", zoned_query(
+        dimensions=["orders.local_slot"], time_dimensions=[{"field": "orders.order_day", "granularity": "month"}],
+        metrics=[m("count(orders.*)", "n")],
+    )), "mysql")
+    assert mysql.converted_zones(civil, zones={NY}) == []
 
 
 # ---------------------------------------------------------------------------

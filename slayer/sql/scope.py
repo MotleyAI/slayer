@@ -49,6 +49,7 @@ from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.field_expansion import (
     collect_root_scope_joined_paths,
     expand_field_definition_ast,
+    ExpansionSinks,
     expand_derived_refs_ast,
 )
 from slayer.sql.zoned_reads import STORED, VALUE, Context, ReadSite, apply_reads, mark_read, read_column, zone_setting
@@ -291,9 +292,7 @@ class ScopeFrame(BaseModel):
             dialect=self.dialect.sqlglot_name,
             owner_path=owner_path,
             alias_resolver=self._alias_resolver(),
-            crossed_paths=self.relationship_paths,
-            read=mark_read,
-            context=context,
+            sinks=ExpansionSinks(crossed=self.relationship_paths, read=mark_read, context=context),
         ))
 
     def _read(self, marked: Optional[Expression]) -> Optional[Expression]:

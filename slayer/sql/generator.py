@@ -610,6 +610,24 @@ def _grouped(predicate: Expression) -> Expression:  # pyright: ignore[reportPriv
     return exp.Paren(this=predicate) if isinstance(predicate, (exp.And, exp.Or)) else predicate
 
 
+def _point_comparison(
+    conjunct: ValueKey, *, frame_fields: FrozenSet[ValueKey],
+) -> Optional[Tuple[FieldKey, datetime, str]]:
+    """``conjunct`` as ``field op point`` (operands flipped as needed) when it compares a field with a time point and
+    is no frame bound."""
+    if not isinstance(conjunct, ArithmeticKey) or conjunct.op not in _PREFILTER_OPS or len(conjunct.operands) != 2:
+        return None
+    if is_frame_bound(key=conjunct, time_fields=frame_fields):
+        return None
+    left, right = conjunct.operands
+    field_key, point, op = (left, right, conjunct.op) if isinstance(right, LiteralKey) else (
+        right, left, _FLIPPED_OPS.get(conjunct.op, conjunct.op))
+    if not isinstance(field_key, FieldKey) or not isinstance(point, LiteralKey) or not isinstance(point.value, date):
+        return None
+    value = point.value if isinstance(point.value, datetime) else datetime.combine(point.value, datetime.min.time())
+    return field_key, value, op
+
+
 def _conjunction(parts: Sequence[Expression]) -> Optional[Expression]:  # pyright: ignore[reportPrivateImportUsage]
     """The ``AND`` of already-grouped ``parts``; ``None`` when empty."""
     if not parts:
@@ -4983,7 +5001,7 @@ class SQLGenerator:
         """A computed relationship key: its expression over ``alias``'s source columns, each a dataset's read through
         the read path."""
         key = self._parse(text)
-        for column in list(key.find_all(exp.Column)):
+        for column in list(key.find_all(exp.Column)):  # NOSONAR(S7504) — materialised before in-place column.replace
             if not column.table:
                 column.set("table", exp.to_identifier(alias))
                 if dataset is None:
@@ -6643,17 +6661,14 @@ class SQLGenerator:
         )]
         rest = [h for h in group.hops if all(h is not hop for hop, _ in leaves)]
         if not rest:
-            combined = conditions[0]
-            for condition in conditions[1:]:
-                combined = exp.And(this=combined, expression=condition)
+            combined = _conjunction(conditions)
+            assert combined is not None
             return combined
         hop_names = {_alias(p): n for p, n in node_datasets.items()}
 
         def hop_dataset(table: str) -> Optional[SlayerDataset]:
-            if table not in hop_names:
-                return None
-            return source_dataset if hop_names[table] == source_dataset.name else self._hop_dataset(
-                name=hop_names[table], bundle=bundle)
+            return self._aliased_hop_dataset(
+                name=hop_names.get(table), source_dataset=source_dataset, bundle=bundle)
 
         ops = _SemiJoinOps(
             alias=_alias,
@@ -6676,6 +6691,13 @@ class SQLGenerator:
         for condition in conditions:
             inner = inner.where(condition)
         return exp.Exists(this=inner)
+
+    def _aliased_hop_dataset(
+        self, *, name: Optional[str], source_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
+    ) -> Optional[SlayerDataset]:
+        if name is None:
+            return None
+        return source_dataset if name == source_dataset.name else self._hop_dataset(name=name, bundle=bundle)
 
     def _element_test(
         self, *, hop, predicates: List[Expression], node_datasets, source_relation: str, bundle: ResolvedSourceBundle, alias,
@@ -6773,28 +6795,23 @@ class SQLGenerator:
             return []
         out: List[Expression] = []
         for conjunct in split_top_level_and(key):
-            if not isinstance(conjunct, ArithmeticKey) or conjunct.op not in _PREFILTER_OPS or len(conjunct.operands) != 2:
+            comparison = _point_comparison(conjunct, frame_fields=frame_fields)
+            if comparison is None:
                 continue
-            if is_frame_bound(key=conjunct, time_fields=frame_fields):
-                continue
-            left, right = conjunct.operands
-            field_key, point, op = (left, right, conjunct.op) if isinstance(right, LiteralKey) else (
-                right, left, _FLIPPED_OPS.get(conjunct.op, conjunct.op))
-            if not isinstance(field_key, FieldKey) or not isinstance(point, LiteralKey):
-                continue
-            if not isinstance(point.value, date):
-                continue
+            field_key, value, op = comparison
             raw = self._raw_read(key=field_key, source_dataset=source_dataset, source_relation=source_relation,
                                  bundle=bundle)
-            if raw is None:
-                continue
-            column, instant = raw
-            value = point.value if isinstance(point.value, datetime) else datetime.combine(point.value, datetime.min.time())
-            for bound_op, moved in _widened(op, value):
-                literal = (self._dialect.instant_literal(moved) if instant
-                           else self._dialect.build_temporal_literal(value=moved, dt=DataType.DATETIME))
-                if literal is not None:
-                    out.append(COMPARISON_NODES[bound_op](this=column.copy(), expression=literal))
+            if raw is not None:
+                out.extend(self._widened_bounds(column=raw[0], instant=raw[1], op=op, value=value))
+        return out
+
+    def _widened_bounds(self, *, column: Expression, instant: bool, op: str, value: datetime) -> List[Expression]:
+        out: List[Expression] = []
+        for bound_op, moved in _widened(op, value):
+            literal = (self._dialect.instant_literal(moved) if instant
+                       else self._dialect.build_temporal_literal(value=moved, dt=DataType.DATETIME))
+            if literal is not None:
+                out.append(COMPARISON_NODES[bound_op](this=column.copy(), expression=literal))
         return out
 
     def _raw_read(
@@ -7352,13 +7369,14 @@ def _framing_fields(planned) -> FrozenSet[ValueKey]:
 
 
 def _widened(op: str, value: datetime) -> List[Tuple[str, datetime]]:
-    """The stored-column bounds implied by ``column <op> value`` across any two zones."""
-    lower, upper = (">=", value - _PREFILTER_MARGIN), ("<", value + _PREFILTER_MARGIN)
-    if op in (">=", ">"):
-        return [lower]
-    if op in ("<", "<="):
-        return [upper]
-    return [lower, upper]
+    """The stored-column bounds implied by ``column <op> value`` across any two zones; one past the calendar's ends
+    is omitted."""
+    out: List[Tuple[str, datetime]] = []
+    if op not in ("<", "<=") and value - datetime.min >= _PREFILTER_MARGIN:
+        out.append((">=", value - _PREFILTER_MARGIN))
+    if op not in (">=", ">") and datetime.max - value >= _PREFILTER_MARGIN:
+        out.append(("<", value + _PREFILTER_MARGIN))
+    return out
 
 
 def _statement_datasets(planned_queries, *, bundle) -> Dict[str, SlayerDataset]:

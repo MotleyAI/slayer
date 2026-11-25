@@ -1316,7 +1316,7 @@ def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetFie
         return persisted.model_copy(update={
             "datatype": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
             # Scalar-only settings; a temporal granularity would fail the list's validation.
-            "granularity": None, "format": None,
+            "granularity": None, "format": None, "time_zone": None,
             "allowed_aggregations": [
                 a for a in persisted.allowed_aggregations or () if a in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY]
             ] or None,

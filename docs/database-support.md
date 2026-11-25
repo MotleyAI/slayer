@@ -298,6 +298,8 @@ Other T-SQL specifics surfaced by the dialect:
 
 `JSON` and `Object` columns are read natively by `json_value` through their ingested `db_type` (from `system.columns`), so datasets ingested before that need a re-ingest.
 
+Under a query `time_zone`, a converted timestamp is a `DateTime64(6, zone)` instant, so adding hours or minutes across a DST transition adds elapsed time (01:30 + 1 hour on a spring-forward day gives 03:30, where Postgres or DuckDB give 02:30).
+
 ### Snowflake caveats
 
 Snowflake is a fully managed cloud warehouse — no Docker, no local instance.

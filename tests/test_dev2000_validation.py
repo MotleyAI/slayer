@@ -32,6 +32,10 @@ from tests._dev2000_fixtures import (
     warnings_of,
 )
 from tests._dev2000_surface_fixtures import zone_error
+from tests._dev2243_fixtures import dataset as doc_dataset
+from tests._dev2243_fixtures import document_text, store_document
+from tests._dev2243_fixtures import field as doc_field
+from tests._dev2243_fixtures import metric as doc_metric
 
 UNKNOWN = "Mars/Olympus"
 PLUS_HOUR = DatasetField(name="ordered_plus", expression="date_add(orders.ordered_at, 1, 'hour')",
@@ -320,6 +324,24 @@ class TestOssieRefusesAZone:
             assert (await engine.execute("by_day", conformance=STRICT)).data
             with pytest.raises(OssieQueryError) as info:
                 await engine.execute("by_day", refine={"time_zone": "UTC"}, conformance=STRICT)
+        _refused_for_the_zone(info.value)
+
+    @pytest.mark.parametrize("head", ["by_day_tokyo", "BY_DAY_TOKYO"])
+    async def test_a_zoned_stage_read_by_reference(self, head: str) -> None:
+        async with _strict_engine() as engine:
+            await engine.create_dataset_from_query(query={**BY_DAY, "time_zone": TOKYO}, name="by_day_tokyo")
+            with pytest.raises(OssieQueryError) as info:
+                await engine.execute({"dimensions": [f"{head}.order_day"]}, conformance=STRICT)
+        _refused_for_the_zone(info.value)
+
+    async def test_a_zoned_stage_read_through_a_bare_model_metric(self) -> None:
+        async with _strict_engine() as engine:
+            await engine.create_dataset_from_query(query={**BY_DAY, "time_zone": TOKYO}, name="by_day_tokyo")
+            await store_document(engine.storage, document_text(
+                name="m", datasets=[doc_dataset("other", source="orders", fields=[doc_field("id", datatype="Integer")])],
+                metrics=[doc_metric("tokyo_revenue", "SUM(by_day_tokyo.revenue)")]), data_source=DS)
+            with pytest.raises(OssieQueryError) as info:
+                await engine.execute({"metrics": ["tokyo_revenue"]}, conformance=STRICT)
         _refused_for_the_zone(info.value)
 
     async def test_stored_stage_run_by_name(self) -> None:

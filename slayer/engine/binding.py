@@ -107,6 +107,7 @@ from slayer.engine.population.anchors import (
     unqualified_count,
 )
 from slayer.engine.key_metadata import bundle_dialect, scope_field_type
+from slayer.core.time_zones import check_bucketed_zones
 from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
@@ -524,7 +525,7 @@ def _bind(
     if isinstance(parsed, Cast):
         return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
     if isinstance(parsed, DateTrunc):
-        return _bind_date_trunc(parsed, source=sub(parsed.value), bundle=bundle)
+        return _bind_date_trunc(parsed, source=sub(parsed.value), scope=scope, bundle=bundle)
     if isinstance(parsed, NamedArg):
         raise CallArgumentError(f"`{canonical_metric_text(parsed)}` is only an argument of a call.")
     if isinstance(parsed, AggCall):
@@ -1922,8 +1923,11 @@ def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
     return key.model_copy(update={"filter": condition})
 
 
-def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSourceBundle) -> TimeTruncKey:
-    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``."""
+def _bind_date_trunc(
+    parsed: DateTrunc, *, source: ValueKey, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> TimeTruncKey:
+    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``; a leaf bucketed in another zone is
+    refused."""
     granularity = resolve_granularity(parsed.unit, defined=bundle.granularities)
     if granularity is None:
         raise UnknownGranularityError(summary=unknown_granularity_message(
@@ -1933,6 +1937,9 @@ def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSou
         isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)
     ):
         raise GranularityCallError.wrong_shape(canonical_metric_text(parsed))
+    if bundle.time_zone is not None:
+        check_bucketed_zones(name=canonical_metric_text(parsed), zone=bundle.time_zone,
+                             bucketed_zones=_bucketed_zones(source, scope=scope, bundle=bundle))
     return TimeTruncKey(source=source, granularity=granularity)
 
 

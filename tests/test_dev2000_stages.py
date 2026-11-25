@@ -82,6 +82,16 @@ class TestInheritance:
                 "population": "daily", "time_zone": TOKYO, "dimensions": ["daily.ordered_at"]}))
         assert {day(r["daily.ordered_at"]) for r in resp.data} == {local(i, TOKYO).date() for i in ROWS}
 
+    async def test_a_reader_in_another_zone_keeps_the_pin(self, backend) -> None:
+        daily = SlayerDataset(name="daily", data_source=DS, source_queries=[SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TOKYO, "time_dimensions": [DAY_TD],
+            "metrics": [m("sum(orders.amount)", "s")]})])
+        async with tz_engine(backend, datasets=[*default_datasets(), daily]) as engine:
+            resp = await engine.execute(SlayerQuery.model_validate({
+                "population": "daily", "time_zone": NY, "dimensions": ["daily.ordered_at"]}))
+        starts = {datetime.combine(local(i, TOKYO).date(), datetime.min.time()) for i in ROWS}
+        assert {naive(r["daily.ordered_at"]) for r in resp.data} == {to_zone(s, NY, source=TOKYO) for s in starts}
+
 
 @pytest.mark.parametrize("backend", BACKENDS)
 class TestPinnedStageIntoReader:
@@ -133,6 +143,17 @@ class TestOutputZoneState:
             resp = await engine.execute([stage, final])
         assert {int(r["s1.id"]): naive(r["s1.v"]) for r in resp.data} == {i: expected(i) for i in ROWS}, resp.sql
 
+    async def test_a_filtered_base_field_output_converts(self, backend) -> None:
+        base = orders_dataset()
+        orders = base.model_copy(update={"relationships": [], "fields": [
+            f.model_copy(update={"filter": "id >= 0"}) if f.name == "ordered_at" else f for f in base.fields]})
+        stage = _stage(time_zone=NY, dimensions=["orders.id", "orders.ordered_at"])
+        final = {"population": "s1", "time_zone": TOKYO, "dimensions": ["s1.id", "s1.ordered_at"]}
+        async with tz_engine(backend, datasets=default_datasets(orders)) as engine:
+            resp = await engine.execute([stage, final])
+        assert {int(r["s1.id"]): naive(r["s1.ordered_at"]) for r in resp.data} == {i: local(i, TOKYO) for i in ROWS}, \
+            resp.sql
+
     async def test_bucket_output(self, backend) -> None:
         stage = _stage(time_zone=NY, time_dimensions=[DAY_TD], metrics=[m("count(orders.*)", "n")])
         final = {"population": "s1", "time_zone": TOKYO, "dimensions": ["s1.ordered_at"]}
@@ -176,6 +197,31 @@ async def test_cross_zone_rebucketing_is_refused(backend) -> None:
     assert "ordered_at" in msg
     assert "UTC" in msg
     assert NY in msg
+
+
+@pytest.mark.parametrize("place", ["dimension", "filter"])
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_cross_zone_scalar_rebucketing_is_refused(backend, place) -> None:
+    stage = _stage(time_zone="UTC", time_dimensions=[MONTH_TD], metrics=[m("sum(orders.amount)", "s")])
+    trunc = "date_trunc('year', s1.ordered_at)"
+    final: dict[str, Any] = {"population": "s1", "time_zone": NY, "metrics": [m("sum(s1.s)", "t")]}
+    final.update({"dimensions": [d(trunc, "y")]} if place == "dimension" else {"filter": [f"{trunc} = '2025-01-01'"]})
+    async with tz_engine(backend) as engine:
+        with pytest.raises(TimeDimensionFieldError) as exc:
+            await engine.execute([stage, final], dry_run=True)
+    msg = str(exc.value)
+    assert "UTC" in msg
+    assert NY in msg
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_same_zone_scalar_rebucketing_still_works(backend) -> None:
+    stage = _stage(time_zone=NY, time_dimensions=[MONTH_TD], metrics=[m("sum(orders.amount)", "s")])
+    final = {"population": "s1", "time_zone": NY, "dimensions": [d("date_trunc('year', s1.ordered_at)", "y")],
+             "metrics": [m("sum(s1.s)", "t")]}
+    async with tz_engine(backend) as engine:
+        resp = await engine.execute([stage, final])
+    assert {day(r["y"]).year: float(r["t"]) for r in resp.data} == {2024: 10.0, 2025: 90.0}
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

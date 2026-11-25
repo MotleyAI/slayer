@@ -21,7 +21,7 @@ from pydantic import Field
 from sqlalchemy.engine.url import URL
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, NUMERIC_DATATYPES, TimeGranularity
 from slayer.core.granularity import bucket_type
@@ -80,6 +80,7 @@ _GATED_FUNCTIONS = REGEX_LIBRARY | {"json_value"}
 # The session read-only from connect, through the drivers' one init statement.
 _INIT_COMMAND = "init_command"
 _READ_ONLY_SESSION = "SET SESSION TRANSACTION READ ONLY"
+_UTC_OFFSET = "+00:00"
 
 
 def _numeric_try_cast(key: object) -> bool:
@@ -154,19 +155,24 @@ class MysqlDialect(SqlDialect):
         if source is None:
             epoch = exp.Anonymous(this="UNIX_TIMESTAMP", expressions=[value])
             value = exp.DateAdd(this=exp.Literal.string("1970-01-01"), expression=epoch, unit=exp.var("SECOND"))
-            source_tz: Expression = exp.Literal.string("+00:00")
+            source_tz: Expression = exp.Literal.string(_UTC_OFFSET)
         else:
             source_tz = zone_name(source)
         return exp.ConvertTimezone(source_tz=source_tz, target_tz=zone_name(target), timestamp=value)
 
     def instant_literal(self, value: datetime) -> Optional[Expression]:
         return exp.Anonymous(this="CONVERT_TZ", expressions=[
-            exp.Literal.string(iso_text(value)), exp.Literal.string("+00:00"), exp.var("@@session.time_zone")])
+            exp.Literal.string(iso_text(value)), exp.Literal.string(_UTC_OFFSET), exp.var("@@session.time_zone")])
+
+    def converted_zones(self, statement: Expr, *, zones: Iterable[str]) -> list[str]:
+        targets = {node.args["target_tz"].name for node in statement.find_all(exp.ConvertTimezone)
+                   if isinstance(node.args.get("target_tz"), exp.Literal)}
+        return sorted(targets.intersection(zones))
 
     def zone_probe(self, zone: ZoneInfo) -> Optional[exp.Select]:
         """``CONVERT_TZ`` is NULL for a named zone the server's time zone tables do not hold."""
         return exp.select(exp.ConvertTimezone(
-            source_tz=exp.Literal.string("+00:00"), target_tz=zone_name(zone),
+            source_tz=exp.Literal.string(_UTC_OFFSET), target_tz=zone_name(zone),
             timestamp=exp.Literal.string("2000-01-01 00:00:00"),
         ).as_("z"))
 

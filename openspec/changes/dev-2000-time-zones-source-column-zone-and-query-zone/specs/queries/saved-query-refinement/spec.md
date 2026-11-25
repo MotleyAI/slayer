@@ -74,7 +74,8 @@ normalization. Filters SHALL be the saved filters followed by the refinement's, 
 strings dropped. `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`,
 `distinct_dimension_values`, `to_many_handling` and `time_zone` SHALL replace the saved value when the refinement
 supplies them, an explicit empty `order` or `null` clearing the saved value, and SHALL leave it
-unchanged otherwise.
+unchanged otherwise; `whole_periods_only` and `distinct_dimension_values` SHALL refuse `null`, and a `null`
+`to_many_handling` SHALL keep the saved value.
 
 #### Scenario: Identical duplicates collapse
 - **WHEN** `monthly_revenue` runs with refinement `{"dimensions": ["orders.region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}]}`

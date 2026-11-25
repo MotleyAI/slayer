@@ -15,21 +15,25 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import mysql
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core import slayer_extension as ext
+from slayer.core.models import DatasetField, DatasourceConfig, ExtensionNote, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.ingestion import (
     _fields_to_dataset,
     _introspected_field,
     _merge_one_field,
+    _retyped_list,
     ingest_datasource_idempotent,
 )
 from slayer.sql.dialects import base as dialects_base
 from slayer.sql.dialects import dialect_for_sa_backend, get_dialect
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_extensions import Entry, apply_field_entry
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_storage import SQLiteStorage
+from slayer.storage.upgrade import upgrade_store
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import owned_query_engine
 from tests._osi_export_helpers import carries, dataset, export_datasets, make_env, reimport, stored, validate
@@ -158,6 +162,7 @@ def test_reingest_merge_retypes_a_mysql_timestamp_column() -> None:
 PREVIOUS = 30
 BIGQUERY = DatasourceConfig(name=DS, type="bigquery", database="proj")
 POSTGRES = DatasourceConfig(name=DS, type="postgres", host="localhost", database="db")
+MYSQL = DatasourceConfig(name=DS, type="mysql", host="localhost", database="db")
 NO_ZONE_QUERY = SlayerQuery.model_validate({
     "population": "events", "metrics": [{"metric": "count(events.*)", "alias": "n"}],
     "time_dimensions": [{"field": "events.created_at", "granularity": "month"}],
@@ -207,14 +212,29 @@ async def test_upgraded_field_emits_the_same_sql_without_a_zone(tmp_path: Path, 
     assert sql == NO_ZONE_SQL
 
 
+@pytest.mark.parametrize("datasource", [POSTGRES, MYSQL], ids=["postgres", "mysql"])
 @pytest.mark.parametrize("backend", BACKENDS)
-async def test_other_datasources_are_untouched(tmp_path: Path, backend: str) -> None:
-    storage, _ = await _v30_store(tmp_path, backend=backend, datasource=POSTGRES)
+async def test_other_datasources_are_untouched(tmp_path: Path, backend: str, datasource: DatasourceConfig) -> None:
+    storage, _ = await _v30_store(tmp_path, backend=backend, datasource=datasource)
     model = await storage.get_dataset("events", data_source=DS)
     assert model is not None
     created = model.get_field("created_at")
     assert created is not None
     assert created.datatype is DT
+
+
+async def test_upgrade_waits_for_the_datasource_type(tmp_path: Path) -> None:
+    storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=None, models=[_events_v30()])
+    report = await upgrade_store(storage)
+    [refused] = [o for o in report.outcomes if o.name == f"{DS}.events"]
+    assert refused.status == "not upgraded", refused
+    assert refused.detail is not None
+    assert "instant typing waits for datasource" in refused.detail
+    typed = await upgrade_store(storage, datasource_types={DS: "bigquery"})
+    assert typed.complete, typed.outcomes
+    model = await storage.get_dataset("events", data_source=DS)
+    assert model is not None
+    assert {f.name: f.datatype for f in model.fields} == {"id": DataType.INTEGER, "created_at": TZ, "wall_at": DT}
 
 
 # --------------------------------------------------------------------------- #
@@ -300,3 +320,25 @@ async def _ids_in_january(engine: SlayerQueryEngine, name: str) -> set[int]:
         "time_dimensions": [{"field": f"{name}.ts", "granularity": "day", "date_range": ["2025-01-01", "2025-01-31"]}],
     }))
     return {int(r[f"{name}.id"]) for r in resp.data}
+
+
+@pytest.mark.parametrize("datatype, zone", [(DataType.DATETIME, "Mars/Olympus"), (DataType.STRING, "Asia/Tokyo")])
+def test_a_slayer_entry_zone_the_field_cannot_take_is_dropped_with_a_note(datatype: DataType, zone: str) -> None:
+    notes: list[ExtensionNote] = []
+    entry = Entry(ext.FieldPayload(entity="slot", field=ext.FieldContent(datatype=datatype, time_zone=zone)),
+                  matched=True)
+    out = apply_field_entry(DatasetField(name="slot", datatype=DataType.DATETIME), entry, notes=notes, label="slot",
+                            target="duckdb")
+    assert out.time_zone is None
+    assert out.datatype is datatype
+    [note] = notes
+    assert zone in note.message
+
+
+def test_a_zoned_field_retyped_to_a_list_drops_its_zone() -> None:
+    stored = DatasetField.model_validate({"name": "ts", "datatype": "DateTime", "time_zone": "UTC"})
+    live = DatasetField(name="ts", datatype=DataType.ARRAY, element_type=DataType.DATETIME, db_type="TIMESTAMP[]")
+    merged = _retyped_list(persisted=stored, fresh=live)
+    assert merged is not None
+    assert merged.time_zone is None
+    DatasetField.model_validate(merged.model_dump())

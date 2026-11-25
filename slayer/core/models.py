@@ -484,9 +484,13 @@ class DatasetField(DatasetPart):
 
     @model_validator(mode="after")
     def _validate_time_zone(self) -> "DatasetField":
-        """A source zone only on a ``DateTime`` field reading a plain column."""
+        self.check_time_zone()
+        return self
+
+    def check_time_zone(self) -> None:
+        """A source zone only on a ``DateTime`` field reading a plain column; else a ``TimeZoneError``."""
         if self.time_zone is None:
-            return self
+            return
         check_zone(self.time_zone, owner=f"field {self.name!r}", civil=True)
         if self.datatype is DataType.DATETIME_TZ:
             reason = "it is DateTimeTz, an instant, which has no source zone"
@@ -495,7 +499,7 @@ class DatasetField(DatasetPart):
         elif not self.is_base:
             reason = "it is derived; only a field reading a plain column takes one (its reads are converted)"
         else:
-            return self
+            return
         raise TimeZoneError(f"Field {self.name!r} cannot declare time_zone {self.time_zone!r}: {reason}.",
                             zone=self.time_zone)
 

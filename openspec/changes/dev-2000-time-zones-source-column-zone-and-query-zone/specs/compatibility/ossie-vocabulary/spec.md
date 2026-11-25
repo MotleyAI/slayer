@@ -30,4 +30,4 @@ A `datatype` or list element type SHALL be one of `String`, `Integer`, `Decimal`
 
 #### Scenario: Re-ingest re-types an instant column
 - **WHEN** a stored MySQL dataset has a `DateTime` field over a `TIMESTAMP` column and a `DateTime` field over a `DATETIME` column, and the datasource is re-ingested
-- **THEN** the first becomes `DateTimeTz`, the second stays `DateTime`, and every other attribute of both is unchanged
+- **THEN** the first becomes `DateTimeTz` and loses any `time_zone`, the second stays `DateTime`, and every other attribute of both is unchanged

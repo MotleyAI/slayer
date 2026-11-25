@@ -123,14 +123,9 @@ def read_column(column: exp.Column, *, site: ReadSite, dialect: SqlDialect, sett
     instant = field is not None and dialect.holds_instant(datatype=field.datatype, db_type=field.db_type)
     zone = dialect.time_zone
     if zone is None or site.context == STORED:
-        _tagged(column, context=site.context, outcome="unzoned" if zone is None else "stored")
-        naive = instant and site.reads_naive and site.dataset.name not in setting.stages
-        return dialect.read_column(column, zoned=naive)
+        return _read_as_stored(column, site=site, dialect=dialect, setting=setting, instant=instant)
     if field is None:
-        if site.dataset.name not in setting.stages:
-            _warn_undeclared(site, zone=zone)
-        _tagged(column, context=VALUE, outcome="undeclared")
-        return column
+        return _read_undeclared(column, site=site, zone=zone, setting=setting)
     if instant:
         _tagged(column, context=VALUE, outcome="converted")
         return dialect.convert_zone(column, source=None, target=ZoneInfo(zone))
@@ -141,16 +136,28 @@ def read_column(column: exp.Column, *, site: ReadSite, dialect: SqlDialect, sett
     source = source_zone(field, dataset=site.dataset, setting=setting)
     if source == CIVIL:
         _tagged(column, context=VALUE, outcome="civil")
-        return column
+        return dialect.civil_read(column)
     if source is None:
-        if site.dataset.name not in setting.stages:
-            _warn_undeclared(site, zone=zone)
-        _tagged(column, context=VALUE, outcome="undeclared")
-        return column
+        return dialect.civil_read(_read_undeclared(column, site=site, zone=zone, setting=setting))
     _tagged(column, context=VALUE, outcome="converted")
     if source == zone and site.dataset.name in setting.stages:
         return column  # a stage output already in this zone
     return dialect.convert_zone(column, source=ZoneInfo(source), target=ZoneInfo(zone))
+
+
+def _read_as_stored(
+    column: exp.Column, *, site: ReadSite, dialect: SqlDialect, setting: ZoneSetting, instant: bool,
+) -> Expression:
+    _tagged(column, context=site.context, outcome="unzoned" if dialect.time_zone is None else "stored")
+    naive = instant and site.reads_naive and site.dataset.name not in setting.stages
+    return dialect.read_column(column, zoned=naive)
+
+
+def _read_undeclared(column: exp.Column, *, site: ReadSite, zone: str, setting: ZoneSetting) -> Expression:
+    if site.dataset.name not in setting.stages:
+        _warn_undeclared(site, zone=zone)
+    _tagged(column, context=VALUE, outcome="undeclared")
+    return column
 
 
 def mark_read(column: exp.Column, site: ReadSite) -> exp.Column:

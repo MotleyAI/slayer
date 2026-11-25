@@ -2155,3 +2155,13 @@ class TestMySQLTimeZones:
             assert "time zone tables" in message.lower().replace("-", " "), message
         assert _probe_count(mysql_no_tz_container) - probes == 1
         assert _data_statements(mysql_no_tz_container) == data
+
+    async def test_a_zoned_query_converting_nothing_needs_no_zone_tables(
+        self, mysql_no_tz_env: SlayerQueryEngine, mysql_no_tz_container,
+    ) -> None:
+        probes = _probe_count(mysql_no_tz_container)
+        resp = await mysql_no_tz_env.execute(SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TZ_NY, "metrics": [{"metric": "sum(orders.amount)", "alias": "s"}],
+        }))
+        assert float(resp.data[0]["s"]) == sum(tz_amount(i) for i in TZ_ROWS), resp.sql
+        assert _probe_count(mysql_no_tz_container) == probes

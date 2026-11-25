@@ -837,7 +837,7 @@ class _Prepared(BaseModel):
     #: The SQL evaluates ``now()`` / ``current_date()``: its result must never be cached.
     reads_clock: bool = False
     time_zone: Optional[str] = None
-    #: The zones its stages convert to.
+    #: The stage zones the statement converts to.
     zones: List[str] = PydanticField(default_factory=list)
 
 
@@ -1501,8 +1501,9 @@ class SlayerQueryEngine:
             row_sources=rendered.row_sources,
             reads_clock=plans_read_clock(rendered.emitted_list),
             time_zone=root_planned.stage_bundle.time_zone if root_planned.stage_bundle is not None else None,
-            zones=sorted({p.stage_bundle.time_zone for p in rendered.emitted_list
-                          if p.stage_bundle is not None and p.stage_bundle.time_zone is not None}),
+            zones=get_dialect(dialect).converted_zones(statement, zones={
+                p.stage_bundle.time_zone for p in rendered.emitted_list
+                if p.stage_bundle is not None and p.stage_bundle.time_zone is not None}),
         )
 
     async def _plan_and_render(self, **kwargs: Any) -> _Rendered:
@@ -2020,7 +2021,6 @@ class SlayerQueryEngine:
             await cache_obj.put(key, entry)
         return response
 
-    @probes.probe(name="query.run", result=lambda executed: {"query.rows": len(executed.rows)})
     async def _check_zones(self, *, prepared: _Prepared, client: SqlClient) -> None:
         """Before the statement runs, the server resolves each zone it converts to: checked once per client and zone
         through the client, a failure raised every time."""
@@ -2039,6 +2039,7 @@ class SlayerQueryEngine:
             if failure is not None:
                 raise failure
 
+    @probes.probe(name="query.run", result=lambda executed: {"query.rows": len(executed.rows)})
     async def _run_data_query(
         self, *, prepared: _Prepared, client: SqlClient
     ) -> ExecutionResult:

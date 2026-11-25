@@ -95,3 +95,11 @@ async def test_not_on_frame_bounds_executes(backend: str) -> None:
     assert resp.sql is not None
     assert LOW[:10] not in resp.sql, resp.sql
     assert [str(r["orders.ordered_at"])[:7] for r in resp.data] == ["2025-01"], resp.data
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_bound_at_the_calendar_end_keeps_the_exact_filter(backend: str) -> None:
+    async with tz_engine(backend) as engine:
+        resp = await engine.execute(q(time_zone=NY, dimensions=["orders.id"],
+                                      filter=["orders.ordered_at >= '2025-01-01'", "orders.ordered_at < '9999-12-31'"]))
+    assert {int(r["orders.id"]) for r in resp.data} == {i for i in range(1, 5) if local(i, NY).year >= 2025}, resp.sql

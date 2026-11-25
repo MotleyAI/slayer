@@ -10,7 +10,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, ValueKey, field_leaf
 from slayer.core.models import DatasetField, SlayerDataset
-from slayer.core.relationship_walker import follow
+from slayer.core.relationship_walker import OrientedRelationship, follow
 from slayer.core.time_spine import is_spine
 from slayer.core.time_zones import CIVIL
 from slayer.engine.field_dependency import value_reads
@@ -33,7 +33,7 @@ class _Reads:
         if field is None:
             yield "civil" if dataset.name in self.stages else "undeclared"
             return
-        if field.needs_expansion:
+        if field.needs_expansion and not field.is_base:
             yield from self.derived(dataset, field, seen)
             return
         if field.datatype is DataType.DATETIME_TZ:
@@ -41,7 +41,7 @@ class _Reads:
         elif field.datatype is DataType.DATETIME and not is_spine(dataset):
             zone = field.time_zone if field.time_zone is not None or dataset.name in self.stages \
                 else self.datasource_zone
-            yield "civil" if zone == CIVIL else ("undeclared" if zone is None else "converted")
+            yield _zone_read(zone)
 
     def derived(self, dataset: SlayerDataset, field: DatasetField, seen: frozenset) -> Iterator[ReadKind]:
         key = (dataset.name, field.name)
@@ -53,6 +53,21 @@ class _Reads:
                 yield "undeclared"
                 continue
             yield from self.column(target, read, seen | {key})
+
+
+def _zone_read(zone: Optional[str]) -> ReadKind:
+    if zone == CIVIL:
+        return "civil"
+    return "undeclared" if zone is None else "converted"
+
+
+def _chain_owner(
+    chain: Optional[list[OrientedRelationship]], *, root: SlayerDataset, datasets_by_name: Mapping[str, SlayerDataset],
+) -> Optional[SlayerDataset]:
+    """The dataset a followed path ends on: ``root`` for an empty path, ``None`` for an unresolved one."""
+    if chain is None:
+        return None
+    return datasets_by_name.get(chain[-1].to) if chain else root
 
 
 def _column_reader(dataset: SlayerDataset, column: str) -> Optional[DatasetField]:
@@ -88,7 +103,7 @@ def output_time_zone(
             chain = follow(root=root, path=leaf.path, datasets_by_name=dict(datasets_by_name))
         except AmbiguousRelationshipPathError:
             chain = None
-        owner = (datasets_by_name.get(chain[-1].to) if chain else root) if chain is not None else None
+        owner = _chain_owner(chain, root=root, datasets_by_name=datasets_by_name)
         if owner is None:
             kinds.add("undeclared")
             continue

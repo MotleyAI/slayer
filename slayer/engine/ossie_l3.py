@@ -271,10 +271,15 @@ async def _model(engine: "SlayerQueryEngine", data_source: str) -> _Model:
 
 def _zoned_stages(query: _Query, model: _Model) -> None:
     """A query-backed dataset the query reads whose stored stage sets a time zone runs a SLayer query part."""
-    for head, _ in _heads(query)[0]:
-        dataset = model.datasets.get(head)
-        if dataset is not None and any(q.time_zone is not None for q in dataset.source_queries or ()):
-            raise _invalid(f"'time_zone' is not a part of an Ossie query; the query-backed dataset {head!r} it reads "
+    heads, bare = _heads(query)
+    read = [d.name for head, quoted in heads if (d := model.dataset(head, quoted=quoted)) is not None]
+    for name, quoted in bare:
+        metric = model.metric(name, quoted=quoted)
+        if metric is not None:
+            read += _homes(_Target(kind="model_metric", name=metric.name, model_metric=metric), model)
+    for name in dict.fromkeys(read):
+        if any(q.time_zone is not None for q in model.datasets[name].source_queries or ()):
+            raise _invalid(f"'time_zone' is not a part of an Ossie query; the query-backed dataset {name!r} it reads "
                            f"sets one")
 
 
