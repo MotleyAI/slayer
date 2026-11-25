@@ -76,6 +76,7 @@ presence of a field:
 The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, and `variables`. Notable optional fields:
 
 - `whole_periods_only` (bool) — snap time bounds to bucket boundaries; see [Time](../concepts/time.md#whole_periods_only).
+- `time_zone` (str, optional) — IANA zone timestamps are bucketed, filtered and returned in; the response reports it as `time_zone`. See [Time zones](../concepts/time.md#time-zones).
 - `distinct_dimension_values` (bool, default `true`) — set `false` to emit raw rows (no top-level `GROUP BY`); rejects any metric reference in `metrics` / `filter` / `order`.
 - `to_many_handling` (str, optional) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-dataset-metrics): omitted or `associate` (per-cell value over the distinct associated rows) or `error` (refuse); `broadcast` is deprecated, removed in 3.0 — give each aggregate `partition_by=` instead. Rejected at the top level of run-by-name bodies (`{"name": ...}`) — put it in `refine` instead.
 

@@ -118,6 +118,7 @@ from slayer.engine.elaborate_env import (
 )
 from slayer.engine.elaborate import elaborate_synthesized
 from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMetric, OrderSpec, bound_filter_from_key, row_restriction_from_key
+from slayer.engine.zone_state import output_time_zone
 from slayer.engine.compile.discovery import RootDisposition, TransformRouting, discover_roots, row_attach_inputs
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.terms import Aggregate, AggregateHomes
@@ -5103,6 +5104,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
                    for attach in regroup_attach_plans for sub in attach.substitutions},
         upstream=_upstream_respellings(scope),
         restricted=_stage_restricts(prebound=typed_prebound, population=render_source_dataset, bundle=bundle),
+        zone=bundle.time_zone, datasource_zone=bundle.datasource_time_zone, stages=frozenset(bundle.stage_displays),
     )
 
     frame_bound_fields = _frame_bound_fields(grain=grain, registry=projection.registry)
@@ -5475,8 +5477,12 @@ def _emit_stage_schema(
     originals: Mapping[ValueKey, ValueKey],
     upstream: Mapping[str, Tuple[str, ...]],
     restricted: bool = False,
+    zone: Optional[str] = None,
+    datasource_zone: Optional[str] = None,
+    stages: frozenset[str] = frozenset(),
 ) -> StageSchema:
-    """Each grain slot's first public field names the schema grain; ``None`` in raw-row mode."""
+    """Each grain slot's first public field names the schema grain; ``None`` in raw-row mode. Under ``zone`` each
+    timestamp output carries its zone state."""
     fields: List[StageField] = []
     alias_idx: Dict[str, int] = {}
     flat_by_sid: Dict[SlotId, str] = {}
@@ -5497,8 +5503,12 @@ def _emit_stage_schema(
             collision = collision or (flat, key_by_flat[flat], rk)
             continue
         key_by_flat[flat] = rk
+        state = output_time_zone(
+            originals.get(slot.key, slot.key), root=root, datasets_by_name=datasets_by_name, zone=zone,
+            datasource_zone=datasource_zone, stages=stages,
+        ) if slot.type in (DataType.DATETIME, DataType.DATETIME_TZ) else None
         fields.append(_stage_field(
-            slot=slot, alias=rk.removeprefix(f"{field_relation}."), flat=flat,
+            slot=slot, alias=rk.removeprefix(f"{field_relation}."), flat=flat, time_zone=state,
             source=_source_field(key=slot.key, root=root, datasets_by_name=datasets_by_name),
             respellings=() if alias in slot.explicit_aliases else _respellings(
                 flat=flat, key=originals.get(slot.key, slot.key), root=root,
@@ -5566,7 +5576,7 @@ def _source_field(
 
 def _stage_field(
     *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...], source=None,
-    passes: Optional[PassThrough] = None,
+    passes: Optional[PassThrough] = None, time_zone: Optional[str] = None,
 ) -> StageField:
     # A bucketed field (bucketed here, or passed through from upstream) carries its granularity
     # so a re-binding TimeDimension can type-check the re-bucket.
@@ -5579,7 +5589,9 @@ def _stage_field(
         name=flat,
         sql_alias=flat,
         public_alias=alias,
-        datatype=slot.type,
+        # Under a zone a converted instant is that zone's wall clock.
+        datatype=DataType.DATETIME if time_zone is not None and slot.type is DataType.DATETIME_TZ else slot.type,
+        time_zone=time_zone,
         element_type=slot.element_type or (row.element_type if row is not None and slot.type is DataType.ARRAY else None),
         granularity=upstream_gran,
         label=slot.label or (row.label if row is not None else None),

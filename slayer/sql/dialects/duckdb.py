@@ -9,6 +9,8 @@ the Postgres catalog queries duckdb-engine inherits.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlglot
@@ -36,6 +38,8 @@ from slayer.sql.dialects.base import (
     lit,
     pad_fill,
     text_try_cast,
+    at_time_zone,
+    iso_text,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
@@ -134,6 +138,13 @@ class DuckdbDialect(SqlDialect):
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
     })
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``(v AT TIME ZONE S) AT TIME ZONE Q``; an instant: ``v AT TIME ZONE Q``."""
+        return at_time_zone(value, source=source, target=target)
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"), to=exp.DataType.build("TIMESTAMPTZ"))
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)

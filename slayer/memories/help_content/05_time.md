@@ -50,3 +50,10 @@ second, minute, hour, day, week (ISO, Monday), week_sunday, month, quarter, year
 granularity defined on the datasource (fiscal years and the like). `month(x)` and its siblings
 `year`, `quarter`, `week`, `day`, `hour`, `minute`, `second` are integer extraction
 (`date_part('month', x)`, the month of year), never a bucket.
+
+## Time zones
+
+`"time_zone": "America/New_York"` on a query buckets, filters and returns timestamps as that zone's
+wall clock, and "today" / `now()` follow it. A `DateTime` field converts from its own `time_zone`, else its
+datasource's; `time_zone: civil` never converts; a field with neither is read as stored and warns
+`time_zone_undeclared`.

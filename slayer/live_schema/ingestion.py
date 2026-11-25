@@ -1316,7 +1316,7 @@ def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetFie
         return persisted.model_copy(update={
             "datatype": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
             # Scalar-only settings; a temporal granularity would fail the list's validation.
-            "granularity": None, "format": None,
+            "granularity": None, "format": None, "time_zone": None,
             "allowed_aggregations": [
                 a for a in persisted.allowed_aggregations or () if a in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY]
             ] or None,
@@ -1326,6 +1326,14 @@ def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetFie
     if persisted.datatype is DataType.ARRAY and kind_of(persisted.element_type) is TypeKind.UNKNOWN and inferred and known:
         return persisted.model_copy(update={"element_type": fresh.element_type})
     return None
+
+
+def _retyped_instant(*, persisted: DatasetField, fresh: DatasetField) -> DatasetField | None:
+    """A stored ``DateTime`` field whose live column holds instants, re-typed ``DateTimeTz`` (live_schema P1's
+    exception); a source zone does not apply to an instant. ``None`` when nothing changes."""
+    if persisted.datatype is not DataType.DATETIME or fresh.datatype is not DataType.DATETIME_TZ:
+        return None
+    return persisted.model_copy(update={"datatype": DataType.DATETIME_TZ, "time_zone": None})
 
 
 def _merge_one_field(
@@ -1345,7 +1353,10 @@ def _merge_one_field(
     unique_filled = False
     described = False
     if fresh_col is not None:
-        retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) if _reads(persisted_col, fresh_col) else None
+        retyped = None
+        if _reads(persisted_col, fresh_col):
+            retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) or _retyped_instant(
+                persisted=merged_col, fresh=fresh_col)
         if retyped is not None:
             merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):

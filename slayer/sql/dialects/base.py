@@ -6,6 +6,7 @@ import hashlib
 import re
 from datetime import date, datetime
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Optional, Self, TypeGuard, get_args
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
@@ -25,6 +26,7 @@ from slayer.core.errors import (
     IdentifierCollisionError,
     IdentifierLengthError,
     ServerVersionError,
+    TimeZoneError,
     UnsupportedServerFunctionError,
 )
 from slayer.core.granularity import CustomGranularity, Granularity, bucket_type, granularity_parts, nests_into
@@ -53,6 +55,7 @@ from slayer.sql.dialects.reflection import (
     column_from_sa_type,
     column_from_type_string,
     eq_literal,
+    unwrap_clickhouse_wrapper_str,
     fetch,
     inspector_column_names,
     inspector_foreign_keys,
@@ -279,6 +282,17 @@ def operand_copy(value: Expression) -> Expression:
 def iso_text(value: date) -> str:
     """``YYYY-MM-DD``, or ``YYYY-MM-DD HH:MM:SS[.ffffff]`` for a datetime."""
     return str(value)
+
+
+def zone_name(zone: ZoneInfo) -> exp.Literal:
+    return exp.Literal.string(zone.key)
+
+
+def at_time_zone(value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+    """``(v AT TIME ZONE S) AT TIME ZONE Q`` (naive ``S`` wall clock → instant → ``Q`` wall clock); an instant:
+    ``v AT TIME ZONE Q``."""
+    instant = value if source is None else exp.AtTimeZone(this=value, zone=zone_name(source))
+    return exp.AtTimeZone(this=instant, zone=zone_name(target))
 
 
 TemporalComparisonOp = Literal["=", "!=", "<", "<=", ">", ">="]
@@ -937,16 +951,73 @@ class SqlDialect(BaseModel):
             return t in self.unsigned_cast_types
         return t not in VENDOR_ONLY_CAST_TYPES or t in self.vendor_cast_types
 
-    #: Column ``db_type``s holding a zoned instant where SLayer's TIMESTAMP is naive (BigQuery ``TIMESTAMP``).
+    #: Type names holding an instant, kept as ``db_type`` and ingested as ``DateTimeTz`` (BigQuery ``TIMESTAMP``).
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset()
 
     def is_zoned_db_type(self, db_type: Optional[str]) -> bool:
         """Whether a column of ``db_type`` holds a zoned instant on this dialect."""
         return bool(db_type) and db_type.split("(")[0].strip().upper() in self.zoned_timestamp_db_types
 
+    #: The instant type reads as its UTC wall clock where SLayer's timestamp is naive (BigQuery).
+    naive_instant_reads: ClassVar[bool] = False
+
+    def holds_instant(self, *, datatype: Optional[DataType], db_type: Optional[str]) -> bool:
+        """Whether a field of ``datatype`` over a column of ``db_type`` holds instants."""
+        return datatype is DataType.DATETIME_TZ or self.is_zoned_db_type(db_type)
+
+    def is_instant_db_type(self, type_name: str) -> bool:
+        """Whether a column of database type ``type_name`` holds an instant (ingested ``DateTimeTz``)."""
+        return self.is_zoned_db_type(unwrap_clickhouse_wrapper_str(type_name))
+
     def read_column(self, column: Expression, *, zoned: bool) -> Expression:  # NOSONAR(S1172) — hook parameter read by dialect overrides
         """A column as SLayer reads it; default: as stored."""
         return column
+
+    # Time zones (queries/time-zones): a stage renders through a copy carrying its zone and its "now".
+    time_zone: Optional[str] = None
+    zone_now: Optional[datetime] = None
+
+    def zoned(self, *, zone: Optional[str], now: Optional[datetime]) -> Self:
+        """This dialect rendering a stage in ``zone`` (``None``: no conversion) whose wall-clock "now" is ``now``."""
+        if zone == self.time_zone and now == self.zone_now:
+            return self
+        return self.model_copy(update={"time_zone": zone, "zone_now": now if zone is not None else None})
+
+    def zoned_timestamp_cast(self, value: Expression) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
+        """A declared timestamp cast under this stage's zone when a plain ``CAST`` would lose it; ``None``: plain."""
+        return None
+
+    def civil_read(self, value: Expression) -> Expression:
+        """A ``DateTime`` read as stored under this stage's zone (``civil`` or undeclared), its wall clock kept in the
+        type converted values have; default: as stored."""
+        return value
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:  # NOSONAR(S1172) — hook signature
+        """``value`` as naive ``target`` wall clock: from naive ``source`` wall clock, or from an instant (``source``
+        ``None``). Default: refused, a Tier-2 database cannot convert."""
+        raise TimeZoneError(
+            f"{self.database_name} cannot convert timestamps to time zone {target.key!r}; run the query without "
+            f"time_zone, or read only Date, civil or undeclared fields.", zone=target.key,
+        )
+
+    def zoned_cast(self, value: Expression) -> Expression:
+        """A cast to a zoned timestamp, under this stage's zone: that instant's wall clock there."""
+        return value if self.time_zone is None else self.convert_zone(value, source=None, target=ZoneInfo(self.time_zone))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
+        """The UTC instant ``value`` (naive) in the database's instant type; ``None`` when it cannot be written."""
+        return None
+
+    def converted_zones(self, statement: Expr, *, zones: Iterable[str]) -> list[str]:  # NOSONAR(S1172) — hook signature
+        """Of ``zones``, those ``statement`` converts between; default: all of them."""
+        return sorted(zones)
+
+    def zone_probe(self, zone: ZoneInfo) -> Optional[exp.Select]:  # NOSONAR(S1172) — hook signature
+        """A statement whose one value is NULL when the server cannot resolve ``zone``; ``None``: no check needed."""
+        return None
+
+    def unresolved_zone_error(self, zone: ZoneInfo) -> TimeZoneError:
+        return TimeZoneError(f"{self.database_name} cannot resolve time zone {zone.key!r}.", zone=zone.key)
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:  # NOSONAR(S1172) — hook parameter read by dialect overrides
         """The portable ``TRY_CAST`` target of a cast to ``data_type``; default: the database's own type."""
@@ -2301,7 +2372,7 @@ class SqlDialect(BaseModel):
         return [
             column_from_type_string(
                 name=name, data_type=dtype, comment=comments.get(name), zoned_types=self.zoned_timestamp_db_types,
-                json_types=self.json_db_types,
+                json_types=self.json_db_types, instant=self.is_instant_db_type,
             )
             for name, dtype in rows
         ]
@@ -2317,6 +2388,7 @@ class SqlDialect(BaseModel):
             column_from_sa_type(
                 name=c["name"], sa_type=c["type"], comment=c.get("comment"),
                 zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types, sa_dialect=sa_dialect,
+                instant=self.is_instant_db_type,
             )
             for c in raw
         ]
@@ -2329,6 +2401,7 @@ class SqlDialect(BaseModel):
             column_from_type_string(
                 name=c.name, data_type=declared.get(c.name), comment=c.comment,
                 zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
+                instant=self.is_instant_db_type,
             ) if c.name in untyped else c
             for c in columns
         ]
