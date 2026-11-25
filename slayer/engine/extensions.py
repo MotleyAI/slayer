@@ -220,7 +220,7 @@ def resolve_path(
             route = dimension_routing.short_form_route_or_none(
                 root=root, target_dataset=hops[0], datasets_by_name=datasets_by_name)
             hops = tuple(route or ())
-            chain = walk(root=root, path=hops, datasets_by_name=datasets_by_name) if route else None
+            chain = walk(root=root, path=(), via=hops, datasets_by_name=datasets_by_name) if route else None
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
         return None
     return (hops, chain) if chain is not None else None
@@ -242,8 +242,8 @@ def resolve_anchored_path(
             return None
         route = anchor_route(reader=reader, anchor=anchor, datasets_by_name=universe, rest=hops[1:]).route
         path = (*route, *hops[1:])
-        chain = walk(root=reader, path=path, datasets_by_name=universe,
-                     quoted=(*(False for _ in route), *(_flag(quoted, i) for i in range(1, len(hops)))))
+        chain = walk(root=reader, path=hops[1:], via=route, datasets_by_name=universe,
+                     quoted=tuple(_flag(quoted, i) for i in range(1, len(hops))))
     except SlayerError:
         return None
     return (path, chain) if chain is not None else None

@@ -82,6 +82,7 @@ from slayer.core.syntax import (
     metric_text_at_path,
     parse_expr,
     parse_template,
+    quote_blind_metric_text,
     root_relative,
     variable_names,
     walk_parsed,
@@ -856,7 +857,7 @@ def _time_dimension_name_identity(td: "TimeDimension") -> tuple[str, tuple] | No
 
 def _canonical_expression_text(expression: str) -> str:
     try:
-        return canonical_metric_text(parse_expr(expression))
+        return quote_blind_metric_text(parse_expr(expression))
     except Exception:  # noqa: BLE001 — an unparseable expression is reported at binding
         return expression
 
@@ -1517,9 +1518,9 @@ def _root_relative_ref(ref: FieldRef, root: str | None) -> FieldRef:
 
 
 def _parsed_identity(text: str, root: str | None) -> str:
-    """``text``'s root-relative parsed meaning, as canonical text; the text itself when unparseable."""
+    """``text``'s root-relative parsed meaning, as quote-blind canonical text; the text itself when unparseable."""
     node = _parsed_or_none(text)
-    return text if node is None else canonical_metric_text(root_relative(node, root))
+    return text if node is None else quote_blind_metric_text(root_relative(node, root))
 
 
 @vocabulary.input_object("query")
