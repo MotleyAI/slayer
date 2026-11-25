@@ -424,7 +424,7 @@ class TestValidatorRejects:
         """D7 explicit strictness: a transform must be staged strictly later than
         every transform it reads — a hand-built equal-level plan is rejected."""
         inner = TransformKey(op="cumsum", input=_agg_key())
-        outer = TransformKey(op="last", input=inner)
+        outer = TransformKey(op="lag", input=inner)
         inner_slot = ValueSlot(type=DataType.INTEGER, id="t_inner", key=inner, declared_name="i", hidden=True,
                                phase=Phase.POST, needs_field=True,
                                stage=Stage(kind=StageKind.DERIVED, level=1))
@@ -439,7 +439,7 @@ class TestValidatorRejects:
         """A value reading a transform no slot materialises is malformed —
         nothing can ever emit it (Codex fold on D7)."""
         inner = TransformKey(op="cumsum", input=_agg_key())
-        outer = TransformKey(op="last", input=inner)
+        outer = TransformKey(op="lag", input=inner)
         outer_slot = ValueSlot(type=DataType.INTEGER, id="t_outer", key=outer, declared_name="o", public_name="o",
                                public_aliases=["o"], phase=Phase.POST,
                                stage=Stage(kind=StageKind.DERIVED, level=2))
