@@ -670,7 +670,7 @@ def _producer_row_conjuncts(
     bundle: ResolvedSourceBundle,
 ) -> List[Tuple[ValueKey, Optional[str]]]:
     """The base ROW conjuncts a home-rooted producer disposes; spine bounds reach a home only through its axis."""
-    spine = spine_field(host_dataset)
+    spine = spine_field(host_dataset, bundle=bundle)
     reaches_spine = spine is not None and key_attributable_from_root(
         key=spine, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
         bundle=bundle, host_dataset=host_dataset, host_name=host_dataset.name,
@@ -1266,7 +1266,7 @@ def _plan_shifted_attaches(
         producer_prebound, ordered_pks = _regroup_producer_prebound(
             pks=pks, aggs=[answer], dataset=producer_dataset, bundle=bundle,
             inherited=[*inherited, *shifted_spine_bounds(
-                prebound=prebound, spine=spine_field(producer_dataset), periods=periods,
+                prebound=prebound, spine=spine_field(producer_dataset, bundle=bundle), periods=periods,
                 unit=shift_unit or key.time_key.granularity,
             )], n_date_range=0,
             partition_order=lambda pks: sorted(
@@ -2352,7 +2352,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         )
 
     def broadcast_reason_at_home(key: Optional[ValueKey], spelled: Optional[ValueKey] = None) -> str:
-        if key is None and spelled is not None and reads_the_spine(spelled, host=host_dataset):
+        if key is None and spelled is not None and reads_the_spine(spelled, host=host_dataset, datasets_by_name=home_datasets):
             if not (host_dataset.population_spine and home.name == host_dataset.name) and routes(
                     root=home, target=TIME_SPINE_DATASET, datasets_by_name=home_datasets, cap=1):
                 return f"crosses a fanning or unproven relationship hop to {TIME_SPINE_DATASET}"
@@ -4642,9 +4642,9 @@ def _route_top_level(
     dispositions = discover_roots(
         stripped, filter_typings=filter_typings, scope=scope, bundle=bundle, homes=homes,
         transforms=TransformRouting(
-            route=spine_field(scope.population) is None,
+            route=spine_field(scope.population, bundle=bundle) is None,
             rows_are_host_cells=supply is None or not supply.branches,
-            spine=spine_field(scope.population) is not None,
+            spine=spine_field(scope.population, bundle=bundle) is not None,
         ),
     )
     routed_prebound, attaches = _plan_regroups(
@@ -4676,7 +4676,7 @@ def _route_producer(
         prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle, homes=env.homes,
         transforms=TransformRouting(answers=frozenset(
             dm.bound.value_key for dm in prebound.declared_metrics if not dm.is_dimension
-        ), spine=spine_field(scope.population) is not None),
+        ), spine=spine_field(scope.population, bundle=bundle) is not None),
     )
     routed_prebound, attaches = _plan_regroups(
         prebound=prebound, filter_typings=list(env.filter_typings),
@@ -5011,13 +5011,13 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     # total — the prefix ``masks[:n_date_range_masks]`` must stay exactly the
     # surviving frame bounds (readers: sql.generator lowering, _plan_src_row_filters).
     surviving_date_range = 0
-    spine = spine_field(render_source_dataset)
+    spine = spine_field(render_source_dataset, bundle=bundle)
     spine_factor = (
         plan_spine(prebound=typed_prebound, host=render_source_dataset, spine=spine, bundle=bundle)
         if spine is not None and render_source_dataset is not None else None
     )
     if spine is None:
-        check_off_spine_order_keys(typed_prebound)
+        check_off_spine_order_keys(typed_prebound, host=render_source_dataset, bundle=bundle)
     for i, (bf, ct) in enumerate(zip(bound_filters, filter_typings)):
         key = _drop_conjuncts(value_key=bf.value_key, drop=pushed_set)
         key = host_mask(key, spine=spine) if key is not None else None

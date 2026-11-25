@@ -20,6 +20,7 @@ from slayer.core.relationship_walker import (
     edges_between,
     follow,
     is_product_edge,
+    reaches_spine,
     provably_to_one,
     resolve_hop,
     reverse_token,
@@ -29,6 +30,7 @@ from slayer.core.relationship_walker import (
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, axis_field, is_spine
 from slayer.core.keys import (
     TransformKey,
+    display_token,
     is_framed_path,
     is_ranked,
     SLOT_COMPOSITE_KINDS,
@@ -404,11 +406,11 @@ def fanning_route_error(*, dataset: str, routes: list[list[OrientedRelationship]
 
 
 def spine_route_error(*, dataset: str, routes: list[list[OrientedRelationship]], leaf: str) -> UnresolvableDimensionRelationshipError:
-    """The ambiguous-spine-route error, naming each tied canonical route."""
+    """The ambiguous-spine-route error, naming each tied route from the spine."""
     return UnresolvableDimensionRelationshipError(
         reference=f"{dataset}.{leaf}", root_dataset=TIME_SPINE_DATASET,
-        reason="equal-length routes to the time spine: " + ", ".join(
-            ".".join((dataset, *canonical_path(r))) for r in routes
+        reason=f"equal-length routes join {dataset} to the time spine: " + ", ".join(
+            ".".join((TIME_SPINE_DATASET, *(display_token(reverse_token(e)) for e in reversed(r)))) for r in routes
         ) + "; give the dataset a default_time_dimension, or query its facts through one of the routes",
     )
 
@@ -420,13 +422,21 @@ def _factor_free(datasets_by_name: Dict[str, SlayerDataset]) -> Dict[str, Slayer
 def _is_product_path(host_path: Tuple[str, ...], *, host_name: Optional[str], datasets_by_name: Dict[str, SlayerDataset]) -> bool:
     """``host_path`` starts at the population's product hop to the spine."""
     host = datasets_by_name.get(host_name) if host_name is not None else None
-    return host is not None and host.population_spine and bool(host_path) and host_path[0] == TIME_SPINE_DATASET
+    return host is not None and _crosses_product(host_path, host=host, datasets_by_name=datasets_by_name)
 
 
-def reads_population_spine(key: ValueKey, *, host: Optional[SlayerDataset]) -> bool:
+def _crosses_product(path: Tuple[str, ...], *, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset]) -> bool:
+    """``path`` starts at spine population ``host``'s product hop."""
+    return host.population_spine and reaches_spine(root=host, path=path[:1], datasets_by_name=datasets_by_name)
+
+
+def reads_population_spine(
+    key: ValueKey, *, host: Optional[SlayerDataset], datasets_by_name: Dict[str, SlayerDataset],
+) -> bool:
     """``key`` reads a spine population's product hop (the spine as the population sees it)."""
-    return host is not None and host.population_spine and any(
-        isinstance(r, FieldKey) and r.path[:1] == (TIME_SPINE_DATASET,) for r in walk_value_keys(key)
+    return host is not None and any(
+        isinstance(r, FieldKey) and _crosses_product(r.path, host=host, datasets_by_name=datasets_by_name)
+        for r in walk_value_keys(key)
     )
 
 
@@ -459,7 +469,7 @@ def attributable_from_root(
     """Is a host-coordinate path attributable from the aggregate's root over provably many-to-one hops only?"""
     tp, hp = tuple(target_path), tuple(host_path)
     if _is_product_path(hp, host_name=host_name, datasets_by_name=datasets_by_name) or (
-        not tp and root_dataset.population_spine and hp[:1] == (TIME_SPINE_DATASET,)
+        not tp and _crosses_product(hp, host=root_dataset, datasets_by_name=datasets_by_name)
     ):
         return home_spine_route(root_dataset=root_dataset, datasets_by_name=datasets_by_name) is not None
     if hp[: len(tp)] == tp:

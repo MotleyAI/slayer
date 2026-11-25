@@ -25,6 +25,7 @@ def _orders() -> SlayerDataset:
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="__regroup__legacy_col", datatype=DataType.STRING),
         ],
     )
 

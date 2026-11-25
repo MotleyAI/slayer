@@ -15,6 +15,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import SlayerDataset
 from slayer.core.refs import bucket_remedy, key_display
+from slayer.core.relationship_walker import SPINE_TOKEN, reaches_spine, spine_token
 from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
 from slayer.core.time_points import add_units, floor_to
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, is_spine
@@ -36,14 +37,15 @@ _MIRROR = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}
 _SERIES_FALLBACKS = (TimeGranularity.DAY, TimeGranularity.HOUR, TimeGranularity.MINUTE, TimeGranularity.SECOND)
 
 
-def spine_field(dataset: Optional[SlayerDataset]) -> Optional[FieldKey]:
+def spine_field(dataset: Optional[SlayerDataset], *, bundle: ResolvedSourceBundle) -> Optional[FieldKey]:
     """The spine field as the host reads it: its own field, or across the product hop."""
     if dataset is None:
         return None
     if is_spine(dataset):
         return FieldKey(path=(), leaf=TIME_SPINE_FIELD)
     if dataset.population_spine:
-        return FieldKey(path=(TIME_SPINE_DATASET,), leaf=TIME_SPINE_FIELD)
+        hop = spine_token(dataset=dataset, datasets_by_name=bundle.datasets_by_name)
+        return FieldKey(path=(hop,), leaf=TIME_SPINE_FIELD)
     return None
 
 
@@ -131,7 +133,7 @@ def plan_spine(
     upper = min(uppers) if uppers else add_units(floor_to(bundle.now, granularity), granularity, 1)
     return SpineFactor(
         granularity=granularity, lower=lower, upper=upper,
-        size=_series_size(granularity=granularity, lower=lower, upper=upper),
+        size=_series_size(granularity=granularity, lower=lower, upper=upper), path=tuple(spine.path),
     )
 
 
@@ -185,11 +187,18 @@ def _spine_bounds(
     return lowers, uppers
 
 
-def check_off_spine_order_keys(prebound: PreboundQuery) -> None:
+def check_off_spine_order_keys(
+    prebound: PreboundQuery, *, host: Optional[SlayerDataset], bundle: ResolvedSourceBundle,
+) -> None:
     """Outside a spine population no bucket of the spine is projected, so no order key may read it."""
+    def reads_spine(path: Tuple[str, ...]) -> bool:
+        if host is None:
+            return bool({TIME_SPINE_DATASET, SPINE_TOKEN} & set(path))
+        return reaches_spine(root=host, path=path, datasets_by_name=bundle.datasets_by_name)
+
     for spec in prebound.order_specs:
         key = spec.bound.value_key
-        reads = any(isinstance(k, FieldKey) and TIME_SPINE_DATASET in k.path for k in walk_value_keys(key))
+        reads = any(isinstance(k, FieldKey) and reads_spine(k.path) for k in walk_value_keys(key))
         check_spine_plain_use(offender=key_display(key) if reads else None, position="order key")
 
 
@@ -207,7 +216,7 @@ def check_axis_rebucket(
     bundle: ResolvedSourceBundle,
 ) -> None:
     """A spine bucket attributed through a fact's axis obeys that axis field's recorded granularity."""
-    spine = spine_field(host)
+    spine = spine_field(host, bundle=bundle)
     if not (isinstance(host_key, TimeTruncKey) and host_key.source == spine and isinstance(rerooted, TimeTruncKey)):
         return
     field = rerooted.source
