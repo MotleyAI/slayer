@@ -2611,21 +2611,16 @@ async def planets_env(tmp_path):
     return SlayerQueryEngine(storage=storage)
 
 
-async def test_filter_on_windowed_column_sqlite_raises(planets_env):
-    """End-to-end: filtering on a `DatasetField.sql` with a window function used to
-    auto-promote to a post-aggregation outer WHERE. That escape
-    hatch is removed — users must use rank-family transforms
-    (`rank(<metric>, direction='desc') <= 3`) or factor the windowed field into a
-    multi-stage `source_queries` dataset instead. The engine raises a
-    clear error with that suggestion."""
+async def test_filter_on_windowed_column_sqlite(planets_env):
+    """A filter on a windowed field applies outside the materialised window."""
     engine = planets_env
     query = SlayerQuery(
         population="planets",
         dimensions=["planets.name"],
         filter=["planets.rn <= 3"],
     )
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await engine.execute(query)
+    result = await engine.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Neptune"}
 
 
 async def test_json_extract_case_when_matches_in_sqlite(tmp_path):

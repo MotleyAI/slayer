@@ -73,7 +73,7 @@ def _bare_field_refs(expression: str) -> list[str]:
     """Best-effort extraction of field-like identifiers from a SQL-mode
     predicate. The render-time relationship-path detection use was superseded by structured
     extraction (``reference_closure``) and the Mode-A door; this now serves
-    only VALIDATION — the dataset-filter metric/windowed-field rejection in
+    only VALIDATION — the dataset-filter metric rejection in
     ``stage_planner`` and the ``schema_drift`` check. Skips string literals,
     then walks tokens that look like identifiers
     (``customers__regions.name`` → ``customers__regions.name``,
