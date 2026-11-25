@@ -38,7 +38,7 @@ from slayer.core.refs import (
     key_display,
     partition_by_suffix,
 )
-from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_metric_text, legacy_result_name_seed
+from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, legacy_result_name_seed, quote_blind_metric_text
 from slayer.sql._identifier_fit import fit_identifier
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, get_dialect
 from slayer.sql.dialects.base import LIST_POSITION
@@ -357,7 +357,7 @@ def expression_text_alias(parsed: object) -> str:
     field or star, else the sanitised legacy naming seed."""
     if (isinstance(parsed, AggCall) and not parsed.args and not parsed.kwargs and parsed.filter is None
             and isinstance(parsed.source, (Ref, DottedRef, StarSource)) and _PLAIN_NAME_RE.fullmatch(parsed.agg)):
-        base = canonical_metric_text(parsed.source)
+        base = quote_blind_metric_text(parsed.source)
         if _PLAIN_SOURCE_RE.fullmatch(base):
             if base.endswith(".*"):
                 return f"{base[:-2]}.{canonical_agg_name(metric_name='*', aggregation_name=parsed.agg)}"

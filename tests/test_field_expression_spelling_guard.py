@@ -94,6 +94,8 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestQualification::test_an_alias_qualifies_the_expression": 1,
         "TestQualification::test_an_owner_qualified_reference_reads_the_owners_column": 1,
         "TestQualification::test_an_unquoted_reference_matches_the_column_in_any_case": 1,
+        "TestQualification::test_an_extension_column_reading_a_quoted_hop_in_its_exact_spelling_is_inlined": 1,
+        "TestQualification::test_an_extension_column_reading_a_quoted_hop_in_another_case_does_not_resolve": 1,
         "TestColumnShapes::test_a_declared_type_is_kept_as_a_cast": 1,
         "TestColumnShapes::test_a_label_carries_over_where_the_position_holds_one": 1,
         "TestUnconvertible::test_an_extension_of_a_name_several_models_match_fails_to_load": 1,
