@@ -155,12 +155,15 @@ class DatasetFieldCycleError(SlayerError, ValueError):
 class DatasetFilterCycleError(SlayerError, ValueError):
     """A dataset's filters read its own dataset; carries the ordered dataset ``cycle``."""
 
-    def __init__(self, cycle: Sequence[str]) -> None:
+    def __init__(self, cycle: Sequence[str], *, windowed: str | None = None) -> None:
         self.cycle: list[str] = list(cycle)
+        self.windowed = windowed
+        through = (f" The windowed column {windowed!r} reads every row of {self.cycle[-1]!r}." if windowed is not None
+                   else "")
         super().__init__(
             f"Circular dataset filters: {' → '.join(self.cycle)}. A dataset's filters read the "
             f"filtered rows of every dataset they reach through a relationship, so these datasets' filtered rows depend on "
-            f"themselves; drop the filter that closes the cycle."
+            f"themselves; drop the filter that closes the cycle.{through}"
         )
 
 
@@ -921,7 +924,7 @@ class IllegalScopeReferenceError(SlayerError, ValueError):
 
 
 class IllegalWindowInFilterError(SlayerError, ValueError):
-    """A filter contains a raw ``OVER(...)`` window (directly or via a ``DatasetField.sql``); use a rank-family transform instead."""
+    """A filter, metric or portable field definition contains a raw ``OVER(...)`` window."""
 
     def __init__(
         self,

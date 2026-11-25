@@ -37,6 +37,7 @@ from slayer.core.scope import resolve_generated_field
 from slayer.core.syntax import drop_root_hop
 from slayer.core.vocabulary import old_keywords
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.sql.naming import windowed_column
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.root_scope import root_scope_field_ids
 
@@ -594,11 +595,14 @@ def _expand_target_field(
         )
 
     definition = target_col.definition_sql
-    if definition is None or is_trivial_base(field=target_col):
+    if target_col.windowed:
+        _record(sinks.reads, full_path)
+        value_sql: Optional[str] = windowed_column_sql(field=target_col, alias_path=canonical_alias, dialect=dialect)
+    elif definition is None or is_trivial_base(field=target_col):
         # The target's own spelling, not the (possibly unquoted) reference site,
         # so a quoted self-identity keeps its quoting on case-folding dialects.
         _record(sinks.reads, full_path)
-        value_sql: Optional[str] = _qualified_base_sql(
+        value_sql = _qualified_base_sql(
             field=target_col, alias_path=canonical_alias, dialect=dialect,
         )
     else:
@@ -754,7 +758,9 @@ def expand_field_definition_parts_sync(
         return out if out is not None else sql
 
     definition = field.definition_sql
-    if definition is None or is_trivial_base(field=field):
+    if field.windowed:
+        value = windowed_column_sql(field=field, alias_path=alias_path, dialect=dialect)
+    elif definition is None or is_trivial_base(field=field):
         value = _qualified_base_sql(field=field, alias_path=alias_path, dialect=dialect)
     else:
         value = _expand(definition, sibling_first=reads_siblings_first(field))
@@ -767,3 +773,8 @@ def _qualified_base_sql(*, field: DatasetField, alias_path: str, dialect: str) -
     raw = prequote_reserved_identifiers(field.definition_sql or field.name, dialect=dialect)
     node = exp.maybe_parse(raw, dialect=dialect)
     return _requalify(node=node, alias=alias_path, leaf=field.name).sql(dialect=dialect)
+
+
+def windowed_column_sql(*, field: DatasetField, alias_path: str, dialect: str) -> str:
+    """A windowed field as the column its dataset's relation materialises it in: ``alias.<column>``."""
+    return exp.column(windowed_column(field.name), table=exp.to_identifier(alias_path)).sql(dialect=dialect)

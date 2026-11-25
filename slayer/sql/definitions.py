@@ -3,7 +3,7 @@ its datasource's dialect) and the checks on which forms run on a datasource."""
 
 from __future__ import annotations
 
-from slayer.core.errors import FieldExpressionError
+from slayer.core.errors import FieldExpressionError, IllegalWindowInFilterError
 from slayer.core.field_expression import (
     DialectEntry,
     ExpressionObject,
@@ -12,10 +12,27 @@ from slayer.core.field_expression import (
     unquoted_identifier,
 )
 from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.syntax import parse_expr
 from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.root_scope import qualified_siblings
 
-__all__ = ["check_forms", "check_metric_forms", "qualified_siblings", "sibling_names", "with_converted_sql"]
+__all__ = [
+    "check_forms", "check_metric_forms", "check_portable_window", "qualified_siblings", "sibling_names",
+    "with_converted_sql",
+]
+
+
+def check_portable_window(text: str, *, field: str, dataset: str) -> None:
+    """Refuse a portable field definition holding a window; any other parse failure is binding's to report."""
+    try:
+        parse_expr(text)
+    except IllegalWindowInFilterError as exc:
+        raise IllegalWindowInFilterError(
+            filter_expr=text, source=f"field {field!r} on dataset {dataset!r} is a portable window",
+            suggestion="define the window as a dialect entry of the field's expression.",
+        ) from exc
+    except Exception:  # noqa: BLE001 — binding reports an unparseable definition
+        return
 
 
 def check_metric_forms(dataset: SlayerDataset, *, ds_type: str | None) -> None:
@@ -31,13 +48,18 @@ def check_metric_forms(dataset: SlayerDataset, *, ds_type: str | None) -> None:
                 suggestion="Write it as the metric's sql.")
 
 
-def check_forms(dataset: SlayerDataset, *, ds_type: str | None) -> None:
-    """Refuse a field with two entries for the datasource's dialect or no form that runs there, and a metric's
-    own-dialect entry."""
+def check_forms(dataset: SlayerDataset, *, ds_type: str | None, stored: SlayerDataset | None = None) -> None:
+    """Refuse a field with two entries for the datasource's dialect or no form that runs there, a portable window
+    (a document's own, unchanged from ``stored``, excepted), and a metric's own-dialect entry."""
     token = ossie_token(ds_type)
+    carried = ({f.name: f.expression for f in stored.fields}
+               if stored is not None and dataset.semantic_model is not None else {})
     for field in with_converted_sql(dataset, ds_type=ds_type).fields:
-        if field.expression is not None:
-            running_form(owner=f"Field {field.name!r}", expression=field.expression, dialect=token)
+        if field.expression is None:
+            continue
+        form = running_form(owner=f"Field {field.name!r}", expression=field.expression, dialect=token)
+        if not form.native and carried.get(field.name) != field.expression:
+            check_portable_window(form.text, field=field.name, dataset=dataset.name)
     check_metric_forms(dataset, ds_type=ds_type)
 
 
