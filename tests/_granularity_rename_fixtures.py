@@ -152,7 +152,8 @@ def raw_documents(*, backend: str, base: str) -> dict[str, str]:
                 for f in files:
                     if f.endswith(ext):
                         rel = os.path.relpath(os.path.join(dirpath, f), root)
-                        with open(os.path.join(dirpath, f), encoding="utf-8") as fh:  # NOSONAR(S7493) — test read
+                        with open(os.path.join(dirpath, f), encoding="utf-8",  # NOSONAR(S7493) — test read
+                                  errors="surrogateescape") as fh:  # an undecodable file is kept byte-exact
                             out[f"{kind}/{rel[: -len(ext)]}"] = fh.read()
         return out
     with transaction(os.path.join(base, "store.db")) as conn:
