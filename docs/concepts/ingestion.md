@@ -323,14 +323,16 @@ app = create_app(storage=storage, ingest_on_startup=True)
 mcp = create_mcp_server(storage=storage, ingest_on_startup=True)
 ```
 
-Same "models are fresh by the time the constructor returns" guarantee the
-CLI gets.
+`create_app` ingests before it returns, so models are fresh by the time the constructor returns.
+`create_mcp_server` returns at once; ingestion runs in the background while the server runs,
+and every tool call waits for it to finish.
 
 ### Error semantics
 
 - **One datasource fails** (the ingest call raises): caught, friendly-formatted, accumulated, server starts anyway.
 - **Per-table errors inside a single datasource** (`result.errors` non-empty): printed; that datasource still counts as "succeeded" because the call itself returned.
-- **`storage.list_datasources()` raises**: propagates — server does not start. Boot should not proceed with broken storage.
+- **`storage.list_datasources()` raises**: `serve` does not start, since boot should not proceed with broken storage.
+  `mcp` reports the failure on stderr and keeps running; its tools can still fail while storage stays broken.
 - **Zero datasources**: prints `Ingest-on-startup: no datasources configured` and starts normally.
 
 ### Drift handling

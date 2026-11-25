@@ -184,6 +184,11 @@ def _one_line(text: str) -> str:
     return " ".join(line.strip() for line in text.splitlines() if line.strip())
 
 
+def _escaped(text: str) -> str:
+    """``text`` with control characters escaped as in a JSON string, so it stays on one line."""
+    return json.dumps(text, ensure_ascii=False)[1:-1]
+
+
 _MAX_VALIDATION_FIELDS = 10
 
 
@@ -191,7 +196,7 @@ def _validation_error_line(exc: ValidationError) -> str:
     """``Error: <n> validation error(s) for <model>: <loc>: <reason>; …`` — never the rejected values."""
     errors = exc.errors(include_input=False, include_url=False, include_context=False)
     fields = [
-        f"{'.'.join(str(part) for part in err['loc'])}: {_one_line(err['msg'])}"
+        f"{'.'.join(_escaped(str(part)) for part in err['loc'])}: {_one_line(err['msg'])}"
         for err in errors[:_MAX_VALIDATION_FIELDS]
     ]
     if len(errors) > _MAX_VALIDATION_FIELDS:

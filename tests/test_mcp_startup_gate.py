@@ -294,6 +294,73 @@ class TestPreparationEngine:
         assert outcome[-1] == "cancelled"
         assert outcome[0] in {f"engine:{id(e)}" for e in closed}
 
+    async def test_one_session_closing_does_not_stop_preparation_for_another(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        release = asyncio.Event()
+        events: list[str] = []
+
+        async def orchestrator(**_kwargs: Any) -> StartupIngestSummary:
+            events.append("started")
+            try:
+                await asyncio.wait_for(release.wait(), timeout=REPLY_S)
+            except asyncio.CancelledError:
+                events.append("cancelled")
+                raise
+            events.append("finished")
+            return StartupIngestSummary()
+
+        monkeypatch.setattr(ingestion_module, "ingest_all_datasources_idempotent", orchestrator)
+        server = create_mcp_server(storage=YAMLStorage(base_dir=_store(tmp_path)), ingest_on_startup=True,
+                                   _seed_help=False)
+        close_first = asyncio.Event()
+
+        async def first_session() -> None:
+            async with create_connected_server_and_client_session(server):
+                await close_first.wait()
+
+        first = asyncio.ensure_future(first_session())
+        await asyncio.sleep(0.2)  # the first session's lifespan has started preparation
+        async with create_connected_server_and_client_session(server) as kept:
+            close_first.set()
+            await asyncio.wait_for(first, timeout=REPLY_S)
+            call = asyncio.ensure_future(kept.call_tool("list_datasources", {}))
+            await asyncio.sleep(0.2)
+            release.set()
+            result = await asyncio.wait_for(call, timeout=REPLY_S)
+            assert not result.isError, result.content
+        assert events == ["started", "finished"]
+
+    async def test_a_session_after_an_interrupted_preparation_gets_a_prepared_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        release = asyncio.Event()
+        events: list[str] = []
+
+        async def orchestrator(**_kwargs: Any) -> StartupIngestSummary:
+            events.append("started")
+            try:
+                await asyncio.wait_for(release.wait(), timeout=REPLY_S)
+            except asyncio.CancelledError:
+                events.append("cancelled")
+                raise
+            events.append("finished")
+            return StartupIngestSummary()
+
+        monkeypatch.setattr(ingestion_module, "ingest_all_datasources_idempotent", orchestrator)
+        server = create_mcp_server(storage=YAMLStorage(base_dir=_store(tmp_path)), ingest_on_startup=True,
+                                   _seed_help=False)
+        async with create_connected_server_and_client_session(server):
+            await asyncio.sleep(0.2)
+        async with create_connected_server_and_client_session(server) as later:
+            call = asyncio.ensure_future(later.call_tool("list_datasources", {}))
+            await asyncio.sleep(0.2)
+            assert not call.done()
+            release.set()
+            result = await asyncio.wait_for(call, timeout=REPLY_S)
+            assert not result.isError, result.content
+        assert events == ["started", "cancelled", "started", "finished"]
+
     async def test_shutdown_awaits_a_running_demo_setup(self, tmp_path: Path) -> None:
         entered = threading.Event()
         finished = threading.Event()

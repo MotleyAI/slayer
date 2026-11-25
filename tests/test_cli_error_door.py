@@ -157,6 +157,10 @@ class TestValidationErrors:
         assert line.startswith("Error: 1 validation error for SlayerQuery: measures.0: "), line
         assert "first line second line" in line
 
+    def test_a_field_name_with_a_newline_stays_on_one_line(self, shop: str) -> None:
+        line = self._line(shop, {"source_model": "orders", "bad\nfield": 1})
+        assert "bad\\nfield: Extra inputs are not permitted" in line, line
+
     def test_debug_still_prints_the_traceback(self, shop: str) -> None:
         query = json.dumps({"populaton": "orders"})
         result = run_cli_in_process(["--debug", "query", query, "--storage", shop], uncaught_exit=True)

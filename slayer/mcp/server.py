@@ -218,21 +218,32 @@ class StartupPreparation:
         self._demo_setup = demo_setup
         self._ingest = ingest
         self._task: asyncio.Task[None] | None = None
+        self._sessions = 0
         self.outcome = StartupOutcome() if demo_setup or ingest else StartupOutcome(state="ready")
 
     @asynccontextmanager
     async def lifespan(self, _app: object) -> AsyncIterator[None]:
-        """Start preparation with the server; cancel and await it on shutdown."""
-        if self.outcome.state != "pending" or self._task is not None:
+        """Run preparation while any session is open (FastMCP enters this per session); the last one out cancels it."""
+        if self.outcome.state != "pending":
             yield
             return
-        self._task = asyncio.get_running_loop().create_task(self._run())
+        self._sessions += 1
+        self._ensure_running()
         try:
             yield
         finally:
-            with anyio.CancelScope(shield=True):
-                self._task.cancel()
-                await asyncio.wait({self._task})
+            self._sessions -= 1
+            if self._sessions == 0 and self._task is not None:
+                with anyio.CancelScope(shield=True):
+                    self._task.cancel()
+                    await asyncio.wait({self._task})
+                if self._sessions:  # a session arrived while the cancel was awaited
+                    self._ensure_running()
+
+    def _ensure_running(self) -> None:
+        """Start preparation unless it is running or has finished; a cancelled run starts afresh."""
+        if self.outcome.state == "pending" and (self._task is None or self._task.done()):
+            self._task = asyncio.get_running_loop().create_task(self._run())
 
     async def _run(self) -> None:
         if self._demo_setup is not None:
@@ -262,9 +273,8 @@ class StartupPreparation:
 
     async def wait(self, *, report_progress: Callable[[float, str], Coroutine[Any, Any, None]]) -> None:
         """Hold the calling request until preparation ends, reporting progress; a cancelled caller never cancels it."""
-        task = self._task
         tick = 0
-        while task is not None and not task.done():
+        while (task := self._task) is not None and not task.done():
             tick += 1
             try:
                 await report_progress(tick, _PREPARING)
@@ -273,6 +283,8 @@ class StartupPreparation:
             await asyncio.wait({task}, timeout=_PROGRESS_INTERVAL_S)
         if self.outcome.state == "demo_failed":
             raise DemoSetupError(self.outcome.reason or "unknown error")
+        if self.outcome.state == "pending" and self._task is not None:
+            raise RuntimeError("SLayer startup preparation was interrupted; reconnect to retry")
 
 
 def _counted(fastmcp_cls: "type[FastMCP]", *, preparation: StartupPreparation) -> "type[FastMCP]":
