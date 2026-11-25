@@ -319,14 +319,20 @@ async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
 # --------------------------------------------------------------------------- #
 # Fail-closed probes: a window never bypasses input safety (Axiom 2.4 / 2.8).
 # --------------------------------------------------------------------------- #
-async def test_windowed_corr_other_across_fanning_hop_fails_closed(exec_backend):
+async def test_windowed_corr_other_across_fanning_hop_homes_on_orders(exec_backend):
+    # orders determines customers.spend, so the aggregation computes on orders from either root.
     _, engine = exec_backend
-    query = SlayerQuery(
+    from_customers = await engine.execute(SlayerQuery(
         source_model="customers", time_dimensions=F.month_td("signup_at"),
         measures=[_m("spend:corr(other=orders.amount, window='1y')", "m")],
-    )
-    with pytest.raises(ValueError, match="unproven join hop"):
-        await engine.execute(query)
+    ))
+    from_orders = await engine.execute(SlayerQuery(
+        source_model="orders", time_dimensions=F.month_td("customers.signup_at"),
+        measures=[_m("corr(customers.spend, other=amount, window='1y')", "m")],
+    ))
+    expected = F.by_month(from_orders, "orders.m")
+    assert expected["2024-02"] == pytest.approx(1.0)
+    assert F.by_month(from_customers, "customers.m") == pytest.approx(expected, nan_ok=True)
 
 
 async def test_windowed_last_ranking_across_fanning_hop_fails_closed(exec_backend):

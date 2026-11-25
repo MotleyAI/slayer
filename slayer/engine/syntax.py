@@ -650,10 +650,19 @@ def _is_single_literal(toks: List[tokenize.TokenInfo], j: int) -> Optional[int]:
         return j + 1 if j < len(toks) and toks[j].type == tokenize.NUMBER else None
     if j < len(toks) and (
         toks[j].type in (tokenize.STRING, tokenize.NUMBER)
-        or (toks[j].type == tokenize.NAME and toks[j].string.lower() in ("true", "false"))
+        or (toks[j].type == tokenize.NAME and toks[j].string.lower() in ("true", "false", "none", "null"))
     ):
         return j + 1
     return None
+
+
+def _is_parenthesised_literal(toks: List[tokenize.TokenInfo], j: int) -> bool:
+    """``toks[j:]`` opens one literal in one or more balanced parentheses: ``(v)``, ``((v))``, …"""
+    depth = 0
+    while j + depth < len(toks) and toks[j + depth].string == "(":
+        depth += 1
+    end = _is_single_literal(toks, j + depth) if depth else None
+    return end is not None and [t.string for t in toks[end:end + depth]] == [")"] * depth
 
 
 def _mark_parenthesised_literals(text: str) -> str:
@@ -667,10 +676,7 @@ def _mark_parenthesised_literals(text: str) -> str:
         line_starts.append(line_starts[-1] + len(line))
     marks = []
     for i, t in enumerate(toks):
-        if t.type != tokenize.NAME or t.string != "in" or i + 1 >= len(toks) or toks[i + 1].string != "(":
-            continue
-        end = _is_single_literal(toks, i + 2)
-        if end is not None and end < len(toks) and toks[end].string == ")":
+        if t.type == tokenize.NAME and t.string == "in" and _is_parenthesised_literal(toks, i + 1):
             row, col = toks[i + 1].start
             marks.append(line_starts[row - 1] + col)
     for pos in reversed(marks):

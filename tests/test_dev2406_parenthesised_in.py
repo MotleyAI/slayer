@@ -12,7 +12,7 @@ from slayer.core.errors import DateOperandTypeError
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.engine.syntax import parse_filter_expr
+from slayer.engine.syntax import _mark_parenthesised_literals, parse_filter_expr
 from tests._engine_helpers import seed_tables, seeded_exec_engine
 
 
@@ -102,9 +102,23 @@ class TestParser:
     def test_parenthesised_number_is_the_one_element_tuple(self) -> None:
         assert parse_filter_expr("id in (5)") == parse_filter_expr("id in (5,)")
 
-    @pytest.mark.parametrize("text", ["active in (true)", "active not in (FALSE)", "active in (True)"])
+    @pytest.mark.parametrize("text", [
+        "active in (true)", "active not in (FALSE)", "active in (True)", "state in (NULL)", "state not in (None)",
+    ])
     def test_parenthesised_boolean_in_any_case_is_the_one_element_tuple(self, text: str) -> None:
         assert parse_filter_expr(text) == parse_filter_expr(text.replace(")", ",)"))
+
+    @pytest.mark.parametrize(("redundant", "single"), [
+        ("state in (('paid'))", "state in ('paid')"),
+        ("id in ((5))", "id in (5)"),
+        ("id not in (((-5)))", "id not in (-5)"),
+    ])
+    def test_redundant_parentheses_read_as_one_pair(self, redundant: str, single: str) -> None:
+        assert parse_filter_expr(redundant) == parse_filter_expr(single)
+
+    @pytest.mark.parametrize("text", ["id in ((5),)", "state in (('a', 'b'))", "id in ((5)"])
+    def test_unbalanced_or_tuple_parentheses_are_not_marked(self, text: str) -> None:
+        assert "__slayer_paren__" not in _mark_parenthesised_literals(text)
 
     def test_parenthesised_string_is_not_the_bare_string(self) -> None:
         assert parse_filter_expr("state in ('paid')") != parse_filter_expr("state in 'paid'")
