@@ -479,6 +479,7 @@ carve_outs:
   - {name: _semi_join_exists_conditions, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _semi_join_flat, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _semi_join_spine, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _window_layer_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: base_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: column, file: slayer/sql/generator.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: columns, file: slayer/sql/generator.py, reason: "SQL column in a SQL AST, statement or wire surface"}

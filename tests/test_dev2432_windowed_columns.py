@@ -27,6 +27,7 @@ from slayer.core.errors import (
     DatasetFilterCycleError,
     IllegalWindowInFilterError,
     UnevaluableEntityError,
+    UnsafeRelationshipInputError,
 )
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
@@ -317,6 +318,17 @@ class TestRelationshipKeys:
     async def test_a_filter_across_a_fanning_hop_reads_the_computed_key(self, engine):
         resp = await _run(engine, _grouped("slots", "slots.label", "count(slots.*)", filter=["orders_s.amount >= 60"]))
         assert _num(_by(resp, "slots.label", "m")) == {"first": 1, "third": 1}
+
+    @pytest.mark.filterwarnings("ignore")
+    async def test_an_unread_window_across_an_unproven_hop_blocks_no_query(self, engine):
+        await engine.save_dataset(_orders_like("orders_u", fields=[
+            native("w", "ROW_NUMBER() OVER (PARTITION BY ss.label ORDER BY orders_u.id)")], relationships=[
+            DatasetRelationship(name="ss", to="slots_w", from_columns=["slot"], to_columns=["sort_key"])]))
+        resp = await _run(engine, {"population": "orders_u", "metrics": [{"metric": "count(orders_u.*)", "alias": "m"}]})
+        assert [int(r["m"]) for r in resp.data] == [7]
+        query = SlayerQuery.model_validate(_grouped("orders_u", "orders_u.w", "count(orders_u.*)"))
+        with pytest.raises(UnsafeRelationshipInputError):
+            await engine.execute(query)
 
     async def test_a_window_across_a_windowed_key_runs_a_layer_above_it(self, engine):
         resp = await _run(engine, _grouped("orders_s", "orders_s.by_label", "count(orders_s.*)"))

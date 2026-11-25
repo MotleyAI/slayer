@@ -3710,12 +3710,12 @@ class SlayerQueryEngine:
         # Parse with the datasource's own dialect (matching generation), else
         # valid non-Postgres Mode-A SQL could be mis-rejected. Missing → postgres.
         datasource = await self.storage.get_datasource(dataset.data_source)
-        dialect = self._dialect_for_type(datasource.type if datasource else None)
+        ds_type = datasource.type if datasource else None
+        dialect = self._dialect_for_type(ds_type)
         datasets_by_name = {k: v for k, v in loaded.items() if v is not None}
         check_definition_reach(dataset=dataset, reachable=datasets_by_name)
         check_definition_ambiguity(dataset=dataset, reachable=datasets_by_name)
-        check_dataset_filters(dataset=dataset, reachable=datasets_by_name,
-                              dialect=ossie_token(datasource.type) if datasource is not None else None)
+        check_dataset_filters(dataset=dataset, reachable=datasets_by_name, dialect=ossie_token(ds_type))
 
         def _expand(sql: str) -> None:
             expand_derived_refs_sync(

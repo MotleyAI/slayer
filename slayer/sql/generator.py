@@ -5851,8 +5851,6 @@ class SQLGenerator:
         when given) a column: one ``(SELECT rows.*, <window> AS <column> FROM … AS rows [to-one joins]) AS rows`` per
         dependency depth."""
         allocator = self._gen_allocator or self._new_allocator()
-        limit = self._dialect.max_identifier_bytes
-        columns = {windowed_column(f.name): f.name for f in fields}
         rendered: Dict[str, Tuple[Expression, List[Tuple[str, ...]]]] = {}
         for f in fields:
             frame = self._scope_frame(dataset=dataset, relation=rows, bundle=bundle, allocator=allocator)
@@ -5862,47 +5860,68 @@ class SQLGenerator:
             rendered[f.name] = (window, _prefix_closed(frame.relationship_paths.as_list()))
         chains = {path: self._oriented_hop_chain(source_dataset=dataset, path=path, bundle=bundle)
                   for _, paths in rendered.values() for path in paths}
-        reads = {
+        reads = self._window_reads(rendered=rendered, chains=chains, rows=rows, dataset=dataset)
+        unsafe = _read_closure(_reversed(reads), start={
+            name for name, (_, paths) in rendered.items() if any(not _to_one_hop(chains[p]) for p in paths)})
+        keep = set(rendered) - unsafe if demand is None else _read_closure(reads, start=demand)
+        if keep & unsafe:
+            raise ValueError(f"A windowed field of dataset {dataset.name!r} reads across a hop that is not a proven "
+                             f"to-one hop: {min(keep & unsafe)!r}.")
+        for layer in _dependency_layers({n: d for n, d in reads.items() if n in keep}, dataset=dataset.name):
+            select = exp.select(
+                exp.Column(this=exp.Star(), table=exp.to_identifier(rows)),
+                *(exp.Alias(this=rendered[name][0], alias=exp.to_identifier(windowed_column(name))) for name in layer),
+            ).from_(relation)
+            joins = self._window_layer_joins(layer=layer, rendered=rendered, chains=chains, dataset=dataset, rows=rows,
+                                             allocator=allocator, bundle=bundle)
+            relation = exp.Subquery(this=_apply_joins(select=select, joins=joins),
+                                    alias=exp.TableAlias(this=exp.to_identifier(rows)))
+            relation.meta[_WINDOW_LAYER] = True
+        relation.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
+        if unsafe:
+            relation.meta[_UNSAFE_WINDOWS] = {windowed_column(name): (
+                f"A windowed field of dataset {dataset.name!r} reads across a hop that is not a proven to-one hop: "
+                f"{name!r}.") for name in unsafe}
+        return relation
+
+    def _window_reads(
+        self, *, rendered: Dict[str, Tuple[Expression, List[Tuple[str, ...]]]],
+        chains: Dict[Tuple[str, ...], List[Tuple[OrientedRelationship, SlayerDataset]]], rows: str,
+        dataset: SlayerDataset,
+    ) -> Dict[str, Set[str]]:
+        """Each window's sibling windows: those its definition reads and those keying its first hops."""
+        columns = {windowed_column(name): name for name in rendered}
+        return {
             name: {columns[c.name] for c in window.find_all(exp.Column) if c.table == rows and c.name in columns}
                   | {src.name for path in paths if len(path) == 1
                      for src, _ in self._hop_keys(chains[path], source=dataset) if src.name in rendered}
             for name, (window, paths) in rendered.items()
         }
-        if demand is not None:
-            keep = _read_closure(reads, start=demand)
-            reads = {name: deps for name, deps in reads.items() if name in keep}
-        for layer in _dependency_layers(reads, dataset=dataset.name):
-            joins = []
-            paths = list(dict.fromkeys(p for name in layer for p in rendered[name][1]))
-            for path in paths:
-                chain = chains[path]
-                edge, target = chain[-1]
-                if is_lateral_edge(edge) or not provably_to_one(edge=edge, target_dataset=target):
-                    raise ValueError(
-                        f"A windowed field of dataset {dataset.name!r} reads across {'.'.join(path)!r}, "
-                        f"which is not a proven to-one hop."
-                    )
-                next_alias = allocator.alias_for(root=rows, path=path, limit=limit)
-                read = {c.name for name in layer for c in rendered[name][0].find_all(exp.Column) if c.table == next_alias}
-                keys = [tgt for _, tgt in self._hop_keys(chain, source=dataset)]
-                keys += [src for p in paths if p[:-1] == path for src, _ in self._hop_keys(chains[p], source=dataset)]
-                join, on, _kind = self._hop_join(
-                    edge=edge, prev_dataset=chain[-2][1] if len(chain) > 1 else dataset, next_dataset=target,
-                    current_alias=allocator.alias_for(root=rows, path=path[:-1], limit=limit),
-                    next_alias=next_alias, bundle=bundle,
-                    windows={f.name for f in target.fields
-                             if f.windowed and (windowed_column(f.name) in read or any(k.name == f.name for k in keys))},
-                )
-                joins.append((join, on, "LEFT"))  # a row definition never drops its dataset's rows
-            select = exp.select(
-                exp.Column(this=exp.Star(), table=exp.to_identifier(rows)),
-                *(exp.Alias(this=rendered[name][0], alias=exp.to_identifier(windowed_column(name))) for name in layer),
-            ).from_(relation)
-            relation = exp.Subquery(this=_apply_joins(select=select, joins=joins),
-                                    alias=exp.TableAlias(this=exp.to_identifier(rows)))
-            relation.meta[_WINDOW_LAYER] = True
-        relation.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
-        return relation
+
+    def _window_layer_joins(
+        self, *, layer: List[str], rendered: Dict[str, Tuple[Expression, List[Tuple[str, ...]]]],
+        chains: Dict[Tuple[str, ...], List[Tuple[OrientedRelationship, SlayerDataset]]], dataset: SlayerDataset,
+        rows: str, allocator: AliasAllocator, bundle,
+    ) -> List[Tuple[Expression, Optional[exp.Condition], str]]:
+        """The LEFT to-one joins ``layer``'s windows read, each target materialising only the windows they read."""
+        limit = self._dialect.max_identifier_bytes
+        paths = list(dict.fromkeys(p for name in layer for p in rendered[name][1]))
+        joins: List[Tuple[Expression, Optional[exp.Condition], str]] = []
+        for path in paths:
+            chain = chains[path]
+            edge, target = chain[-1]
+            next_alias = allocator.alias_for(root=rows, path=path, limit=limit)
+            read = {c.name for name in layer for c in rendered[name][0].find_all(exp.Column) if c.table == next_alias}
+            keys = {tgt.name for _, tgt in self._hop_keys(chain, source=dataset)}
+            keys |= {src.name for p in paths if p[:-1] == path for src, _ in self._hop_keys(chains[p], source=dataset)}
+            join, on, _kind = self._hop_join(
+                edge=edge, prev_dataset=chain[-2][1] if len(chain) > 1 else dataset, next_dataset=target,
+                current_alias=allocator.alias_for(root=rows, path=path[:-1], limit=limit), next_alias=next_alias,
+                bundle=bundle, windows={f.name for f in target.fields
+                                        if f.windowed and (windowed_column(f.name) in read or f.name in keys)},
+            )
+            joins.append((join, on, "LEFT"))  # a row definition never drops its dataset's rows
+        return joins
 
     @staticmethod
     def _hop_keys(
@@ -7113,6 +7132,7 @@ def _finish_statement(
 ) -> str:
     """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
     d = _as_dialect(dialect)
+    _refuse_unsafe_window_reads(statement)
     _prune_window_layers(statement)
     sql = d.rewrite_emitted_sql(
         d.rewrite_statement(project_untrusted_hops(statement)).sql(dialect=d.sqlglot_name, pretty=pretty), aliases=aliases,
@@ -7207,6 +7227,31 @@ def _dependency_layers(reads: Dict[str, Set[str]], *, dataset: str) -> List[List
     for name in reads:
         visit(name, ())
     return [[n for n in reads if depth[n] == d] for d in range(max(depth.values(), default=-1) + 1)]
+
+
+_UNSAFE_WINDOWS = "slayer_unsafe_windows"
+
+
+def _to_one_hop(chain: List[Tuple[OrientedRelationship, SlayerDataset]]) -> bool:
+    edge, target = chain[-1]
+    return not is_lateral_edge(edge) and provably_to_one(edge=edge, target_dataset=target)
+
+
+def _reversed(reads: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
+    """Each window's readers."""
+    return {name: {reader for reader, deps in reads.items() if name in deps} for name in reads}
+
+
+def _refuse_unsafe_window_reads(statement: Expression) -> None:
+    """Refuse a statement reading a window left unmaterialised because it reads across a hop not proven to-one."""
+    for relation in statement.find_all(exp.Subquery, exp.Table):
+        unsafe = relation.meta.get(_UNSAFE_WINDOWS)
+        if not unsafe:
+            continue
+        read = next((c.name for c in statement.find_all(exp.Column) if c.table == relation.alias and c.name in unsafe),
+                    None)
+        if read is not None:
+            raise ValueError(unsafe[read])
 
 
 def _read_closure(reads: Dict[str, Set[str]], *, start: AbstractSet[str]) -> Set[str]:

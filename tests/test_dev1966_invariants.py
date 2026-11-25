@@ -135,9 +135,9 @@ class TestEmissionLaw:
         seen: List[tuple] = []
         real = SQLGenerator._emit_relation
 
-        def spy(self, *, dataset, alias, bundle):
+        def spy(self, *, dataset, alias, bundle, windows=None):
             seen.append((dataset.sql_table, frozenset(self._gen_stage_reads)))
-            return real(self, dataset=dataset, alias=alias, bundle=bundle)
+            return real(self, dataset=dataset, alias=alias, bundle=bundle, windows=windows)
 
         monkeypatch.setattr(SQLGenerator, "_emit_relation", spy)
         queries = {
