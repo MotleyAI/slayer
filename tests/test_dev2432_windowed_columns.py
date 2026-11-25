@@ -22,7 +22,12 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
-from slayer.core.errors import DatasetFieldCycleError, DatasetFilterCycleError, IllegalWindowInFilterError
+from slayer.core.errors import (
+    DatasetFieldCycleError,
+    DatasetFilterCycleError,
+    IllegalWindowInFilterError,
+    UnevaluableEntityError,
+)
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
@@ -48,6 +53,24 @@ DDL = (
 
 RN = "ROW_NUMBER() OVER (PARTITION BY region ORDER BY ordered_at)"
 RN_OF_ID = {1: 1, 2: 2, 3: 3, 4: 1, 5: 2, 6: 3, 7: 1}
+#: An Ossie document whose dataset carries an OSSIE_SQL_2026 window field.
+DOC_WINDOW = """version: "0.3.0.dev0"
+name: m_doc
+datasets:
+  - name: doc_orders
+    source: orders
+    fields:
+      - name: id
+        expression:
+          dialects:
+            - dialect: OSSIE_SQL_2026
+              expression: id
+      - name: rn
+        expression:
+          dialects:
+            - dialect: OSSIE_SQL_2026
+              expression: ROW_NUMBER() OVER (ORDER BY id)
+"""
 #: Window inside an uncorrelated scalar subquery: 2 for every order.
 SUBQUERY_WINDOW = "(SELECT COUNT(*) FROM (SELECT ROW_NUMBER() OVER (ORDER BY id) AS r FROM customers) t WHERE t.r <= 2)"
 
@@ -118,6 +141,9 @@ def _datasets() -> list[SlayerDataset]:
                      relationships=[DatasetRelationship(
                          to="slots_wc", from_columns=["rn", "zero"], to_columns=["pos", "zero"],
                          cardinality=RelationshipCardinality.MANY_TO_ONE)]),
+        _orders_like("orders_2j", fields=[native("rn", RN), native("both", "ROW_NUMBER() OVER (PARTITION BY customers.tier, slots.label ORDER BY id)")],
+                     relationships=[_to_customers(), DatasetRelationship(
+                         to="slots", from_columns=["slot"], to_columns=["pos"], cardinality=RelationshipCardinality.MANY_TO_ONE)]),
         _orders_like("orders_inner", fields=[native("w", "ROW_NUMBER() OVER (PARTITION BY nomatch.tier ORDER BY id)")],
                      relationships=[DatasetRelationship(
                          to="customers", name="nomatch", from_columns=["amount"], to_columns=["id"],
@@ -366,6 +392,16 @@ class TestOnlyReadWindowsAreComputed:
         assert resp.sql is not None
         assert sqlglot.parse_one(resp.sql).find(exp.Join) is None, resp.sql
 
+    async def test_every_unread_join_is_dropped_and_read_joins_are_kept(self, engine):
+        for dimension, joined in (("orders_2j.rn", set()), ("orders_2j.both", {"customers", "slots"})):
+            resp = await engine.execute(SlayerQuery.model_validate(_grouped("orders_2j", dimension, "count(orders_2j.*)")),
+                                        dry_run=True)
+            assert resp.sql is not None
+            aliases = {j.this.alias_or_name for j in sqlglot.parse_one(resp.sql).find_all(exp.Join)}
+            assert aliases & {"customers", "slots"} == joined, resp.sql
+        both = await _run(engine, _grouped("orders_2j", "orders_2j.both", "count(orders_2j.*)"))
+        assert _num(_by(both, "orders_2j.both", "m")) == {1: 5, 2: 2}
+
 
 async def test_a_dataset_with_windowed_fields_saves_with_validation(engine):
     for dataset in _datasets():
@@ -420,6 +456,15 @@ class TestPortableWindowedField:
         await save(dataset)
         resp = await _run(engine, _grouped("orders_portable", "orders_portable.rn", "sum(orders_portable.amount)"))
         assert _num(_by(resp, "orders_portable.rn", "m")) == {1: 120, 2: 70, 3: 90}
+
+    async def test_a_document_window_saves_and_its_query_is_unevaluable(self, engine):
+        await engine.storage.save_semantic_model_text(data_source="test", name="m_doc", text=DOC_WINDOW)
+        dataset = await engine.storage.get_dataset("doc_orders", data_source="test")
+        assert dataset is not None
+        await engine.storage.save_dataset(dataset)
+        query = SlayerQuery.model_validate(_raw("doc_orders", "rn"))
+        with pytest.raises(UnevaluableEntityError, match="doc_orders.rn"):
+            await engine.execute(query)
 
 
 RANKED = "rank() over (order by amount)"

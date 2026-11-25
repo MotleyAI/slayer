@@ -734,17 +734,16 @@ async def planets_duckdb_env(tmp_path):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_duckdb_raises(planets_duckdb_env):
-    """DuckDB parity: filtering a windowed DatasetField.sql raises
-    (use rank-family transforms instead)."""
+async def test_filter_on_windowed_column_duckdb(planets_duckdb_env):
+    """DuckDB parity: a filter on a windowed field applies outside the materialised window."""
     engine = planets_duckdb_env
     query = SlayerQuery(
         population="planets",
         dimensions=["planets.name"],
         filter=["planets.rn <= 3"],
     )
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await engine.execute(query)
+    result = await engine.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Neptune"}
 
 
 # ---------------------------------------------------------------------------

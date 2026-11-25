@@ -7181,8 +7181,9 @@ def _dependency_layers(reads: Dict[str, Set[str]], *, dataset: str) -> List[List
 def _prune_window_layers(statement: Expression) -> None:
     """Drop each materialised window column no reference reads, each join of a layer no kept column reads, and each
     layer left without a column."""
-    while _prune_window_columns(statement) | _prune_window_joins(statement):
-        pass
+    changed = True
+    while changed:
+        changed = _prune_window_columns(statement) | _prune_window_joins(statement)
     for layer in _window_layers(statement):
         if not any(isinstance(p, exp.Alias) for p in layer.this.expressions):
             inner = layer.this.args["from_"].this
@@ -7207,12 +7208,17 @@ def _prune_window_joins(statement: Expression) -> bool:
     pruned = False
     for layer in _window_layers(statement):
         select = layer.this
-        for join in list(select.args.get("joins") or []):
-            others = [*select.expressions, *(j.args.get("on") for j in select.args.get("joins") or [] if j is not join)]
-            if join.this.alias_or_name not in {c.table for n in others if n is not None for c in n.find_all(exp.Column)}:
-                join.pop()
-                pruned = True
+        joins = select.args.get("joins") or []
+        dead = [join for join in joins if join.this.alias_or_name not in _tables_read(select, joins=joins, skip=join)]
+        for join in dead:
+            join.pop()
+        pruned = pruned or bool(dead)
     return pruned
+
+
+def _tables_read(select: exp.Select, *, joins: List[exp.Join], skip: exp.Join) -> Set[str]:
+    others = [*select.expressions, *(j.args.get("on") for j in joins if j is not skip)]
+    return {c.table for n in others if n is not None for c in n.find_all(exp.Column)}
 
 
 def _stamp_dataset(relation: Expression, *, dataset) -> Expression:

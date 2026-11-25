@@ -119,6 +119,8 @@ P13 (one relation door); system P4, P11.
       → mechanical alias-spelling edit only, if the wrapper's inner alias changes `A.raw_a / 10`.
     - `tests/test_dev1450fix_model_filter_derived.py::test_windowed_derived_column_model_filter_raises` stays
       unchanged (`ValueError`, `match="window"`).
+    - `tests/integration/test_integration*.py::test_filter_on_windowed_column_*_raises` (SQLite, DuckDB, Postgres,
+      MySQL, ClickHouse, SQL Server, Trino) → the filter returns the three heaviest planets.
 
 18. **Pinned scenario title.** OpenSpec cannot rename a scenario of a MODIFIED requirement, so
     `models/model-filters` › "Saving a filter on a joined windowed column is refused" keeps its title and
