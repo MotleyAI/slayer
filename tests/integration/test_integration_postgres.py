@@ -1066,17 +1066,16 @@ async def planets_pg_env(postgresql):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_postgres_raises(planets_pg_env):
-    """Postgres parity: filtering a windowed DatasetField.sql
-    raises (use rank-family transforms instead)."""
+async def test_filter_on_windowed_column_postgres(planets_pg_env):
+    """Postgres parity: a filter on a windowed field applies outside the materialised window."""
     engine = planets_pg_env
     query = SlayerQuery(
         population="planets",
         dimensions=["planets.name"],
         filter=["planets.rn <= 3"],
     )
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await engine.execute(query)
+    result = await engine.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Neptune"}
 
 # ---------------------------------------------------------------------------
 # Cross-dataset derived ``DatasetField.sql`` chaining (Postgres)

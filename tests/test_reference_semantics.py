@@ -552,35 +552,24 @@ class TestStrictResolution:
 
 
 class TestPredicatePromotionRemoved:
-    """A query filter referencing a DatasetField whose `sql` contains a window
-    function used to auto-promote to a post-aggregation outer WHERE. That
-    escape hatch is dropped — users use rank-family transforms instead.
-    """
+    """A windowed DatasetField is a column of its dataset: a query filter on it generates, as does a projection."""
 
-    async def test_filter_on_windowed_column_raises_with_actionable_message(self) -> None:
+    async def test_filter_on_windowed_column_generates(self) -> None:
         model = _make_planets_dataset(with_window_field=True)
         query = SlayerQuery(
             population="planets",
             dimensions=[QueryDimension(field="planets.name")],
             filter=["planets.rn <= 3"],
         )
-        with pytest.raises(Exception) as excinfo:
-            await _engine_generate(query=query, dataset=model)
-        msg = str(excinfo.value).lower()
-        assert "window function" in msg or "rank" in msg, (
-            f"Expected message to mention 'window function' and/or 'rank' "
-            f"transform suggestion. Got: {excinfo.value}"
-        )
+        await _engine_generate(query=query, dataset=model)
 
     async def test_select_only_on_windowed_column_still_works(self) -> None:
-        """A windowed DatasetField.sql is still legal as a *projection* — only as a
-        filter target does it now error."""
+        """A windowed DatasetField.sql projects."""
         model = _make_planets_dataset(with_window_field=True)
         query = SlayerQuery(
             population="planets",
             dimensions=["planets.name", "planets.rn"],
         )
-        # Should render without error; only filter use is restricted.
         await _engine_generate(query=query, dataset=model)
 
 
