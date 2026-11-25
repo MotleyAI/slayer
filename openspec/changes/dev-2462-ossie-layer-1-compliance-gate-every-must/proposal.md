@@ -43,8 +43,8 @@ weekly against upstream `main`. Layer 1 gaps are recorded, not fixed; the gate f
 - Tests: `tests/_dev2446_required_manifest.py`, `tests/test_dev2446_required_constructs.py`,
   `tests/test_dev2220_layer1_gaps.py`, `tests/test_dev2220_compliance_page.py`, `tests/_dev2220_compliance_gaps.py`,
   `tests/_dev2217_fixtures.py`, `tests/test_dev2243_*.py`, a new shared harness and a new `tests/integration` module.
-- CI: `.github/workflows/ossie-corpus-weekly.yml`, `integration-{mysql,clickhouse,sqlserver,trino,snowflake}.yml`,
-  `ci.yml` (Postgres, BigQuery), new composite actions for per-engine setup.
+- CI: `.github/workflows/ossie-compliance.yml` (renamed from `ossie-corpus-weekly.yml`), `ci.yml` (the server gate module
+  excluded from the integration job), new composite actions for per-engine setup and the upstream corpus.
 - Production: `slayer/sql/dialects/` (Trino, SQL Server decimal casts; whatever the probe finds), the column renderer for
   joined datasets.
 - Docs: `docs/interfaces/ossie-compliance.md`, `docs/upgrading/2.0.md`, `docs/database-support.md`.
