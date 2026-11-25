@@ -36,10 +36,26 @@ from tests._dev1737_fixtures import (
     matrix_query,
     server_seed_statements,
 )
+from tests._dev2000_fixtures import (
+    DS as TZ_DS,
+    MARKS as TZ_MARKS,
+    NY as TZ_NY,
+    ROWS as TZ_ROWS,
+    TOKYO as TZ_TOKYO,
+    amount as tz_amount,
+    day as tz_day,
+    instant_typing_queries,
+    local as tz_local,
+    marks_dataset as tz_marks_dataset,
+    orders_dataset as tz_orders_dataset,
+    orders_naive_instant_dataset,
+    row_values,
+)
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
 
 from slayer.async_utils import run_sync
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
@@ -1979,3 +1995,159 @@ def test_queries_keep_their_timeout_on_a_read_only_session(read_only_ds: Datasou
     finally:
         client.close()
     assert [float(r["t"]) for r in rows] == [_TIMEOUT_SET[ds_type]]
+
+
+# ---------------------------------------------------------------------------
+# Time zones (spec: queries/time-zones › Executed per dialect; MySQL without time-zone tables)
+# ---------------------------------------------------------------------------
+
+_TZ_SESSION = "--default-time-zone=+05:30"
+_TZ_MARKER = "tz_marker_total"
+
+
+def _tz_container(*, skip_tz_tables: bool) -> MySqlContainer:
+    container = MySqlContainer(
+        "mysql:8.0", username="slayer", password="slayer",  # NOSONAR(S2068) — testcontainer credentials
+        dbname="slayer_root", root_password="root",  # NOSONAR(S2068) — testcontainer credentials
+    ).with_command(_TZ_SESSION)
+    return container.with_env("MYSQL_INITDB_SKIP_TZINFO", "1") if skip_tz_tables else container
+
+
+@pytest.fixture(scope="module")
+def mysql_tz_container():
+    """A MySQL server with time-zone tables and a +05:30 session zone."""
+    with _tz_container(skip_tz_tables=False) as c:
+        yield c
+
+
+@pytest.fixture(scope="module")
+def mysql_no_tz_container():
+    """A MySQL server without time-zone tables."""
+    with _tz_container(skip_tz_tables=True) as c:
+        yield c
+
+
+def _seed_tz_db(container) -> str:
+    db_name = _create_module_db(container)
+    conn = _admin_connect(container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET time_zone = '+00:00'")  # TIMESTAMP rows hold the UTC instants of ordered_at
+            cur.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount DOUBLE, ordered_at DATETIME, "
+                "paid_at TIMESTAMP NULL, local_slot DATETIME, order_day DATE, created_raw DATETIME)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                [(i, a, ts, ts, slot, d, ts) for i, (a, ts, slot, d) in TZ_ROWS.items()],
+            )
+            cur.execute("CREATE TABLE marks (marked_at DATETIME PRIMARY KEY, label VARCHAR(32))")
+            cur.executemany("INSERT INTO marks VALUES (%s, %s)", list(TZ_MARKS.items()))
+            cur.execute("SET GLOBAL log_output = 'TABLE'")
+            cur.execute("SET GLOBAL general_log = 'ON'")
+    finally:
+        conn.close()
+    return db_name
+
+
+def _probe_count(container) -> int:
+    conn = _admin_connect(container)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM mysql.general_log WHERE command_type = 'Query' "
+                "AND argument LIKE %s AND argument NOT LIKE %s",
+                ("%CONVERT_TZ('2000-01-01 00:00:00', '+00:00'%", "%general_log%"),
+            )
+            return int(cur.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _data_statements(container) -> int:
+    conn = _admin_connect(container)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM mysql.general_log WHERE command_type = 'Query' "
+                "AND argument LIKE %s AND argument NOT LIKE %s",
+                (f"%{_TZ_MARKER}%", "%general_log%"),
+            )
+            return int(cur.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _tz_storage(container, db_name: str, base_dir: str) -> YAMLStorage:
+    storage = YAMLStorage(base_dir=base_dir)
+    ds = DatasourceConfig.model_validate({**_ds_config(container, db_name).model_dump(), "name": TZ_DS, "time_zone": "UTC"})
+    run_sync(storage.save_datasource(ds))
+    run_sync(storage.save_dataset(tz_orders_dataset()))
+    run_sync(storage.save_dataset(orders_naive_instant_dataset()))
+    run_sync(storage.save_dataset(tz_marks_dataset()))
+    return storage
+
+
+@pytest.fixture
+def mysql_tz_env(mysql_tz_container, tmp_path) -> Iterator[SlayerQueryEngine]:
+    db_name = _seed_tz_db(mysql_tz_container)
+    try:
+        yield SlayerQueryEngine(storage=_tz_storage(mysql_tz_container, db_name, str(tmp_path / "store")))
+    finally:
+        _drop_module_db(mysql_tz_container, db_name)
+
+
+@pytest.fixture
+def mysql_no_tz_env(mysql_no_tz_container, tmp_path) -> Iterator[SlayerQueryEngine]:
+    db_name = _seed_tz_db(mysql_no_tz_container)
+    try:
+        yield SlayerQueryEngine(storage=_tz_storage(mysql_no_tz_container, db_name, str(tmp_path / "store")))
+    finally:
+        _drop_module_db(mysql_no_tz_container, db_name)
+
+
+def _local_day_query(field: str, *, zone: str = TZ_NY) -> SlayerQuery:
+    return SlayerQuery.model_validate({
+        "population": "orders", "time_zone": zone, "metrics": [{"metric": "sum(orders.amount)", "alias": _TZ_MARKER}],
+        "time_dimensions": [{"field": f"orders.{field}", "granularity": "day"}],
+    })
+
+
+@pytest.mark.integration
+class TestMySQLTimeZones:
+    @pytest.mark.parametrize("field", ["ordered_at", "paid_at"])
+    async def test_local_day_under_a_non_utc_session(self, mysql_tz_env: SlayerQueryEngine, field: str) -> None:
+        resp = await mysql_tz_env.execute(_local_day_query(field))
+        got = {tz_day(r[f"orders.{field}"]): float(r[_TZ_MARKER]) for r in resp.data}
+        assert got == {tz_local(i, TZ_NY).date(): tz_amount(i) for i in TZ_ROWS}, resp.sql
+
+    async def test_the_zone_probe_runs_once_per_engine(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
+        before = _probe_count(mysql_tz_container)
+        await mysql_tz_env.execute(_local_day_query("ordered_at"))
+        await mysql_tz_env.execute(_local_day_query("paid_at"))
+        assert _probe_count(mysql_tz_container) - before == 1
+
+    async def test_each_zone_probes_once(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
+        before = _probe_count(mysql_tz_container)
+        for zone in (TZ_NY, TZ_TOKYO, TZ_NY, TZ_TOKYO):
+            await mysql_tz_env.execute(_local_day_query("ordered_at", zone=zone))
+        assert _probe_count(mysql_tz_container) - before == 2
+
+    async def test_instant_typing_changes_nothing_without_a_zone(self, mysql_tz_env: SlayerQueryEngine) -> None:
+        for zoned, naive in zip(instant_typing_queries("orders"), instant_typing_queries("orders_naive")):
+            got, want = await mysql_tz_env.execute(zoned), await mysql_tz_env.execute(naive)
+            assert row_values(got) == row_values(want), got.sql
+
+    async def test_missing_time_zone_tables_fail_before_the_statement(
+        self, mysql_no_tz_env: SlayerQueryEngine, mysql_no_tz_container,
+    ) -> None:
+        probes, data = _probe_count(mysql_no_tz_container), _data_statements(mysql_no_tz_container)
+        query = _local_day_query("ordered_at")
+        for _ in range(2):
+            with pytest.raises(core_errors.TimeZoneError) as info:
+                await mysql_no_tz_env.execute(query)
+            message = str(info.value)
+            assert TZ_NY in message, message
+            assert "time zone tables" in message.lower().replace("-", " "), message
+        assert _probe_count(mysql_no_tz_container) - probes == 1
+        assert _data_statements(mysql_no_tz_container) == data

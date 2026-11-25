@@ -119,7 +119,7 @@ A field's `filter`, a dataset's `filters` and row-level security predicates SHAL
 - **THEN** the sum is 90, computed from the stored hours 3, 6, 23 and 6
 
 #### Scenario: Row-level security is zone-independent
-- **WHEN** a session policy restricts `orders` to `ordered_at < '2025-01-01 05:00'` and a query with `time_zone: Asia/Tokyo` counts rows
+- **WHEN** a session policy restricts `orders` to `ordered_at = '2025-01-01 03:30:00'` and a query with `time_zone: Asia/Tokyo` counts rows
 - **THEN** the count is 1
 
 ### Requirement: Unpinned stages and query-backed datasets take the query's zone

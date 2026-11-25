@@ -98,6 +98,20 @@ from tests._dev2120_fixtures import (
 )
 from tests._cast_fixtures import check_author_casts, check_boolean_casts, check_try_cast_targets
 from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
+from tests._dev2000_fixtures import (
+    DS as TZ_DS,
+    MARKS as TZ_MARKS,
+    NY as TZ_NY,
+    ROWS as TZ_ROWS,
+    amount as tz_amount,
+    day as tz_day,
+    instant_typing_queries,
+    local as tz_local,
+    marks_dataset as tz_marks_dataset,
+    orders_dataset as tz_orders_dataset,
+    orders_naive_instant_dataset,
+    row_values,
+)
 from tests._engine_helpers import disposable_engine
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
@@ -2307,3 +2321,92 @@ class TestClickHouseReadOnly:
                 engine_factory.invalidate_engine(ds)
         assert "one" in listing.tables
         assert rows == [{"x": 1}]
+
+
+# ---------------------------------------------------------------------------
+# Time zones (spec: queries/time-zones › Zone conversion renders on every Tier-1 dialect)
+# ---------------------------------------------------------------------------
+
+_TZ_LITERAL = f"DateTime64(6, '{TZ_NY}')"
+
+
+def _ch_value(value: Any) -> str:
+    return repr(value) if isinstance(value, float) else f"'{value}'"
+
+
+@pytest.fixture
+def clickhouse_tz_env(clickhouse_container, tmp_path) -> Generator[SlayerQueryEngine]:
+    db_name = _create_module_db(clickhouse_container)
+    rows = ", ".join(
+        "(" + ", ".join([str(i), _ch_value(a), _ch_value(ts), _ch_value(ts), _ch_value(slot), _ch_value(d),
+                         _ch_value(ts)]) + ")"
+        for i, (a, ts, slot, d) in TZ_ROWS.items()
+    )
+    marks = ", ".join(f"('{at}', '{label}')" for at, label in TZ_MARKS.items())
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                conn.execute(sa.text(
+                    "CREATE TABLE orders (id Int32, amount Float64, ordered_at DateTime64(6), "
+                    "paid_at DateTime64(6, 'UTC'), local_slot DateTime64(6), order_day Date, "
+                    "created_raw DateTime64(6)) ENGINE = MergeTree() ORDER BY id"
+                ))
+                conn.execute(sa.text(f"INSERT INTO orders VALUES {rows}"))
+                conn.execute(sa.text(
+                    "CREATE TABLE marks (marked_at DateTime64(6), label String) ENGINE = MergeTree() ORDER BY marked_at"
+                ))
+                conn.execute(sa.text(f"INSERT INTO marks VALUES {marks}"))
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        run_sync(storage.save_datasource(DatasourceConfig.model_validate({
+            **_ds_config(clickhouse_container, db_name).model_dump(), "name": TZ_DS, "time_zone": "UTC",
+        })))
+        run_sync(storage.save_dataset(tz_orders_dataset()))
+        run_sync(storage.save_dataset(orders_naive_instant_dataset()))
+        run_sync(storage.save_dataset(tz_marks_dataset()))
+        yield SlayerQueryEngine(storage=storage)
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+def _wall_day(value: Any):
+    """A ``DateTime64(6, Q)`` bucket's Q wall-clock day, whether the driver returns it zoned or naive."""
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.replace(tzinfo=None).date()
+    return tz_day(value)
+
+
+@pytest.mark.integration
+class TestClickHouseTimeZones:
+    @pytest.mark.parametrize("field", ["ordered_at", "paid_at"])
+    async def test_local_day(self, clickhouse_tz_env: SlayerQueryEngine, field: str) -> None:
+        resp = await clickhouse_tz_env.execute(SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TZ_NY, "metrics": [{"metric": "sum(orders.amount)", "alias": "s"}],
+            "time_dimensions": [{"field": f"orders.{field}", "granularity": "day"}],
+        }))
+        got = {_wall_day(r[f"orders.{field}"]): float(r["s"]) for r in resp.data}
+        assert got == {tz_local(i, TZ_NY).date(): tz_amount(i) for i in TZ_ROWS}, resp.sql
+
+    async def test_a_filter_literal_is_zoned(self, clickhouse_tz_env: SlayerQueryEngine) -> None:
+        resp = await clickhouse_tz_env.execute(SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TZ_NY, "dimensions": ["orders.id"],
+            "filter": ["orders.ordered_at in '2024-12-31'"],
+        }))
+        assert {int(r["orders.id"]) for r in resp.data} == {1}, resp.sql
+        assert resp.sql is not None
+        assert _TZ_LITERAL in resp.sql, resp.sql
+
+    async def test_a_date_range_is_zoned(self, clickhouse_tz_env: SlayerQueryEngine) -> None:
+        resp = await clickhouse_tz_env.execute(SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TZ_NY, "metrics": [{"metric": "sum(orders.amount)", "alias": "s"}],
+            "time_dimensions": [{"field": "orders.ordered_at", "granularity": "day",
+                                 "date_range": ["2025-01-01", "2025-01-31"]}],
+        }))
+        got = {_wall_day(r["orders.ordered_at"]): float(r["s"]) for r in resp.data}
+        assert got == {tz_local(2, TZ_NY).date(): 20.0, tz_local(3, TZ_NY).date(): 30.0}, resp.sql
+        assert resp.sql is not None
+        assert _TZ_LITERAL in resp.sql, resp.sql
+
+    async def test_instant_typing_changes_nothing_without_a_zone(self, clickhouse_tz_env: SlayerQueryEngine) -> None:
+        for zoned, naive in zip(instant_typing_queries("orders"), instant_typing_queries("orders_naive")):
+            got, want = await clickhouse_tz_env.execute(zoned), await clickhouse_tz_env.execute(naive)
+            assert row_values(got) == row_values(want), got.sql
