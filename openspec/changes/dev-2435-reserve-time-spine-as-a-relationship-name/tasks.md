@@ -12,10 +12,10 @@
 
 ## 2. Implementation (pr-implement)
 
-- [ ] 2.1 Virtual spine hops (axis link from `axis_relationship`, product hop from `_product_edge`) keep the spelling `time_spine` while it addresses them alone, else take a reserved never-declared token naming the spine (`product_token` rule shape); route search admits them — verify 1.2–1.4 pass
-- [ ] 2.2 Every consumer that recognises a spine hop by the literal path token `time_spine` (e.g. `_is_product_path`, spine-route reversal in `resolve_route`, attribution helpers) reads the hop structurally — verify by grepping `TIME_SPINE_DATASET` comparisons against path tokens and 1.4 passing
-- [ ] 2.3 One display mapping spells the reserved token `time_spine` on every human-readable surface; executable / round-tripped paths re-resolve or are omitted — verify 1.6 passes
-- [ ] 2.4 Diagnostics follow the new addressability — verify 1.8 passes
-- [ ] 2.4a The multi-route spine error's suggested paths bind when used as the time dimension, or none is offered (Decision 13) — verify `test_an_unroutable_spine_query_error` passes for both names
+- [x] 2.1 Virtual spine hops (axis link from `axis_relationship`, product hop from `_product_edge`) keep the spelling `time_spine` while it addresses them alone, else take a reserved never-declared token naming the spine (`product_token` rule shape); route search admits them — verify 1.2–1.4 pass
+- [x] 2.2 Every consumer that recognises a spine hop by the literal path token `time_spine` (e.g. `_is_product_path`, spine-route reversal in `resolve_route`, attribution helpers) reads the hop structurally — verify by grepping `TIME_SPINE_DATASET` comparisons against path tokens and 1.4 passing
+- [x] 2.3 One display mapping spells the reserved token `time_spine` on every human-readable surface; executable / round-tripped paths re-resolve or are omitted — verify 1.6 passes
+- [x] 2.4 Diagnostics follow the new addressability — verify 1.8 passes
+- [x] 2.4a The multi-route spine error's suggested paths bind when used as the time dimension, or none is offered (Decision 13) — verify `test_an_unroutable_spine_query_error` passes for both names
 - [ ] 2.5 Local test scope green: `la-affected-tests --base main` files plus the spine suites (`tests/test_dev2015_time_spine.py`, `tests/test_dev2119_time_spine.py`, `tests/test_dev2218_*`, `tests/test_dev2269_spine_case.py`), the stored-upgrade suites covering "Stored names shadow the spine", and SQL goldens; if the stored-upgrade outcome changes, stop for a ruling
-- [ ] 2.6 `poetry run ruff check slayer/ tests/`, `poetry run la-arch-check`, `poetry run basedpyright` (no new errors vs baseline) clean
+- [x] 2.6 `poetry run ruff check slayer/ tests/`, `poetry run la-arch-check`, `poetry run basedpyright` (no new errors vs baseline) clean

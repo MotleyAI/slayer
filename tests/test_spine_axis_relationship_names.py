@@ -214,8 +214,9 @@ def _explicit_hop(name: str) -> SlayerQuery:
 
 @pytest.mark.parametrize("name", SHADOWS)
 async def test_an_explicit_hop_stays_ambiguous(backend: str, name: str) -> None:
+    datasets, query = _datasets(name), _explicit_hop(name)
     with pytest.raises(AmbiguousHopError) as exc:
-        await _execute(backend, _datasets(name), _explicit_hop(name))
+        await _execute(backend, datasets, query)
     assert f"orders.{name}" in str(exc.value)
 
 
@@ -226,8 +227,9 @@ async def test_a_query_extension_relationship_named_like_the_spine_stays_refused
             {"name": "time_spine", "to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]},
         ]}],
     })
+    datasets = _datasets(RENAMED)
     with pytest.raises(QueryExtensionError):
-        await _execute("duckdb", _datasets(RENAMED), query)
+        await _execute("duckdb", datasets, query)
 
 
 # ---------------------------------------------------------------------------
@@ -282,8 +284,9 @@ class TestNoReservedSpelling:
             return spine_query(metrics=[m("count(shipments.id)", "c")], time_dimensions=[td])
 
         async with spine_engine(backend, datasets=_datasets(name, extra=[shipments_two_parents_dataset()])) as engine:
+            query = counted(spine_td())
             with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
-                await engine.execute(counted(spine_td()))
+                await engine.execute(query)
             msg = str(exc.value)
             assert _reserved(msg) == set()
             for path in set(re.findall(r"'(time_spine\.[\w.]+)'", msg)):
@@ -291,8 +294,9 @@ class TestNoReservedSpelling:
 
     async def test_the_explicit_hop_error_suggests_no_unresolvable_spelling(self) -> None:
         """The shadowed spine hop has no spelling left to offer."""
+        datasets, query = _datasets("time_spine"), _explicit_hop("time_spine")
         with pytest.raises(AmbiguousHopError) as exc:
-            await _execute("duckdb", _datasets("time_spine"), _explicit_hop("time_spine"))
+            await _execute("duckdb", datasets, query)
         msg = str(exc.value)
         assert _reserved(msg) == set()
         assert "by its edge name" not in msg
