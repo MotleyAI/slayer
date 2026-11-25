@@ -35,7 +35,7 @@ relationships, `population` / `metrics`, `slayer.live_schema.ingestion`, `storag
 ## 4. Gate
 
 - [x] 4.1 Local test scope (`la-affected-tests --base main` plus every file from section 1, `tests/test_law_sql_built_as_ast.py`, `tests/test_law_ingest_door.py`, `tests/test_forward_merge_specs.py`), then `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors), `poetry run la-arch-check`, `openspec validate dev-2471-merge-1x-into-main-reproducible-demo-mcp --strict`, the forward-merge guard. Verify: all green.
-- [ ] 4.2 On the PR, `latest-deps` runs (it changes `latest-deps.yml`) and goes green on both Python versions and all four shards; fix every clean-venv failure (design decision 13).
+- [x] 4.2 On the PR, `latest-deps` runs (it changes `latest-deps.yml`) and goes green on both Python versions and all four shards; fix every clean-venv failure (design decision 13).
 
 ## 5. Archive (pr-review)
 

@@ -19,7 +19,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema import ingestion as ingestion_module
 from slayer.live_schema.ingestion import StartupIngestSummary
-from slayer.mcp.server import create_mcp_server
+from slayer.mcp.server import StartupPreparation, create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._mcp_gated_server import ORDERS_ROWS, tiny_orders_datasource
 from tests._mcp_stdio_rpc import StdioRpc, server_env, tool_text
@@ -417,6 +417,34 @@ class TestPreparationEngine:
             result = await asyncio.wait_for(call, timeout=REPLY_S)
             assert not result.is_error, result.content
         assert events == ["started", "cancelled", "started", "finished"]
+
+    async def test_a_close_during_the_drain_starts_no_second_demo_worker(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        runs: list[str] = []
+
+        def demo_setup() -> None:
+            runs.append("demo")
+            entered.set()
+            release.wait(REPLY_S)
+
+        preparation = StartupPreparation(demo_setup=demo_setup, ingest=None)
+        first = preparation.lifespan(None)
+        await first.__aenter__()
+        assert await asyncio.to_thread(entered.wait, HANDSHAKE_S)
+        first_close = asyncio.ensure_future(first.__aexit__(None, None, None))
+        await asyncio.sleep(0.1)  # the first close is now draining the demo thread
+        second = preparation.lifespan(None)
+        await second.__aenter__()
+        second_close = asyncio.ensure_future(second.__aexit__(None, None, None))
+        await asyncio.sleep(0.1)
+        third = preparation.lifespan(None)
+        await third.__aenter__()
+        await asyncio.sleep(0.3)
+        assert runs == ["demo"]
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first_close, second_close), timeout=REPLY_S)
+        await third.__aexit__(None, None, None)
 
     async def test_shutdown_awaits_a_running_demo_setup(self, tmp_path: Path) -> None:
         entered = threading.Event()

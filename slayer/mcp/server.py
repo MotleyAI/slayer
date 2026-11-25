@@ -298,7 +298,8 @@ class StartupPreparation:
             self._sessions -= 1
             if self._sessions == 0 and self._task is not None:
                 with anyio.CancelScope(shield=True):
-                    self._task.cancel()
+                    if not self._task.cancelling():  # a repeat cancel would cut the demo-thread drain short
+                        self._task.cancel()
                     await asyncio.wait({self._task})
                 if self._sessions:  # a session arrived while the cancel was awaited
                     self._ensure_running()
