@@ -786,7 +786,7 @@ ungrained form on construction grounds is a closure violation.
 
 ### Requirement: Home dataset of a row-level aggregation source
 An aggregation over a row-level source SHALL run over the rows of exactly one home
-dataset (Axiom 2): the deepest join path from the query root from which every
+dataset (Axiom 2): the source's anchor when every
 dependency of every input — each source leaf, each column-valued parameter and each
 non-overridden definition default, each taken through its dependency closure, and
 each grain member of every attached constituent (an aggregate or grained transform
@@ -794,7 +794,8 @@ operand is opaque and stands for its grain: its explicit `partition_by=`, else t
 query's dimensions; a transform's grain is the union of its inner aggregates', where
 a windowed inner's grain always includes the query's time bucket whether or not its
 `partition_by=` names it) — is
-reachable over provably to-one hops. A non-overridden definition default SHALL be
+reachable from it over provably to-one hops, else the deepest join path from the query
+root from which every such dependency is reachable over provably to-one hops. A non-overridden definition default SHALL be
 resolved as a reference from the owning model — the source anchor that declares the
 aggregation — with each column reference (bare, or one inside an expression default)
 taken in the owner's coordinates. A qualifier naming a dataset already on the owner's
@@ -821,9 +822,9 @@ to that dataset, exactly as spelling that column explicitly would; a definition
 default whose definition crosses a fanning hop SHALL fail closed even when other
 inputs widen the home away from the declaring model; and a cancelled or root-anchored
 default is never rendered as a join from the owner back to the dataset it names.
-Candidates are the input paths and their
-longest common prefix, deepest first; a tie prefers the source's anchor, the longest
-common prefix of the source leaves' own paths. The aggregation is computed over the
+Candidates are the source's anchor, the longest
+common prefix of the source leaves' own paths, tried first, then the input paths and
+their longest common prefix, deepest first. The aggregation is computed over the
 home's rows, each counted once, never over a join product. When no candidate
 determines every input the query SHALL fail with the input-safety error naming the
 offending leaf and hop. The home SHALL depend on the leaves' paths alone, never on
@@ -940,9 +941,10 @@ applies exactly as for a single-column source rooted at the home.
 #### Scenario: A reverse hop to a dataset not on the path stays refused
 - **WHEN** a query rooted at `regions` selects `wsum_cust_spend(pop)`, whose
   `regions`-declared default is `customers.spend`
-- **THEN** nothing cancels — `customers` is not on the path — and the query fails with
-  the same input-safety error naming `customers` that the explicit
-  `weight=customers.spend` twin raises
+- **THEN** nothing cancels — `customers` is not on the path — and, `customers → regions`
+  being to-one, the default homes on `customers`: the value equals the explicit
+  `weight=customers.spend` twin and `sum(regions.pop * spend)` rooted at `customers`,
+  by executed values
 
 #### Scenario: A query-typed revisit is refused
 - **WHEN** a query selects `sum(customers.regions.customers.spend)` from `orders`
@@ -1094,3 +1096,60 @@ A division whose divisor evaluates to 0 SHALL be NULL on every backend and in ev
 
 - **WHEN** a query measures `sum(amount) / count(*)` and its filters keep no population row
 - **THEN** one row is returned whose ratio is NULL on SQLite and DuckDB, and the SQL emitted for every dialect guards the divisor with `NULLIF(…, 0)`
+
+### Requirement: The home, not the query root, decides where an aggregation is computed
+An aggregation over a row-level source whose home (per "Home dataset of a row-level
+aggregation source") is a dataset below the query root SHALL be computed over that home's
+rows exactly as when the query is rooted on any other dataset whose join paths reach the
+same home: the same value per cell it can attribute, the same input-safety outcome, the
+same refusal when it is refused. The longest common prefix of the source's own leaves (its
+anchor) SHALL NOT decide where it is computed. An aggregation homed on the query root, a
+second-order aggregation (homed on its operand dataset) and an aggregation in a query whose
+root is not a model SHALL keep their own evaluation.
+
+#### Scenario: A root column read per row of a to-many child homes on the child
+- **WHEN** a query rooted at `invoices`, which declares a one-to-many join to `lines`,
+  measures `sum(iif(state in ('paid', 'sent'), lines.amount, 0))`, and a query rooted at
+  `lines` measures `sum(iif(invoices.state in ('paid', 'sent'), amount, 0))`
+- **THEN** both return the same total — each line counted once with its own invoice's
+  state — by executed values on SQLite and DuckDB; grouped by `state` (by `invoices.state`
+  from `lines`) both return the same per-state values
+
+#### Scenario: A root column and a reverse to-many column home on the child dataset
+- **WHEN** a query rooted at `invoices` measures `sum(iif(lines.amount > 0, id, 0))`, and a
+  query rooted at `lines` measures `sum(iif(amount > 0, invoices.id, 0))`
+- **THEN** both return the same value, by executed values
+
+#### Scenario: Every producer kind is independent of the query root
+- **WHEN** an aggregation in a query rooted at `invoices` and homed on `lines` is a
+  `FILTER` aggregation, a ranked or `first` / `last` aggregation, a windowed aggregation,
+  an aggregation with an attached constituent, or an explicit `partition_by=` aggregation,
+  and the same aggregation is spelled in a query rooted at `lines`
+- **THEN** each returns the same values from both roots, or both roots refuse it with the
+  same typed error
+
+#### Scenario: Undetermined inputs are refused from every population
+- **WHEN** an aggregation's inputs are determined by no single dataset over provably
+  to-one hops (e.g. columns of two sibling to-many children)
+- **THEN** it is refused with the same input-safety error from every root that reaches its
+  inputs
+
+#### Scenario: An unresolved aggregation with a cross-model anchor is still judged from its anchor
+- **WHEN** no dataset determines every input of an aggregation whose source leaves share a
+  non-empty join path from the root
+- **THEN** it is refused with the input-safety error naming the offending hop, never
+  computed host-rooted or multiplied
+
+#### Scenario: A to-one input keeps the aggregation on its anchor
+- **WHEN** `orders` and `customers` are linked one-to-one by their primary keys, and a query
+  on `orders` measures `scaled(price, scale='customers.weight')` with `scaled` defined as
+  `SUM({value}) / MAX({scale})`
+- **THEN** it is computed over the rows of `orders`: an order with no matching customer
+  still counts in `SUM(price)`
+
+#### Scenario: A home-changing default after a redundant partition still homes below the root
+- **WHEN** an aggregation homed below the query root also carries a redundant
+  `partition_by=` that the query's grain already implies and a definition default that
+  moves its home
+- **THEN** it is computed at the same home and returns the same value as without the
+  redundant `partition_by=`
