@@ -1,4 +1,4 @@
-"""The Ossie compliance gaps outside Layer 1: the semantic-model format (DEV-2244) cases.
+"""The Ossie compliance gaps outside Layer 1: the semantic-model format cases.
 
 Each probe asserts Ossie's behaviour; the gap's case id and fixing issue are the compliance page's row. Layer 1 gaps
 are the gap rows of ``tests/_dev2446_required_manifest.py``.
@@ -24,7 +24,8 @@ from tests._dev2243_fixtures import dataset, document_text, field, metric, relat
 
 #: The vendored Ossie revision the compliance page and these cases are measured against.
 REVISION = "d4dca4e9"
-FORMAT = "DEV-2244"
+#: The issue that will make every valid Ossie document load and behave.
+FORMAT = "DEV-2464"
 
 Probe = Callable[[Path], Awaitable[None]]
 
@@ -47,7 +48,7 @@ class Gap(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# DEV-2244: semantic-model format
+# Semantic-model format
 # --------------------------------------------------------------------------- #
 ORDERS_SQL = ("CREATE TABLE orders (id VARCHAR, amount DOUBLE, unit_price INTEGER, \"Order Amount\" DOUBLE);"
               "INSERT INTO orders VALUES ('O1', 10, 1, 1.5), ('O2', 20, 2, 2.5);")

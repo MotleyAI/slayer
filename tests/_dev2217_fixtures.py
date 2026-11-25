@@ -8,7 +8,6 @@ name the implementation has not added yet fails only the tests that need it.
 from __future__ import annotations
 
 import contextlib
-import os
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import Any
@@ -19,10 +18,11 @@ import pytest
 from slayer.core import errors
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._dev2243_fixtures import CORPUS, make_storage, store_document
+from tests._dev2243_fixtures import make_storage, store_document
 from tests._engine_helpers import owned_query_engine
+from tests._ossie_gate import corpus_root
 
-WIDE_TABLE = Path(os.environ.get("SLAYER_OSSIE_CORPUS") or CORPUS) / "compliance" / "wide_table"
+WIDE_TABLE = corpus_root() / "compliance" / "wide_table"
 DS = "wide_table"
 #: Fixture name → (SQL, model), per upstream's wide_table README.
 FIXTURES = {
