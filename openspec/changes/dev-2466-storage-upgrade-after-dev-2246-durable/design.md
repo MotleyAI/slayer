@@ -41,7 +41,7 @@ No arc42, `model.c4` or `index.yaml` edit is needed. Every delta spec belongs to
   - simulated failures prove each check trips.
 - **Upgrade command.** `_held_by`, the dependents-first split and the "waits for" detail are removed. Every plan is written as it comes. Unreadable outcomes stay.
 - **Warning.** Logged only for pending renames, keyed as today.
-- **Save.** `save_datasource` reads the stored raw datasource, computes its map, and for each `former → new` adds `renamed_from=former` to the incoming granularity named `new` (casefold) when that granularity lacks it. Then:
+- **Save.** `save_datasource` reads the stored raw datasource, computes its map, and for each `former → new` adds `renamed_from=former` to the incoming granularity named `new` (casefold) when that granularity lacks it and no incoming granularity records `former`; when it records another former name and none records `former`, the save is refused naming it. Then:
   - `check_granularities` adds the `renamed_from` rules: the value is a key of `reserved_granularity_names()`, and unique case-insensitively;
   - the save is written;
   - `_check_no_pending_rename` is deleted.
@@ -83,6 +83,7 @@ A context-scoped collector in `slayer/core` (`stored_input_rewritten()` marks; `
 12. Rejected (codex): refuse a datasource save that omits a renamed granularity until every dependent is rewritten. It contradicts decision 2, and deleting a granularity breaks its references whichever meaning the old text gets.
 13. Rejected (codex): count `CustomGranularity._default_origin` as a rewrite. Filling a default is not a legacy rewrite, and counting fills would flag every hand-written document.
 14. Rejected (codex): edit storage arc42 3.1 to exempt the open-time layout moves. 3.1 governs loads; the move is a spec-licensed write on open, kept by DEV-2246 decision 16 when 3.1's wording was approved.
+15. A save that would drop a stored record by giving its granularity another former name is refused; a record moved to another granularity is kept, not duplicated. Options weighed: refuse; let the client's record replace the stored one. (user; codex, CodeRabbit)
 
 ## Risks / Trade-offs
 

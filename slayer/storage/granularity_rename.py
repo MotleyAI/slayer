@@ -253,7 +253,8 @@ def renamed_datasource(data: dict) -> dict:
     recorded = _recorded(_granularity_dicts(data))
     granularities = [
         {**g, "name": pending[g["name"].casefold()],
-         **({} if g["name"].casefold() in recorded or "renamed_from" in g else {"renamed_from": g["name"]})}
+         **({} if g["name"].casefold() in recorded or isinstance(g.get("renamed_from"), str)
+            else {"renamed_from": g["name"]})}
         if isinstance(g, dict) and isinstance(g.get("name"), str) and g["name"].casefold() in pending else g
         for g in data.get("granularities") or []
     ]

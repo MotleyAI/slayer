@@ -82,6 +82,26 @@ async def test_a_config_built_without_the_record_keeps_it(tmp_path: Path, backen
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_record_replaced_by_another_former_name_is_refused(tmp_path: Path, backend: str) -> None:
+    base = str(tmp_path / backend)
+    storage = await _recorded_store(backend=backend, base=base)
+    before = raw_documents(backend=backend, base=base)
+    config = _config(base, [{**granularity_definition("left_granularity"), "renamed_from": "collect"}])
+    with pytest.raises(GranularityDefinitionError, match="'left_granularity'"):
+        await storage.save_datasource(config)
+    assert raw_documents(backend=backend, base=base) == before
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_record_moved_to_another_granularity_is_kept(tmp_path: Path, backend: str) -> None:
+    base = str(tmp_path / backend)
+    storage = await _recorded_store(backend=backend, base=base)
+    await storage.save_datasource(_config(base, [granularity_definition("left_granularity"),
+                                                 {**granularity_definition("left_g"), "renamed_from": "left"}]))
+    assert _stored_granularities(backend=backend, base=base) == [("left_granularity", None), ("left_g", "left")]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
 async def test_saving_after_the_upgrade_keeps_the_record(tmp_path: Path, backend: str) -> None:
     base = str(tmp_path / backend)
     storage = await _recorded_store(backend=backend, base=base)

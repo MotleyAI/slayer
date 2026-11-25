@@ -133,6 +133,14 @@ class TestRecord:
             [("left_granularity_2", "left"), ("left_granularity", None)], key=str)
 
     @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_a_null_record_is_no_record(self, tmp_path: Path, backend: str) -> None:
+        base = str(tmp_path / backend)
+        ds = {**datasource_doc(db_path=live_db(base)),
+              "granularities": [{**granularity_definition("left"), "renamed_from": None}]}
+        storage = await write_raw_store(backend=backend, base=base, datasources=[ds])
+        assert await _granularities(storage) == [("left_granularity", "left")]
+
+    @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_stored_record_is_kept(self, tmp_path: Path, backend: str) -> None:
         storage, _ = await _store(tmp_path, backend=backend, granularities=[_recorded("left_granularity", "left")])
         assert await _granularities(storage) == [("left_granularity", "left")]

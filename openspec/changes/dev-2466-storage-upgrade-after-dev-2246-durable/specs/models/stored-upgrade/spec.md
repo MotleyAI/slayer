@@ -200,7 +200,7 @@ A public entry point SHALL take one datasource's stored dataset documents, an op
 
 ### Requirement: A datasource save keeps its granularity rename records
 
-Saving a datasource SHALL keep every rename the stored datasource of that name holds, pending or recorded: when the saved config defines the new name of such a rename without `renamed_from`, the stored result SHALL carry `renamed_from` with the former name. A save SHALL NOT be refused because a rename is pending. A saved `renamed_from` SHALL name a reserved library name and SHALL be unique, case-insensitively, among the datasource's granularities; otherwise the save SHALL be refused with an error naming the granularity, and nothing SHALL be written. This SHALL hold on both the YAML and the SQLite store, through every save path.
+Saving a datasource SHALL keep every rename the stored datasource of that name holds, pending or recorded. When no granularity of the saved config records that former name and the saved config defines its new name, the stored result SHALL carry `renamed_from` with the former name if that granularity has none; if it records another former name, the save SHALL be refused with an error naming the granularity, and nothing SHALL be written. A save SHALL NOT be refused because a rename is pending. A saved `renamed_from` SHALL name a reserved library name and SHALL be unique, case-insensitively, among the datasource's granularities; otherwise the save SHALL be refused with an error naming the granularity, and nothing SHALL be written. This SHALL hold on both the YAML and the SQLite store, through every save path.
 
 #### Scenario: Saving a loaded datasource whose rename is pending
 
@@ -211,6 +211,16 @@ Saving a datasource SHALL keep every rename the stored datasource of that name h
 
 - **WHEN** the stored datasource defines `left_granularity` with `renamed_from: left`, and a config defining `left_granularity` without `renamed_from` is saved under its name
 - **THEN** the stored datasource defines `left_granularity` with `renamed_from: left`
+
+#### Scenario: A record replaced by another former name is refused
+
+- **WHEN** the stored datasource defines `left_granularity` with `renamed_from: left`, and a config defining `left_granularity` with `renamed_from: collect` is saved under its name
+- **THEN** the save fails naming `left_granularity`, and nothing is written
+
+#### Scenario: A record moved to another granularity is kept
+
+- **WHEN** the stored datasource defines `left_granularity` with `renamed_from: left`, and a config defining `left_granularity` without `renamed_from` and `left_g` with `renamed_from: left` is saved under its name
+- **THEN** the save succeeds and the stored datasource records `renamed_from: left` on `left_g` only
 
 #### Scenario: A record naming no reserved name is refused
 

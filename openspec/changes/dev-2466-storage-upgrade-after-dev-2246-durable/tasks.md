@@ -27,6 +27,7 @@
 ## 4. Datasource save
 
 - [x] 4.1 `save_datasource` carries stored records over; delete `_check_no_pending_rename`; add the `renamed_from` rules to `check_granularities`. Verify: 1.5 passes.
+- [x] 4.2 Save carry-over skips a former name the incoming config records; a conflicting record is refused. Tests: YAML and SQLite, both scenarios.
 
 ## 5. Drift, memories and the change flag
 

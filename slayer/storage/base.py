@@ -33,6 +33,7 @@ from slayer.core.errors import (
     CaseCollisionError,
     ColonSpellingError,
     EnforcedKeyError,
+    GranularityDefinitionError,
     IdCollisionError,
     NamespaceCollisionError,
     OssieDocumentInvalidError,
@@ -2224,12 +2225,21 @@ class StorageBackend(ABC):
         self._forget_granularity_renames()
 
     async def _with_stored_rename_records(self, datasource: DatasourceConfig) -> DatasourceConfig:
-        """``datasource`` with ``renamed_from`` on each new name of a stored rename (pending or recorded) lacking it."""
+        """``datasource`` with ``renamed_from`` on each new name of a stored rename (pending or recorded) it records
+        nowhere; refused when that granularity records another former name."""
         renames = datasource_renames(await self._stored_raw(kind="datasource", data_source=None, name=datasource.name))
-        former_of = {granularity_key(new): former for former, new in reversed(list(renames.items()))}
+        recorded = {granularity_key(g.renamed_from) for g in datasource.granularities if g.renamed_from is not None}
+        former_of = {
+            granularity_key(new): former for former, new in reversed(list(renames.items()))
+            if granularity_key(former) not in recorded
+        }
+        for g in datasource.granularities:
+            if g.renamed_from is not None and granularity_key(g.name) in former_of:
+                raise GranularityDefinitionError(name=g.name, rule=(
+                    f"renamed_from {g.renamed_from!r} would drop the stored record of {former_of[granularity_key(g.name)]!r}"))
         granularities = [
             g.model_copy(update={"renamed_from": former_of[granularity_key(g.name)]})
-            if g.renamed_from is None and granularity_key(g.name) in former_of else g
+            if granularity_key(g.name) in former_of else g
             for g in datasource.granularities
         ]
         if granularities == datasource.granularities:

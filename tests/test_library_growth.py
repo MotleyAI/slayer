@@ -24,7 +24,8 @@ from tests._granularity_rename_fixtures import EXPECTED_BUCKETS, bucket_totals, 
 from tests._library_names_fixtures import SUM_A, agg, metric, stored_engine, t_doc, value
 from tests._stored_upgrade_fixtures import DS
 
-#: Every name the library reserved when this guard was written. Extend it only together with the rule below.
+#: Every name the library reserved when this guard was written. Never extended: a later reservation is shadowable or
+#: goes in ``MIGRATED``.
 PINNED: dict[str, frozenset[str]] = {
     "functions": frozenset({
         "abs", "acos", "ascii", "asin", "atan", "atan2", "cbrt", "ceil", "ceiling", "chr", "coalesce", "concat",
@@ -123,8 +124,15 @@ INITIAL_GATE: dict[str, int] = {"SlayerModel": 30, "SlayerQuery": 19, "Memory": 
 _RESERVED_SPELLINGS = frozenset({
     "array_contains", "array_length", "cardinality", "current_timestamp", "dateadd", "datediff", "iff",
 })
-INITIAL_NAMES = frozenset().union(*PINNED.values()) | frozenset(MIGRATED) | _RESERVED_SPELLINGS
+#: ``MIGRATED`` when gates were introduced; a later entry needs a stepped gate.
+_INITIAL_MIGRATED = frozenset({"agg"})
+INITIAL_NAMES = frozenset().union(*PINNED.values()) | _INITIAL_MIGRATED | _RESERVED_SPELLINGS
 Gates = Mapping[str, Mapping[str, int]]
+
+
+def initial_gate_findings(*, reserved: Iterable[str], gates: Gates) -> list[str]:
+    """Each reserved initial name whose gate is no longer the initial one."""
+    return sorted(n for n in set(reserved) & INITIAL_NAMES if dict(gates.get(n) or {}) != INITIAL_GATE)
 
 
 def _stepped(low: Mapping[str, int], high: Mapping[str, int]) -> bool:
@@ -159,10 +167,17 @@ class TestRenameGates:
     def test_every_reserved_name_has_its_gate(self) -> None:
         assert gate_findings(reserved=reserved_granularity_names(), gates=granularity_rename.RENAME_GATES) == []
 
-    def test_every_name_reserved_today_has_the_initial_gate(self) -> None:
-        assert set(reserved_granularity_names()) <= INITIAL_NAMES
-        for name in reserved_granularity_names():
-            assert dict(granularity_rename.RENAME_GATES[name]) == INITIAL_GATE, name
+    def test_every_initial_name_keeps_the_initial_gate(self) -> None:
+        assert _INITIAL_MIGRATED <= set(MIGRATED)
+        assert initial_gate_findings(reserved=reserved_granularity_names(), gates=granularity_rename.RENAME_GATES) == []
+
+    def test_a_stepped_later_reservation_keeps_the_initial_gates(self) -> None:
+        reserved, gates = _with("new_window", {"SlayerModel": 31, "SlayerQuery": 20, "Memory": 15})
+        assert initial_gate_findings(reserved=reserved, gates=gates) == []
+
+    def test_a_changed_initial_gate_is_caught(self) -> None:
+        reserved, gates = _with("left", {"SlayerModel": 31, "SlayerQuery": 20, "Memory": 15})
+        assert initial_gate_findings(reserved=reserved, gates=gates) == ["left"]
 
     @pytest.mark.parametrize("name", ["new_window", "new_fn"], ids=["transform", "function"])
     def test_a_reservation_without_a_gate_is_caught(self, name: str) -> None:
