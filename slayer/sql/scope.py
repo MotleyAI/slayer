@@ -480,7 +480,8 @@ class ScopeFrame(BaseModel):
                 read=mark_read,
                 context=self.context,
             )
-            instant = col.datatype is DataType.DATETIME_TZ and self.dialect.time_zone is None
+            instant = self.dialect.holds_instant(datatype=col.datatype, db_type=col.db_type) \
+                and self.dialect.time_zone is None
             read = self._read(expanded)
             assert read is not None
             return self.dialect.read_column(read, zoned=instant)

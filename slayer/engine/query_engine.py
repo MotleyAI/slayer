@@ -13,6 +13,7 @@ import warnings as _warnings_module
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from functools import partial
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Unpack
 
 from sqlglot import exp
@@ -33,6 +34,7 @@ from slayer.core.enums import (
 )
 from slayer.core.ossie_conformance import parse_conformance
 from slayer.core.errors import (
+    TimeZoneError,
     AggregationArgumentError,
     AmbiguousDatasetError,
     AssociatedGrainWarning,
@@ -835,6 +837,8 @@ class _Prepared(BaseModel):
     #: The SQL evaluates ``now()`` / ``current_date()``: its result must never be cached.
     reads_clock: bool = False
     time_zone: Optional[str] = None
+    #: The zones its stages convert to.
+    zones: List[str] = PydanticField(default_factory=list)
 
 
 class _Rendered(BaseModel):
@@ -989,6 +993,8 @@ class SlayerQueryEngine:
         self._drift_snapshots = schema_drift.LiveSnapshotCache()
         # Live source-column types a portable definition's undeclared columns read, by table.
         self._source_column_types: dict[tuple, dict[str, DataType]] = {}
+        # Per client: each zone the server was checked to resolve, with the error it raises when it cannot.
+        self._zone_checks: dict[tuple, dict[str, Optional[TimeZoneError]]] = {}
         self._unknown_types = UnknownTypes()
 
     async def _resolve_unknown_types(self, dataset: SlayerDataset) -> SlayerDataset:
@@ -1495,6 +1501,8 @@ class SlayerQueryEngine:
             row_sources=rendered.row_sources,
             reads_clock=plans_read_clock(rendered.emitted_list),
             time_zone=root_planned.stage_bundle.time_zone if root_planned.stage_bundle is not None else None,
+            zones=sorted({p.stage_bundle.time_zone for p in rendered.emitted_list
+                          if p.stage_bundle is not None and p.stage_bundle.time_zone is not None}),
         )
 
     async def _plan_and_render(self, **kwargs: Any) -> _Rendered:
@@ -2013,10 +2021,29 @@ class SlayerQueryEngine:
         return response
 
     @probes.probe(name="query.run", result=lambda executed: {"query.rows": len(executed.rows)})
+    async def _check_zones(self, *, prepared: _Prepared, client: SqlClient) -> None:
+        """Before the statement runs, the server resolves each zone it converts to: checked once per client and zone
+        through the client, a failure raised every time."""
+        dialect = get_dialect(prepared.dialect)
+        checks = self._zone_checks.setdefault(_sql_client_cache_key(prepared.datasource), {})
+        for zone in prepared.zones:
+            if zone not in checks:
+                probe = dialect.zone_probe(ZoneInfo(zone))
+                if probe is None:
+                    checks[zone] = None
+                    continue
+                result = await client.execute(sql=probe.sql(dialect=dialect.sqlglot_name))
+                value = next(iter(result.rows[0].values()), None) if result.rows else None
+                checks[zone] = dialect.unresolved_zone_error(ZoneInfo(zone)) if value is None else None
+            failure = checks[zone]
+            if failure is not None:
+                raise failure
+
     async def _run_data_query(
         self, *, prepared: _Prepared, client: SqlClient
     ) -> ExecutionResult:
         """Run the prepared data query (schema-drift attribution on error); decodes result keys."""
+        await self._check_zones(prepared=prepared, client=client)
         try:
             result = await client.execute(sql=prepared.sql)
         except Exception as exc:

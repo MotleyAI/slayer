@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
@@ -92,7 +93,7 @@ class PrestoFamilyDialect(SqlDialect):
     })
     extremum_propagates_null: ClassVar[bool] = True
 
-    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``CAST(with_timezone(v, S) AT TIME ZONE Q AS TIMESTAMP)``; an instant: ``CAST(v AT TIME ZONE Q AS
         TIMESTAMP)``."""
         instant = value if source is None else exp.Anonymous(this="with_timezone", expressions=[value, zone_name(source)])

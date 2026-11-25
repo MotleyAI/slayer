@@ -1406,6 +1406,9 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                 '"2000-04-01"}; usable wherever a built-in granularity is.'
             ),
         )] = None,
+        time_zone: Annotated[str | None, Field(
+            description="IANA zone its DateTime columns are stored in, e.g. 'UTC'; a field's own time_zone wins.",
+        )] = None,
     ) -> str:
         """Create a database connection, verify it, and auto-ingest datasets. Use ${ENV_VAR} in credentials to read environment variables.
 
@@ -1435,7 +1438,10 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             connection_string=connection_string,
             schema_name=schema_name,
         )
-        ds = DatasourceConfig.model_validate({**data, "granularities": granularities or []})
+        try:
+            ds = DatasourceConfig.model_validate({**data, "granularities": granularities or [], "time_zone": time_zone})
+        except ValueError as exc:
+            return f"Cannot create datasource: {exc}"
         existed = await storage.get_datasource(name) is not None
         try:
             await storage.save_datasource(ds)
@@ -1563,6 +1569,9 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                 "start at origin + k * multiple * base."
             ),
         )] = None,
+        time_zone: Annotated[str | None, Field(
+            description="IANA zone its DateTime columns are stored in, e.g. 'UTC'; a field's own time_zone wins.",
+        )] = None,
     ) -> str:
         """Update a datasource's metadata."""
         ds = await storage.get_datasource(name)
@@ -1576,6 +1585,11 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         if granularities is not None:
             update["granularities"] = granularities
         ds = ds.model_copy(update=update)
+        if time_zone is not None:
+            try:
+                ds.time_zone = time_zone
+            except ValueError as exc:
+                return f"Cannot update datasource '{name}': {exc}"
 
         try:
             await storage.save_datasource(ds)

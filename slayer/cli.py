@@ -1046,6 +1046,10 @@ examples:
         ),
     )
     datasources_create_parser.add_argument(
+        "--time-zone", default=None,
+        help="IANA zone its DateTime columns are stored in, e.g. UTC; a field's own time_zone wins",
+    )
+    datasources_create_parser.add_argument(
         "--ingest",
         action="store_true",
         help="Run auto-ingestion immediately after creating the datasource",
@@ -2898,16 +2902,20 @@ def _run_datasources_create(args, storage):
     # Persist ``schema_name`` only for a single explicit schema — a multi-schema
     # or --all-schemas request has no one default schema to record (D-7).
     persisted_schema = schema_list[0] if (schema_list and len(schema_list) == 1) else None
-    ds = DatasourceConfig.model_validate(
-        {
-            "name": name,
-            "type": ds_type,
-            "connection_string": args.connection_string,
-            "description": args.description,
-            "schema_name": persisted_schema,
-            "granularities": getattr(args, "granularities", None) or [],
-        }
-    )
+    try:
+        ds = DatasourceConfig.model_validate(
+            {
+                "name": name,
+                "type": ds_type,
+                "connection_string": args.connection_string,
+                "description": args.description,
+                "schema_name": persisted_schema,
+                "granularities": getattr(args, "granularities", None) or [],
+                "time_zone": getattr(args, "time_zone", None),
+            }
+        )
+    except ValueError as e:
+        _fail(str(e))
 
     existing = run_sync(storage.get_datasource(name))
     if existing is not None and not _confirm(
@@ -2977,6 +2985,7 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
             "database": db_path,
             "description": args.description or "Jaffle Shop demo (synthetic data via jafgen)",
             "granularities": getattr(args, "granularities", None) or [],
+            "time_zone": getattr(args, "time_zone", None),
         }
     )
 

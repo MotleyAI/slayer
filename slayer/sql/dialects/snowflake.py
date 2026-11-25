@@ -6,6 +6,7 @@ import json
 import re as _re
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from urllib.parse import quote
 
@@ -178,7 +179,7 @@ class SnowflakeDialect(SqlDialect):
     url_scheme: str | None = "snowflake"
     install_extra: str | None = "snowflake"
 
-    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``CONVERT_TIMEZONE(S, Q, v)``; an instant: ``CONVERT_TIMEZONE(Q, v)::TIMESTAMP_NTZ``."""
         if source is not None:
             return exp.ConvertTimezone(source_tz=zone_name(source), target_tz=zone_name(target), timestamp=value)

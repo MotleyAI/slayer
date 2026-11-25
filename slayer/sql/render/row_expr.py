@@ -301,7 +301,10 @@ def render_cast(
     value = part(source)
     if key.try_:
         value.meta[CONSTANT_INPUT] = reads_no_rows(source)
-    return dialect.build_author_cast(value, to, source=key.numeric_source, try_=key.try_)
+    cast = dialect.build_author_cast(value, to, source=key.numeric_source, try_=key.try_)
+    # Under a zone a zoned timestamp is its instant's wall clock there.
+    zoned = to.is_type(exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMESTAMPLTZ)
+    return dialect.zoned_cast(cast) if zoned else cast
 
 
 def render_temporal_comparison(

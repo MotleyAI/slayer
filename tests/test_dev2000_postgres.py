@@ -44,7 +44,7 @@ pg_proc = factories.postgresql_proc(port=None, postgres_options="-c unix_socket_
 
 SESSION_ZONE = "Asia/Kolkata"
 _PG_TYPES = {"INT": "INTEGER", "DOUBLE": "DOUBLE PRECISION", "TEXT": "TEXT", "DATE": "DATE",
-             "TIMESTAMP": "TIMESTAMP", "TIMESTAMPTZ": "TIMESTAMPTZ"}
+             "TIMESTAMP": "TIMESTAMP", "TIMESTAMPTZ": "TIMESTAMPTZ", "DECLARED_TIMESTAMP": "TIMESTAMP"}
 
 
 def _literal(value: Any) -> str:

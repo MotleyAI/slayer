@@ -7,6 +7,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Literal, Optional
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
@@ -119,7 +120,7 @@ def read_column(column: exp.Column, *, site: ReadSite, dialect: SqlDialect, sett
     """``column`` as SLayer reads it at ``site``: under the dialect's zone, a timestamp value converted to its wall
     clock (``civil`` and undeclared ones as stored, the latter with a warning); a stored predicate's as stored."""
     field = site.field
-    instant = field is not None and field.datatype is DataType.DATETIME_TZ
+    instant = field is not None and dialect.holds_instant(datatype=field.datatype, db_type=field.db_type)
     zone = dialect.time_zone
     if zone is None or site.context == STORED:
         _tagged(column, context=site.context, outcome="unzoned" if zone is None else "stored")
@@ -132,7 +133,7 @@ def read_column(column: exp.Column, *, site: ReadSite, dialect: SqlDialect, sett
         return column
     if instant:
         _tagged(column, context=VALUE, outcome="converted")
-        return dialect.convert_zone(column, source=None, target=zone)
+        return dialect.convert_zone(column, source=None, target=ZoneInfo(zone))
     if field.datatype is not DataType.DATETIME or is_spine(site.dataset):
         # The spine's buckets are generated in the stage's own wall clock.
         _tagged(column, context=VALUE, outcome="civil")
@@ -147,7 +148,9 @@ def read_column(column: exp.Column, *, site: ReadSite, dialect: SqlDialect, sett
         _tagged(column, context=VALUE, outcome="undeclared")
         return column
     _tagged(column, context=VALUE, outcome="converted")
-    return column if source == zone else dialect.convert_zone(column, source=source, target=zone)
+    if source == zone and site.dataset.name in setting.stages:
+        return column  # a stage output already in this zone
+    return dialect.convert_zone(column, source=ZoneInfo(source), target=ZoneInfo(zone))
 
 
 def mark_read(column: exp.Column, site: ReadSite) -> exp.Column:

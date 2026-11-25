@@ -836,9 +836,10 @@ class SqliteDialect(SqlDialect):
     url_scheme: str | None = "sqlite"
     result_census_rows: int | None = PROBE_SCAN_CAP + 1
 
-    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``slayer_convert_tz(v, S, Q)``; an instant's text carries its offset (UTC when it carries none)."""
-        return exp.Anonymous(this=CONVERT_TZ_FUNCTION, expressions=[value, zone_name(source or "UTC"), zone_name(target)])
+        return exp.Anonymous(this=CONVERT_TZ_FUNCTION,
+                             expressions=[value, zone_name(source or ZoneInfo("UTC")), zone_name(target)])
 
     def instant_literal(self, value: datetime) -> Optional[Expression]:
         return exp.Literal.string(f"{iso_text(value)}+00:00")

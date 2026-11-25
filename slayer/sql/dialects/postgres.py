@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import Field
@@ -220,7 +221,7 @@ class PostgresDialect(SqlDialect):
     regex_flavour: ClassVar[Optional[RegexFlavour]] = POSTGRES
     read_only_transaction_sql: ClassVar[str | None] = SET_TRANSACTION_READ_ONLY
 
-    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``(v AT TIME ZONE S) AT TIME ZONE Q``; an instant: ``v AT TIME ZONE Q``."""
         return at_time_zone(value, source=source, target=target)
 

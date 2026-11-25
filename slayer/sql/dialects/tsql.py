@@ -11,6 +11,7 @@ import re
 from collections.abc import Iterable, Sequence
 from decimal import Decimal
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, ClassVar, Literal, Optional
 
 from sqlglot import exp
@@ -201,12 +202,12 @@ def _bit_value(predicate: Expr) -> Expression:
 _DATETIME2 = exp.DataType.build("datetime2", dialect="tsql")
 
 
-def _windows_zone(zone: str) -> exp.Literal:
+def _windows_zone(zone: ZoneInfo) -> exp.Literal:
     """``zone``'s Windows zone id, the one ``AT TIME ZONE`` reads; an IANA zone without one is refused."""
-    windows = WINDOWS_ZONES.get(zone)
+    windows = WINDOWS_ZONES.get(zone.key)
     if windows is None:
-        raise TimeZoneError(f"Time zone {zone!r} has no SQL Server (Windows) equivalent; choose another IANA zone.",
-                            zone=zone)
+        raise TimeZoneError(f"Time zone {zone.key!r} has no SQL Server (Windows) equivalent; choose another IANA "
+                            f"zone.", zone=zone.key)
     return exp.Literal.string(windows)
 
 
@@ -241,7 +242,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"CONCAT_WS", "PI", "GREATEST", "LEAST"})
 
-    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``CAST((v AT TIME ZONE S) AT TIME ZONE Q AS datetime2)`` in Windows zone ids; an instant (a
         ``datetimeoffset``): ``CAST(v AT TIME ZONE Q AS datetime2)``."""
         instant = value if source is None else exp.AtTimeZone(this=value, zone=_windows_zone(source))

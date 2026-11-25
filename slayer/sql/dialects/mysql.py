@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import Field
@@ -24,7 +25,7 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, DatePart, NUMERIC_DATATYPES, TimeGranularity
 from slayer.core.granularity import bucket_type
-from slayer.core.errors import ReadOnlyConnectionError, UnsupportedServerFunctionError
+from slayer.core.errors import ReadOnlyConnectionError, TimeZoneError, UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
@@ -147,7 +148,7 @@ class MysqlDialect(SqlDialect):
     extremum_propagates_null: ClassVar[bool] = True
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
 
-    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``CONVERT_TZ(v, S, Q)``; an instant (a ``TIMESTAMP``) from its epoch seconds, independent of the session
         zone."""
         if source is None:
@@ -161,6 +162,20 @@ class MysqlDialect(SqlDialect):
     def instant_literal(self, value: datetime) -> Optional[Expression]:
         return exp.Anonymous(this="CONVERT_TZ", expressions=[
             exp.Literal.string(iso_text(value)), exp.Literal.string("+00:00"), exp.var("@@session.time_zone")])
+
+    def zone_probe(self, zone: ZoneInfo) -> Optional[exp.Select]:
+        """``CONVERT_TZ`` is NULL for a named zone the server's time zone tables do not hold."""
+        return exp.select(exp.ConvertTimezone(
+            source_tz=exp.Literal.string("+00:00"), target_tz=zone_name(zone),
+            timestamp=exp.Literal.string("2000-01-01 00:00:00"),
+        ).as_("z"))
+
+    def unresolved_zone_error(self, zone: ZoneInfo) -> TimeZoneError:
+        return TimeZoneError(
+            f"{self.database_name} cannot resolve time zone {zone.key!r}: its time zone tables are not loaded. Load "
+            f"them with mysql_tzinfo_to_sql (see the MySQL manual, 'MySQL Server Time Zone Support'), then retry.",
+            zone=zone.key,
+        )
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
         """Regex and numeric ``TRY_CAST`` need MySQL 8.0, ``json_value`` 8.0.21: the version decides."""

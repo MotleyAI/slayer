@@ -63,8 +63,27 @@ def conversions_above(node: exp.Expression, *, stop: Optional[exp.Expression] = 
     return count
 
 
+def _relation(column: exp.Column) -> Optional[exp.Expression]:
+    """The FROM / JOIN relation ``column``'s qualifier names, in the nearest enclosing SELECT binding it."""
+    select = column.find_ancestor(exp.Select)
+    while select is not None:
+        for holder in [select.args.get("from_"), *(select.args.get("joins") or [])]:
+            relation = holder.this if holder is not None else None
+            if relation is not None and relation.alias_or_name == column.table:
+                return relation
+        select = select.find_ancestor(exp.Select)
+    return None
+
+
 def reads(tree: exp.Expression, name: str) -> list[exp.Column]:
-    return [c for c in tree.find_all(exp.Column) if c.name.lower() == name]
+    """Reads of a dataset table's column ``name``: a column of a CTE or derived table carries an earlier read."""
+    ctes = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+    out = []
+    for column in tree.find_all(exp.Column):
+        relation = _relation(column) if column.name.lower() == name else None
+        if isinstance(relation, exp.Table) and relation.name not in ctes:
+            out.append(column)
+    return out
 
 
 def comparisons(tree: exp.Expression) -> list[exp.Expression]:

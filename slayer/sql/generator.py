@@ -20,6 +20,7 @@ from typing import (
     cast,
 )
 
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
@@ -44,7 +45,9 @@ from slayer.core.field_expression import portable_text
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.granularity import bucket_type as granularity_bucket_type
 from slayer.core.time_spine import TIME_SPINE_DATASET, TIME_SPINE_FIELD, is_spine
-from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
+from slayer.core.time_bounds import is_frame_bound
+from slayer.core.time_zones import CIVIL
+from slayer.core.keys import split_top_level_and, restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.relationship_walker import (
     OrientedRelationship,
     aggregation_owner,
@@ -71,9 +74,11 @@ from slayer.sql.field_expansion import (
 )
 from slayer.sql.zoned_read_check import maybe_check_zoned_reads
 from slayer.sql.zoned_reads import (
-    STORED, VALUE, Context, ReadSite, apply_reads, field_for_column, mark_read, read_column, zone_setting,
+    STORED, VALUE, Context, ReadSite, apply_reads, field_for_column, mark_read, read_column, source_zone,
+    zone_setting,
 )
 from slayer.ir.planned import (
+    plan_value_keys,
     AssociationProducerKernel,
     EntityDedup,
     MaskTyping,
@@ -98,7 +103,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
-from slayer.sql.dialects.base import LIST_POSITION, bare_comparands
+from slayer.sql.dialects.base import COMPARISON_NODES, LIST_POSITION, bare_comparands
 from slayer.sql.untrusted_projection import mark_untrusted, project_untrusted_hops
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
@@ -1055,7 +1060,8 @@ class SQLGenerator:
 
     def _derived_read(self, expr: Expression, *, declared: Optional[DatasetField]) -> Expression:
         """A derived field's value: without a zone, a ``DateTimeTz`` one reads as the dialect's naive type."""
-        instant = declared is not None and declared.datatype is DataType.DATETIME_TZ
+        instant = declared is not None and self._dialect.holds_instant(datatype=declared.datatype,
+                                                                       db_type=declared.db_type)
         return self._dialect.read_column(expr, zoned=instant and self._dialect.time_zone is None)
 
     def _scope_frame(self, *, dataset, relation, bundle, allocator, attached_fields=None):
@@ -6746,8 +6752,68 @@ class SQLGenerator:
                     "scope": None, "dimension_values": dimension_values,
                 })
             target_parts.append(_grouped(render_value_key(key=fp.expression.value_key, ctx=ctx)))
+            if not having:
+                target_parts.extend(self._prefilters(
+                    key=fp.expression.value_key, source_dataset=source_dataset, source_relation=source_relation,
+                    bundle=bundle, frame_fields=_framing_fields(planned_query),
+                ))
 
         return _conjunction(where_parts), _conjunction(having_parts)
+
+    def _prefilters(
+        self, *, key, source_dataset: SlayerDataset, source_relation: str, bundle, frame_fields: FrozenSet[ValueKey],
+    ) -> List[Expression]:
+        """Under a zone, each top-level comparison of a converted dataset column with a time point also compares the
+        stored column with the point widened by two days (any two zones differ by at most 26 hours), in the stored
+        column's type, so the filter stays prunable; omitted on a frame bound and where the dialect cannot write that
+        literal."""
+        if self._dialect.time_zone is None:
+            return []
+        out: List[Expression] = []
+        for conjunct in split_top_level_and(key):
+            if not isinstance(conjunct, ArithmeticKey) or conjunct.op not in _PREFILTER_OPS or len(conjunct.operands) != 2:
+                continue
+            if is_frame_bound(key=conjunct, time_fields=frame_fields):
+                continue
+            left, right = conjunct.operands
+            field_key, point, op = (left, right, conjunct.op) if isinstance(right, LiteralKey) else (
+                right, left, _FLIPPED_OPS.get(conjunct.op, conjunct.op))
+            if not isinstance(field_key, FieldKey) or not isinstance(point, LiteralKey):
+                continue
+            if not isinstance(point.value, date):
+                continue
+            raw = self._raw_read(key=field_key, source_dataset=source_dataset, source_relation=source_relation,
+                                 bundle=bundle)
+            if raw is None:
+                continue
+            column, instant = raw
+            value = point.value if isinstance(point.value, datetime) else datetime.combine(point.value, datetime.min.time())
+            for bound_op, moved in _widened(op, value):
+                literal = (self._dialect.instant_literal(moved) if instant
+                           else self._dialect.build_temporal_literal(value=moved, dt=DataType.DATETIME))
+                if literal is not None:
+                    out.append(COMPARISON_NODES[bound_op](this=column.copy(), expression=literal))
+        return out
+
+    def _raw_read(
+        self, *, key: FieldKey, source_dataset: SlayerDataset, source_relation: str, bundle,
+    ) -> Optional[Tuple[Expression, bool]]:
+        """The stored read of a converted dataset column ``key`` and whether it holds instants; ``None`` for any
+        other read."""
+        owner = self._walk_relationship_path_dataset(source_dataset=source_dataset, path=key.path, bundle=bundle) \
+            if key.path else source_dataset
+        field = owner.get_field(key.leaf) if owner is not None else None
+        if owner is None or field is None or not field.is_base or owner.name in bundle.stage_displays:
+            return None
+        instant = self._dialect.holds_instant(datatype=field.datatype, db_type=field.db_type)
+        source = source_zone(field, dataset=owner, setting=zone_setting(bundle))
+        if not instant and (field.datatype is not DataType.DATETIME or source in (None, CIVIL) or is_spine(owner)):
+            return None
+        alias = self._join_alias(root=source_relation, path=tuple(key.path)) if key.path else source_relation
+        column = exp.Column(this=key_identifier(field.physical_name, quoted=field.physical_quoted),
+                            table=exp.to_identifier(alias))
+        return self._read(column, field=field, dataset=owner, bundle=bundle, path=tuple(key.path),
+                          context=STORED, reads_naive=False), instant
 
     @staticmethod
     def _is_nontrivial_derived(dataset: SlayerDataset, name: str) -> bool:
@@ -7266,6 +7332,31 @@ def build_planned_statement(
         exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect), kept_stages=kept,
         associated=filter_associations,
     )
+
+
+#: The comparisons a pre-filter widens, and each with its operands swapped.
+_PREFILTER_OPS = frozenset({">=", ">", "<", "<=", "="})
+_FLIPPED_OPS = {">=": "<=", ">": "<", "<": ">", "<=": ">="}
+_PREFILTER_MARGIN = timedelta(days=2)
+
+
+def _framing_fields(planned) -> FrozenSet[ValueKey]:
+    """The time fields whose bounds frame a window or transform of ``planned`` (none when it has neither)."""
+    frames = any(
+        isinstance(k, TransformKey) or (isinstance(k, AggregateKey) and any(name == "window" for name, _ in k.kwargs))
+        for root in plan_value_keys(planned) for k in walk_value_keys(root)
+    )
+    return frozenset(planned.frame_bound_fields) if frames else frozenset()
+
+
+def _widened(op: str, value: datetime) -> List[Tuple[str, datetime]]:
+    """The stored-column bounds implied by ``column <op> value`` across any two zones."""
+    lower, upper = (">=", value - _PREFILTER_MARGIN), ("<", value + _PREFILTER_MARGIN)
+    if op in (">=", ">"):
+        return [lower]
+    if op in ("<", "<="):
+        return [upper]
+    return [lower, upper]
 
 
 def _statement_datasets(planned_queries, *, bundle) -> Dict[str, SlayerDataset]:

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import sqlite3
 from collections.abc import Iterator
 from typing import Any, Optional
@@ -11,13 +10,14 @@ from typing import Any, Optional
 import pytest
 
 from slayer.sql.dialects import dialect_for_ds_type
+from slayer.storage.sqlite_conn import open_connection
 
 from tests._dev2000_fixtures import NY, TOKYO
 
 
 @pytest.fixture
 def con() -> Iterator[sqlite3.Connection]:
-    with contextlib.closing(sqlite3.connect(":memory:")) as conn:
+    with open_connection(":memory:") as conn:
         dialect_for_ds_type("sqlite").register_udfs(conn)
         yield conn
 

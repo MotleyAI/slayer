@@ -11,6 +11,7 @@ import math
 import re
 from collections.abc import Callable, Sequence
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import Any, ClassVar, Optional
 
 from sqlglot import exp
@@ -261,7 +262,7 @@ class ClickhouseDialect(SqlDialect):
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"PI"})
 
-    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``toTimeZone(v, Q)``; a naive value is first read as ``S`` wall clock."""
         if source is not None:
             value = exp.Anonymous(this="toDateTime64", expressions=[
@@ -646,7 +647,9 @@ class ClickhouseDialect(SqlDialect):
         ))
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
-        return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6)])
+        """``toDateTime64(x, 6)``; under a zone ``DateTime64(6, zone)``, the type a converted value has."""
+        zone = [exp.Literal.string(self.time_zone)] if self.time_zone is not None else []
+        return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6), *zone])
 
     def demote_to_date(self, expr: Expression) -> Expression:
         return exp.Anonymous(this="toDate", expressions=[expr])
