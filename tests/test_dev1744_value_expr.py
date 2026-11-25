@@ -1502,6 +1502,8 @@ class TestNoKeyFieldIsSilentlyIgnored:
                     continue
                 except NotImplementedError:
                     continue
+                except UnknownReferenceError:
+                    continue
             return None  # refused everywhere — fail-closed, acceptable
 
         base_sql = render(base)
