@@ -23,7 +23,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._mcp_gated_server import ORDERS_ROWS, tiny_orders_datasource
 from tests._mcp_stdio_rpc import StdioRpc, server_env, tool_text
 
-HANDSHAKE_S = 10.0
+HANDSHAKE_S = 60.0  # a hang guard only: preparation is held, so any answer proves the handshake did not wait
 NO_WAIT_S = 5.0
 REPLY_S = 60.0
 COUNT_QUERY = {"query": {"source_model": "orders", "measures": ["count(*)"]}, "format": "json"}

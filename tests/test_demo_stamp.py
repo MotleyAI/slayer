@@ -113,7 +113,7 @@ class TestYears:
         _restamp(db, four_years)
         rpc = StdioRpc([sys.executable, "-m", "slayer", "mcp", "--demo", "--storage", str(store)])
         try:
-            rpc.handshake(timeout=10.0)
+            rpc.handshake(timeout=60.0)  # a hang guard: a loaded runner can take over 10s to start the server
             is_error, text = tool_text(rpc.response(rpc.call_tool("query", COUNT_QUERY), timeout=180.0))
             assert not is_error, text
             assert "reused" in rpc.stderr

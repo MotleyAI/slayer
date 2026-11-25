@@ -219,7 +219,9 @@ def checkout(tmp_path: Path) -> Path:
 
 @pytest.mark.timeout(600)  # real demo ingest + CLI + MCP legs: ~90-120 s on CI runners
 def test_real_gate_passes_against_the_dev_install(tmp_path: Path, checkout: Path) -> None:
-    result = _gate(slayer=DEV_SLAYER, wheel=_wheel(tmp_path, version("motley-slayer")), checkout=checkout, timeout=540)
+    # A loaded test runner can take over 10s to start a cold server; the wheel gate keeps the 10s default.
+    result = _gate(slayer=DEV_SLAYER, wheel=_wheel(tmp_path, version("motley-slayer")), checkout=checkout,
+                   extra=("--mcp-handshake-limit", "60"), timeout=540)
     assert result.returncode == 0, result.stdout + result.stderr
     assert _failed_checks(result) == []
 
@@ -349,6 +351,14 @@ def test_fast_handshake_with_a_slow_first_call_passes(tmp_path: Path, checkout: 
 
 def test_mcp_handshake_limit_is_ten_seconds() -> None:
     assert release_gate.MCP_HANDSHAKE_LIMIT == 10.0
+    assert release_gate._parse_args(["--slayer", "s", "--wheel", "w"]).mcp_handshake_limit == 10.0
+
+
+def test_the_handshake_limit_option_is_honoured(tmp_path: Path, checkout: Path) -> None:
+    slayer = _fake_slayer(tmp_path, Behaviour(mcp_start_delay=3))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout,
+                   extra=("--mcp-handshake-limit", "1"), timeout=120)
+    assert "mcp handshake" in _failed_checks(result), result.stdout + result.stderr
 
 
 def test_mcp_server_that_cannot_spawn_is_a_named_failure(tmp_path: Path, checkout: Path) -> None:
