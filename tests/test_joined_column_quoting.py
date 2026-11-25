@@ -154,7 +154,8 @@ def _assert_projected_under_own_name(projection: exp.Select, *, leaf: str, sql: 
     assert carried, f"distinct projection does not carry {leaf!r}:\n{sql}"
     for p in carried:
         assert p.this.this.quoted, f"inner read unquoted: {p.sql()}\n{sql}"
-        assert p.alias == leaf and p.args["alias"].quoted, f"not projected as quoted {leaf!r}: {p.sql()}\n{sql}"
+        assert p.alias == leaf, f"not projected as {leaf!r}: {p.sql()}\n{sql}"
+        assert p.args["alias"].quoted, f"projected alias unquoted: {p.sql()}\n{sql}"
 
 
 class TestJoinedDimension:
@@ -201,7 +202,8 @@ class TestAggregateArgument:
             casts = [r.find_ancestor(exp.Cast) for r in _reads(tree, "signedUpAt")]
             assert any(c is not None and c.to.sql(dialect="bigquery") == "DATETIME" for c in casts), sql
         post = tree.args.get("having") or tree.args.get("where")
-        assert post is not None and post.find(exp.GT) is not None, f"filter on the count dropped:\n{sql}"
+        assert post is not None, f"filter on the count dropped:\n{sql}"
+        assert post.find(exp.GT) is not None, f"filter on the count dropped:\n{sql}"
 
 
 class TestTwoHop:
@@ -283,7 +285,8 @@ class TestRankedAggregate:
         ranked = _named(_parse(sql), "_ranked_src", sql)
         _assert_quoted_reads(ranked, leaf="extRef", sql=sql)
         window = ranked.find(exp.Window)
-        assert window is not None and _reads(window, "extRef"), sql
+        assert window is not None, sql
+        assert _reads(window, "extRef"), sql
 
     async def test_ranked_by_joined_time(self, trusted: bool) -> None:
         sql = await _sql({"population": "orders", "dimensions": ["orderNumber"],
@@ -291,7 +294,8 @@ class TestRankedAggregate:
         ranked = _named(_parse(sql), "_ranked_src", sql)
         _assert_quoted_reads(ranked, leaf="signedUpAt", sql=sql)
         window = ranked.find(exp.Window)
-        assert window is not None and _reads(window, "signedUpAt"), sql
+        assert window is not None, sql
+        assert _reads(window, "signedUpAt"), sql
 
 
 class TestOrderingByJoinedField:
@@ -312,7 +316,8 @@ class TestOrderingByJoinedField:
         tree = _parse(sql)
         _assert_quoted_reads(tree, leaf="extRef", sql=sql)
         [ordered] = tree.args["order"].expressions
-        assert isinstance(ordered.this, exp.Column) and ordered.this.name == "extRef", sql
+        assert isinstance(ordered.this, exp.Column), sql
+        assert ordered.this.name == "extRef", sql
 
 
 class TestSemiJoin:
@@ -453,8 +458,10 @@ class TestUnresolvableFieldFailsClosed:
         stripped = accounts.model_copy(update={
             "fields": [f for f in accounts.fields if f.name != "extRef"], "relationships": [],
         })
+        generator = SQLGenerator(dialect="postgres")
+        bundle = _bundle([orders, stripped, regions])
         with pytest.raises(UnknownReferenceError):
-            SQLGenerator(dialect="postgres").generate_from_planned(planned, bundle=_bundle([orders, stripped, regions]))
+            generator.generate_from_planned(planned, bundle=bundle)
 
     @pytest.mark.parametrize("key", [
         FieldKey(path=(), leaf="missingCol"),
@@ -471,7 +478,8 @@ class TestUnresolvableFieldFailsClosed:
         """A semi-join tree-node path resolves through the group's node dataset, quoted."""
         frame = _frame(node_datasets={("node",): "accounts"})
         out = frame.resolve(FieldKey(path=("node",), leaf="extRef"))
-        assert isinstance(out, exp.Column) and out.this.quoted, out.sql()
+        assert isinstance(out, exp.Column), out.sql()
+        assert out.this.quoted, out.sql()
 
 
 def _frame(*, node_datasets: dict[tuple[str, ...], str]) -> ScopeFrame:
