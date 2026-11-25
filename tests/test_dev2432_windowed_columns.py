@@ -611,6 +611,14 @@ class TestModelFilterOnWindowedColumn:
         assert "ranked" in str(exc.value)
         assert await filter_engine.storage.get_dataset("orders_win", data_source="test") is None
 
+    @pytest.mark.parametrize("reference", ["orders_win.ranked", 'orders_win."Ranked"'], ids=["unquoted", "quoted"])
+    async def test_own_windowed_column_is_a_cycle_whatever_the_casing(self, filter_engine, door, reference):
+        dataset = SlayerDataset(name="orders_win", data_source="test", sql_table="orders", filters=[f"{reference} > 1"],
+                                fields=[_col("id", primary_key=True), _col("status", DataType.STRING), _col("amount"),
+                                        native("Ranked", RANKED)])
+        with pytest.raises(DatasetFilterCycleError):
+            await _save(filter_engine, dataset, door=door)
+
     async def test_cycle_through_a_joined_windowed_columns_definition(self, filter_engine, door):
         await _save(filter_engine, _cycle_dataset("b", "a", extra=[
             native("rn", "ROW_NUMBER() OVER (PARTITION BY b_to_a.flag ORDER BY id)")]), door=door)

@@ -22,6 +22,7 @@ import warnings
 from collections.abc import Iterator, Set as AbstractSet
 
 import sqlglot
+from sqlglot import exp
 
 from slayer.core.errors import (
     AggArgumentError,
@@ -87,20 +88,30 @@ def value_fragments(field: DatasetField, *, host: SlayerDataset) -> list[Fragmen
     return out
 
 
-def _portable_refs(text: str) -> list[tuple[tuple[str, ...], str]] | None:
+RefSite = tuple[tuple[str, ...], str, bool]
+
+
+def _portable_refs(text: str) -> list[RefSite] | None:
     try:
         parsed = parse_template(text)
     except Exception:  # noqa: BLE001 — binding reports an unparseable definition
         return None
-    return [((), n.name) if isinstance(n, Ref) else (tuple(n.parts[:-1]), n.parts[-1])
+    return [((), n.name, n.quoted) if isinstance(n, Ref)
+            else (tuple(n.parts[:-1]), n.parts[-1], n.quoted_at(len(n.parts) - 1))
             for n in walk_parsed(parsed) if isinstance(n, (Ref, DottedRef))]
+
+
+def _ref_sites(fragment: Fragment, *, host: SlayerDataset) -> list[RefSite]:
+    """``(qualifiers, leaf, leaf quoted)`` for each field path ``fragment`` reads from ``host``, bar source-column
+    reads."""
+    text, portable = fragment
+    found = (_portable_refs(text) if portable else _fragment_refs(text)) or []
+    return [site for site in found if not reads_source_column(tuple(site[0]), dataset=host)]
 
 
 def _refs(fragment: Fragment, *, host: SlayerDataset) -> list[tuple[tuple[str, ...], str]]:
     """The field paths ``fragment`` reads from ``host``: its references bar source-column reads."""
-    text, portable = fragment
-    found = (_portable_refs(text) if portable else _fragment_refs(text)) or []
-    return [(quals, leaf) for quals, leaf in found if not reads_source_column(tuple(quals), dataset=host)]
+    return [(quals, leaf) for quals, leaf, _quoted in _ref_sites(fragment, host=host)]
 
 
 def _fragment_refs(sql: str):
@@ -121,8 +132,8 @@ def _fragment_refs(sql: str):
     # sqlglot's parse_one is typed with a generic Expr TypeVar; without into= it
     # is an Expression at runtime.
     return [
-        (quals, leaf)
-        for _node, quals, leaf in reference_sites(
+        (quals, leaf, bool((node.parts[-1] if isinstance(node, exp.Column) else node.expression).args.get("quoted")))
+        for node, quals, leaf in reference_sites(
             parsed, root_scope_field_ids(parsed=parsed),  # pyright: ignore[reportArgumentType]
         )
     ]
@@ -136,17 +147,18 @@ def definition_reads(
     out: list[tuple[str, str]] = []
     for fragment in _arity_reference_sources(field, host=host):
         out += _source_column_reads(fragment, field=field, host=host)
-        for quals, leaf in _refs(fragment, host=host):
+        for quals, leaf, quoted in _ref_sites(fragment, host=host):
             target = resolve_ref_target(qualifiers=quals, source_dataset=host, datasets_by_name=reachable)
-            if target is not None and target.get_field(leaf, quoted=True) is not None:
-                out.append((target.name, leaf))
+            read = target.get_field(leaf, quoted=quoted) if target is not None else None
+            if target is not None and read is not None:
+                out.append((target.name, read.name))
     return out
 
 
 def _source_column_reads(fragment: tuple[str, bool], *, field: DatasetField, host: SlayerDataset) -> list[tuple[str, str]]:
     """``(host, reader)`` for each physical reader of a source column ``fragment`` reads, other than ``field``."""
     text, portable = fragment
-    columns = [leaf for quals, leaf in (_portable_refs(text) if portable else _fragment_refs(text)) or []
+    columns = [leaf for quals, leaf, _quoted in (_portable_refs(text) if portable else _fragment_refs(text)) or []
                if reads_source_column(tuple(quals), dataset=host)]
     return [(host.name, c.name) for leaf in columns for c in host.fields
             if c.name != field.name and c.is_physical_reader and c.physical_name == leaf]
@@ -178,13 +190,13 @@ def _sql_dependencies(
     """Edges from every form of a field's definition to each expanding field a path reads."""
     deps: list[tuple[str, str]] = []
     for fragment in value_fragments(field, host=host):
-        for quals, leaf in _refs(fragment, host=host):
+        for quals, leaf, quoted in _ref_sites(fragment, host=host):
             target = resolve_ref_target(
                 qualifiers=quals, source_dataset=host, datasets_by_name=reachable,
             )
             if target is None:
                 continue
-            col = target.get_field(leaf, quoted=True)
+            col = target.get_field(leaf, quoted=quoted)
             if col is not None and col.needs_expansion:
                 deps.append((target.name, col.name))
     return deps
@@ -199,14 +211,14 @@ def _filter_dependencies(
     if not field.filter:
         return []
     deps: list[tuple[str, str]] = []
-    for quals, leaf in _refs(_native(field.filter), host=host):
+    for quals, leaf, quoted in _ref_sites(_native(field.filter), host=host):
         target = _filter_ref_target(
             field=field, host=host, quals=quals, leaf=leaf, reachable=reachable,
             known_but_unloaded=known_but_unloaded,
         )
         if target is None:
             continue  # a real relationship hop whose target is not loaded here — skip
-        col = target.get_field(leaf, quoted=True)
+        col = target.get_field(leaf, quoted=quoted)
         if col is not None and col.needs_expansion:
             deps.append((target.name, col.name))
     return deps
@@ -593,18 +605,19 @@ def _references(
 ) -> Iterator[tuple[SlayerDataset, str, tuple[str, ...]]]:
     """A windowed column reads its owner's dataset: its owner joins the path, its definition is the owner's read; a hop
     keyed by a windowed column reads that column."""
-    for quals, leaf in _refs(fragment, host=host):
+    for quals, leaf, quoted in _ref_sites(fragment, host=host):
         resolved = _resolve_owner(quals=quals, host=host, reachable=reachable)
         if resolved is None:
             continue
         owner, chain = resolved
         yield from _windowed_keys(chain, via=via, reachable=reachable, dialect=dialect)
         on_path = (*via, *(edge.to for edge in chain))
-        field = owner.get_field(leaf, quoted=True)
+        field = owner.get_field(leaf, quoted=quoted)
+        name = leaf if field is None else field.name
         if field is not None and windowed_field(field, dialect=dialect):
-            yield owner, leaf, (*on_path, owner.name)
+            yield owner, name, (*on_path, owner.name)
             continue
-        yield owner, leaf, on_path
+        yield owner, name, on_path
         if field is None or (owner.name, leaf) in seen:
             continue
         seen.add((owner.name, leaf))
