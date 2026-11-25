@@ -82,12 +82,16 @@ Every suite of the gate SHALL read the corpus from `$SLAYER_OSSIE_CORPUS` when i
 - **WHEN** `$SLAYER_OSSIE_CORPUS` names a copy of the corpus holding an added construct, wide-table case and document
 - **THEN** the completeness check, the wide-table suite and the corpus suites each collect the added item
 
-### Requirement: The gate runs weekly against upstream main
-A weekly workflow SHALL fetch apache/ossie `main` and run every suite of the gate on every Tier-1 database with the fetched copy as corpus root, and SHALL fail unless every database's run passes; a run that skips a database, including for missing credentials, SHALL fail the workflow. The compliance-page check, which pins the vendored revision, SHALL NOT run against the fetched copy. Pull requests SHALL run the gate on the vendored snapshot, each database in the workflow that runs its integration suite.
+### Requirement: The gate runs on pull requests, nightly and weekly
+Pull requests SHALL run the gate's in-process suites on the vendored snapshot: the Layer 1 construct table, the wide-table cases and the mixed-case column on SQLite and DuckDB, the corpus and wide-table cases compiled in every Tier-1 dialect, the completeness check and the compliance-page check. A nightly workflow SHALL run every suite on every server Tier-1 database on the vendored snapshot. A weekly workflow SHALL fetch apache/ossie `main` and run every suite on every Tier-1 database with the fetched copy as corpus root. Each scheduled workflow SHALL fail unless every database's run passes; a run that skips a database, including for missing credentials, SHALL fail the workflow. The compliance-page check, which pins the vendored revision, SHALL NOT run against the fetched copy.
 
 #### Scenario: A skipped database fails the weekly run
 - **WHEN** the weekly run's Snowflake job skips for lack of credentials
 - **THEN** the workflow fails
+
+#### Scenario: A pull request runs no server database
+- **WHEN** a pull request's CI runs the gate
+- **THEN** it runs on SQLite and DuckDB and compiles in every Tier-1 dialect, and starts no database server
 
 ### Requirement: The compliance page states what the gate proves
 The compliance page SHALL claim full Ossie Layer 3 under `conformance="ossie-l3"` on every Tier-1 database, stating that expressions inside a query are subject to the listed Layer 1 gaps. For Layer 1 it SHALL report, per database, the counts of pass, refused and gap cells, and list every refused and gap construct. It SHALL claim full Layer 1 if and only if no REQUIRED cell is a gap or a refusal. The page SHALL name the corpus revision it was measured against. A check SHALL assert that the page's lists, counts and claims equal the gate's declarations.

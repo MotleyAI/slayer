@@ -17,8 +17,9 @@ weekly against upstream `main`. Layer 1 gaps are recorded, not fixed; the gate f
   or gap; gaps are strict expected failures naming their construct-family issue.
 - Upstream's wide-table fixtures and the Layer 1 seed are seeded into every engine from one canonical fixture form.
 - One corpus-root resolver: every suite reads `$SLAYER_OSSIE_CORPUS` when set, the vendored snapshot otherwise.
-- `ossie-corpus-weekly.yml` runs every suite on every engine against upstream `main` and fails unless all nine engines
-  pass; PRs run the same suites on the vendored snapshot through the existing per-engine workflows.
+- PRs run the in-process gate (SQLite, DuckDB, every-dialect compile); a nightly workflow runs every server engine on the
+  vendored snapshot; a weekly run covers every engine against upstream `main`. Each scheduled run fails unless all its
+  engines pass.
 - Fixes: exponent-form numeric text casts to `DECIMAL(p, s)` exactly on Trino and SQL Server; a source column whose name
   needs quoting renders quoted when read through a relationship, on every dialect; every other cell that fails on one
   engine but passes on DuckDB.

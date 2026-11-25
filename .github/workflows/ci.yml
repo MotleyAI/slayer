@@ -236,20 +236,19 @@ jobs:
         # The live-Metabase e2e suite (`metabase_e2e` marker) has
         # its own workflow at .github/workflows/pg-facade-e2e.yml — same
         # reasoning, exclude here so this job isn't on the hook for booting
-        # a Metabase container.
+        # a Metabase container. The Ossie compliance gate's server engines run
+        # nightly in ossie-compliance.yml.
         # -n logical --dist loadscope: parallelise across all vCPUs, but pin each
         # test module to one worker so the notebook suite's fixed-path DuckDB
         # (single-writer) can't hit a cross-process lock. --durations logs slowest.
-        # The compliance gate runs here on Postgres; each other server engine's workflow runs it on that engine.
-        env:
-          SLAYER_GATE_ENGINES: postgres
         run: |
           poetry run pytest tests/ -m "integration and not metabase_e2e" --timeout=180 --durations=25 \
             -n logical --dist loadscope \
             --ignore=tests/integration/test_integration_mysql.py \
             --ignore=tests/integration/test_integration_clickhouse.py \
             --ignore=tests/integration/test_integration_sqlserver.py \
-            --ignore=tests/integration/test_integration_trino.py
+            --ignore=tests/integration/test_integration_trino.py \
+            --ignore=tests/integration/test_integration_ossie_gate.py
 
   # The Docker examples' verify.py checks run in examples.yml.
 
@@ -292,13 +291,19 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # The full install: the compliance gate's server harness imports every engine's driver.
       - if: steps.gate.outputs.skip != 'true'
-        uses: ./.github/actions/engine-setup
+        uses: ./.github/actions/poetry-env
         with:
-          engine: bigquery
-          gcp-project-id: ${{ secrets.GCP_PROJECT_ID }}
-          gcp-sa-key-b64: ${{ secrets.GCP_SA_KEY_B64 }}
+          python-version: "3.11"
+          install-args: "-E bigquery"
+
+      - name: Decode service-account JSON key
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GCP_SA_KEY_B64: ${{ secrets.GCP_SA_KEY_B64 }}
+        run: |
+          echo "$GCP_SA_KEY_B64" | base64 -d > "$RUNNER_TEMP/sa-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa-key.json" >> "$GITHUB_ENV"
 
       - name: Start SLayer server
         if: steps.gate.outputs.skip != 'true'
@@ -333,13 +338,6 @@ jobs:
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: poetry run pytest tests/integration/test_integration_bigquery.py -m integration -v
-
-      - name: Run the compliance gate on BigQuery
-        if: steps.gate.outputs.skip != 'true'
-        timeout-minutes: 20
-        env:
-          SLAYER_GATE_ENGINES: bigquery
-        run: poetry run pytest tests/integration/test_integration_ossie_gate.py -m integration -v --timeout=600
 
       - name: Dump server logs on failure
         if: failure() && steps.gate.outputs.skip != 'true'

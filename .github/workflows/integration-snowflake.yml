@@ -15,12 +15,7 @@ on:
       - 'slayer/sql/dialects/snowflake.py'
       - 'tests/integration/test_integration_snowflake.py'
       - 'tests/_reserved_alias_probe.py'
-      - 'tests/integration/test_integration_ossie_gate.py'
-      - 'tests/integration/_ossie_gate_servers.py'
-      - 'tests/_ossie_gate*.py'
-      - 'tests/fixtures/ossie_corpus/**'
       - '.github/workflows/integration-snowflake.yml'
-      - '.github/actions/engine-setup/**'
   push:
     branches: [main]
 
@@ -58,13 +53,26 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # The full install: the compliance gate's server harness imports every engine's driver.
       - if: steps.gate.outputs.skip != 'true'
-        uses: ./.github/actions/engine-setup
+        uses: ./.github/actions/poetry-env
         with:
-          engine: snowflake
-          snowflake-connections-toml: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
-          snowflake-private-key: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          python-version: "3.11"
+          install-args: "-E snowflake"
+
+      - name: Write ~/.snowflake/connections.toml and the key-pair key from secrets
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.snowflake
+          # `printf '%s'` is literal — no backslash mangling, no extra trailing
+          # newline. `chmod 600` is required: snowflake-connector-python
+          # refuses to load a TOML that's world-/group-readable. The profile's
+          # `private_key_file = "~/.snowflake/slayer_ci_key.p8"` reads the key.
+          printf '%s' "$SNOWFLAKE_CONNECTIONS_TOML" > ~/.snowflake/connections.toml
+          printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > ~/.snowflake/slayer_ci_key.p8
+          chmod 600 ~/.snowflake/connections.toml ~/.snowflake/slayer_ci_key.p8
 
       - name: Run Snowflake integration tests
         if: steps.gate.outputs.skip != 'true'
@@ -78,14 +86,6 @@ jobs:
           # The secrets are present (gate above), so an unreachable Snowflake fails rather than skips.
           SLAYER_SNOWFLAKE_REQUIRED: "1"
         run: poetry run pytest tests/integration/test_integration_snowflake.py -v -rs -m integration --timeout=300
-
-      - name: Run the compliance gate on Snowflake
-        if: steps.gate.outputs.skip != 'true'
-        timeout-minutes: 20
-        env:
-          SLAYER_SNOWFLAKE_CONNECTION: slayer_test
-          SLAYER_GATE_ENGINES: snowflake
-        run: poetry run pytest tests/integration/test_integration_ossie_gate.py -v -rs -m integration --timeout=600
 
       - name: Wipe Snowflake credentials
         if: always()

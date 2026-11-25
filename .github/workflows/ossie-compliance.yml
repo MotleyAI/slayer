@@ -1,19 +1,30 @@
-name: Ossie corpus (upstream main)
+name: Ossie compliance (scheduled)
 
-# Weekly: fetch apache/ossie main, harvest its validator test documents, and run every suite of the Ossie compliance
-# gate against that fresh copy on every Tier-1 database. PRs run the same suites on the vendored snapshot. Never runs
-# on PRs; a red run is the signal to re-vendor tests/fixtures/ossie_corpus and adjust the gate's declarations. The
-# compliance-page check pins the vendored revision and is left out.
+# The Ossie compliance gate on the server Tier-1 databases. PRs run only its in-process suites (SQLite, DuckDB, every
+# dialect's compile) in ci.yml's unit job.
+# - Nightly: every server engine on the vendored corpus; red means SLayer regressed.
+# - Weekly: every engine, in-process suites included, against apache/ossie main; red alone means upstream moved:
+#   re-vendor tests/fixtures/ossie_corpus and adjust the gate's declarations. The compliance-page check pins the
+#   vendored revision and is left out.
+# Each run fails unless every engine passed; a skipped engine (e.g. missing secrets) fails it.
 on:
   schedule:
+    - cron: "17 3 * * *"
     - cron: "41 5 * * 1"
   workflow_dispatch:
+    inputs:
+      corpus:
+        description: vendored (as nightly) or upstream (as weekly)
+        type: choice
+        options: [vendored, upstream]
+        default: vendored
 
 permissions:
   contents: read
 
 jobs:
-  corpus:
+  in-process:
+    if: github.event.schedule == '41 5 * * 1' || inputs.corpus == 'upstream'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +62,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Missing Snowflake or BigQuery secrets fail here: a skipped engine fails the run.
+      # Missing Snowflake or BigQuery secrets fail here.
       - uses: ./.github/actions/engine-setup
         with:
           engine: ${{ matrix.engine }}
@@ -60,9 +71,10 @@ jobs:
           gcp-project-id: ${{ secrets.GCP_PROJECT_ID }}
           gcp-sa-key-b64: ${{ secrets.GCP_SA_KEY_B64 }}
 
-      - uses: ./.github/actions/ossie-upstream
+      - if: github.event.schedule == '41 5 * * 1' || inputs.corpus == 'upstream'
+        uses: ./.github/actions/ossie-upstream
 
-      - name: Run the compliance gate on ${{ matrix.engine }} against upstream main
+      - name: Run the compliance gate on ${{ matrix.engine }}
         timeout-minutes: 30
         env:
           # A named engine that cannot start fails rather than skips.
@@ -75,14 +87,16 @@ jobs:
         run: rm -f ~/.snowflake/connections.toml ~/.snowflake/slayer_ci_key.p8 "$RUNNER_TEMP/sa-key.json"
 
   all-engines:
-    needs: [corpus, server]
+    needs: [in-process, server]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every suite passed on every engine
         env:
-          CORPUS: ${{ needs.corpus.result }}
+          UPSTREAM: ${{ github.event.schedule == '41 5 * * 1' || inputs.corpus == 'upstream' }}
+          IN_PROCESS: ${{ needs.in-process.result }}
           SERVER: ${{ needs.server.result }}
         run: |
-          echo "in-process: $CORPUS; server engines: $SERVER"
-          [[ "$CORPUS" == "success" && "$SERVER" == "success" ]]
+          echo "upstream: $UPSTREAM; in-process: $IN_PROCESS; server engines: $SERVER"
+          [[ "$SERVER" == "success" ]]
+          [[ "$UPSTREAM" != "true" || "$IN_PROCESS" == "success" ]]

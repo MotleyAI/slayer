@@ -59,9 +59,11 @@ model.
    compiles in all nine dialects, since it carries no data. (default)
 8. One engine-parametrised harness replaces copy-per-engine test files; `TIER1` comes from one place. (default, structural)
 9. One corpus-root resolver, used before any collection-time constant is built. (default, structural)
-10. Weekly: the existing job adds the in-process modules; a matrix job runs the gate per server engine; per-engine setup
-    is shared with `integration-<db>.yml` through composite actions; an aggregation job fails unless all nine engines
-    report passed; Snowflake/BigQuery run with repo secrets and fail closed without them. (default)
+10. PRs run only the in-process gate (unit job). One scheduled workflow runs a per-server-engine matrix nightly on the
+    vendored snapshot and weekly against upstream `main` (plus the in-process suites); per-engine setup is a composite
+    action; an aggregation job fails unless every engine passed; Snowflake/BigQuery run with repo secrets and fail
+    closed without them. Per-engine PR workflows are unchanged. Options: every engine per PR / in-process per PR +
+    nightly servers. Taken: the latter, to keep PR CI light. (user)
 11. Gap rows move from DEV-2282 (now a parent) to its children; a parent carries no work items. (default)
 12. `APPROX_PERCENTILE` (RECOMMENDED) moves from "planned" gap to refused. (default, from 4)
 13. **Canonical fixture form** (codex): upstream fixture SQL is parsed with sqlglot into tables, column types and rows,
@@ -74,8 +76,7 @@ model.
 16. **Logical-type comparison** (codex): exact numbers stay `Decimal`, booleans are distinct from integers, temporal values
     compare at the row's precision, NULL only to NULL; tolerance only for approximate constructs.
 17. **Multiset rows** (codex): wide-table rows compare as a multiset, as today; order only where Ossie defines it.
-18. **Fail closed on skips** (codex): the weekly aggregation job requires every engine job to pass, not skip; PR-side
-    gating is unchanged.
+18. **Fail closed on skips** (codex): the scheduled aggregation job requires every engine job to pass, not skip.
 19. **Declared cells equal discovered cells** (codex): state declarations are keyed by (row or case id, engine) with issue
     and error class; stale or missing declarations fail.
 20. **Fail-closed completeness parser** (codex): any unclassified line inside a REQUIRED/RECOMMENDED section fails, a

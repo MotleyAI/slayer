@@ -3,9 +3,9 @@
 This page states how far SLayer 2.0 complies with [Ossie](https://github.com/apache/ossie), layer by layer. Every
 claim is measured against the Ossie specification vendored in SLayer's test suite, apache/ossie revision `d4dca4e9`
 (22 November 2026), and names the tests that back it. The Tier-1 databases are SQLite, DuckDB, PostgreSQL, MySQL,
-ClickHouse, SQL Server, Trino, Snowflake and BigQuery. Every pull request runs the compliance gate on each of them
-(`tests/test_ossie_gate.py` on SQLite and DuckDB, `tests/integration/test_integration_ossie_gate.py` on the others),
-and a weekly run repeats it against upstream's `main`.
+ClickHouse, SQL Server, Trino, Snowflake and BigQuery. The compliance gate runs on SQLite and DuckDB on every pull
+request (`tests/test_ossie_gate.py`), on the others nightly (`tests/integration/test_integration_ossie_gate.py`), and on
+all nine weekly against upstream's `main`.
 
 | Layer | Claim | Certified on |
 |---|---|---|
