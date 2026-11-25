@@ -38,6 +38,7 @@ from slayer.core.errors import (
     MaterialisationStageError,
     DatasetFilterCycleError,
     QueryBackedCycleError,
+    UnknownReferenceError,
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.field_expression import portable_text
@@ -4809,13 +4810,16 @@ class SQLGenerator:
         self, *, source_dataset: SlayerDataset, path, bundle: ResolvedSourceBundle,
     ) -> List[Tuple[OrientedRelationship, SlayerDataset]]:
         """``(OrientedRelationship, next_dataset)`` hops of a bound (possibly composed) relationship ``path``;
-        ``ValueError`` when it does not resolve, ``AmbiguousRelationshipPathError`` on an ambiguous hop."""
+        ``UnknownReferenceError`` when it does not resolve, ``AmbiguousRelationshipPathError`` on an ambiguous hop."""
         datasets_by_name = bundle.datasets_by_name
         datasets_by_name.setdefault(source_dataset.name, source_dataset)
         chain = follow(root=source_dataset, path=tuple(path), datasets_by_name=datasets_by_name)
         if chain is None:
-            raise ValueError(
-                f"Joined path {tuple(path)!r} does not resolve from dataset {source_dataset.name!r}.",
+            raise UnknownReferenceError(
+                name=".".join(path),
+                scope_kind="SQLGenerator",
+                scope_summary=f"relationship paths from dataset {source_dataset.name!r}",
+                suggestion="A joined path must follow declared relationships from the dataset it starts at.",
             )
         return [(edge, datasets_by_name[edge.to]) for edge in chain]
 

@@ -450,7 +450,9 @@ class TestUnresolvableFieldFailsClosed:
         {"population": "orders", "dimensions": ["orders.orderNumber"], "distinct_dimension_values": False,
          "order": [{"field": "accounts.extRef"}]},
         {"population": "orders", "dimensions": ["accounts.regions.regionName"]},
-    ], ids=["projection", "filter", "order-only", "unknown-path"])
+        {"population": "orders", "dimensions": ["orders.orderNumber"], "distinct_dimension_values": False,
+         "order": [{"field": "accounts.regions.regionName"}]},
+    ], ids=["projection", "filter", "order-only", "unknown-path", "order-only-unknown-path"])
     def test_generator(self, query: dict[str, Any], trusted: bool) -> None:
         """Planned against the full datasets, generated against ones missing the leaf or the path."""
         planned = plan_query(query=SlayerQuery.model_validate(query), bundle=_bundle(_datasets(trusted=trusted)))
