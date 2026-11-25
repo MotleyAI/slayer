@@ -180,3 +180,16 @@ async def test_opening_a_pre_v4_flat_layout_store_moves_its_files_only(tmp_path:
     YAMLStorage(base_dir=str(base))
     assert not (base / "models" / "orders.yaml").exists()
     assert yaml.safe_load((base / "models" / "demo" / "orders.yaml").read_text()) == flat
+
+
+async def test_opening_a_pre_v4_flat_layout_store_fills_an_empty_data_source(tmp_path: Path) -> None:
+    base = tmp_path / "store"
+    (base / "datasources").mkdir(parents=True)
+    (base / "datasources" / "demo.yaml").write_text(yaml.safe_dump({"name": "demo", "type": "sqlite", "version": 1}))
+    flat = {"version": 15, "name": "orders", "data_source": "", "sql_table": "orders",
+            "columns": [{"name": "status", "type": "TEXT"}]}
+    (base / "models").mkdir()
+    (base / "models" / "orders.yaml").write_text(yaml.safe_dump(flat, sort_keys=False))
+    YAMLStorage(base_dir=str(base))
+    assert not (base / "models" / "orders.yaml").exists()
+    assert yaml.safe_load((base / "models" / "demo" / "orders.yaml").read_text()) == {**flat, "data_source": "demo"}

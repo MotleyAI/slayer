@@ -119,7 +119,7 @@ An expression is never an axis: a time dimension whose expression reads `time_sp
 
 ## Custom granularities
 
-A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `date_trunc('fiscal_year', orders.order_date)`, `DatasetField.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.
+A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `date_trunc('fiscal_year', orders.order_date)`, `DatasetField.granularity`, transform units), each bucket starting at `origin + k × multiple × base`. A granularity renamed because the library reserved its name carries `renamed_from` with the former name; a save keeps it.
 
 ## Time zones
 

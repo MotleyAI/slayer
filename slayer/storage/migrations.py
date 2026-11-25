@@ -24,7 +24,7 @@ from slayer.core.vocabulary import extension_dataset, is_extension_object
 CURRENT_VERSIONS: dict[str, int] = {
     "SlayerModel": 31,
     "SlayerQuery": 19,
-    "DatasourceConfig": 3,
+    "DatasourceConfig": 4,
     "Memory": 14,
     "Embedding": 2,
 }
@@ -130,6 +130,12 @@ def _dataset_v24_to_v25(data: dict) -> dict:
 def _datasource_v2_to_v3(data: dict) -> dict:
     """v3: per-doc no-op; the library-name granularity rename rewrites dependants, so it runs in the
     storage load path on every load."""
+    return data
+
+
+@register_migration(entity="DatasourceConfig", source_version=3)
+def _datasource_v3_to_v4(data: dict) -> dict:
+    """v4: per-doc no-op; a renamed granularity records ``renamed_from``, set in the storage load path."""
     return data
 
 

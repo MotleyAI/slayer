@@ -24,7 +24,8 @@ from typing_extensions import deprecated
 
 from slayer.core.deprecation import outside_stacklevel
 from slayer.core.enums import DataType, RESERVED_NAMES, TEMPORAL_DATATYPES, TimeGranularity
-from slayer.core.granularity import resolve_granularity, unknown_granularity_message
+from slayer.core.granularity import granularity_key, resolve_granularity, unknown_granularity_message
+from slayer.core.stored_rewrites import collecting_rewrites
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset, spine_variant_warnings
 from slayer.core.errors import (
     AmbiguousDatasetError,
@@ -107,8 +108,9 @@ from slayer.storage.field_expression_migration import FIELD_EXPRESSION_VERSION, 
 from slayer.storage.instant_field_migration import INSTANT_FIELD_VERSION, typed_instant_fields
 from slayer.storage.granularity_rename import (
     Renames,
-    granularity_renames,
+    datasource_renames,
     memory_source_dataset,
+    pending_renames,
     rename_in_memory,
     rename_in_dataset,
     renamed_datasource,
@@ -285,14 +287,6 @@ def one_upgrade_pass() -> Generator[None]:
             _RENAME_PASS.reset(rename_token)
         if token is not None:
             _UPGRADE_PASS.reset(token)
-
-
-def _library_renames(data: Any) -> Renames:
-    """A stored datasource dict's renames of the granularities a library name reserves."""
-    granularities = data.get("granularities") if isinstance(data, dict) else None
-    names = [g["name"] for g in granularities if isinstance(g, dict) and isinstance(g.get("name"), str)] \
-        if isinstance(granularities, list) else []
-    return granularity_renames(names)
 
 
 def _memory_in_datasource(data: dict, *, data_source: str, identities: Sequence[tuple[str, str]]) -> bool:
@@ -1578,10 +1572,10 @@ class StorageBackend(ABC):
             logged = set()
             setattr(self, "_logged_granularity_renames", logged)
         for name, data in (await self._raw_datasource_dicts()).items():
-            renames = _library_renames(data)
+            renames = datasource_renames(data)
             if renames:
                 table[name] = renames
-            for old, new in renames.items():
+            for old, new in pending_renames(data).items():
                 if (name, old) not in logged:
                     logged.add((name, old))
                     logging.getLogger(__name__).warning(
@@ -1601,8 +1595,7 @@ class StorageBackend(ABC):
         """Stored datasource ``name``'s dict with each granularity a library name reserves renamed."""
         del name  # the renames are a function of the document alone
         await asyncio.sleep(0)
-        renames = _library_renames(data)
-        return renamed_datasource(data, renames=renames) if renames else data
+        return renamed_datasource(data) if isinstance(data, dict) else data
 
     async def _memory_with_granularities_renamed(self, data: Any) -> Any:
         """A stored memory dict with the renamed granularities of the datasource its query reads respelled."""
@@ -1900,8 +1893,10 @@ class StorageBackend(ABC):
             data = await self._converted_source_queries(name=name, data=data, data_source=data_source, gates=gates,
                                                         pending=pending)
             changes = True
-        dataset, converted = await self._with_dialect_sql(SlayerDataset.model_validate(data), data_source=data_source)
-        return dataset, changes or converted
+        with collecting_rewrites() as collected:
+            validated = SlayerDataset.model_validate(data)
+        dataset, converted = await self._with_dialect_sql(validated, data_source=data_source)
+        return dataset, changes or converted or collected.rewritten
 
     async def _datasource_type(self, data_source: str) -> str | None:
         """The datasource's type: stored, else the enclosing upgrade's, else unknown."""
@@ -2228,21 +2223,35 @@ class StorageBackend(ABC):
     # ---- datasource CRUD ---------------------------------------------------
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
-        """Persist a datasource config (upsert by exact name) once it re-validates and its custom granularities pass the save-time rules. Backends must NOT override this."""
-        await self._check_no_pending_rename(datasource.name)
+        """Persist a datasource config (upsert by exact name), keeping the stored granularity rename records, once it re-validates and its custom granularities pass the save-time rules. Backends must NOT override this."""
         check_whole(datasource)
+        datasource = await self._with_stored_rename_records(datasource)
         datasource.check_granularities()
         connection_policy.check_transaction_pooler(datasource)
         await self._save_datasource_impl(datasource)
         self._forget_granularity_renames()
 
-    async def _check_no_pending_rename(self, name: str) -> None:
-        """Refuse while the stored datasource still has a reserved-name granularity: saving would drop its rename."""
-        pending = _library_renames(await self._stored_raw(kind="datasource", data_source=None, name=name))
-        if pending:
-            raise GranularityDefinitionError(name=next(iter(pending)), rule=(
-                f"stored datasource {name!r} still defines this reserved name; run `slayer storage upgrade` to store "
-                f"its rename before saving the datasource"))
+    async def _with_stored_rename_records(self, datasource: DatasourceConfig) -> DatasourceConfig:
+        """``datasource`` with ``renamed_from`` on each new name of a stored rename (pending or recorded) it records
+        nowhere; refused when that granularity records another former name."""
+        renames = datasource_renames(await self._stored_raw(kind="datasource", data_source=None, name=datasource.name))
+        recorded = {granularity_key(g.renamed_from) for g in datasource.granularities if g.renamed_from is not None}
+        former_of = {
+            granularity_key(new): former for former, new in reversed(list(renames.items()))
+            if granularity_key(former) not in recorded
+        }
+        for g in datasource.granularities:
+            if g.renamed_from is not None and granularity_key(g.name) in former_of:
+                raise GranularityDefinitionError(name=g.name, rule=(
+                    f"renamed_from {g.renamed_from!r} would drop the stored record of {former_of[granularity_key(g.name)]!r}"))
+        granularities = [
+            g.model_copy(update={"renamed_from": former_of[granularity_key(g.name)]})
+            if granularity_key(g.name) in former_of else g
+            for g in datasource.granularities
+        ]
+        if granularities == datasource.granularities:
+            return datasource
+        return datasource.model_copy(update={"granularities": granularities})
 
     async def _datasource_from_stored(self, *, name: str, data: Any) -> DatasourceConfig:
         """A stored datasource dict upgraded in memory and validated (env vars unresolved); never written back."""
@@ -2257,7 +2266,9 @@ class StorageBackend(ABC):
         stamped = _mig.stamp_stored(renamed)
         changes = renamed != data or (
             isinstance(stamped, dict) and int(stamped["version"]) < _mig.CURRENT_VERSIONS["DatasourceConfig"])
-        return DatasourceConfig.model_validate(renamed), changes
+        with collecting_rewrites() as collected:
+            datasource = DatasourceConfig.model_validate(renamed)
+        return datasource, changes or collected.rewritten
 
     async def _stored_raw(self, *, kind: str, data_source: str | None, name: str) -> dict | None:
         """One stored document's raw dict by ``kind`` (``dataset``, ``memory`` or ``datasource``)."""
@@ -2444,7 +2455,9 @@ class StorageBackend(ABC):
                     document=memory_id)
                 data = {**data, "query": converted[0]}
                 changes = True
-        return Memory.model_validate(data), changes
+        with collecting_rewrites() as collected:
+            memory = Memory.model_validate(data)
+        return memory, changes or collected.rewritten
 
     async def _memory_upgrade_data_source(self, data: dict) -> str | None:
         """The datasource a stored memory's qualification reads: pinned when its population names no stored dataset

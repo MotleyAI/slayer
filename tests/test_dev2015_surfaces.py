@@ -41,7 +41,7 @@ async def _spine_storage(base_dir: str) -> YAMLStorage:
 
 
 def _granularity_dump(cfg: DatasourceConfig) -> list[dict[str, Any]]:
-    return [g.model_dump(mode="json") for g in cfg.granularities]  # type: ignore[attr-defined]
+    return [g.model_dump(mode="json", exclude_none=True) for g in cfg.granularities]  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

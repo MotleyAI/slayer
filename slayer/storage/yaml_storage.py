@@ -96,6 +96,11 @@ def _memory_to_md(memory: Memory) -> str:
     return f"{_MD_FENCE}{fm}{_MD_FENCE}{learning}"
 
 
+def _decoded_text(raw: bytes) -> str:
+    """A memory file's bytes as UTF-8 text with universal newlines, as a text-mode read gives it."""
+    return raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _md_to_memory_dict(memory_id: str, text: str) -> dict[str, Any]:
     """Inverse of :func:`_memory_to_md`, as the raw stored dict. Splits only the FIRST frontmatter
     block, so a learning body that itself contains a ``---`` line survives.
@@ -386,7 +391,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             try:
                 with open(self._memory_md_path(memory_id), encoding="utf-8") as f:  # NOSONAR(S7493) — local read
                     out[memory_id] = _md_to_memory_dict(memory_id, f.read())
-            except (OSError, yaml.YAMLError):
+            except (OSError, UnicodeDecodeError, yaml.YAMLError):
                 continue
         return out
 
@@ -772,11 +777,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         ):
             return None
         try:
-            with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-                text = f.read()
+            with open(path, "rb") as f:  # NOSONAR(S7493) — sync I/O in async by design
+                raw = f.read()
         except FileNotFoundError:
             return None
-        return await self._memory_from_stored(memory_id=memory_id, decode=lambda: _md_to_memory_dict(memory_id, text))
+        return await self._memory_from_stored(
+            memory_id=memory_id, decode=lambda: _md_to_memory_dict(memory_id, _decoded_text(raw)))
 
     async def _memory_ids(self) -> list[str]:
         return self._memory_ids_on_disk()

@@ -21,6 +21,7 @@ from slayer.core.query import SlayerQuery
 from slayer.core.vocabulary import stored_query
 from slayer.engine.query_engine import SlayerResponse
 from slayer.memories.models import Memory
+from slayer.storage import granularity_rename
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_keys import CURRENT_KEYS, dataset_in
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -129,7 +130,7 @@ def _names_rename(texts: list[str], *, old: str, new: str) -> bool:
 
 
 def test_datasource_version_bumped() -> None:
-    assert CURRENT_VERSIONS["DatasourceConfig"] == 3
+    assert CURRENT_VERSIONS["DatasourceConfig"] == 4
 
 
 class TestLeft:
@@ -304,8 +305,12 @@ async def test_a_foreign_dotted_model_file_does_not_block_the_rename(tmp_path: A
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path: Any, backend: str) -> None:
-    stage = _current(stage_doc(dimensions=["date_trunc('left', events.created_at)"], measures=[QUALIFIED_SUM]),
+async def test_a_current_version_store_colliding_with_a_later_addition(
+    tmp_path: Any, backend: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A later release reserves ``left``, gated above today's versions.
+    monkeypatch.setitem(granularity_rename.RENAME_GATES, "left", {"SlayerModel": 31, "SlayerQuery": 20, "Memory": 15})
+    stage =_current(stage_doc(dimensions=["date_trunc('left', events.created_at)"], measures=[QUALIFIED_SUM]),
                      "SlayerQuery")
     storage = await write_raw_store(
         backend=backend, base=str(tmp_path),

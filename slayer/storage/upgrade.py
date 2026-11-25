@@ -76,19 +76,33 @@ class _Plan(BaseModel):
     refused: str | None = None
 
 
-def _dialect_refusal(data_source: str) -> str:
-    return (f"its field sql waits for datasource {data_source!r}'s dialect; store the datasource or pass its type "
-            f"(--datasource-type {data_source}=TYPE)")
+def _store_dialect_remedy(data_source: str) -> str:
+    return f"store the datasource or pass its type (--datasource-type {data_source}=TYPE)"
+
+
+async def _upgraded_or_refusal(
+    upgraded: Awaitable[tuple[BaseModel, bool]], *, data_source: str | None, dialect_remedy: str,
+) -> tuple[BaseModel, bool] | str:
+    """One document's upgrade, or why it cannot complete; never raises, so the other documents go on."""
+    try:
+        document, changes = await upgraded
+    except LiveRefinementRequiredError:
+        return (f"written below version 8, it needs live type refinement against datasource {data_source!r}; "
+                f"run `slayer storage upgrade` with that datasource stored and reachable")
+    except Exception as exc:  # noqa: BLE001
+        return str(exc)
+    if isinstance(document, SlayerDataset) and any(f.sql is not None for f in document.fields):
+        return f"its field sql waits for datasource {data_source!r}'s dialect; {dialect_remedy}"
+    return document, changes
 
 
 async def _planned(plan: _Plan, upgraded: Awaitable[tuple[BaseModel, bool]]) -> _Plan:
     """``plan`` with its upgrade's outcome: refused on any failure, so the other documents go on."""
-    try:
-        document, changes = await upgraded
-    except Exception as exc:  # noqa: BLE001
-        return plan.model_copy(update={"refused": str(exc)})
-    if isinstance(document, SlayerDataset) and any(f.sql is not None for f in document.fields):
-        return plan.model_copy(update={"refused": _dialect_refusal(str(plan.data_source))})
+    outcome = await _upgraded_or_refusal(upgraded, data_source=plan.data_source,
+                                         dialect_remedy=_store_dialect_remedy(str(plan.data_source)))
+    if isinstance(outcome, str):
+        return plan.model_copy(update={"refused": outcome})
+    document, changes = outcome
     return plan.model_copy(update={"upgraded": without_none(document.model_dump(mode="json"))}) if changes else plan
 
 
@@ -195,48 +209,19 @@ async def _outcome(storage: StorageBackend, plan: _Plan, *, dry_run: bool) -> Do
     return DocumentOutcome(kind=plan.kind, name=plan.shown, status="upgraded")
 
 
-async def _held_by(storage: StorageBackend, *, datasource: str, plans: Sequence[_Plan],
-                   outcomes: Sequence[DocumentOutcome]) -> list[str]:
-    """The dependents not stored in the current format that a renaming ``datasource`` must wait for: its datasets,
-    the memories reading it, and every unreadable memory (which names no datasource), whatever the run's scope."""
-    if datasource not in await storage._granularity_renames():
-        return []
-    identities = await storage._list_all_dataset_identities()
-    memories = {p.shown: p.raw for p in plans if p.kind == "memory"}
-
-    def depends(outcome: DocumentOutcome) -> bool:
-        if outcome.kind == "dataset":
-            return outcome.name.startswith(f"{datasource}.")
-        raw = memories.get(outcome.name)
-        return raw is not None and _memory_in_datasource(raw, data_source=datasource, identities=identities)
-
-    held = [f"{o.kind} {o.name}" for o in outcomes
-            if o.kind in ("dataset", "memory") and o.status in (NOT_UPGRADED, "conflict") and depends(o)]
-    readable = await storage._raw_memory_dicts()
-    _, failures = await storage._list_memories_rows(entities=None)
-    return held + [f"memory {f.name}" for f in failures if f.name not in readable]
-
-
 async def upgrade_store(
     storage: StorageBackend, *, data_source: str | None = None, dry_run: bool = False,
     datasource_types: Mapping[str, str] | None = None, client_source: ClientSource | None = None,
 ) -> StoreUpgradeReport:
-    """Store every in-scope document the upgrade changes in the current format (dependents before their datasource),
-    each only if unchanged since read; ``client_source`` refines documents below v8 against their live datasource."""
+    """Store every in-scope document the upgrade changes in the current format, in no particular order, each only if
+    unchanged since read; ``client_source`` refines documents below v8 against their live datasource."""
     types_token = DATASOURCE_TYPES.set(dict(datasource_types or {}))
     client_token = CLIENT_SOURCE.set(client_source)
     try:
         with warnings.catch_warnings(), one_upgrade_pass():
             warnings.simplefilter("ignore", SlayerStoredUpgradeNeededWarning)
             plans, outcomes = await _plans(storage, data_source=data_source)
-            for plan in [p for p in plans if p.kind != "datasource"]:
-                outcomes.append(await _outcome(storage, plan, dry_run=dry_run))
-            for plan in [p for p in plans if p.kind == "datasource"]:
-                held = await _held_by(storage, datasource=plan.name, plans=plans, outcomes=outcomes)
-                outcomes.append(DocumentOutcome(
-                    kind="datasource", name=plan.shown, status=NOT_UPGRADED,
-                    detail=f"its granularity rename waits for {', '.join(held)}") if held
-                    else await _outcome(storage, plan, dry_run=dry_run))
+            outcomes += [await _outcome(storage, plan, dry_run=dry_run) for plan in plans]
             outcomes += [await _semantic_model_outcome(storage, data_source=d, name=n)
                          for d, n in await storage.list_semantic_models(data_source=data_source)]
     finally:
@@ -342,19 +327,13 @@ async def _upgrade_datasets(snapshot: _Snapshot, documents: Sequence[dict[str, A
     refused: list[Refusal] = []
     for document in documents:
         name = str(document.get("name"))
-        try:
-            dataset, _ = await snapshot._upgraded_dataset(name=name, data=copy.deepcopy(document),
-                                                          data_source=data_source)
-        except LiveRefinementRequiredError:
-            refused.append(Refusal(name=name, reason=(
-                f"written below version 8, it needs live type refinement against datasource {data_source!r}; "
-                f"run `slayer storage upgrade` on a store holding it")))
-            continue
-        if any(f.sql is not None for f in dataset.fields):
-            refused.append(Refusal(name=name, reason=(
-                f"its field sql waits for datasource {data_source!r}'s dialect; pass datasource_type or datasource")))
-            continue
-        out.append(without_none(dataset.model_dump(mode="json")))
+        outcome = await _upgraded_or_refusal(
+            snapshot._upgraded_dataset(name=name, data=copy.deepcopy(document), data_source=data_source),
+            data_source=data_source, dialect_remedy="pass datasource_type or datasource")
+        if isinstance(outcome, str):
+            refused.append(Refusal(name=name, reason=outcome))
+        else:
+            out.append(without_none(outcome[0].model_dump(mode="json")))
     return UpgradedDatasets(documents=out, refused=refused)
 
 
