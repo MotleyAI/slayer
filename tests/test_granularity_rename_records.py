@@ -10,7 +10,6 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -281,13 +280,15 @@ def _legacy_store(*, backend: str, base: str) -> StorageBackend:
 
 
 def _copy_datasource(*, backend: str, source: str, target: str) -> None:
+    """Copy datasource ``DS`` from the store at ``source`` into the one at ``target``, reading ``target``'s live db."""
     if backend == "yaml":
-        shutil.copy(Path(source, "datasources", f"{DS}.yaml"), Path(target, "datasources", f"{DS}.yaml"))
+        text = Path(source, "datasources", f"{DS}.yaml").read_text()
+        Path(target, "datasources", f"{DS}.yaml").write_text(text.replace(source, target))
         return
     with transaction(os.path.join(source, "store.db")) as conn:
         [(data,)] = conn.execute("SELECT data FROM datasources WHERE name = ?", (DS,)).fetchall()
     with transaction(os.path.join(target, "store.db")) as conn:
-        conn.execute("UPDATE datasources SET data = ? WHERE name = ?", (data, DS))
+        conn.execute("UPDATE datasources SET data = ? WHERE name = ?", (data.replace(source, target), DS))
 
 
 def _comparable(*, backend: str, base: str) -> dict[str, Any]:

@@ -34,8 +34,9 @@ def _version(text: str) -> int:
 
 def test_get_memory_names_the_memory(tmp_path: Path) -> None:
     storage, _ = _store(tmp_path)
+    load = storage.get_memory(BAD)
     with pytest.raises(StoredDocumentLoadError, match=BAD):
-        asyncio.run(storage.get_memory(BAD))
+        asyncio.run(load)
 
 
 def test_listing_collects_it_as_a_failure(tmp_path: Path) -> None:

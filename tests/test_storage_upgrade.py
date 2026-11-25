@@ -441,7 +441,8 @@ def test_an_interrupted_settle_converges(backend: str, tmp_path: Path) -> None:
     finished = raw(backend=backend, base=interrupted)
     assert _comparable(finished, base=interrupted) == _comparable(raw(backend=backend, base=done), base=done)
     assert "left_granularity" in finished[f"datasources/{gran.DS}"]
-    assert not any(_mentions_granularity(text, "left") for text in finished.values())
+    assert not any(_mentions_granularity(text, "left") for key, text in finished.items()
+                   if not key.startswith("datasources/"))
 
 
 def _write_datasource(*, backend: str, base: str, doc: dict[str, Any]) -> None:

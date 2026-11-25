@@ -14,9 +14,7 @@ from slayer.sql.dialects.reflection import ResultColumnType
 
 
 def _payments(*, datatype: str | None = "Float", **extra: Any) -> SlayerDataset:
-    total: dict[str, Any] = {"name": "total", "expression": '"amount"'}
-    if datatype is not None:
-        total["datatype"] = datatype
+    total: dict[str, Any] = {"name": "total", "expression": '"amount"', "datatype": datatype}  # null: undeclared
     return SlayerDataset.model_validate({
         "name": "payments", "sql": "SELECT id, amount FROM raw_payments", "data_source": "warehouse",
         "fields": [{"name": "id", "datatype": "Integer", "primary_key": True}, total],

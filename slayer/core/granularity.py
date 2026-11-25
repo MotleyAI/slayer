@@ -27,6 +27,8 @@ class CustomGranularity(BaseModel, frozen=True):
     base: str
     multiple: int = 1
     origin: Optional[datetime] = None
+    #: The reserved library name this granularity had before the rename that freed it.
+    renamed_from: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -111,6 +113,8 @@ def definition_error(g: CustomGranularity, *, reserved: Mapping[str, str]) -> Op
         return f"base {g.base!r} is not a built-in granularity ({', '.join(t.value for t in TimeGranularity)})"
     if g.multiple < 1:
         return f"multiple must be an integer >= 1, got {g.multiple}"
+    if g.renamed_from is not None and g.renamed_from.lower() not in reserved:
+        return f"renamed_from {g.renamed_from!r} names no reserved library name"
     return _origin_error(g.anchor, unit=g.unit)
 
 

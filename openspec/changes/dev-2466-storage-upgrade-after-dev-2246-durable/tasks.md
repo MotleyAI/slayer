@@ -13,31 +13,31 @@
 
 ## 2. Rename record, map and gate
 
-- [ ] 2.1 `CustomGranularity.renamed_from`; the datasource 3 → 4 migration (version stamp only); `CURRENT_VERSIONS["DatasourceConfig"] = 4`. Verify: the 1.1 record tests pass.
-- [ ] 2.2 The rename map (pending plus records) and the per-name gate table in `slayer/storage/granularity_rename.py`; `renamed_datasource` records `renamed_from`. Verify: 1.1 passes.
-- [ ] 2.3 Apply the gate in the dataset, stage and memory rewrites (`_upgraded_dataset`, `_memory_with_granularities_renamed`, `rename_in_query` for nested stages). Verify: 1.2 passes.
-- [ ] 2.4 Rename warning only for pending renames. Verify: the 1.1 warning tests pass.
-- [ ] 2.5 The library-growth guard checks for gates. Verify: 1.3 passes.
+- [x] 2.1 `CustomGranularity.renamed_from`; the datasource 3 → 4 migration (version stamp only); `CURRENT_VERSIONS["DatasourceConfig"] = 4`. Verify: the 1.1 record tests pass.
+- [x] 2.2 The rename map (pending plus records) and the per-name gate table in `slayer/storage/granularity_rename.py`; `renamed_datasource` records `renamed_from`. Verify: 1.1 passes.
+- [x] 2.3 Apply the gate in the dataset, stage and memory rewrites (`_upgraded_dataset`, `_memory_with_granularities_renamed`, `rename_in_query` for nested stages). Verify: 1.2 passes.
+- [x] 2.4 Rename warning only for pending renames. Verify: the 1.1 warning tests pass.
+- [x] 2.5 The library-growth guard checks for gates. Verify: 1.3 passes.
 
 ## 3. Upgrade command and pure entry point
 
-- [ ] 3.1 Remove `_held_by`, the dependents-first split and the "waits for" detail from `upgrade_store`. Verify: 1.4 passes.
-- [ ] 3.2 One per-document upgrade-and-refusal helper used by `_planned` and `_upgrade_datasets`. Verify: 1.7 passes.
+- [x] 3.1 Remove `_held_by`, the dependents-first split and the "waits for" detail from `upgrade_store`. Verify: 1.4 passes.
+- [x] 3.2 One per-document upgrade-and-refusal helper used by `_planned` and `_upgrade_datasets`. Verify: 1.7 passes.
 
 ## 4. Datasource save
 
-- [ ] 4.1 `save_datasource` carries stored records over; delete `_check_no_pending_rename`; add the `renamed_from` rules to `check_granularities`. Verify: 1.5 passes.
+- [x] 4.1 `save_datasource` carries stored records over; delete `_check_no_pending_rename`; add the `renamed_from` rules to `check_granularities`. Verify: 1.5 passes.
 
 ## 5. Drift, memories and the change flag
 
-- [ ] 5.1 sql-mode drift and retyping match base fields by `physical_name`. Verify: 1.6 passes.
-- [ ] 5.2 Decode memory files inside the stored-document boundary; `_raw_memory_dicts` skips undecodable files. Verify: 1.8 passes.
-- [ ] 5.3 The stored-input rewrite marker and collector; mark `user` → `username`; OR the collector into the three `_upgraded_*` change flags. Verify: 1.9 passes.
+- [x] 5.1 sql-mode drift and retyping match base fields by `physical_name`. Verify: 1.6 passes.
+- [x] 5.2 Decode memory files inside the stored-document boundary; `_raw_memory_dicts` skips undecodable files. Verify: 1.8 passes.
+- [x] 5.3 The stored-input rewrite marker and collector; mark `user` → `username`; OR the collector into the three `_upgraded_*` change flags. Verify: 1.9 passes.
 
 ## 6. Docs
 
-- [ ] 6.1 `docs/concepts/datasets.md` rename paragraph (record, old documents only); `docs/upgrading/2.0.md` (drop "until it does, saving that datasource is refused"); `docs/development.md` (a new reservation needs a strictly higher rename gate); document `renamed_from` wherever datasource granularities are documented. Verify: `rg -n "saving that datasource is refused" docs/` prints nothing, and every changed page is in `zensical.toml` nav.
+- [x] 6.1 `docs/concepts/datasets.md` rename paragraph (record, old documents only); `docs/upgrading/2.0.md` (drop "until it does, saving that datasource is refused"); `docs/development.md` (a new reservation needs a strictly higher rename gate); document `renamed_from` wherever datasource granularities are documented. Verify: `rg -n "saving that datasource is refused" docs/` prints nothing, and every changed page is in `zensical.toml` nav.
 
 ## 7. Gates
 
-- [ ] 7.1 Local test scope green (`la-affected-tests --base main` plus the files above); `poetry run ruff check slayer/ tests/`; `la-typecheck` with no new errors; `la-arch-check`. Verify: all pass.
+- [x] 7.1 Local test scope green (`la-affected-tests --base main` plus the files above); `poetry run ruff check slayer/ tests/`; `la-typecheck` with no new errors; `la-arch-check`. Verify: all pass.

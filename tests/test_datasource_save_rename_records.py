@@ -97,8 +97,9 @@ async def test_saving_the_reserved_spelling_is_refused(tmp_path: Path, backend: 
     base = str(tmp_path / backend)
     storage = await granularity_store(backend=backend, base=base, name="left")
     before = raw_documents(backend=backend, base=base)
+    config = _config(base, [granularity_definition("left")])
     with pytest.raises(GranularityDefinitionError, match="'left'"):
-        await storage.save_datasource(_config(base, [granularity_definition("left")]))
+        await storage.save_datasource(config)
     assert raw_documents(backend=backend, base=base) == before
 
 
@@ -121,8 +122,9 @@ async def test_an_invalid_record_is_refused(tmp_path: Path, backend: str, case: 
     storage = await _plain_store(backend=backend, base=base)
     granularities, named = _INVALID_RECORDS[case]
     before = raw_documents(backend=backend, base=base)
+    config = _config(base, granularities)
     with pytest.raises(GranularityDefinitionError, match=f"'{named}'"):
-        await storage.save_datasource(_config(base, granularities))
+        await storage.save_datasource(config)
     assert raw_documents(backend=backend, base=base) == before
 
 
@@ -155,7 +157,8 @@ class TestSurfaces:
         before = raw_documents(backend=backend, base=base)
         granularities, named = _INVALID_RECORDS["not-reserved"]
         text = await _call(server, name="edit_datasource", arguments={"name": DS, "granularities": granularities})
-        assert named in text and "updated" not in text, text
+        assert named in text, text
+        assert "updated" not in text, text
         assert raw_documents(backend=backend, base=base) == before
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -175,10 +178,11 @@ class TestSurfaces:
     async def test_rest_save_with_an_invalid_record_is_refused(self, tmp_path: Path, backend: str) -> None:
         base = str(tmp_path / backend)
         storage = await _plain_store(backend=backend, base=base)
+        client = TestClient(create_app(storage=storage))
         before = raw_documents(backend=backend, base=base)
         granularities, named = _INVALID_RECORDS["duplicate"]
         body = {"name": DS, "type": "sqlite", "database": str(Path(base, "live.db")), "granularities": granularities}
-        refused = TestClient(create_app(storage=storage)).post("/datasources", json=body)
+        refused = client.post("/datasources", json=body)
         assert refused.status_code in (400, 422), refused.text
         assert named in refused.text
         assert raw_documents(backend=backend, base=base) == before

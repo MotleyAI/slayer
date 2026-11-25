@@ -1,13 +1,14 @@
 """A stored datasource granularity named like a reserved library name is renamed, with every reference to it.
 
-The rename map is a pure function of the stored granularity names, so a rename interrupted after some documents
-were rewritten recomputes the same map and converges. References are rewritten token-exactly, so a rewritten
-document is a fixed point.
+The rename map is a pure function of the stored datasource (its pending renames plus its ``renamed_from`` records),
+and a reference is renamed only in a document written below its former name's gate, so any subset of upgrade writes
+converges. References are rewritten token-exactly, so a rewritten document is a fixed point.
 """
 
 import re
 from collections.abc import Callable, Mapping
 from functools import partial
+from types import MappingProxyType
 from typing import Any
 
 from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, normalize_aggregation_name
@@ -19,8 +20,54 @@ from slayer.storage.rank_direction_migration import rewrite_query_fields
 
 #: Casefolded stored name → its new name.
 Renames = Mapping[str, str]
+#: The entity and version a stored document or query was written at (``None``: unversioned, so old).
+Written = tuple[str, int | None]
+
+_INITIAL_GATE: Mapping[str, int] = MappingProxyType({"SlayerModel": 30, "SlayerQuery": 19, "Memory": 14})
+#: Reserved name → the dataset, query and memory versions current when the library reserved it. A later
+#: reservation adds its own entry, strictly above every earlier gate.
+RENAME_GATES: dict[str, Mapping[str, int]] = dict.fromkeys(reserved_granularity_names(), _INITIAL_GATE)
 
 _TOKEN = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|[A-Za-z_]\w*|\S")
+
+
+def _granularity_dicts(data: Any) -> list[dict]:
+    granularities = data.get("granularities") if isinstance(data, dict) else None
+    return [g for g in granularities if isinstance(g, dict) and isinstance(g.get("name"), str)] if isinstance(
+        granularities, list) else []
+
+
+def _recorded(granularities: list[dict]) -> dict[str, str]:
+    """Each recorded former name (casefolded) → the first granularity recording it."""
+    out: dict[str, str] = {}
+    for g in granularities:
+        if isinstance(g.get("renamed_from"), str):
+            out.setdefault(g["renamed_from"].casefold(), g["name"])
+    return out
+
+
+def pending_renames(data: Any) -> dict[str, str]:
+    """A stored datasource dict's granularities still named like a reserved name, and their new names."""
+    return granularity_renames([g["name"] for g in _granularity_dicts(data)])
+
+
+def datasource_renames(data: Any) -> dict[str, str]:
+    """A stored datasource dict's renames: its pending ones, each overridden by a record of the same former name."""
+    return {**pending_renames(data), **_recorded(_granularity_dicts(data))}
+
+
+def gated(renames: Renames, *, written: Written) -> Renames:
+    """The renames whose gate a document ``written`` falls below; a former name without a gate always renames."""
+    entity, version = written
+    if version is None:
+        return renames
+    return {f: n for f, n in renames.items() if (gate := RENAME_GATES.get(f)) is None or version < gate[entity]}
+
+
+def _own_written(data: dict, *, entity: str, enclosing: Written) -> Written:
+    """What a nested query was written at: its own version, else its enclosing document's."""
+    version = data.get("version")
+    return (entity, version) if isinstance(version, int) else enclosing
 
 
 def granularity_renames(names: list[str]) -> dict[str, str]:
@@ -116,19 +163,23 @@ def _version_keys(*, entity: str, data: dict) -> DocumentKeys:
     return keys_for(entity=entity, version=version if isinstance(version, int) else 1)
 
 
-def rename_in_query(data: dict, *, renames: Renames, keys: DocumentKeys) -> dict:
-    """A stored query dict with every granularity reference renamed (inline datasets and extensions included)."""
-    text = partial(rename_in_text, renames=renames)
+def rename_in_query(data: dict, *, renames: Renames, keys: DocumentKeys, enclosing: Written) -> dict:
+    """A stored query dict with every granularity reference below its gate renamed (inline datasets and extensions
+    included); ``enclosing`` judges a query without its own version."""
+    written = _own_written(data, entity="SlayerQuery", enclosing=enclosing)
+    applied = gated(renames, written=written)
+    text = partial(rename_in_text, renames=applied)
     keys = query_keys(data, enclosing=keys)
     data = rewrite_query_fields(dict(data), text, keys)
     if isinstance(data.get("time_dimensions"), list):
-        data["time_dimensions"] = [_renamed_time_dimension(td, renames=renames) for td in data["time_dimensions"]]
+        data["time_dimensions"] = [_renamed_time_dimension(td, renames=applied) for td in data["time_dimensions"]]
     source = data.get(keys.population)
     if isinstance(source, dict):
-        data[keys.population] = _renamed_dataset(source, renames=renames, keys=keys)
+        data[keys.population] = _renamed_dataset(source, renames=renames, keys=keys, written=written)
     if isinstance(data.get("extensions"), list):
         data["extensions"] = [
-            _renamed_dataset(e, renames=renames, keys=keys) if isinstance(e, dict) else e for e in data["extensions"]
+            _renamed_dataset(e, renames=renames, keys=keys, written=written) if isinstance(e, dict) else e
+            for e in data["extensions"]
         ]
     return data
 
@@ -154,19 +205,22 @@ def _renamed_expression(metric: Any, text: Callable[[str], str], *, keys: Docume
 
 
 def rename_in_dataset(data: dict, *, renames: Renames) -> dict:
-    """A stored dataset dict, in the keys of its version, with every granularity reference renamed."""
-    return _renamed_dataset(data, renames=renames, keys=_version_keys(entity="SlayerModel", data=data))
+    """A stored dataset dict, in the keys of its version, with every granularity reference below its gate renamed."""
+    version = data.get("version")
+    return _renamed_dataset(data, renames=renames, keys=_version_keys(entity="SlayerModel", data=data),
+                            written=("SlayerModel", version if isinstance(version, int) else None))
 
 
-def _renamed_dataset(data: dict, *, renames: Renames, keys: DocumentKeys) -> dict:
-    """A dataset or inline extension dict with every granularity reference renamed (field granularities, metrics,
-    stages)."""
+def _renamed_dataset(data: dict, *, renames: Renames, keys: DocumentKeys, written: Written) -> dict:
+    """A dataset or inline extension dict ``written`` with every granularity reference below its gate renamed (field
+    granularities, metrics, stages by their own version)."""
     out = dict(data)
-    text = partial(rename_in_text, renames=renames)
+    applied = gated(renames, written=written)
+    text = partial(rename_in_text, renames=applied)
     if isinstance(out.get(keys.fields), list):
         out[keys.fields] = [
-            {**c, "granularity": renames[c["granularity"].casefold()]}
-            if isinstance(c, dict) and isinstance(c.get("granularity"), str) and c["granularity"].casefold() in renames
+            {**c, "granularity": applied[c["granularity"].casefold()]}
+            if isinstance(c, dict) and isinstance(c.get("granularity"), str) and c["granularity"].casefold() in applied
             else c
             for c in out[keys.fields]
         ]
@@ -174,22 +228,33 @@ def _renamed_dataset(data: dict, *, renames: Renames, keys: DocumentKeys) -> dic
         out[keys.metrics] = [_renamed_expression(m, text, keys=keys) for m in out[keys.metrics]]
     if isinstance(out.get("source_queries"), list):
         out["source_queries"] = [
-            rename_in_query(q, renames=renames, keys=keys) if isinstance(q, dict) else q for q in out["source_queries"]
+            rename_in_query(q, renames=renames, keys=keys, enclosing=written) if isinstance(q, dict) else q
+            for q in out["source_queries"]
         ]
     return out
 
 
 def rename_in_memory(data: dict, *, renames: Renames) -> dict:
+    """A stored memory dict with every granularity reference below its gate renamed (its query by its own version)."""
     if not isinstance(data.get("query"), dict):
         return data
     keys = _version_keys(entity="Memory", data=data)
-    return {**data, "query": rename_in_query(data["query"], renames=renames, keys=keys)}
+    version = data.get("version")
+    return {**data, "query": rename_in_query(data["query"], renames=renames, keys=keys,
+                                             enclosing=("Memory", version if isinstance(version, int) else None))}
 
 
-def renamed_datasource(data: dict, *, renames: Renames) -> dict:
+def renamed_datasource(data: dict) -> dict:
+    """A stored datasource dict with each pending rename applied, recording its former name unless a granularity
+    already records it."""
+    pending = pending_renames(data)
+    if not pending:
+        return data
+    recorded = _recorded(_granularity_dicts(data))
     granularities = [
-        {**g, "name": renames[g["name"].casefold()]}
-        if isinstance(g, dict) and isinstance(g.get("name"), str) and g["name"].casefold() in renames else g
+        {**g, "name": pending[g["name"].casefold()],
+         **({} if g["name"].casefold() in recorded or "renamed_from" in g else {"renamed_from": g["name"]})}
+        if isinstance(g, dict) and isinstance(g.get("name"), str) and g["name"].casefold() in pending else g
         for g in data.get("granularities") or []
     ]
     return {**data, "granularities": granularities}
