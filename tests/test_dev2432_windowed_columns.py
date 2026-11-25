@@ -18,8 +18,10 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
-from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import DatasetFieldCycleError, DatasetFilterCycleError, IllegalWindowInFilterError
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
@@ -109,6 +111,10 @@ def _datasets() -> list[SlayerDataset]:
             DatasetRelationship(to="slots_w", from_columns=["slot"], to_columns=["pos"], cardinality=RelationshipCardinality.MANY_TO_ONE)]),
         _orders_like("orders_ws", fields=[native("rn", RN)], relationships=[
             DatasetRelationship(to="slots_w", from_columns=["rn"], to_columns=["pos"], cardinality=RelationshipCardinality.MANY_TO_ONE)]),
+        _orders_like("orders_inner", fields=[native("w", "ROW_NUMBER() OVER (PARTITION BY nomatch.tier ORDER BY id)")],
+                     relationships=[DatasetRelationship(
+                         to="customers", name="nomatch", from_columns=["amount"], to_columns=["id"],
+                         cardinality=RelationshipCardinality.MANY_TO_ONE, join_type=JoinType.INNER)]),
     ]
 
 
@@ -234,6 +240,10 @@ class TestReaders:
         grouped = await _run(engine, _grouped("orders", "orders.tier_rn", "count(orders.*)"))
         assert _num(_by(grouped, "orders.tier_rn", "m")) == {1: 2, 2: 2, 3: 1, 4: 1, 5: 1}
 
+    async def test_a_window_across_an_inner_relationship_keeps_every_row(self, engine):
+        raw = await _run(engine, _raw("orders_inner", "id", "w"))
+        assert _num(_by_id(raw, "orders_inner", "orders_inner.w")) == {i: i for i in range(1, 8)}
+
     async def test_the_window_runs_over_the_datasets_filtered_rows(self, engine):
         resp = await _run(engine, _grouped("big_orders", "big_orders.rn", "sum(big_orders.amount)"))
         assert _num(_by(resp, "big_orders.rn", "m")) == {1: 130, 2: 80, 3: 60}
@@ -319,6 +329,28 @@ class TestClassification:
         assert windowed != plain
 
 
+async def _windows(engine: SlayerQueryEngine, body: dict[str, Any]) -> list[str]:
+    """The window columns the dry-run SQL of ``body`` computes."""
+    resp = await engine.execute(SlayerQuery.model_validate(body), dry_run=True)
+    assert resp.sql is not None
+    return sorted(a.alias for a in sqlglot.parse_one(resp.sql).find_all(exp.Alias) if a.alias.startswith("__slayer_w_"))
+
+
+class TestOnlyReadWindowsAreComputed:
+    async def test_a_query_reading_no_windowed_field_computes_no_window(self, engine):
+        assert await _windows(engine, _grouped("orders", "orders.region", "sum(orders.amount)")) == []
+
+    async def test_a_window_over_a_windowed_field_computes_only_its_chain(self, engine):
+        assert await _windows(engine, _grouped("orders", "orders.ww", "count(orders.*)")) == [
+            "__slayer_w_rn", "__slayer_w_ww"]
+
+    async def test_an_unread_windows_join_is_dropped(self, engine):
+        resp = await engine.execute(SlayerQuery.model_validate(_grouped("orders", "orders.rn", "count(orders.*)")),
+                                    dry_run=True)
+        assert resp.sql is not None
+        assert sqlglot.parse_one(resp.sql).find(exp.Join) is None, resp.sql
+
+
 async def test_a_dataset_with_windowed_fields_saves_with_validation(engine):
     for dataset in _datasets():
         await engine.save_dataset(dataset)
@@ -360,8 +392,9 @@ class TestPortableWindowedField:
 
     async def test_a_stored_portable_window_fails_the_query(self, engine):
         await engine.storage.save_dataset(self._portable(sql=RN), _validate=False)
+        query = SlayerQuery.model_validate(_raw("orders_portable", "id", "rn"))
         with pytest.raises(IllegalWindowInFilterError, match="rn"):
-            await _run(engine, _raw("orders_portable", "id", "rn"))
+            await engine.execute(query)
 
     @pytest.mark.parametrize("door", ["engine", "storage"])
     async def test_a_windowed_dialect_entry_is_accepted_beside_a_portable_window(self, engine, door):
@@ -427,8 +460,9 @@ class TestModelFilterOnWindowedColumn:
         (["orders_win.rank_plus > 1"], [native("rank_plus", "orders_win.ranked + 0")]),
     ], ids=["direct", "through-derived"])
     async def test_own_windowed_column_is_a_cycle(self, filter_engine, door, filters, extra):
+        dataset = _ranked("orders_win", fields=extra, filters=filters)
         with pytest.raises(DatasetFilterCycleError) as exc:
-            await _save(filter_engine, _ranked("orders_win", fields=extra, filters=filters), door=door)
+            await _save(filter_engine, dataset, door=door)
         assert exc.value.cycle == ["orders_win", "orders_win"]
         assert "orders_win → orders_win" in str(exc.value)
         assert "ranked" in str(exc.value)
@@ -437,11 +471,13 @@ class TestModelFilterOnWindowedColumn:
     async def test_cycle_through_a_joined_windowed_columns_definition(self, filter_engine, door):
         await _save(filter_engine, _cycle_dataset("b", "a", extra=[
             native("rn", "ROW_NUMBER() OVER (PARTITION BY b_to_a.flag ORDER BY id)")]), door=door)
+        dataset = _cycle_dataset("a", "b", filters=["a_to_b.rn = 1"])
         with pytest.raises(DatasetFilterCycleError) as exc:
-            await _save(filter_engine, _cycle_dataset("a", "b", filters=["a_to_b.rn = 1"]), door=door)
+            await _save(filter_engine, dataset, door=door)
         assert exc.value.cycle == ["a", "b", "a"]
         stored = await filter_engine.storage.get_dataset("a", data_source="test")
-        assert stored is not None and stored.filters == []
+        assert stored is not None
+        assert stored.filters == []
 
     async def test_joined_windowed_column_is_accepted_and_evaluated(self, filter_engine, door):
         await filter_engine.storage.save_dataset(_ranked("ranked_orders"))

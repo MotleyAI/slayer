@@ -22,7 +22,7 @@ A dataset field whose dialect entry is a window function (`ROW_NUMBER() OVER (PA
 
 ## Impact
 
-- `slayer/engine/definitions.py` (windowed classification at resolution), `slayer/engine/binding.py` (windowed reference binds as a materialised column; filter refusal removed), `slayer/engine/compile/` and `slayer/ir/planned.py` (per-relation materialisation layers; typed computed join keys), `slayer/sql/generator.py` (`_emit_relation` wrapper; join-key rendering), `slayer/sql/field_expansion.py` (expansion stops at windowed fields), `slayer/engine/field_dependency.py` and `slayer/engine/elaborate_env.py` (filter-cycle walk), `slayer/storage/base.py` (portable windowed refusal).
+- `slayer/engine/definitions.py` (windowed classification at resolution), `slayer/engine/binding.py` (windowed reference binds as a materialised column; filter refusal removed), `slayer/ir/planned.py` (typed computed join keys), `slayer/sql/generator.py` (`_emit_relation` wrapper; join-key rendering), `slayer/sql/field_expansion.py` (expansion stops at windowed fields), `slayer/engine/field_dependency.py` and `slayer/engine/elaborate_env.py` (filter-cycle walk), `slayer/storage/base.py` (portable windowed refusal).
 - `architecture/semantics.arc42.md` Axiom 1.
 - Docs: the field-definition concept page.
 - Release: 2.x (bug fix plus additive); no API removal.

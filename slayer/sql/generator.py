@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from slayer.core.errors import (
     AggregationNotAllowedError,
     MaterialisationStageError,
+    DatasetFieldCycleError,
     DatasetFilterCycleError,
     QueryBackedCycleError,
 )
@@ -71,6 +72,9 @@ from slayer.sql.field_expansion import (
 )
 from slayer.ir.planned import (
     AssociationProducerKernel,
+    DerivedKey,
+    WindowedKey,
+    derived_key,
     EntityDedup,
     MaskTyping,
     PlannedQuery,
@@ -99,6 +103,7 @@ from slayer.sql.untrusted_projection import mark_untrusted, project_untrusted_ho
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
     ROW_IDENTITY_FIELD,
+    windowed_column,
     AliasAllocator,
     identified_datasets,
     canonical_aggregate_alias,
@@ -769,7 +774,7 @@ class _SemiJoinOps:
         col: Callable[[str, str, bool], exp.Column],  # (table, name, quoted)
         table: Callable[[Any, bool], Tuple[Expression, str]],  # pyright: ignore[reportPrivateImportUsage] — sqlglot exports it
         attached: Set[Tuple[str, ...]],
-        computed: Callable[[str, str], Expression],  # (table, a computed key's expression)
+        computed: Callable[[str, DerivedKey], Expression],  # (table, a derived key)
     ) -> None:
         self.alias = alias
         self.col = col
@@ -777,8 +782,8 @@ class _SemiJoinOps:
         self.attached = attached
         self.computed = computed
 
-    def key(self, *, table: str, name: str, quoted: bool, computed: Optional[str]) -> Expression:
-        """One side's key read from ``table``: its column, or a computed key's expression."""
+    def key(self, *, table: str, name: str, quoted: bool, computed: Optional[DerivedKey]) -> Expression:
+        """One side's key read from ``table``: its column, or a derived key's read."""
         return self.col(table, name, quoted) if computed is None else self.computed(table, computed)
 
     def is_attached(self, hop: SemiJoinHop) -> bool:
@@ -807,8 +812,8 @@ def _hop_quoting(hop: SemiJoinHop) -> List[Tuple[bool, bool]]:
     return list(hop.quoted) or [(False, False)] * len(hop.join_pairs)
 
 
-def _hop_computed(hop: SemiJoinHop) -> List[Tuple[Optional[str], Optional[str]]]:
-    """Per key pair, each side's computed-key expression (``None``: a column)."""
+def _hop_computed(hop: SemiJoinHop) -> List[Tuple[Optional[DerivedKey], Optional[DerivedKey]]]:
+    """Per key pair, each side's derived key (``None``: a column)."""
     return list(hop.computed) or [(None, None)] * len(hop.join_pairs)
 
 
@@ -4915,19 +4920,23 @@ class SQLGenerator:
 
     def _join_key(self, *, field: DatasetField, alias: str) -> Expression:
         # Table qualifiers are internal aliases.
-        if not field.is_base:
-            return self._computed_key(text=field.definition_sql or field.name, alias=alias)
+        derived = derived_key(field)
+        if derived is not None:
+            return self._computed_key(key=derived, alias=alias)
         key = exp.Column(this=key_identifier(field.physical_name, quoted=field.physical_quoted),
                          table=exp.to_identifier(alias))
         return self._dialect.read_column(key, zoned=self._dialect.is_zoned_db_type(field.db_type))
 
-    def _computed_key(self, *, text: str, alias: str) -> Expression:
-        """A computed relationship key: its expression over ``alias``'s source columns."""
-        key = self._parse(text)
-        for column in key.find_all(exp.Column):
+    def _computed_key(self, *, key: DerivedKey, alias: str) -> Expression:
+        """A derived relationship key read from ``alias``: a windowed field's materialised column, or a computed
+        key's expression over its source columns."""
+        if isinstance(key, WindowedKey):
+            return exp.column(windowed_column(key.field), table=exp.to_identifier(alias))
+        parsed = self._parse(key.text)
+        for column in parsed.find_all(exp.Column):
             if not column.table:
                 column.set("table", exp.to_identifier(alias))
-        return key
+        return parsed
 
     def _hop_join(
         self, *, edge: OrientedRelationship, prev_dataset: SlayerDataset, next_dataset: SlayerDataset, current_alias: str,
@@ -5797,6 +5806,8 @@ class SQLGenerator:
         hop, list parent), always as its filtered dataset (python.sql P13)."""
         if is_spine(dataset):
             return self._spine_relation(alias=alias)
+        windowed = [c for c in dataset.fields if c.windowed]
+        outer_alias, alias = alias, (dataset.name if windowed else alias)
         filters = list(dataset.filters or [])
         if not filters:
             relation = self._backing_relation(dataset=dataset, alias=alias)
@@ -5818,8 +5829,58 @@ class SQLGenerator:
                 self._gen_filter_stack = self._gen_filter_stack[:-1]
         if dataset.sql_table not in self._gen_stage_relations:
             relation = _stamp_dataset(relation, dataset=dataset)
+        if windowed:
+            relation = self._materialised_windows(
+                dataset=dataset, relation=relation, rows=alias, alias=outer_alias, fields=windowed, bundle=bundle,
+            )
         if any(c.name == ROW_IDENTITY_FIELD for c in dataset.fields):
-            relation = self._numbered_relation(relation, alias=alias)
+            relation = self._numbered_relation(relation, alias=outer_alias)
+        return relation
+
+    def _materialised_windows(
+        self, *, dataset: SlayerDataset, relation: Expression, rows: str, alias: str, fields: List[DatasetField],
+        bundle,
+    ) -> Expression:
+        """``relation`` (the filtered rows, aliased ``rows``) with each windowed field a column: one
+        ``(SELECT rows.*, <window> AS <column> FROM … AS rows [to-one joins]) AS rows`` per dependency depth."""
+        allocator = self._gen_allocator or self._new_allocator()
+        limit = self._dialect.max_identifier_bytes
+        columns = {windowed_column(f.name): f.name for f in fields}
+        rendered: Dict[str, Tuple[Expression, List[Tuple[str, ...]]]] = {}
+        for f in fields:
+            frame = self._scope_frame(dataset=dataset, relation=rows, bundle=bundle, allocator=allocator)
+            window = frame.enter_expression(
+                f.definition_sql or f.name, location=f"definition of field {f.name!r} on dataset {dataset.name!r}",
+            )
+            rendered[f.name] = (window, _prefix_closed(frame.relationship_paths.as_list()))
+        reads = {
+            name: {columns[c.name] for c in window.find_all(exp.Column) if c.table == rows and c.name in columns}
+            for name, (window, _) in rendered.items()
+        }
+        for layer in _dependency_layers(reads, dataset=dataset.name):
+            joins = []
+            for path in dict.fromkeys(p for name in layer for p in rendered[name][1]):
+                chain = self._oriented_hop_chain(source_dataset=dataset, path=path, bundle=bundle)
+                edge, target = chain[-1]
+                if is_lateral_edge(edge) or not provably_to_one(edge=edge, target_dataset=target):
+                    raise ValueError(
+                        f"A windowed field of dataset {dataset.name!r} reads across {'.'.join(path)!r}, "
+                        f"which is not a proven to-one hop."
+                    )
+                join, on, _kind = self._hop_join(
+                    edge=edge, prev_dataset=chain[-2][1] if len(chain) > 1 else dataset, next_dataset=target,
+                    current_alias=allocator.alias_for(root=rows, path=path[:-1], limit=limit),
+                    next_alias=allocator.alias_for(root=rows, path=path, limit=limit), bundle=bundle,
+                )
+                joins.append((join, on, "LEFT"))  # a row definition never drops its dataset's rows
+            select = exp.select(
+                exp.Column(this=exp.Star(), table=exp.to_identifier(rows)),
+                *(exp.Alias(this=rendered[name][0], alias=exp.to_identifier(windowed_column(name))) for name in layer),
+            ).from_(relation)
+            relation = exp.Subquery(this=_apply_joins(select=select, joins=joins),
+                                    alias=exp.TableAlias(this=exp.to_identifier(rows)))
+            relation.meta[_WINDOW_LAYER] = True
+        relation.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         return relation
 
     def _numbered_relation(self, relation: Expression, *, alias: str) -> Expression:
@@ -5939,7 +6000,7 @@ class SQLGenerator:
                 this=key_identifier(name, quoted=quoted), table=exp.to_identifier(table_alias)),
             table=table,
             attached={tuple(h.node_path) for h in hops if len(h.node_path) == 1},
-            computed=lambda table_alias, text: self._computed_key(text=text, alias=table_alias),
+            computed=lambda table_alias, key: self._computed_key(key=key, alias=table_alias),
         )
         inner = _semi_join_spine(ops=ops, hops=hops, inner=exp.select(exp.Literal.number(1)))
         return exp.Exists(this=inner.where(predicate))
@@ -6594,7 +6655,7 @@ class SQLGenerator:
                 tuple(h.node_path) for h in rest
                 if tuple(h.node_path[:-1]) not in in_group
             },
-            computed=lambda table, text: self._computed_key(text=text, alias=table),
+            computed=lambda table, key: self._computed_key(key=key, alias=table),
         )
         inner = exp.select(exp.Literal.number(1))
         if any(h.null_extended for h in rest if ops.is_attached(h)):
@@ -7021,6 +7082,7 @@ def _finish_statement(
 ) -> str:
     """The one render of a composed statement: text, then identifier fitting, scope validation and the limit check."""
     d = _as_dialect(dialect)
+    _prune_window_layers(statement)
     sql = d.rewrite_emitted_sql(
         d.rewrite_statement(project_untrusted_hops(statement)).sql(dialect=d.sqlglot_name, pretty=pretty), aliases=aliases,
         exempt=exempt,
@@ -7094,6 +7156,63 @@ def _stage_relation(*, planned, is_root: bool) -> Optional[str]:
 
 
 _DATASET_STAMP = "slayer_model"
+
+
+_WINDOW_LAYER = "slayer_window_layer"
+
+
+def _dependency_layers(reads: Dict[str, Set[str]], *, dataset: str) -> List[List[str]]:
+    """Windowed fields by dependency depth (each reads only shallower ones); a cycle raises."""
+    depth: Dict[str, int] = {}
+
+    def visit(name: str, path: Tuple[str, ...]) -> int:
+        if name in path:
+            cycle = [*path[path.index(name):], name]
+            raise DatasetFieldCycleError(cycle=[(dataset, n) for n in cycle])
+        if name not in depth:
+            depth[name] = 1 + max((visit(r, (*path, name)) for r in sorted(reads[name])), default=-1)
+        return depth[name]
+
+    for name in reads:
+        visit(name, ())
+    return [[n for n in reads if depth[n] == d] for d in range(max(depth.values(), default=-1) + 1)]
+
+
+def _prune_window_layers(statement: Expression) -> None:
+    """Drop each materialised window column no reference reads, each join of a layer no kept column reads, and each
+    layer left without a column."""
+    while _prune_window_columns(statement) | _prune_window_joins(statement):
+        pass
+    for layer in _window_layers(statement):
+        if not any(isinstance(p, exp.Alias) for p in layer.this.expressions):
+            inner = layer.this.args["from_"].this
+            inner.set("alias", layer.args["alias"])
+            layer.replace(inner)
+
+
+def _window_layers(statement: Expression) -> List[exp.Subquery]:
+    return [n for n in statement.find_all(exp.Subquery) if n.meta.get(_WINDOW_LAYER)]
+
+
+def _prune_window_columns(statement: Expression) -> bool:
+    read = {c.name for c in statement.find_all(exp.Column)}
+    unread = [p for layer in _window_layers(statement) for p in layer.this.expressions
+              if isinstance(p, exp.Alias) and p.alias not in read]
+    for projection in unread:
+        projection.pop()
+    return bool(unread)
+
+
+def _prune_window_joins(statement: Expression) -> bool:
+    pruned = False
+    for layer in _window_layers(statement):
+        select = layer.this
+        for join in list(select.args.get("joins") or []):
+            others = [*select.expressions, *(j.args.get("on") for j in select.args.get("joins") or [] if j is not join)]
+            if join.this.alias_or_name not in {c.table for n in others if n is not None for c in n.find_all(exp.Column)}:
+                join.pop()
+                pruned = True
+    return pruned
 
 
 def _stamp_dataset(relation: Expression, *, dataset) -> Expression:

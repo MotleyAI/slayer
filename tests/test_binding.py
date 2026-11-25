@@ -526,8 +526,9 @@ class TestWindowInFilter:
                 ),
             ],
         })
+        peers = [_customers(), _regions()]
         with pytest.raises(IllegalWindowInFilterError, match="rolling_rank"):
-            resolved_dataset(model, ds_type="postgres", datasets=[_customers(), _regions()], live={})
+            resolved_dataset(model, ds_type="postgres", datasets=peers, live={})
 
 
 class TestNestedAggregateParamDimAliasMap:

@@ -71,9 +71,12 @@ P13 (one relation door); system P4, P11.
 7. **Materialise only the windowed fields the query reads.** A pure lowering choice (Law 6). (default)
 8. **Only directly windowed fields materialise.** A derived field over one is an ordinary derived field
    whose expansion stops at the materialised column. (default)
-9. **Layers, topologically ordered.** The plan carries, per relation occurrence, the windowed fields read
-   and the windowed fields they read, ordered by dependency depth; each depth is one nested subquery (a
-   sibling alias cannot be read in the same SELECT). Field cycles stay refused by the existing
+9. **Layers, topologically ordered.** The relation door emits, per relation occurrence, the dataset's
+   windowed fields ordered by dependency depth; each depth is one nested subquery (a sibling alias cannot be
+   read in the same SELECT). Once the statement is built, one lowering pass drops every materialised column no
+   reference in the statement reads, and any layer left empty, so only the windowed fields the query reads and
+   those they read are computed (decision 7). Relation occurrences are discovered during emission (sql P4), so
+   the planned IR cannot carry them. Field cycles stay refused by the existing
    `DatasetFieldCycleError`; the row-identity wrapper sits above the last layer. (default; codex)
 10. **A window reading to-one joined fields gets those joins inside its layer,** each joined relation
     emitted through the same door (filtered, materialised if needed). (default)

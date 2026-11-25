@@ -9,8 +9,8 @@ early-failure layer rejects a path that revisits a dataset already on it
 warns on an unproven hop (query-time input-safety gate is the backstop), and
 rejects a derived-field cycle (``DatasetFieldCycleError``). A reference crossing an ambiguous hop is rejected
 (``DerivedFieldAmbiguousError``); a save that changes the dataset's edges warns
-about other datasets' definitions it breaks. Dataset filters naming a metric or a
-windowed field, or reading their own dataset (``DatasetFilterCycleError``), are
+about other datasets' definitions it breaks. Dataset filters naming a metric, or reading
+their own dataset (``DatasetFilterCycleError``; a windowed column reads its own dataset), are
 refused here and, for every dataset a query reads, at query time. Best-effort, same-datasource;
 unresolved/unloaded targets are skipped and the compile-time/query-time guards
 remain authoritative.
@@ -54,6 +54,7 @@ from slayer.sql.field_expansion import (
 )
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.root_scope import root_scope_field_ids
+from slayer.sql.window_detect import holds_window
 
 # The walk only inspects ``exp.Column`` identifier shape, so sqlglot's default
 # dialect keeps it independent of the dataset's runtime datasource dialect.
@@ -573,18 +574,29 @@ def _resolve_owner(
     return None if owner is None else (owner, chain)
 
 
+def windowed_field(field: DatasetField) -> bool:
+    """Whether ``field`` is windowed: as resolved, else when any of its native forms holds a window."""
+    if field.resolved:
+        return field.windowed
+    return any(holds_window(text) for text in field.native_texts)
+
+
 def _references(
     fragment: Fragment, *, host: SlayerDataset, reachable: dict[str, SlayerDataset], via: tuple[str, ...],
     seen: set[tuple[str, str]],
 ) -> Iterator[tuple[SlayerDataset, str, tuple[str, ...]]]:
+    """A windowed column reads its owner's dataset: its owner joins the path, its definition is the owner's read."""
     for quals, leaf in _refs(fragment, host=host):
         resolved = _resolve_owner(quals=quals, host=host, reachable=reachable)
         if resolved is None:
             continue
         owner, chain = resolved
         on_path = (*via, *(edge.to for edge in chain))
-        yield owner, leaf, on_path
         field = owner.get_field(leaf, quoted=True)
+        if field is not None and windowed_field(field):
+            yield owner, leaf, (*on_path, owner.name)
+            continue
+        yield owner, leaf, on_path
         if field is None or (owner.name, leaf) in seen:
             continue
         seen.add((owner.name, leaf))
@@ -592,37 +604,51 @@ def _references(
             yield from _references(inner, host=owner, reachable=reachable, via=on_path, seen=seen)
 
 
-def _filtered_reads(dataset: SlayerDataset, *, reachable: dict[str, SlayerDataset]) -> list[str]:
-    """The datasets ``dataset``'s filters read: every dataset on every path they cross."""
-    return list(dict.fromkeys(
-        name
-        for fragment in dataset.filters
-        for _owner, _leaf, path in filter_references(fragment, host=dataset, reachable=reachable)
-        for name in path
-    ))
+def _dataset_reads(
+    dataset: SlayerDataset, *, windowed: AbstractSet[str], reachable: dict[str, SlayerDataset],
+) -> dict[str, set[str]]:
+    """The datasets ``dataset``'s rows read through its filters and its ``windowed`` columns' definitions, each with
+    the windowed columns read of it."""
+    fragments = [_native(f) for f in dataset.filters]
+    fragments += [fragment for name in sorted(windowed) if (field := dataset.get_field(name)) is not None
+                  for fragment in _arity_reference_sources(field, host=dataset)]
+    out: dict[str, set[str]] = {}
+    for fragment in fragments:
+        for owner, leaf, path in _references(fragment, host=dataset, reachable=reachable, via=(), seen=set()):
+            for name in path:
+                out.setdefault(name, set())
+            field = owner.get_field(leaf, quoted=True)
+            if field is not None and windowed_field(field):
+                out[owner.name].add(field.name)
+    return out
 
 
-def _filter_cycle(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> list[str] | None:
-    """The first chain of filtered datasets from ``dataset`` back to itself, else ``None``."""
+def _filter_cycle(
+    *, dataset: SlayerDataset, reachable: dict[str, SlayerDataset],
+) -> tuple[list[str], str | None] | None:
+    """The first chain of datasets from ``dataset``'s filters back to it, with the windowed column of ``dataset`` that
+    closes it, else ``None``."""
     stack = [dataset.name]
-    done: set[str] = set()
+    done: set[tuple[str, frozenset[str]]] = set()
 
-    def visit(name: str) -> list[str] | None:
+    def visit(name: str, windowed: frozenset[str]) -> tuple[list[str], str | None] | None:
         current = reachable.get(name)
-        for dep in _filtered_reads(current, reachable=reachable) if current is not None else ():
+        reads = _dataset_reads(current, windowed=windowed, reachable=reachable) if current is not None else {}
+        for dep, columns in reads.items():
             if dep == dataset.name:
-                return [*stack, dep]
-            if dep in done or dep in stack:
+                return [*stack, dep], min(columns, default=None)
+            key = (dep, frozenset(columns))
+            if key in done or dep in stack:
                 continue
             stack.append(dep)
-            found = visit(dep)
+            found = visit(dep, frozenset(columns))
             stack.pop()
             if found is not None:
                 return found
-            done.add(dep)
+            done.add(key)
         return None
 
-    return visit(dataset.name)
+    return visit(dataset.name, frozenset())
 
 
 def calls_agg(text: str) -> bool:
@@ -690,8 +716,8 @@ def _check_agg_argument(
 
 
 def check_dataset_filters(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:
-    """Refuse ``dataset``'s filters naming a metric or windowed field (``DatasetFilterError``) or
-    reading its own dataset (:class:`DatasetFilterCycleError`, only a cycle through ``dataset``)."""
+    """Refuse ``dataset``'s filters naming a metric (``DatasetFilterError``) or reading its own dataset
+    (:class:`DatasetFilterCycleError`, only a cycle through ``dataset``)."""
     if not dataset.filters:
         return
     datasets = {**reachable, dataset.name: dataset}
@@ -699,6 +725,6 @@ def check_dataset_filters(*, dataset: SlayerDataset, reachable: dict[str, Slayer
         validate_dataset_filter(mf=fragment, references=(
             (owner, leaf) for owner, leaf, _path in filter_references(fragment, host=dataset, reachable=datasets)
         ))
-    cycle = _filter_cycle(dataset=dataset, reachable=datasets)
-    if cycle is not None:
-        raise DatasetFilterCycleError(cycle)
+    found = _filter_cycle(dataset=dataset, reachable=datasets)
+    if found is not None:
+        raise DatasetFilterCycleError(found[0], windowed=found[1])

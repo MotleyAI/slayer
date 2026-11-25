@@ -69,7 +69,8 @@ class TestSaveRefusesInvalidFilters:
         model = _returns("returns_ranked", target="ranked_orders", filters=["ranked_orders.ranked > 1"])
         await _save(engine, model, door=door)
         stored = await engine.storage.get_dataset("returns_ranked", data_source="test")
-        assert stored is not None and stored.filters == ["ranked_orders.ranked > 1"]
+        assert stored is not None
+        assert stored.filters == ["ranked_orders.ranked > 1"]
 
     async def test_filter_on_windowed_column_through_derived_column(self, engine, door):
         model = _orders("orders_rank_plus", fields=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="orders_rank_plus.ranked + 0")]))],
