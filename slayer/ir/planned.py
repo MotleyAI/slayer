@@ -216,6 +216,8 @@ class SpineFactor(BaseModel):
     lower: datetime
     upper: datetime
     size: int = Field(ge=1)
+    #: The host's path to the spine field.
+    path: Tuple[str, ...] = ()
 
 
 class MaskEntry(BaseModel):

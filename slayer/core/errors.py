@@ -865,15 +865,17 @@ class AmbiguousReferenceError(SlayerError, ValueError):
 
 
 class AmbiguousHopError(AmbiguousReferenceError):
-    """A hop segment names an edge of its dataset and the target of a different edge of it."""
+    """A hop segment names an edge of its dataset and the target of a different edge of it (``other_edge``: that
+    edge's name, ``None`` when it has none)."""
 
-    def __init__(self, *, dataset: str, segment: str, edge: str, other_edge: str) -> None:
+    def __init__(self, *, dataset: str, segment: str, edge: str, other_edge: str | None) -> None:
         self.dataset = dataset
         self.segment = segment
         super().__init__(
             name=f"{dataset}.{segment}",
-            candidates=[f"edge {edge!r}", f"edge {other_edge!r} (into {segment!r})"],
-            suggestion=f"spell the hop into {segment!r} by its edge name {other_edge!r}",
+            candidates=[f"edge {edge!r}",
+                        f"edge {other_edge!r} (into {segment!r})" if other_edge else f"the edge into {segment!r}"],
+            suggestion=f"spell the hop into {segment!r} by its edge name {other_edge!r}" if other_edge else None,
         )
 
 
