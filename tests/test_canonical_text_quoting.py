@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -39,7 +41,7 @@ def _dump(value: Any) -> Any:
     if isinstance(value, BaseModel):
         fields = {k: _dump(getattr(value, k)) for k in type(value).model_fields}
         if "library_error" in fields:
-            fields["library_error"] = value.library_error is not None
+            fields["library_error"] = fields["library_error"] is not None
         return (type(value).__name__, fields)
     if isinstance(value, tuple):
         return tuple(_dump(v) for v in value)
@@ -72,6 +74,7 @@ def test_a_quoted_word_stays_a_column(text: str) -> None:
 
 @pytest.mark.parametrize("text", [
     '"a b".c', 'sum(x) FILTER (WHERE "y" = 1)', 'AGG("Rev")', 'count("Regions".*)', '"Regions".amount + x',
+    '"*"', 'x."*"', 'AGG("*")',
 ])
 def test_quoting_reads_back_in_every_position(text: str) -> None:
     assert _assert_reads_back(text) == text
@@ -97,6 +100,16 @@ def test_a_built_reserved_word_segment_is_quoted_only_where_it_must_be(path: tup
     text = metric_text_at_path("amount", path=path)
     assert text == expected
     assert parse_expr(text) == DottedRef(parts=(*path, "amount"))
+
+
+def test_a_method_call_twin_rendered_mid_parse_keeps_quoting() -> None:
+    # The twin renders inside a parse action, so the read-back probe runs mid-parse (it once deadlocked); a fresh
+    # interpreter has cold caches and is killed on a hang.
+    code = ("from slayer.core.syntax import legacy_spans; "
+            "print([s.twin for s in legacy_spans('h.sum(\"Amount\")')])")
+    done = subprocess.run([sys.executable, "-W", "ignore", "-c", code], capture_output=True, text=True, timeout=120,
+                          check=True)
+    assert done.stdout.strip() == str(['sum(h."Amount")'])
 
 
 def test_a_built_reserved_word_head_under_a_star_source() -> None:

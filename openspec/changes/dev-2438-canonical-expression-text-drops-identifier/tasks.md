@@ -8,8 +8,8 @@
 
 ## 2. Implementation (pr-implement stage)
 
-- [ ] 2.1 `slayer/core/syntax.py`: give the renderer a quoting policy independent of `legacy` (design decision 5); faithful policy quotes a segment iff written quoted or its bare spelling does not read back in its position, via a cached grammar-derived probe (decision 3). `canonical_metric_text` uses the faithful policy; expose the quote-blind identity form (today's output, byte-identical); `legacy_result_name_seed` unchanged. Verify: 1.2 and 1.3 pass.
-- [ ] 2.2 `slayer/core/query.py`: `_parsed_identity` and `_canonical_expression_text` use the quote-blind identity form; `extension_field_text` keeps the faithful text. Verify: 1.1 and the 1.4 time-dimension / refinement guards pass.
-- [ ] 2.3 `slayer/sql/naming.py` `expression_text_alias`: take the `<source>_<agg>` base from the quote-blind form. Verify: the 1.4 result-name guard passes.
-- [ ] 2.4 Re-audit every `canonical_metric_text` / `metric_text_at_path` caller against design.md Context (re-read → faithful; identity or name → quote-blind); verify by listing each caller and its form in the PR description.
-- [ ] 2.5 Gates: local test scope per `/la:pr`, `poetry run ruff check slayer/ tests/`, `la-typecheck`, `poetry run la-arch-check`; all green.
+- [x] 2.1 `slayer/core/syntax.py`: give the renderer a quoting policy independent of `legacy` (design decision 5); faithful policy quotes a segment iff written quoted or its bare spelling does not read back in its position, via a cached grammar-derived probe (decision 3). `canonical_metric_text` uses the faithful policy; expose the quote-blind identity form (today's output, byte-identical); `legacy_result_name_seed` unchanged. Verify: 1.2 and 1.3 pass.
+- [x] 2.2 `slayer/core/query.py`: `_parsed_identity` and `_canonical_expression_text` use the quote-blind identity form; `extension_field_text` keeps the faithful text. Verify: 1.1 and the 1.4 time-dimension / refinement guards pass.
+- [x] 2.3 `slayer/sql/naming.py` `expression_text_alias`: take the `<source>_<agg>` base from the quote-blind form. Verify: the 1.4 result-name guard passes.
+- [x] 2.4 Re-audit every `canonical_metric_text` / `metric_text_at_path` caller against design.md Context (re-read → faithful; identity or name → quote-blind); verify by listing each caller and its form in the PR description.
+- [x] 2.5 Gates: local test scope per `/la:pr`, `poetry run ruff check slayer/ tests/`, `la-typecheck`, `poetry run la-arch-check`; all green.
