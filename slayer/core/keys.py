@@ -57,6 +57,7 @@ from slayer.core.enums import (
 )
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, Granularity, bucket_type
+from slayer.core.spine_names import TIME_SPINE_DATASET
 from slayer.core.time_points import parse_temporal_value
 
 
@@ -78,9 +79,13 @@ def token_anchor(token: str) -> Optional[str]:
     return token[len(ANCHOR_TOKEN_PREFIX):] if token.startswith(ANCHOR_TOKEN_PREFIX) else None
 
 
+#: A virtual spine hop's token while a declared name shadows its own (reserved: never a declared name).
+SPINE_TOKEN = "__slayer_spine__"
+
+
 def display_token(token: str) -> str:
-    """A path token as a reference spells it: an anchor hop by its dataset."""
-    return token_anchor(token) or token
+    """A path token as a reference spells it: an anchor hop by its dataset, the spine hop ``time_spine``."""
+    return TIME_SPINE_DATASET if token == SPINE_TOKEN else token_anchor(token) or token
 
 
 class ScalarSpec(BaseModel, frozen=True):

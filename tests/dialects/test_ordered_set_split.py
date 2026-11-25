@@ -85,6 +85,6 @@ def test_a_grouping_ordinal_or_alias_partitions_by_its_projection(group: str) ->
 
 def test_a_star_projection_beside_a_percentile_is_refused() -> None:
     query = "SELECT *, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.x) AS v FROM t GROUP BY t.k, t.x"
-    statement = _parsed(query)
+    statement, dialect = _parsed(query), MysqlDialect()
     with pytest.raises(ValueError, match="cannot be split"):
-        MysqlDialect().rewrite_statement(statement)
+        dialect.rewrite_statement(statement)
