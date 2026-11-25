@@ -30,11 +30,11 @@ relationships, `population` / `metrics`, `slayer.live_schema.ingestion`, `storag
 
 ## 3. Notebooks (pr-implement, after section 2 is green)
 
-- [ ] 3.1 Delete the stale `docs/examples/jaffle_data` demo DuckDB; re-execute the 13 demo notebooks (`02_sql_vs_dsl`, `03_auto_ingest`, `04_time`, `05_relationships`, `05_joined_metrics`, `06_multistage_queries`, `07_aggregations`, `08_mcp_introspect`, `09_lightning_talk`, `10_row_level_security`, `14_variable_substitution`, `16_list_fields`, `17_cube_import`) with `jupyter nbconvert --to notebook --execute --inplace`. A missing-column failure → stop and discuss with the user; any other failure → stop and ask. Verify: every notebook executes and its saved outputs come from this run.
+- [x] 3.1 Delete the stale `docs/examples/jaffle_data` demo DuckDB; re-execute the 13 demo notebooks (`02_sql_vs_dsl`, `03_auto_ingest`, `04_time`, `05_relationships`, `05_joined_metrics`, `06_multistage_queries`, `07_aggregations`, `08_mcp_introspect`, `09_lightning_talk`, `10_row_level_security`, `14_variable_substitution`, `16_list_fields`, `17_cube_import`) with `jupyter nbconvert --to notebook --execute --inplace`. A missing-column failure → stop and discuss with the user; any other failure → stop and ask. Verify: every notebook executes and its saved outputs come from this run.
 
 ## 4. Gate
 
-- [ ] 4.1 Local test scope (`la-affected-tests --base main` plus every file from section 1, `tests/test_law_sql_built_as_ast.py`, `tests/test_law_ingest_door.py`, `tests/test_forward_merge_specs.py`), then `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors), `poetry run la-arch-check`, `openspec validate dev-2471-merge-1x-into-main-reproducible-demo-mcp --strict`, the forward-merge guard. Verify: all green.
+- [x] 4.1 Local test scope (`la-affected-tests --base main` plus every file from section 1, `tests/test_law_sql_built_as_ast.py`, `tests/test_law_ingest_door.py`, `tests/test_forward_merge_specs.py`), then `poetry run ruff check slayer/ tests/`, `la-typecheck` (no new errors), `poetry run la-arch-check`, `openspec validate dev-2471-merge-1x-into-main-reproducible-demo-mcp --strict`, the forward-merge guard. Verify: all green.
 - [ ] 4.2 On the PR, `latest-deps` runs (it changes `latest-deps.yml`) and goes green on both Python versions and all four shards; fix every clean-venv failure (design decision 13).
 
 ## 5. Archive (pr-review)
