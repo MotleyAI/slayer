@@ -258,13 +258,14 @@ class TestJoinedCubesPhysicalColumn:
         assert not any(has_metric(result, "orders", m) for m in ("tag_total", "double_total"))
         assert [i for i in cube_issues(result, "tag_total") if "list (ARRAY)" in i.message], result.report.issues
 
-    def test_calculated_percentile_over_a_joined_column_refused_by_the_target(self) -> None:
+    def test_calculated_percentile_over_a_joined_column_kept_on_mysql(self) -> None:
         sql = "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY {customers}.id)"
         project = CubeProject.model_validate({"cubes": [
             cube(metrics=[meas("p90", "number", sql)], joins=[self.JOIN]), CUSTOMERS]})
         result = CubeToSlayerConverter(project=project, data_source=DS, target_dialect="mysql").convert()
-        assert not has_metric(result, "orders", "p90")
-        assert [i for i in cube_issues(result, "p90") if "not supported" in i.message], result.report.issues
+        found = datasets_of(result)["orders"].get_metric("p90")
+        assert found is not None
+        assert found.text == "percentile(customers.id, p=0.9)"
 
     def test_filtered_measure_over_a_cube_not_joined_is_dropped(self) -> None:
         result = import_cube([cube(metrics=[meas("m", "sum", "{customers}.id", filters=PAID)]), CUSTOMERS])
@@ -315,14 +316,16 @@ class TestCalculatedMeasures:
         col = field_of(model, parsed.source.name)
         assert (col.physical_name, col.filter, col.is_base) == ("amount", None, True)
 
-    @pytest.mark.parametrize("p", ["0.5", "0.9"], ids=["median", "percentile"])
+    @pytest.mark.parametrize(("p", "text"), [("0.5", "median(amount)"), ("0.9", "percentile(amount, p=0.9)")],
+                             ids=["median", "percentile"])
     @pytest.mark.parametrize("target", ["mysql", "mssql"])
-    def test_percentile_refused_by_the_target_is_dropped(self, p: str, target: str) -> None:
+    def test_percentile_is_kept_on_a_target_that_translates_it(self, p: str, text: str, target: str) -> None:
         project = CubeProject.model_validate({"cubes": [cube(metrics=[
             meas("p", "number", f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {{CUBE}}.amount)")])]})
         result = CubeToSlayerConverter(project=project, data_source=DS, target_dialect=target).convert()
-        assert not has_metric(result, "orders", "p")
-        assert [i for i in cube_issues(result, "p") if "not supported" in i.message], result.report.issues
+        found = datasets_of(result)["orders"].get_metric("p")
+        assert found is not None
+        assert found.text == text
 
     def test_percentile_disc_is_dropped(self) -> None:
         result = import_cube([cube(metrics=[

@@ -28,8 +28,8 @@ from slayer.storage.sqlite_conn import transaction
 from tests._dev1737_fixtures import SERVER_TYPES, TableSpec, as_temporal, seed_backend
 from tests._dev2101_fixtures import emit
 from tests._engine_helpers import seeded_exec_engine
+from tests._ossie_gate import TIER1 as TIER1  # re-exported: the one Tier-1 list
 
-TIER1 = ("sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "trino", "snowflake", "bigquery")
 EXEC_BACKENDS = ("sqlite", "duckdb")
 IDS = tuple(range(1, 11))
 

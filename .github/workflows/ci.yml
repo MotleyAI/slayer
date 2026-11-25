@@ -226,7 +226,8 @@ jobs:
         # The live-Metabase e2e suite (`metabase_e2e` marker) has
         # its own workflow at .github/workflows/pg-facade-e2e.yml — same
         # reasoning, exclude here so this job isn't on the hook for booting
-        # a Metabase container.
+        # a Metabase container. The Ossie compliance gate's server engines run
+        # nightly in ossie-compliance.yml.
         # -n logical --dist loadscope: parallelise across all vCPUs, but pin each
         # test module to one worker so the notebook suite's fixed-path DuckDB
         # (single-writer) can't hit a cross-process lock. --durations logs slowest.
@@ -236,7 +237,8 @@ jobs:
             --ignore=tests/integration/test_integration_mysql.py \
             --ignore=tests/integration/test_integration_clickhouse.py \
             --ignore=tests/integration/test_integration_sqlserver.py \
-            --ignore=tests/integration/test_integration_trino.py
+            --ignore=tests/integration/test_integration_trino.py \
+            --ignore=tests/integration/test_integration_ossie_gate.py
 
   # The Docker examples' verify.py checks run in examples.yml.
 

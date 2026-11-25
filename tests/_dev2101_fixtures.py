@@ -33,9 +33,9 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
+from tests._ossie_gate import TIER1 as TIER1  # re-exported: the one Tier-1 list
 
 #: Tier-1 dialects whose emission every SQL form must survive.
-TIER1 = ["sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "trino", "snowflake", "bigquery"]
 EXEC_BACKENDS = ["sqlite", "duckdb"]
 ALL_IDS = frozenset({1, 2, 3, 4, 5})
 

@@ -2,8 +2,8 @@
 
 Mirror of test_integration_postgres.py, exercising the MySQL
 dialect's variance-decomposition path for corr/covar_*, the MySQL-specific
-``VAR_SAMP``/``VAR_POP`` Anonymous overrides, and the NotImplementedError
-emitted for median/percentile.
+``VAR_SAMP``/``VAR_POP`` Anonymous overrides, and median/percentile interpolated
+over windows.
 
 Skipped silently when:
 - ``testcontainers[mysql]`` is not installed (importorskip)
@@ -947,34 +947,37 @@ class TestRollupIngestionMySQL:
 
 
 # ---------------------------------------------------------------------------
-# Median / percentile — MySQL raises NotImplementedError
+# Median / percentile — interpolated over windows
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-class TestMySQLMedianPercentileRaises:
-    async def test_median_raises(self, mysql_env: SlayerQueryEngine) -> None:
+class TestMySQLMedianPercentile:
+    async def test_median(self, mysql_env: SlayerQueryEngine) -> None:
+        # amounts = [100, 200, 50, 150, 75, 300] -> median 125
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
-        with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
-            await mysql_env.execute(query=query)
+        result = await mysql_env.execute(query=query)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
-    async def test_median_grouped_raises(self, mysql_env: SlayerQueryEngine) -> None:
-        """Grouped median path goes through the same dialect hook; must also raise."""
+    async def test_percentile_quartiles(self, mysql_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"metric": "percentile(orders.total, p=0.25)"}, {"metric": "percentile(orders.total, p=0.75)"}],
+        })
+        row = (await mysql_env.execute(query=query)).data[0]
+        assert float(row["orders.total_percentile_p_0_25"]) == pytest.approx(81.25)
+        assert float(row["orders.total_percentile_p_0_75"]) == pytest.approx(187.5)
+
+    async def test_median_grouped(self, mysql_env: SlayerQueryEngine) -> None:
+        # completed: [100, 150, 200] -> 150; pending: [50, 300] -> 175; cancelled: [75] -> 75
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "median(orders.total)"}],
             "dimensions": ["orders.status"],
         })
-        with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
-            await mysql_env.execute(query=query)
-
-    async def test_percentile_raises(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({
-            "population": "orders",
-            "metrics": [{"metric": "percentile(orders.total, p=0.5)"}],
-        })
-        with pytest.raises(NotImplementedError, match="(?i)percentile.*mysql"):
-            await mysql_env.execute(query=query)
+        result = await mysql_env.execute(query=query)
+        by_status = {r["orders.status"]: float(r["orders.total_median"]) for r in result.data}
+        assert by_status == pytest.approx({"completed": 150, "pending": 175, "cancelled": 75})
 
 
 # ---------------------------------------------------------------------------

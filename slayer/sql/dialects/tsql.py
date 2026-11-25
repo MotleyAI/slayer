@@ -50,6 +50,7 @@ from slayer.sql.dialects.base import (
     _build_covar_decomposition,
     iso_text,
 )
+from slayer.sql.dialects._ordered_set_split import split_percentile_selects
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import ResultColumnType, info_schema_type, result_column_type_of_name
 
@@ -199,6 +200,44 @@ def _bit_value(predicate: Expr) -> Expression:
     return exp.Cast(this=case, to=exp.DataType.build("BIT", dialect="tsql"))
 
 
+def _windowed_percentile(p: Expr, value: Expr, partition: Sequence[Expr]):
+    """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs
+    are skipped, so they sort natively (one ORDER BY key is all it takes)."""
+    key = exp.Ordered(this=value.copy(), nulls_first=True)
+    window = exp.Window(this=exp.WithinGroup(this=exp.PercentileCont(this=p.copy()), expression=exp.Order(expressions=[key])),
+                        partition_by=[k.copy() for k in partition])
+    return [window], lambda reads: exp.Max(this=reads[0])
+
+
+#: Column-free yet per-row: such a GROUP BY key still splits groups.
+_VOLATILE = frozenset({"NEWID", "NEWSEQUENTIALID", "RAND", "CRYPT_GEN_RANDOM"})
+
+
+def _reads_no_column(node: Expr) -> bool:
+    """Constant per statement: reads no column, aggregate, window, subquery or volatile function."""
+    if any(node.find_all(exp.Column, exp.Subquery, exp.Select, exp.AggFunc, exp.Window, exp.Rand, exp.Uuid)):
+        return False
+    return not any(f.name.upper() in _VOLATILE for f in node.find_all(exp.Anonymous))
+
+
+def _group_by_columns_only(select: exp.Select) -> None:
+    """SQL Server rejects a GROUP BY key reading no column (error 164): such a key is constant, so it is dropped; with
+    none left, ``HAVING COUNT(*) > 0`` keeps the one group a non-empty input has and none on an empty one."""
+    group = select.args.get("group")
+    if group is None or group.args.get("rollup") or group.args.get("cube") or group.args.get("grouping_sets"):
+        return
+    keys = [k for k in group.expressions if not _reads_no_column(k)]
+    if len(keys) == len(group.expressions):
+        return
+    if keys:
+        group.set("expressions", keys)
+        return
+    select.set("group", None)
+    nonempty = exp.GT(this=exp.Count(this=exp.Star()), expression=exp.Literal.number(0))
+    having = select.args.get("having")
+    select.set("having", exp.Having(this=exp.and_(having.this, nonempty) if having is not None else nonempty))
+
+
 _DATETIME2 = exp.DataType.build("datetime2", dialect="tsql")
 
 
@@ -334,6 +373,10 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
         """``TRY_CAST`` reads integer text in range, except a blank or a lone sign (as 0)."""
         return case((self.integer_text(text), self.build_try_cast(exp.Trim(this=text.copy()), to)))
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """T-SQL's own ``TIMESTAMP`` is a row version, never a cast's time type."""
+        return data_type.this != exp.DataType.Type.ROWVERSION and super().cast_type_supported(data_type)
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
         """T-SQL's own ``TIMESTAMP`` is ``ROWVERSION``; the portable one is ``DATETIME2``."""
@@ -584,11 +627,18 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return tree.transform(_fix)
 
     def rewrite_statement(self, statement: Expression) -> Expression:
-        """T-SQL predicates are conditions only: one in a value position becomes its BIT value."""
-        statement = statement.copy()
+        """T-SQL predicates are conditions only (one in a value position becomes its BIT value); ``PERCENTILE_CONT``
+        is a window function only; GROUP BY keys read a column."""
+        statement = split_percentile_selects(statement.copy(), columns=_windowed_percentile)
         for node in reversed(list(statement.dfs())):
-            if _is_predicate(node) and not _in_condition_position(node):
+            if _in_condition_position(node):
+                continue
+            if _is_predicate(node):
                 node.replace(_bit_value(node.copy()))
+            elif isinstance(node, exp.Boolean):  # sqlglot spells it ``(1 = 1)`` under a CAST
+                node.replace(exp.Literal.number(1 if node.this else 0))
+        for select in list(statement.find_all(exp.Select)):  # NOSONAR(S7504) — each call edits the tree being walked
+            _group_by_columns_only(select)
         return statement
 
     def row_number(self) -> Expression:
@@ -645,24 +695,6 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if unit in SUB_DAY_GRANULARITIES and operand is DataType.DATE else expr.copy()
         )
         return _dateadd(_DATEADD_UNITS[unit], count.copy(), base)
-
-    def build_median(self, inner: Expression) -> Expression:
-        raise NotImplementedError(
-            "Aggregation 'median' is not supported on T-SQL (SQL Server): "
-            "PERCENTILE_CONT in T-SQL is a window function (requires OVER clause) "
-            "and cannot be used as a GROUP BY aggregate. "
-            "Use a window subquery or compute the value client-side."
-        )
-
-    def build_percentile(
-        self, p: Expression, col_expr: Expression,
-    ) -> Expression:
-        raise NotImplementedError(
-            "Aggregation 'percentile' is not supported on T-SQL (SQL Server): "
-            "PERCENTILE_CONT requires a window function OVER clause in T-SQL "
-            "and is not valid as a GROUP BY aggregate. "
-            "Compute the value client-side or restructure as a window query."
-        )
 
     def build_stat_agg_1arg(
         self, agg_name: StatAgg1Name, col_expr: Expression,

@@ -11,6 +11,7 @@ import math
 import re
 from collections.abc import Callable, Sequence
 from datetime import date, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 from typing import Any, ClassVar, Optional
 
@@ -42,6 +43,7 @@ from slayer.sql.dialects.base import (
     is_null,
     iso_text,
     lit,
+    literal_int,
     number_literal_text,
     pad_fill,
     zone_name,
@@ -69,6 +71,7 @@ _NEVER_NULLABLE = (*exp.DataType.NESTED_TYPES, exp.DataType.Type.LOWCARDINALITY,
 
 
 _DECIMAL128_DIGITS, _DECIMAL256_DIGITS = 38, 76
+_TIME_OF_DAY_TYPES = frozenset({exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ})
 
 
 def _to_decimal(width: int) -> str:
@@ -425,6 +428,20 @@ class ClickhouseDialect(SqlDialect):
         """``isNotDistinctFrom`` is only allowed in ``JOIN ON``."""
         return self._expanded_null_safe_eq(left, right)
 
+    def number_to_boolean(self, value: Expression) -> Expression:
+        """A comparison yields UInt8; its own boolean results (``TRUE``, a predicate) are Bool."""
+        return exp.Cast(this=super().number_to_boolean(value), to=exp.DataType(this=exp.DataType.Type.BOOLEAN))
+
+    def build_round(self, value: Expression, digits: Expression) -> Optional[Expression]:
+        """A number literal is exact, though ClickHouse reads it as a Float64 whose ties ``round`` breaks to even."""
+        known = literal_int(digits)
+        text = number_literal_text(value)
+        if known is None or known < 0 or text is None:
+            return None
+        if max(Decimal(text).adjusted() + 1, 0) + known + 1 > _DECIMAL128_DIGITS:  # no room for the guard digit
+            return None
+        return self.round_half_away(value, known)
+
     def round_half_away(self, value: Expression, digits: int) -> Expression:
         """``round`` breaks a Float64 tie to even: the value is read as a Decimal truncated one digit past ``digits`` (a
         literal from its exact text: it would read as a Float64), then rounded as one."""
@@ -439,8 +456,10 @@ class ClickhouseDialect(SqlDialect):
         return exp.Round(this=exact, decimals=lit(digits))
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
-        """A ``DECIMAL`` rounds through a guard digit past its precision, which Decimal256's 76 digits leave no room
-        for at precision 76."""
+        """No time-of-day type (a ``TIME`` cast reads NULL); a ``DECIMAL`` rounds through a guard digit past its
+        precision, which Decimal256's 76 digits leave no room for at precision 76."""
+        if data_type.this in _TIME_OF_DAY_TYPES:
+            return False
         parts = decimal_parts(data_type)
         if parts is not None and (parts[0] or 0) >= _DECIMAL256_DIGITS:
             return False

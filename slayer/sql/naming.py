@@ -475,6 +475,11 @@ def key_identifier(name: str, *, quoted: bool) -> exp.Identifier:
     return ident
 
 
+def relation_column(name: str, *, relation: str) -> exp.Column:
+    """Output column ``name`` of SLayer's own relation ``relation``: the column quoted, the qualifier as declared."""
+    return exp.Column(this=exp.to_identifier(name, quoted=True), table=exp.to_identifier(relation))
+
+
 def quote_mixed_case_identifiers(node: Expression) -> Expression:
     """Quote mixed-case DB identifiers (``.transform`` callback): a ``Column``'s name leaf and a ``Table``'s physical parts only. Idempotent."""
     if isinstance(node, exp.Column):
