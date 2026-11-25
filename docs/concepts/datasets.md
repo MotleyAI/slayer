@@ -657,7 +657,7 @@ Stored Mode-B text written before the SQL grammar is upgraded on load: double-qu
 
 Text the old grammar could not have held (`::`, `||`, `CAST(`, `FILTER (WHERE`, `BETWEEN`) is left unchanged with a warning even under an old `version`, but old-version text using only `''`, `"…"` or backslash escapes is still upgraded, so hand-edit such text only together with its `version`.
 
-A stored datasource granularity whose name the library has since reserved is renamed on load to `<name>_granularity` (`<name>_granularity_<n>` if taken) together with every reference in that datasource's datasets, saved queries and memories, with a logged warning, so update any client that names it.
+A stored datasource granularity whose name the library has since reserved is renamed on load to `<name>_granularity` (`<name>_granularity_<n>` if taken), recording its former name as `renamed_from`, with a logged warning, so update any client that names it. References to the former name are renamed only in that datasource's datasets, saved queries and memories written before the library reserved it; a newer document reads the name as the library's.
 
 Persisted documents omit unset (`None`) fields, so a store written by this release still reads on the previous one, except for text already in the new grammar and `ARRAY` fields.
 
