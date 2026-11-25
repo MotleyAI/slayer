@@ -60,6 +60,11 @@ class TestStampedBuild:
         assert jaffle_generator.calls == 2
         assert _stamp(db) == current
 
+    def test_non_positive_years_stamp_the_one_year_built(self, jaffle_generator, db: Path) -> None:
+        assert jaffle_shop.build_jaffle_shop(db_path=str(db), years=0) is True
+        assert _stamp(db) == jaffle_shop.current_demo_stamp(years=1)
+        assert jaffle_shop.build_jaffle_shop(db_path=str(db), years=1) is False
+
     def test_an_up_to_date_database_is_reused(self, jaffle_generator, db: Path) -> None:
         jaffle_shop.build_jaffle_shop(db_path=str(db), years=1)
         assert jaffle_shop.build_jaffle_shop(db_path=str(db), years=1) is False

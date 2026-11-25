@@ -1028,6 +1028,8 @@ def build_jaffle_shop(
     file and then replaces ``db_path``, so the demo is never left without a complete DB.
     ``stream`` is forwarded to ``generate_data`` so jafgen's progress stays visible.
     """
+    if years is not None:
+        years = max(1, years)  # what jafgen builds, so the stamp matches the data
     if os.path.exists(db_path):
         conn = _connect_existing(db_path)
         try:
