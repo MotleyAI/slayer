@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import warnings
-from typing import Any
+from functools import partial
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -11,7 +15,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import OssieQueryError
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.core.query import QueryRefinement, SlayerQuery
+from slayer.database.client import SqlClient
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.sql.dialects import get_dialect
+from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev2000_fixtures import (
     BACKENDS,
@@ -359,3 +366,54 @@ class TestOssieRefusesAZone:
             with pytest.raises(OssieQueryError) as info:
                 await engine.execute({"dimensions": ["by_day_tokyo.order_day"]}, conformance=STRICT)
         _refused_for_the_zone(info.value)
+
+
+# ---------------------------------------------------------------------------
+# The MySQL zone check is shared by concurrent statements
+# ---------------------------------------------------------------------------
+
+class _SlowZoneClient:
+    """Answers the zone probe once ``release`` is set, counting the probes."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.calls = 0
+
+    async def execute(self, *, sql: str) -> Any:
+        self.calls += 1
+        await self.release.wait()
+        return SimpleNamespace(rows=[{"z": "2000-01-01 00:00:00"}])
+
+
+async def _zone_tasks(tmp_path: Path, client: _SlowZoneClient) -> tuple[asyncio.Task, asyncio.Task]:
+    engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path)))
+    check = partial(engine._zone_check, key=("mysql",), zone=NY, dialect=get_dialect("mysql"),  # pyright: ignore[reportPrivateUsage]
+                    client=cast(SqlClient, client))
+    first = asyncio.create_task(check())
+    await asyncio.sleep(0)
+    second = asyncio.create_task(check())
+    await asyncio.sleep(0)
+    return first, second
+
+
+async def test_a_cancelled_waiter_leaves_the_shared_check(tmp_path: Path) -> None:
+    client = _SlowZoneClient()
+    first, second = await _zone_tasks(tmp_path, client)
+    second.cancel()
+    client.release.set()
+    assert await first is None
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    assert client.calls == 1
+
+
+async def test_a_cancelled_probe_is_retried_by_its_waiter(tmp_path: Path) -> None:
+    client = _SlowZoneClient()
+    first, second = await _zone_tasks(tmp_path, client)
+    first.cancel()
+    await asyncio.sleep(0)
+    client.release.set()
+    assert await second is None
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert client.calls == 2

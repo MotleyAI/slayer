@@ -4,6 +4,8 @@ Flow: SlayerQuery → plan_query() → PlannedQuery → SQLGenerator → SQL →
 """
 
 import asyncio
+import concurrent.futures
+import threading
 import contextlib
 import copy
 import decimal
@@ -1003,7 +1005,8 @@ class SlayerQueryEngine:
         # Live source-column types a portable definition's undeclared columns read, by table.
         self._source_column_types: dict[tuple, dict[str, DataType]] = {}
         # Per client: each zone the server was checked to resolve, with the error it raises when it cannot.
-        self._zone_checks: dict[tuple, dict[str, Optional[TimeZoneError]]] = {}
+        self._zone_checks: dict[tuple, dict[str, concurrent.futures.Future[Optional[TimeZoneError]]]] = {}
+        self._zone_lock = threading.Lock()
         self._unknown_types = UnknownTypes()
 
     async def _resolve_unknown_types(self, dataset: SlayerDataset) -> SlayerDataset:
@@ -2030,21 +2033,49 @@ class SlayerQueryEngine:
 
     async def _check_zones(self, *, prepared: _Prepared, client: SqlClient) -> None:
         """Before the statement runs, the server resolves each zone it converts to: checked once per client and zone
-        through the client, a failure raised every time."""
+        through the client (concurrent statements share the one check), a failure raised every time."""
         dialect = get_dialect(prepared.dialect)
-        checks = self._zone_checks.setdefault(_sql_client_cache_key(prepared.datasource), {})
+        key = _sql_client_cache_key(prepared.datasource)
         for zone in prepared.zones:
-            if zone not in checks:
-                probe = dialect.zone_probe(ZoneInfo(zone))
-                if probe is None:
-                    checks[zone] = None
-                    continue
-                result = await client.execute(sql=probe.sql(dialect=dialect.sqlglot_name))
-                value = next(iter(result.rows[0].values()), None) if result.rows else None
-                checks[zone] = dialect.unresolved_zone_error(ZoneInfo(zone)) if value is None else None
-            failure = checks[zone]
+            failure = await self._zone_check(key=key, zone=zone, dialect=dialect, client=client)
             if failure is not None:
                 raise failure
+
+    async def _zone_check(
+        self, *, key: tuple, zone: str, dialect: SqlDialect, client: SqlClient,
+    ) -> Optional[TimeZoneError]:
+        """``zone``'s cached check, probing it when none is cached or in flight; a cancelled probe is retried."""
+        while True:
+            with self._zone_lock:
+                checks = self._zone_checks.setdefault(key, {})
+                check = checks.get(zone)
+                owner = check is None
+                if check is None:
+                    check = checks[zone] = concurrent.futures.Future()
+            if owner:
+                try:
+                    check.set_result(await self._probe_zone(dialect=dialect, zone=zone, client=client))
+                except BaseException as exc:
+                    with self._zone_lock:
+                        if checks.get(zone) is check:
+                            del checks[zone]  # a failed probe is retried by the next statement
+                    check.set_exception(exc)
+                    raise
+            try:
+                return await asyncio.shield(asyncio.wrap_future(check))
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if owner or (task is not None and task.cancelling()):
+                    raise  # this statement itself was cancelled
+
+    @staticmethod
+    async def _probe_zone(*, dialect: SqlDialect, zone: str, client: SqlClient) -> Optional[TimeZoneError]:
+        probe = dialect.zone_probe(ZoneInfo(zone))
+        if probe is None:
+            return None
+        result = await client.execute(sql=probe.sql(dialect=dialect.sqlglot_name))
+        value = next(iter(result.rows[0].values()), None) if result.rows else None
+        return dialect.unresolved_zone_error(ZoneInfo(zone)) if value is None else None
 
     @probes.probe(name="query.run", result=lambda executed: {"query.rows": len(executed.rows)})
     async def _run_data_query(

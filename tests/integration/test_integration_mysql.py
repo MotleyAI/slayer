@@ -14,6 +14,7 @@ The CI workflow at .github/workflows/integration-mysql.yml asserts
 in CI surfaces as a workflow failure, not a silent skip.
 """
 
+import asyncio
 import math as _math
 import statistics
 from datetime import date, timedelta
@@ -2129,6 +2130,11 @@ class TestMySQLTimeZones:
         before = _probe_count(mysql_tz_container)
         await mysql_tz_env.execute(_local_day_query("ordered_at"))
         await mysql_tz_env.execute(_local_day_query("paid_at"))
+        assert _probe_count(mysql_tz_container) - before == 2  # New York and the datasource's UTC
+
+    async def test_concurrent_statements_share_the_probe(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
+        before = _probe_count(mysql_tz_container)
+        await asyncio.gather(*(mysql_tz_env.execute(_local_day_query("ordered_at")) for _ in range(4)))
         assert _probe_count(mysql_tz_container) - before == 2  # New York and the datasource's UTC
 
     async def test_each_zone_probes_once(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
