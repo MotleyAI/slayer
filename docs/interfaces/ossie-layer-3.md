@@ -7,7 +7,8 @@ instead. Ossie's conformance rule (`wide_table_semantics.md` §9) requires such 
 query asks for the extension explicitly, so SLayer offers a separate **strict binding** for clients that need
 Ossie's exact behaviour.
 
-Select it with `conformance="ossie-l3"` beside the query, never inside it. The default is `"slayer"`.
+Select it with `conformance="ossie-l3"` beside the query, never inside it. The default is `"slayer"`. For SLayer's
+compliance across Ossie's layers, see [Ossie compliance](ossie-compliance.md).
 
 ## Selecting the binding
 

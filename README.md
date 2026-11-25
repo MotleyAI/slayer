@@ -14,6 +14,8 @@
 
 An expressive, embeddable semantic layer for AI agents and humans.
 
+> **Upgrading from 1.x?** See [Upgrading to 2.0](https://docs.motley.ai/slayer/upgrading/2.0/) for every breaking change and how to migrate.
+
 SLayer enables AI-powered data analytics on top of your warehouse. Agents get a governed, shared surface through which they access your data and metrics and give you reliable answers.
 
 SLayer handles database connectivity (read-only), SQL translation, common data transformations, and row-level security, so LLMs and humans don't have to. Adapt it to your workflows, not the other way around. Manage definitions easily with an agent or by yourself.
