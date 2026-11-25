@@ -140,7 +140,8 @@ def orders_table(*, ordered_at: Optional[Mapping[int, str]] = None) -> Table:
         name="orders",
         columns=[("id", "INT"), ("amount", "DOUBLE"), ("ordered_at", "TIMESTAMP"), ("paid_at", "TIMESTAMPTZ"),
                  ("local_slot", "TIMESTAMP"), ("order_day", "DATE"),
-                 # Typed TIMESTAMP on SQLite too: no field maps it, so its declared type is all that types it.
+                 # Typed TIMESTAMP on SQLite too: no field maps it, so its declared type is all that types it
+                 # (DEV-2470 types or refuses an undeclared TEXT date operand).
                  ("created_raw", "DECLARED_TIMESTAMP")],
         rows=[(i, a, stored[i], _instant_text(ts), slot, d, ts) for i, (a, ts, slot, d) in ROWS.items()],
     )
