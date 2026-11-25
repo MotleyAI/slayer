@@ -2976,7 +2976,8 @@ def _is_null(node: Any) -> bool:
 def _argument_text(node: Any, *, style: _Style) -> str:
     """A non-scalar call's argument: a ``name = value`` comparison parenthesised, so it never reads as a keyword."""
     text = _render(node, style=style)
-    if style is not _Style.LEGACY and isinstance(node, Cmp) and node.op == "==" and isinstance(node.left, Ref) and not node.left.quoted:
+    if (style is not _Style.LEGACY and isinstance(node, Cmp) and node.op == "==" and isinstance(node.left, Ref)
+            and not _reference_text(node.left, style=style).startswith('"')):
         return f"({text})"
     return text
 
@@ -3054,7 +3055,7 @@ def _path_segment_text(node: DottedRef, i: int, *, style: _Style) -> str:
     return _segment_text(part, quoted=quoted, head=i == 0, style=style)
 
 
-def _reference_text(node: Union[Ref, DottedRef], *, style: _Style) -> str:
+def _reference_text(node: Ref | DottedRef, *, style: _Style) -> str:
     if isinstance(node, Ref):
         return _segment_text(node.name, quoted=node.quoted, head=True, style=style)
     return ".".join(_path_segment_text(node, i, style=style) for i in range(len(node.parts)))

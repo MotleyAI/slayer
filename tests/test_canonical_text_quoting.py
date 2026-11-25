@@ -18,6 +18,7 @@ from slayer.core.syntax import (
     legacy_result_name_seed,
     metric_text_at_path,
     parse_expr,
+    quote_blind_metric_text,
     walk_parsed,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -156,6 +157,10 @@ def test_a_refinement_restating_an_unnamed_measure_by_quoting_adds_nothing(saved
 def test_quoting_leaves_the_generated_result_name_unchanged(plain: str, quoted: str) -> None:
     assert expression_text_alias(parse_expr(quoted)) == expression_text_alias(parse_expr(plain))
     assert legacy_result_name_seed(parse_expr(quoted)) == legacy_result_name_seed(parse_expr(plain))
+
+
+def test_quoting_a_compared_argument_name_leaves_its_identity_unchanged() -> None:
+    assert quote_blind_metric_text(parse_expr('sum(("x" = 1))')) == quote_blind_metric_text(parse_expr("sum((x = 1))"))
 
 
 @pytest.fixture(params=BACKENDS)
