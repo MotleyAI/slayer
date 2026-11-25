@@ -104,7 +104,8 @@ async def test_a_refusal_reports_every_problem(tmp_path: Path) -> None:
 
     reply = await mcp_text(storage, "create_ontology_mapping", data_source=FLIGHTS_DS,
                            content=edited(example("flights.mapping.yaml"), two_unknown_fields))
-    assert "arrival_lateness" in reply and "departure_lateness" in reply
+    assert "arrival_lateness" in reply
+    assert "departure_lateness" in reply
     assert await storage.list_ontology_mappings() == []
 
 

@@ -88,7 +88,8 @@ def upstream(tmp_path_factory: pytest.TempPathFactory) -> dict[str, list[str]]:
 
 def test_the_harvest_holds_rejected_and_accepted_cases(upstream: dict[str, list[str]]) -> None:
     verdicts = [bool(upstream[path.name]) for path in CASES]
-    assert any(verdicts) and not all(verdicts)
+    assert any(verdicts)
+    assert not all(verdicts)
 
 
 @pytest.mark.parametrize("name", ONTOLOGY_EXAMPLES)

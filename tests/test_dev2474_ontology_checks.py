@@ -113,7 +113,8 @@ async def test_value_type_cycle(tmp_path: Path) -> None:
     """Spec scenario: Value type cycle."""
     text = ontology_text(concept("A", "ValueType", extends=["B"]), concept("B", "ValueType", extends=["A"]))
     found = await refused(tmp_path, text)
-    assert "A" in found and "B" in found
+    assert "A" in found
+    assert "B" in found
     assert "cycle" in found.lower() or "extends itself" in found.lower()
 
 
@@ -180,6 +181,7 @@ async def test_flights_rules_are_kept(tmp_path: Path) -> None:
     storage = await empty_store("yaml", tmp_path)
     await storage.save_ontology_text(name="Flights", text=text)
     stored = await storage.get_ontology_text("Flights")
+    assert stored is not None
     assert stored == text
     assert "Delay == AVG[Flight.departure_delay WHERE Airport == Flight.route.departure GROUP BY Airport]" in stored
     assert "COUNT[Airport] > 0" in stored

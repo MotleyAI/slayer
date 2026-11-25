@@ -376,7 +376,7 @@ slayer import-osi ./model.yaml --datasource my_postgres
 | `--datasource` | Yes | Configured SLayer datasource the documents belong to; it must be reachable only to upgrade a legacy `semantic_model` wrapper document |
 | `--storage` | No | Storage path |
 
-Prints each stored semantic model and the import report. Exits 1 when any file is refused, after storing the others.
+Imports semantic-model, [ontology and mapping](../concepts/ontologies.md) documents. Prints each stored document and the import report. Exits 1 when any file is refused, after storing the others.
 
 ### `slayer ossie-roundtrip`
 
@@ -402,7 +402,9 @@ slayer export-osi --datasource my_postgres --datasets orders customers --out sho
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--datasource` | Yes | SLayer datasource whose datasets to export |
+| `--datasource` | Yes, unless `--ontology` | SLayer datasource whose datasets (or, with `--mapping`, whose mapping) to export |
+| `--ontology` | No | Export this stored ontology's text instead; takes no `--datasource` or `--datasets` |
+| `--mapping` | No | Export this stored mapping of `--datasource` instead |
 | `--out` | Yes | Output file; JSON when it ends in `.json`, YAML otherwise |
 | `--datasets` | No | Export only these datasets (an unknown name fails with no file written) |
 | `--no-extensions` | No | Omit the `SLAYER` non-portable extensions; SLayer-only content is reported instead of exported |
@@ -438,6 +440,27 @@ slayer semantic-models delete sales --datasource shop --yes
 | `delete <name> [--datasource X] [--yes]` | Delete the document and its datasets, after a confirmation prompt that `--yes` skips |
 
 `--datasource` is needed for `show` and `delete` when the name exists in several datasources. An unknown document fails with an `Error:` line and exit code 1.
+
+### `slayer ontologies` / `slayer ontology-mappings`
+
+Manage [ontologies and mappings](../concepts/ontologies.md). Ontologies are stored once per store; mappings per datasource, so every `ontology-mappings` subcommand but `list` needs `--datasource`.
+
+```bash
+slayer ontologies create flights.ontology.yaml
+slayer ontologies show Flights
+slayer ontology-mappings create flights.mapping.yaml --datasource flights
+slayer ontology-mappings list --datasource flights
+```
+
+| Subcommand | Description |
+|------|-------------|
+| `list` | One name per line; a mapping that no longer resolves is listed with its problems |
+| `show <name>` | Print the stored text |
+| `create <file>` | Store the document under its own `name` |
+| `replace <name> <file>` | Replace the stored document |
+| `delete <name> [--yes]` | Delete it, after a confirmation prompt that `--yes` skips |
+
+A refused document fails with one `Error:` line listing every problem and exit code 1.
 
 ### `slayer datasources`
 

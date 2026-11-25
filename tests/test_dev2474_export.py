@@ -133,6 +133,6 @@ async def test_the_python_export_api(tmp_path: Path, kind: str) -> None:
                                                   name=FLIGHTS_MAPPING) == example("flights.mapping.yaml")
     with pytest.raises(exporter.OsiExportError, match="Nope"):
         await exporter.export_ontology(storage=storage, name="Nope")
+    reopened = make_storage(kind, tmp_path)
     with pytest.raises(exporter.OsiExportError, match="nope_mapping"):
-        await exporter.export_ontology_mapping(storage=make_storage(kind, tmp_path), data_source=FLIGHTS_DS,
-                                               name="nope_mapping")
+        await exporter.export_ontology_mapping(storage=reopened, data_source=FLIGHTS_DS, name="nope_mapping")

@@ -37,6 +37,8 @@ pyparsing = ">=3.1"
 python-dateutil = ">=2.8"
 typing-extensions = ">=4.5"
 pyyaml = ">=6.0"
+# Offline validation against the vendored Ossie ontology and mapping schemas.
+jsonschema = ">=4.20"
 # Round-trip YAML: a semantic-model document keeps its comments and layout through edits.
 ruamel-yaml = ">=0.19.1"
 fastapi = ">=0.100"
@@ -142,7 +144,6 @@ testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = 
 basedpyright = "^1.40.2"
 pytest-xdist = ">=3.6"
 living-architecture = "0.12.0"
-jsonschema = "^4.23"
 filelock = ">=3.12,<4"
 pg8000 = "^1.31.6"
 

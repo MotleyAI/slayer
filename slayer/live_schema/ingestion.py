@@ -73,6 +73,7 @@ from slayer.memories.resolver import (
     extract_entities_from_query,
 )
 from slayer.storage.base import StorageBackend
+from slayer.storage.ontology_documents import database_driven
 from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:
@@ -1959,11 +1960,32 @@ async def ingest_datasource_idempotent(
     include_views: bool = True,
     surface_internals: bool = False,
 ) -> "schema_drift.IdempotentIngestResult":
-    """Idempotent re-ingestion: create missing datasets, additively merge existing ones.
+    """Idempotent re-ingestion: create missing datasets, additively merge existing ones; a database-driven change.
 
     User-authored sql/query-backed datasets are skipped. Then validates the same
     scope so drift and dropped tables show up in ``to_delete``.
     """
+    with database_driven():
+        return await _ingest_datasource_idempotent(
+            datasource=datasource, storage=storage, client=client, include_tables=include_tables,
+            exclude_tables=exclude_tables, schema=schema, schemas=schemas, all_schemas=all_schemas,
+            include_views=include_views, surface_internals=surface_internals,
+        )
+
+
+async def _ingest_datasource_idempotent(
+    *,
+    datasource: DatasourceConfig,
+    storage: StorageBackend,
+    client: SqlClient,
+    include_tables: list[str] | None,
+    exclude_tables: list[str] | None,
+    schema: str | None,
+    schemas: list[str] | None,
+    all_schemas: bool,
+    include_views: bool,
+    surface_internals: bool,
+) -> "schema_drift.IdempotentIngestResult":
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
 
     scan = await ingest_datasource_report_async(

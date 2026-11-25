@@ -118,9 +118,9 @@ async def test_a_reference_iri_is_kept_and_never_fetched(tmp_path: Path, monkeyp
 
 async def test_a_mapping_belongs_to_an_existing_datasource(tmp_path: Path) -> None:
     storage = await flights_store("yaml", tmp_path, mapping=False)
+    text = example("flights.mapping.yaml")
     with pytest.raises(ValueError, match="nowhere"):
-        await storage.save_ontology_mapping_text(data_source="nowhere", name=FLIGHTS_MAPPING,
-                                                 text=example("flights.mapping.yaml"))
+        await storage.save_ontology_mapping_text(data_source="nowhere", name=FLIGHTS_MAPPING, text=text)
 
 
 # --------------------------------------------------------------------------- #
@@ -145,7 +145,8 @@ async def test_wrong_link_level(tmp_path: Path) -> None:
     found = await flights_refused(tmp_path, route_at_depth_one)
     assert f"concept_mappings -> {FLIGHT} -> link_mappings -> 3" in found
     assert "route" in found
-    assert "2" in found and "1" in found
+    assert "2" in found
+    assert "1" in found
 
 
 async def test_missing_identifier_part(tmp_path: Path) -> None:
@@ -209,7 +210,8 @@ async def test_every_structure_problem_is_listed(tmp_path: Path) -> None:
         document["concept_mappings"].append({"concept": "Ordr", "object_mappings": [{"expression": "FLIGHT.id"}]})
 
     found = await flights_refused(tmp_path, two_problems)
-    assert "nonstop" in found and "Ordr" in found
+    assert "nonstop" in found
+    assert "Ordr" in found
 
 
 # --------------------------------------------------------------------------- #
@@ -307,7 +309,8 @@ async def test_a_typed_compatible_mapping_reports_nothing(tmp_path: Path) -> Non
 async def test_a_typed_mismatch_in_a_small_model(tmp_path: Path) -> None:
     storage = await shop_store("yaml", tmp_path, amount_type="String")
     found = await refused(storage, order_mapping(semantic_model="shop_model"), data_source="shop")
-    assert "Amount" in found and "String" in found
+    assert "Amount" in found
+    assert "String" in found
 
 
 async def test_an_entity_mapped_by_expression_takes_its_identifiers_type(tmp_path: Path) -> None:
@@ -315,7 +318,8 @@ async def test_an_entity_mapped_by_expression_takes_its_identifiers_type(tmp_pat
     text = mapping_text({"concept": "Customer", "object_mappings": [{"expression": "orders.order_id"}]},
                         semantic_model="shop_model")
     found = await refused(storage, text, data_source="shop")
-    assert "Customer" in found and "Integer" in found
+    assert "Customer" in found
+    assert "Integer" in found
 
 
 @pytest.mark.parametrize(("built_in", "datatype", "fits"), [
@@ -347,7 +351,8 @@ async def test_type_families(tmp_path: Path, built_in: str, datatype: str, fits:
         assert await storage.save_ontology_mapping_text(data_source="shop", name="m", text=text) == []
     else:
         found = await refused(storage, text, data_source="shop")
-        assert datatype in found and "Value" in found
+        assert datatype in found
+        assert "Value" in found
 
 
 async def test_a_mapping_stays_stored_as_written(tmp_path: Path) -> None:

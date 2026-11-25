@@ -84,7 +84,9 @@ async def test_ontology_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
                                       "good.yaml": example("flights.ontology.yaml")})
     result = await run_import(storage, source, data_source=FLIGHTS_DS)
     reason = refusal_text(result, "bad.yaml").lower()
-    assert "semantic-model" in reason and "ontology" in reason and "mapping" in reason
+    assert "semantic-model" in reason
+    assert "ontology" in reason
+    assert "mapping" in reason
     assert await storage.list_ontologies() == [FLIGHTS]
 
 

@@ -98,10 +98,11 @@ async def test_the_sync_twins(tmp_path: Path, kind: str) -> None:
 
 async def test_a_client_refusal_lists_every_problem(tmp_path: Path) -> None:
     storage = await flights_store("yaml", tmp_path, mapping=False)
+    client, content = SlayerClient(storage=storage), two_unknown_fields()
     with pytest.raises(ValueError) as info:
-        await SlayerClient(storage=storage).create_ontology_mapping(data_source=FLIGHTS_DS,
-                                                                    content=two_unknown_fields())
-    assert "arrival_lateness" in str(info.value) and "departure_lateness" in str(info.value)
+        await client.create_ontology_mapping(data_source=FLIGHTS_DS, content=content)
+    assert "arrival_lateness" in str(info.value)
+    assert "departure_lateness" in str(info.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +140,8 @@ async def test_rest_create_is_refused_with_every_problem(tmp_path: Path) -> None
     response = TestClient(create_app(storage=storage)).post(
         "/ontology-mappings", json={"data_source": FLIGHTS_DS, "content": two_unknown_fields()})
     assert response.status_code == 400
-    assert "arrival_lateness" in response.text and "departure_lateness" in response.text
+    assert "arrival_lateness" in response.text
+    assert "departure_lateness" in response.text
     assert await storage.list_ontology_mappings() == []
 
 
@@ -202,7 +204,8 @@ async def test_a_cli_refusal_reports_every_problem(tmp_path: Path) -> None:
     result = cli("ontology-mappings", "create", str(write(tmp_path / "m.yaml", two_unknown_fields())),
                  "--datasource", FLIGHTS_DS, store=tmp_path / "store")
     assert result.returncode != 0
-    assert "arrival_lateness" in result.stderr and "departure_lateness" in result.stderr
+    assert "arrival_lateness" in result.stderr
+    assert "departure_lateness" in result.stderr
 
 
 async def test_the_cli_lists_an_unresolved_mapping_with_its_problems(tmp_path: Path) -> None:

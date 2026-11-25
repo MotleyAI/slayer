@@ -199,7 +199,8 @@ async def test_a_refusal_lists_every_broken_mapping(tmp_path: Path) -> None:
     with raises_refusal(BREAK) as info:
         await storage.delete_ontology(FLIGHTS)
     found = refusal(info.value)
-    assert FLIGHTS_MAPPING in found and "second_mapping" in found
+    assert FLIGHTS_MAPPING in found
+    assert "second_mapping" in found
 
 
 async def test_a_change_that_keeps_every_mapping_resolving_applies(tmp_path: Path) -> None:

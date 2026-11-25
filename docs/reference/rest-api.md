@@ -152,6 +152,23 @@ curl -X POST http://localhost:5143/semantic-models \
   -d '{"data_source": "mydb", "name": "sales", "datasets": ["orders", "customers"]}'
 ```
 
+### Ontologies and mappings
+
+```
+GET    /ontologies                                # List: [{"name"}]
+GET    /ontologies/{name}                         # {"name", "text"}: the stored text
+POST   /ontologies                                # Create, under the document's own name
+PUT    /ontologies/{name}                         # Replace
+DELETE /ontologies/{name}                         # Delete; 400 while a mapping resolves against it
+GET    /ontology-mappings                         # List: [{"data_source", "name"}]; ?data_source= filters
+GET    /ontology-mappings/{data_source}/{name}    # {"data_source", "name", "text"}
+POST   /ontology-mappings                         # Create: {"data_source", "content"}
+PUT    /ontology-mappings/{data_source}/{name}    # Replace: {"content"}
+DELETE /ontology-mappings/{data_source}/{name}    # Delete
+```
+
+`content` is an Ossie `0.3.0.dev0` document as YAML/JSON text or an object. A refused document returns 400 listing every problem; an unknown one returns 404. Mapping saves return `notes`, such as the expressions whose type is unknown. See [Ontologies and mappings](../concepts/ontologies.md).
+
 ### Datasources
 
 ```

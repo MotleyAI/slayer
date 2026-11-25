@@ -12,6 +12,7 @@ from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import CLIENT_SOURCE, ClientSource, StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
+from slayer.storage.ontology_documents import StoredMapping
 
 _T = TypeVar("_T")
 
@@ -141,6 +142,43 @@ class EngineStorage(StorageBackend):
 
     async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
         return await self._inner.list_model_scoped_metrics(data_source)
+
+    async def list_ontologies(self) -> list[str]:
+        return await self._inner.list_ontologies()
+
+    async def get_ontology_text(self, name: str) -> str | None:
+        return await self._inner.get_ontology_text(name)
+
+    async def save_ontology_text(self, *, name: str, text: str) -> None:
+        await self._sourced(self._inner.save_ontology_text(name=name, text=text))
+
+    async def delete_ontology(self, name: str) -> bool:
+        return await self._sourced(self._inner.delete_ontology(name))
+
+    async def edit_ontology(self, name: str, **edits: Any) -> None:
+        await self._sourced(self._inner.edit_ontology(name, **edits))
+
+    async def list_ontology_mappings(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        return await self._inner.list_ontology_mappings(data_source)
+
+    async def get_ontology_mapping_text(self, name: str, data_source: str) -> str | None:
+        return await self._inner.get_ontology_mapping_text(name, data_source)
+
+    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str) -> list[str]:
+        return await self._sourced(self._inner.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                                          text=text))
+
+    async def edit_ontology_mapping(self, name: str, *, data_source: str, **edits: Any) -> list[str]:
+        return await self._sourced(self._inner.edit_ontology_mapping(name, data_source=data_source, **edits))
+
+    async def delete_ontology_mapping(self, name: str, data_source: str) -> bool:
+        return await self._inner.delete_ontology_mapping(name, data_source)
+
+    async def ontology_mapping_problems(self, name: str, data_source: str) -> list[str]:
+        return await self._sourced(self._inner.ontology_mapping_problems(name, data_source))
+
+    async def load_ontology_mappings(self, *, data_source: str | None = None) -> Loaded[StoredMapping]:
+        return await self._sourced(self._inner.load_ontology_mappings(data_source=data_source))
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         return await self._sourced(self._inner.get_dataset(name, data_source=data_source))

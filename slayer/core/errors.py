@@ -6,6 +6,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
+from pydantic import BaseModel
 from typing_extensions import deprecated
 
 from slayer.core.enums import StrEnum, TimeGranularity
@@ -1593,6 +1594,69 @@ class UnevaluableEntityError(SlayerError):
         self.entity = entity
         self.reason = reason
         super().__init__(_format_error_message(cls_name=type(self).__name__, summary=f"{entity} {reason}."))
+
+
+def _listed(reasons: Sequence[str]) -> str:
+    return "\n".join(f"  - {r}" for r in reasons)
+
+
+class OntologiesUnsupportedError(SlayerError):
+    """A storage backend that does not implement the ontology and mapping hooks."""
+
+    def __init__(self, *, backend: str) -> None:
+        self.backend = backend
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Storage backend {backend} does not support ontology documents.",
+            suggestion="Implement its ontology storage hooks, or use YAML or SQLite storage.",
+        ))
+
+
+class OntologyDocumentInvalidError(SlayerError):
+    """An ontology document refused when saved; ``reasons`` lists every problem."""
+
+    def __init__(self, *, name: str, reasons: Sequence[str]) -> None:
+        self.name = name
+        self.reasons = list(reasons)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=f"Ontology {name!r} is refused:\n{_listed(self.reasons)}"))
+
+
+class OntologyMappingInvalidError(SlayerError):
+    """A mapping document refused when saved; ``reasons`` lists every problem."""
+
+    def __init__(self, *, name: str, data_source: str, reasons: Sequence[str]) -> None:
+        self.name = name
+        self.data_source = data_source
+        self.reasons = list(reasons)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Mapping {name!r} of datasource {data_source!r} is refused:\n{_listed(self.reasons)}"))
+
+
+class BrokenMapping(BaseModel):
+    """A stored mapping an explicit change would break: its problems and the ``concept_mappings`` entries they sit in
+    (``None`` for the document level)."""
+
+    data_source: str
+    name: str
+    problems: list[str]
+    entries: list[int | None]
+
+
+class OntologyMappingBreakError(SlayerError):
+    """An explicit change refused because it would break stored mappings; ``reasons`` names each and its problems."""
+
+    def __init__(self, *, change: str, broken: Sequence[BrokenMapping], own: Sequence[str] = ()) -> None:
+        self.change = change
+        self.broken = list(broken)
+        self.reasons = [f"mapping {b.name!r} of datasource {b.data_source!r}: {p}" for b in self.broken
+                        for p in b.problems] + list(own)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{change} would break {len(self.broken)} stored mapping(s):\n{_listed(self.reasons)}",
+            suggestion="Change or delete the mapping first.",
+        ))
 
 
 class HiddenContentConflictError(SlayerError):
