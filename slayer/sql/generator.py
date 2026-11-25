@@ -5775,7 +5775,7 @@ class SQLGenerator:
             )
             if owner_dataset is None:
                 return None
-            owner_relation = "__".join(key.path)
+            owner_relation = self._join_alias(root=source_relation, path=tuple(key.path))
         else:
             owner_dataset = source_dataset
             owner_relation = source_relation
@@ -6048,7 +6048,7 @@ class SQLGenerator:
                 # host-path alias, not the bare direct-join alias, or the FROM references an unjoined table.
                 expanded_sql = self._expand_derived_field_sql(
                     source_dataset=joined_dataset,
-                    source_relation="__".join(time_field.path),
+                    source_relation=self._join_alias(root=source_relation, path=tuple(time_field.path)),
                     field_name=time_field.field_name,
                     bundle=bundle,
                     owner_path=tuple(time_field.path),

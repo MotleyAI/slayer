@@ -697,17 +697,18 @@ def _walk(
     datasets_by_name: dict[str, SlayerDataset],
     revisits: bool,
     quoted: Sequence[bool] = (),
-    resolved: int = 0,
+    via: Sequence[str] = (),
 ) -> tuple[list[OrientedRelationship] | None, WalkMiss | None]:
     current = root
     visited = {root.name}
     chain: list[OrientedRelationship] = []
-    for i, token in enumerate(path):
+    flags = (*(False for _ in via), *quoted)
+    for i, token in enumerate((*via, *path)):
         if chain and is_spine(current):
             return None, WalkMiss(index=i, token=token, kind="spine")  # a path may end at the spine, never cross it
         edge = resolve_hop(
-            current=current, token=token, datasets_by_name=datasets_by_name, quoted=i < len(quoted) and quoted[i],
-            resolved=revisits or i < resolved,
+            current=current, token=token, datasets_by_name=datasets_by_name, quoted=i < len(flags) and flags[i],
+            resolved=revisits or i < len(via),
         )
         if edge is None:
             return None, WalkMiss(index=i, token=token, kind="no_edge")
@@ -715,7 +716,7 @@ def _walk(
             visited = set()  # a new frame: revisits are frame-local
         if not revisits and edge.to in visited:
             raise CircularRelationshipPathError(
-                reference=".".join(path),
+                reference=".".join((*via, *path)),
                 root_dataset=root.spelling,
                 revisited=edge.to,
                 hop=token,
@@ -736,18 +737,17 @@ def walk(
     path: Sequence[str],
     datasets_by_name: dict[str, SlayerDataset],
     quoted: Sequence[bool] = (),
-    resolved: int = 0,
+    via: Sequence[str] = (),
 ) -> list[OrientedRelationship] | None:
-    """Resolve a full ``path`` of tokens spelled in one frame from ``root`` into an oriented chain (its first
-    ``resolved`` tokens canonical).
+    """Resolve a full ``path`` of tokens spelled in one frame from ``root`` into an oriented chain, after following the
+    canonical route ``via`` (never re-read as a spelling; ``quoted`` flags ``path`` alone).
 
     Returns the chain, ``None`` only on an unknown/unloaded hop, propagates
     :class:`AmbiguousRelationshipPathError` from any ambiguous hop, and raises
     :class:`CircularRelationshipPathError` when a hop revisits a dataset already on the path
     (a definite malformation, not a miss).
     """
-    return _walk(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False, quoted=quoted,
-                 resolved=resolved)[0]
+    return _walk(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False, quoted=quoted, via=via)[0]
 
 
 def walk_miss(
@@ -756,11 +756,11 @@ def walk_miss(
     path: Sequence[str],
     datasets_by_name: dict[str, SlayerDataset],
     quoted: Sequence[bool] = (),
-    resolved: int = 0,
+    via: Sequence[str] = (),
 ) -> WalkMiss | None:
-    """Why :func:`walk` returns ``None`` for ``path`` (``None`` when it does not); raises as :func:`walk` does."""
-    return _walk(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False, quoted=quoted,
-                 resolved=resolved)[1]
+    """Why :func:`walk` returns ``None`` for ``path`` (``None`` when it does not; its ``index`` counts ``via``); raises as
+    :func:`walk` does."""
+    return _walk(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False, quoted=quoted, via=via)[1]
 
 
 def walk_terminal(
@@ -769,11 +769,11 @@ def walk_terminal(
     path: Sequence[str],
     datasets_by_name: dict[str, SlayerDataset],
     quoted: Sequence[bool] = (),
-    resolved: int = 0,
+    via: Sequence[str] = (),
 ) -> tuple[SlayerDataset, tuple[str, ...]] | None:
     """``(terminal dataset, canonical path)`` of :func:`walk`, ``None`` where it misses; raises as it does."""
     datasets = with_list_children({**datasets_by_name, root.name: datasets_by_name.get(root.name, root)})
-    chain = walk(root=root, path=path, datasets_by_name=datasets, quoted=quoted, resolved=resolved)
+    chain = walk(root=root, path=path, datasets_by_name=datasets, quoted=quoted, via=via)
     if chain is None:
         return None
     return (datasets[chain[-1].to] if chain else root), canonical_path(chain)

@@ -1064,11 +1064,12 @@ def _type_for_dimension(
 
 
 def _walk_dotted(
-    *, source_dataset: SlayerDataset, hops: List[str], bundle: ResolvedSourceBundle,
+    *, source_dataset: SlayerDataset, hops: List[str], bundle: ResolvedSourceBundle, via: Tuple[str, ...] = (),
 ) -> Optional[Tuple[SlayerDataset, Tuple[str, ...]]]:
-    """``(terminal_dataset, canonical hops)`` of ``hops`` from ``source_dataset`` (None on a missing/circular/ambiguous hop)."""
+    """``(terminal_dataset, canonical hops)`` of ``hops`` from ``source_dataset`` after its canonical route ``via``
+    (None on a missing/circular/ambiguous hop)."""
     try:
-        return walk_terminal(root=source_dataset, path=hops, datasets_by_name=bundle.datasets_by_name)
+        return walk_terminal(root=source_dataset, path=hops, via=via, datasets_by_name=bundle.datasets_by_name)
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
         return None
 
@@ -1174,8 +1175,8 @@ def _reader_spelling(
         reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=bundle.datasets_by_name, rest=parts[1:])
     except UnresolvableDimensionRelationshipError:
         return ".".join(parts)
-    hops = [*reached.route, *rest]
-    walked = _walk_dotted(source_dataset=host, hops=hops, bundle=bundle) if hops else (host, ())
+    via = tuple(reached.route)
+    walked = _walk_dotted(source_dataset=host, hops=rest, bundle=bundle, via=via) if via or rest else (host, ())
     return ".".join(parts) if walked is None else ".".join((*walked[1], leaf))
 
 

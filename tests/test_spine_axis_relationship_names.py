@@ -11,10 +11,12 @@ from typing import Any
 import pytest
 
 from slayer.core.errors import AmbiguousHopError, QueryExtensionError, UnresolvableDimensionRelationshipError
-from slayer.core.models import DatasetRelationship, SlayerDataset
+from slayer.core.models import DatasetMetric, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.relationship_search import blocking_pairs, unaddressable_pairs
 from slayer.core.time_spine import spine_dataset
+from slayer.engine.extensions import resolve_anchored_path
+from slayer.engine.population.inference import item_blockers, probe_item
 from slayer.engine.query_engine import SlayerResponse
 from slayer.mcp.server import create_mcp_server
 
@@ -202,6 +204,33 @@ async def test_every_route_ignores_the_name(backend: str, route: str, name: str)
     await _differential(backend, name=name, query=query, **kw)
 
 
+def _customers_with_metrics() -> SlayerDataset:
+    return customers_dataset().model_copy(update={"metrics": [
+        DatasetMetric(name="max_id", expression="max(id)"),
+        DatasetMetric(name="max_id_by_region", expression="max(id, partition_by=region)"),
+    ]})
+
+
+ANCHORED_READS: dict[str, dict[str, Any]] = {
+    "saved-metric": {"population": "orders", "dimensions": ["orders.order_date"],
+                     "metrics": [m("customers.max_id", "x")]},
+    "partitioned-saved-metric": {
+        "population": "orders", "dimensions": ["customers.region"], "metrics": [m("customers.max_id_by_region", "x")],
+    },
+}
+
+
+@pytest.mark.parametrize("name", SHADOWS)
+@pytest.mark.parametrize("shape", list(ANCHORED_READS))
+async def test_an_anchored_read_follows_the_relationship(backend: str, shape: str, name: str) -> None:
+    """The reader's route to the anchor is followed, never re-read as a spelling."""
+    query = SlayerQuery.model_validate(ANCHORED_READS[shape])
+    reference = await _execute(backend, [_customers_with_metrics(), _orders(RENAMED)], query)
+    shadowed = await _execute(backend, [_customers_with_metrics(), _orders(name)], query)
+    assert _rows(shadowed) == _rows(reference)
+    assert _warnings(shadowed) == _warnings(reference)
+
+
 # ---------------------------------------------------------------------------
 # An explicit hop spelt like the spine stays ambiguous
 # ---------------------------------------------------------------------------
@@ -350,3 +379,16 @@ class TestDiagnostics:
         assert pairs == {frozenset(("notes", "customers"))}
         blocking = blocking_pairs(root=universe["orders"], target="notes", datasets_by_name=universe)
         assert {frozenset((p.source_dataset, p.to)) for p in blocking} == {frozenset(("notes", "customers"))}
+
+    @pytest.mark.parametrize("name", SHADOWS)
+    def test_population_inference_follows_the_relationship(self, name: str) -> None:
+        universe = _universe(_to_customers(name))
+        assert probe_item(root="orders", item="customers.region", datasets_by_name=universe) == ("ok", (name,))
+        assert item_blockers(root="orders", item="customers.region", datasets_by_name=universe) == []
+
+    @pytest.mark.parametrize("name", SHADOWS)
+    def test_an_extension_path_follows_the_relationship(self, name: str) -> None:
+        universe = _universe(_to_customers(name))
+        resolved = resolve_anchored_path(("customers",), reader=universe["orders"], datasets_by_name=universe)
+        assert resolved is not None
+        assert resolved[0] == (name,)

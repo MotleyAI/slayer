@@ -885,8 +885,9 @@ def _anchor_of(parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedS
 
 def _anchored_parts(
     parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle, quoted: Tuple[bool, ...],
-) -> Tuple[Tuple[str, ...], Tuple[bool, ...]]:
-    """``parts`` as a path from the reading dataset: its anchor replaced by the route reaching it."""
+) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[bool, ...]]:
+    """``(route, rest, flags)``: the reading dataset's canonical route to ``parts``' anchor, then the written rest and
+    its quoting."""
     host = scope.population
     assert host is not None
     datasets = bundle.datasets_by_name
@@ -895,7 +896,7 @@ def _anchored_parts(
     if anchor.name != host.name:
         _announce_changed_reference(parts, host=host, anchor=anchor, route=reached.route, datasets=datasets,
                                     quoted=quoted[0])
-    return (*reached.route, *parts[1:]), (*(False,) * len(reached.route), *quoted[1:])
+    return tuple(reached.route), tuple(parts[1:]), tuple(quoted[1:])
 
 
 def _with_anchor(key: ValueKey, *, anchor: SlayerDataset, rest: Tuple[str, ...], host: SlayerDataset) -> ValueKey:
@@ -933,9 +934,9 @@ def _anchored_saved_metric(
         return None
 
     def host_path() -> Tuple[str, ...]:
-        path, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+        route, rest, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
         return _walk_relationship_chain(
-            hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf=path[-1], quoted=flags,
+            via=route, hop_path=rest[:-1], host=host, bundle=bundle, parts=parts, leaf=rest[-1], quoted=flags,
             routes_short_form=False,
         )[1]
 
@@ -990,11 +991,11 @@ def _walk_relationship_chain(
     quoted: Tuple[bool, ...] = (),
     original_quoted: Tuple[bool, ...] = (),
     routes_short_form: bool = True,
-    anchor: Optional[Tuple[str, int]] = None,
-    resolved: int = 0,
+    anchor: Optional[str] = None,
+    via: Tuple[str, ...] = (),
 ):
-    """Walk ``hop_path`` relationship hops from ``host`` through the shared bidirectional
-    walker; returns ``(terminal_dataset, canonical effective_hop_path)``. Each token
+    """Walk ``hop_path`` relationship hops from ``host``, after its canonical route ``via``, through the shared
+    bidirectional walker; returns ``(terminal_dataset, canonical effective_hop_path)``. Each token
     resolves as an edge name then a neighbour dataset, in either orientation.
 
     When a token resolves to no incident edge, a bare ``Target`` short form
@@ -1007,8 +1008,8 @@ def _walk_relationship_chain(
     remaining tokens spell a flat field raises the flat-spelling refusal instead.
     ``parts`` is the full dotted ref, for error messages; ``quoted`` flags each of
     its segments; ``original_parts`` (pre-self-prefix-strip, defaulting to
-    ``parts``) spells the reference in full, ``original_quoted`` flagging its segments; the first ``resolved`` hops
-    are a canonical route."""
+    ``parts``) spells the reference in full, ``original_quoted`` flagging its segments; ``anchor`` is an anchored
+    reference's written anchor."""
     datasets_by_name = bundle.datasets_by_name
     datasets_by_name.setdefault(host.name, host)
     spelled = parts if original_parts is None else original_parts
@@ -1017,12 +1018,11 @@ def _walk_relationship_chain(
         _quoted_segment(t, quoted=q) for t, q in zip(spelled[:len(spelled) - len(parts)], original_quoted)
     )
     refusal = partial(
-        _flat_spelling_refusal, host=host, hop_path=hop_path, leaf=leaf, spelled=spelled,
-        written=written, quoted=quoted, datasets_by_name=datasets_by_name, anchor=anchor, resolved=resolved,
+        _flat_spelling_refusal, host=host, via=via, hop_path=hop_path, leaf=leaf, spelled=spelled,
+        written=written, quoted=quoted, datasets_by_name=datasets_by_name, anchor=anchor,
     )
     try:
-        walked = walk_terminal(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted,
-                               resolved=resolved)
+        walked = walk_terminal(root=host, path=hop_path, via=via, datasets_by_name=datasets_by_name, quoted=hop_quoted)
     except CircularRelationshipPathError as e:
         raise refusal() or CircularRelationshipPathError(
             reference=".".join(spelled), root_dataset=host.spelling,
@@ -1031,22 +1031,23 @@ def _walk_relationship_chain(
         ) from None
     if walked is not None:
         return walked
-    miss = walk_miss(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted, resolved=resolved)
+    miss = walk_miss(root=host, path=hop_path, via=via, datasets_by_name=datasets_by_name, quoted=hop_quoted)
     assert miss is not None
     if miss.kind == "unloaded":
         assert miss.target is not None
         match_name(name=miss.target, declared=datasets_by_name, quoted=False)  # raises when several match by case
         raise _target_not_in_bundle(parts=parts, target=miss.target)
-    broken = len(hop_path) != 1 or not routes_short_form
+    broken = len(via) + len(hop_path) != 1 or not routes_short_form
     flat = refusal() if broken else None
     if flat is not None:
         raise flat
     _reject_opaque_elements(
-        host=host, hop_path=hop_path, index=miss.index, parts=parts, datasets_by_name=datasets_by_name, quoted=hop_quoted,
+        host=host, via=via, hop_path=hop_path, index=miss.index, parts=parts, datasets_by_name=datasets_by_name,
+        quoted=hop_quoted,
     )
     if broken:
         raise _broken_chain_error(
-            host=host, hop_path=hop_path, leaf=leaf, parts=parts, miss=miss, datasets_by_name=datasets_by_name,
+            host=host, via=via, hop_path=hop_path, leaf=leaf, parts=parts, miss=miss, datasets_by_name=datasets_by_name,
             quoted=hop_quoted,
         )
     try:
@@ -1070,6 +1071,16 @@ def _quoted_segment(name: str, *, quoted: bool) -> str:
     return f'"{name}"' if quoted else name
 
 
+def _walk_prefix(
+    *, host: SlayerDataset, via: Tuple[str, ...], hop_path: Tuple[str, ...], k: int,
+    datasets_by_name: Dict[str, SlayerDataset], quoted: Tuple[bool, ...],
+) -> Optional[Tuple[SlayerDataset, Tuple[str, ...]]]:
+    """:func:`walk_terminal` of the first ``k`` hops of the route ``via`` then ``hop_path``."""
+    n = min(k, len(via))
+    return walk_terminal(root=host, via=via[:n], path=hop_path[:k - n], datasets_by_name=datasets_by_name,
+                         quoted=quoted[:k - n])
+
+
 def _flat_spelling_refusal(
     *,
     host: SlayerDataset,
@@ -1079,30 +1090,32 @@ def _flat_spelling_refusal(
     written: Tuple[str, ...],
     quoted: Tuple[bool, ...],
     datasets_by_name: Dict[str, SlayerDataset],
-    anchor: Optional[Tuple[str, int]] = None,
-    resolved: int = 0,
+    anchor: Optional[str] = None,
+    via: Tuple[str, ...] = (),
 ) -> Optional[UnknownReferenceError]:
     """The refusal of a failed walk whose remaining tokens, joined with ``__``, name a field of a dataset on its walked
     prefix (nearest the root first); ``written`` is the dropped root qualifier, if any; ``anchor`` is an anchored
-    reference's written anchor and the number of route hops before it, which the hint spells as written."""
-    tokens = (*hop_path, leaf)
-    for k in range(len(hop_path)):
+    reference's written anchor, reached by the route ``via``, which the hint spells as written."""
+    full = (*via, *hop_path)
+    flags = (*(False for _ in via), *quoted)
+    tokens = (*full, leaf)
+    for k in range(len(full)):
         try:
-            walked = walk_terminal(root=host, path=hop_path[:k], datasets_by_name=datasets_by_name, quoted=quoted[:k],
-                                   resolved=resolved)
+            walked = _walk_prefix(host=host, via=via, hop_path=hop_path, k=k, datasets_by_name=datasets_by_name,
+                                  quoted=quoted)
         except CircularRelationshipPathError:
             return None
         if walked is None:
             return None
         dataset = walked[0]
-        exact = any(quoted[k:])
+        exact = any(flags[k:])
         col = peek_dataset_field(dataset=dataset, name="__".join(tokens[k:]), quoted=exact)
         if col is not None:
-            segments = tuple(_quoted_segment(t, quoted=q) for t, q in zip(hop_path[:k], quoted))
+            segments = tuple(_quoted_segment(t, quoted=q) for t, q in zip(full[:k], flags))
             if anchor is None:
                 prefix = (*written, *segments)
             else:
-                prefix = (anchor[0], *segments[anchor[1]:]) if k >= anchor[1] else (spelled_name(dataset.spelling),)
+                prefix = (anchor, *segments[len(via):]) if k >= len(via) else (spelled_name(dataset.spelling),)
             flat = ".".join((*prefix, _quoted_segment(col.name, quoted=exact)))
             reference = ".".join(spelled)
             return UnknownReferenceError(
@@ -1114,13 +1127,15 @@ def _flat_spelling_refusal(
 
 
 def _reject_opaque_elements(
-    *, host: SlayerDataset, hop_path: Tuple[str, ...], index: int, parts: Tuple[str, ...],
+    *, host: SlayerDataset, via: Tuple[str, ...], hop_path: Tuple[str, ...], index: int, parts: Tuple[str, ...],
     datasets_by_name: Dict[str, SlayerDataset], quoted: Tuple[bool, ...],
 ) -> None:
-    """A hop naming a list of opaque elements: they have no element access."""
-    walked = walk_terminal(root=host, path=hop_path[:index], datasets_by_name=datasets_by_name, quoted=quoted[:index])
-    hop_quoted = index < len(quoted) and quoted[index]
-    field = walked[0].get_field(hop_path[index], quoted=hop_quoted) if walked is not None else None
+    """A hop (``index`` into ``via`` then ``hop_path``) naming a list of opaque elements: they have no element access."""
+    walked = _walk_prefix(host=host, via=via, hop_path=hop_path, k=index, datasets_by_name=datasets_by_name,
+                          quoted=quoted)
+    flags = (*(False for _ in via), *quoted)
+    hop_quoted = index < len(flags) and flags[index]
+    field = walked[0].get_field((*via, *hop_path)[index], quoted=hop_quoted) if walked is not None else None
     if field is not None and field.datatype is DataType.ARRAY:
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="DatasetScope",
@@ -1152,7 +1167,7 @@ def _route_edgeless_hop(
     terminal = datasets_by_name.get(hop)
     if terminal is None:
         raise _target_not_in_bundle(parts=parts, target=hop)
-    chain = walk(root=host, path=tuple(route), datasets_by_name=datasets_by_name, resolved=len(route))
+    chain = walk(root=host, path=(), via=tuple(route), datasets_by_name=datasets_by_name)
     assert chain is not None  # a safe route walks by construction
     return terminal, canonical_path(chain)
 
@@ -1167,6 +1182,7 @@ def _target_not_in_bundle(*, parts: Tuple[str, ...], target: str) -> UnknownRefe
 def _broken_chain_error(
     *,
     host: SlayerDataset,
+    via: Tuple[str, ...],
     hop_path: Tuple[str, ...],
     leaf: str,
     parts: Tuple[str, ...],
@@ -1174,22 +1190,22 @@ def _broken_chain_error(
     datasets_by_name: Dict[str, SlayerDataset],
     quoted: Tuple[bool, ...],
 ) -> UnresolvableDimensionRelationshipError:
-    """A multi-hop dotted chain with an unresolvable hop — rejected, never
+    """A multi-hop dotted chain (the route ``via`` then ``hop_path``) with an unresolvable hop — rejected, never
     auto-repaired. Names the dataset the hop leaves and its fields; suggests the short form ``Target.leaf`` when its
-    target (``hop_path[-1]``) is itself uniquely routable."""
-    target = hop_path[-1]
+    target (its last hop) is itself uniquely routable."""
+    full = (*via, *hop_path)
+    target = full[-1]
     routable = dimension_routing.short_form_route_or_none(
         root=host, target_dataset=target, datasets_by_name=datasets_by_name,
     )
-    left = walk_terminal(
-        root=host, path=hop_path[:miss.index], datasets_by_name=datasets_by_name, quoted=quoted[:miss.index],
-    )
+    left = _walk_prefix(host=host, via=via, hop_path=hop_path, k=miss.index, datasets_by_name=datasets_by_name,
+                        quoted=quoted)
     assert left is not None  # the walk reached the failing hop
     return UnresolvableDimensionRelationshipError(
         reference=".".join(parts),
         root_dataset=host.spelling,
         reason=(
-            f"'{'.'.join(hop_path)}' is not a valid relationship chain: hop {miss.token!r} does not resolve from dataset "
+            f"'{'.'.join(full)}' is not a valid relationship chain: hop {miss.token!r} does not resolve from dataset "
             f"{left[0].spelling!r}, whose fields are {[c.name for c in left[0].fields]}."
         ),
         suggested_path=f"{target}.{leaf}" if routable is not None else None,
@@ -1292,29 +1308,28 @@ def _resolve_anchored(
     if metric is not None:
         return metric
     anchor = _anchor_of(parts, scope=scope, bundle=bundle, quoted=quoted)
-    path, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
-    if not path[:-1]:
+    route, rest, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+    leaf = rest[-1]
+    if not route and len(rest) == 1:
         return _resolve_terminal_leaf(
-            current=host, leaf=path[-1], hop_path=(), original_parts=parts, scope=scope, bundle=bundle,
+            current=host, leaf=leaf, hop_path=(), original_parts=parts, scope=scope, bundle=bundle,
             metric_ctx=metric_ctx, quoted=flags[-1],
         )
-    route_len = len(path) - len(parts) + 1
     current, effective_hop_path = _walk_relationship_chain(
-        hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf=path[-1], quoted=flags,
-        routes_short_form=False,
-        anchor=(_quoted_segment(parts[0], quoted=quoted[0]), route_len), resolved=route_len,
+        via=route, hop_path=rest[:-1], host=host, bundle=bundle, parts=parts, leaf=leaf, quoted=flags,
+        routes_short_form=False, anchor=_quoted_segment(parts[0], quoted=quoted[0]),
     )
-    if is_spine(current) and len(effective_hop_path) > route_len:  # hops after the anchor's route reach the spine
+    if is_spine(current) and len(effective_hop_path) > len(route):  # hops after the anchor's route reach the spine
         raise UnresolvableDimensionRelationshipError(
             reference=".".join(parts), root_dataset=host.spelling,
             reason=f"a route never crosses {TIME_SPINE_DATASET!r}, which is read only as an anchor.",
-            suggested_path=f"{TIME_SPINE_DATASET}.{path[-1]}",
+            suggested_path=f"{TIME_SPINE_DATASET}.{leaf}",
         )
     key = _resolve_terminal_leaf(
-        current=current, leaf=path[-1], hop_path=effective_hop_path, original_parts=parts, scope=scope,
+        current=current, leaf=leaf, hop_path=effective_hop_path, original_parts=parts, scope=scope,
         bundle=bundle, metric_ctx=metric_ctx, quoted=flags[-1],
     )
-    return _with_anchor(key, anchor=anchor, rest=tuple(effective_hop_path[route_len:]), host=host)
+    return _with_anchor(key, anchor=anchor, rest=tuple(effective_hop_path[len(route):]), host=host)
 
 
 def _resolve_terminal_leaf(
@@ -1513,11 +1528,12 @@ def _resolve_anchored_star(
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="DatasetScope", scope_summary=_NO_ANCHOR_SCOPE_SUMMARY, suggestion=None,
         )
-    path, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
-    if len(path) == 1:
+    route, rest, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+    if not route and len(rest) == 1:
         return StarKey()
     _, effective_hop_path = _walk_relationship_chain(
-        hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf="*", quoted=flags, routes_short_form=False,
+        via=route, hop_path=rest[:-1], host=host, bundle=bundle, parts=parts, leaf="*", quoted=flags,
+        routes_short_form=False,
     )
     return StarKey(path=tuple(effective_hop_path))
 
