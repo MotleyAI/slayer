@@ -8,6 +8,8 @@ A lightweight, open-source semantic layer by [MotleyAI](https://github.com/motle
 
 [GitHub](https://github.com/MotleyAI/slayer) | [PyPI](https://pypi.org/project/motley-slayer/) | [Discord](https://discord.gg/egWxMctHCA)
 
+**Upgrading from 1.x?** See [Upgrading to 2.0](upgrading/2.0.md) for every breaking change and how to migrate.
+
 ## Why?
 
 When AI agents write raw SQL, they can get joins wrong, and produce metrics that drift between queries. 
