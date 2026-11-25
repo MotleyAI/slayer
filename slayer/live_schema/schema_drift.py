@@ -544,8 +544,8 @@ def sql_dataset_retype_findings(
     out: list[RetypeFinding | UntypedFinding] = []
     for col in dataset.fields:
         live = (live_columns or {}).get(col.name)
-        if live is None and col.definition_sql is not None:
-            live = (live_columns or {}).get(col.definition_sql.strip())
+        if live is None and col.is_base:
+            live = (live_columns or {}).get(col.physical_name)
         if live is None:
             continue
         if finding := _field_finding(dataset=dataset, field=col, live_type=live.type, live_db_type=live.db_type,
@@ -739,8 +739,7 @@ def _diff_sql_dataset_fields(
     reasons: list[DeleteReason] = []
     for col in dataset.fields:
         # Cursor exposes alias names: match col.name, fall back to the column it reads.
-        text = col.definition_sql
-        if col.name not in live_columns and (text is None or text.strip() not in live_columns):
+        if col.name not in live_columns and not (col.is_base and col.physical_name in live_columns):
             # Physical readers only; derived expressions handled by cascade.
             if col.reads_physical_column:
                 dropped_cols.append(col.name)

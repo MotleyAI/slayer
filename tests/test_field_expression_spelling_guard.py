@@ -76,6 +76,7 @@ ALLOWLIST: list[AllowlistEntry] = [
         "test_a_pre_v8_model_without_a_reachable_datasource_is_refused": 1,
     }),
     *_allow("test_storage_upgrade_documents.py", _STORED, {"test_a_pre_v8_document_is_refused": 1}),
+    *_allow("test_upgrade_datasets_refusals.py", _STORED, {"<module>": 1}),
     *_allow("test_dev1743_migration.py", _STORED, {"_orders_v8": 1, "_orders_v8_dual": 1}),
     *_allow("test_dev1902_join_key_migration.py", _STORED, {
         "TestLeftAlone::test_declared_name_wins_over_a_rename": 1,

@@ -138,6 +138,8 @@ class ScopeFrame(BaseModel):
     placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
     #: Element types of the list-valued ones.
     placeholder_elements: Dict[Any, DataType] = Field(default_factory=dict)
+    #: A semi-join group's tree-node path → its dataset name; such paths are not root relationship paths.
+    node_datasets: Dict[Tuple[str, ...], str] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
@@ -152,7 +154,7 @@ class ScopeFrame(BaseModel):
         template = self._anchor(ref)
         return self._close(template, consumer=consumer)
 
-    def _register_path_prefixes(self, path: Tuple[str, ...]) -> None:
+    def register_path_prefixes(self, path: Tuple[str, ...]) -> None:
         """Register every relationship-path prefix of ``path`` into this scope."""
         for i in range(1, len(path) + 1):
             self.relationship_paths.add(path[:i])
@@ -244,7 +246,7 @@ class ScopeFrame(BaseModel):
                 root=self.root_relation, path=owner_path,
                 limit=self.dialect.max_identifier_bytes,
             )
-            self._register_path_prefixes(owner_path)
+            self.register_path_prefixes(owner_path)
         else:
             owner_dataset = self.root_dataset
             alias_path = self.root_relation
@@ -406,18 +408,25 @@ class ScopeFrame(BaseModel):
                     f"through the attach registry; reaching field anchoring "
                     f"means the placeholder escaped its producer's join scope.",
                 )
+            declared = self._plain_field(ref)
+            if declared is None:
+                raise UnknownReferenceError(
+                    name=".".join((*ref.path, ref.leaf)),
+                    scope_kind="ScopeFrame",
+                    scope_summary=f"scope rooted at dataset {self.root_dataset.name!r}",
+                    suggestion="A plain field reference must name a field its relationship path's terminal dataset declares.",
+                )
             # The allocator is the single join-alias authority
             # (dotted-canonical); it also registers the crossed path prefixes.
             alias = self.allocator.alias_for(
                 root=self.root_relation, path=ref.path,
                 limit=self.dialect.max_identifier_bytes,
             )
-            self._register_path_prefixes(ref.path)
+            self.register_path_prefixes(ref.path)
             column = quote_mixed_case_identifiers(exp.Column(
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
             ))
-            declared = dataset_field(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name(), key=ref)
             return self.dialect.read_column(
                 column, zoned=self.dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
             )
@@ -441,7 +450,7 @@ class ScopeFrame(BaseModel):
                 )
             else:
                 alias_path = self.root_relation
-            self._register_path_prefixes(owner_path)
+            self.register_path_prefixes(owner_path)
             if col is None:
                 expanded = expand_derived_refs_sync(
                     sql=ref.field_name, dataset=dataset, alias_path=alias_path,
@@ -512,6 +521,13 @@ class ScopeFrame(BaseModel):
     def field(self, ref: FieldKey | FieldSqlKey) -> Optional[DatasetField]:
         """The dataset field ``ref`` names, or ``None`` when unresolvable."""
         return dataset_field(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name(), key=ref)
+
+    def _plain_field(self, ref: FieldKey) -> Optional[DatasetField]:
+        """The field ``ref`` names: through a semi-join node dataset first, else the relationship graph."""
+        node_dataset = self.node_datasets.get(ref.path)
+        if node_dataset is None:
+            return self.field(ref)
+        return self._datasets_by_name()[node_dataset].get_field(ref.leaf)
 
     def _dataset_for(self, name: str) -> SlayerDataset:
         """Resolve a dataset name against the scope root, then the bundle.
