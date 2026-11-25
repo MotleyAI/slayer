@@ -522,8 +522,10 @@ class TestBindLevel:
     def test_determined_transform_ranking_key_binds(self):
         scope, bundle = _orders_scope_bundle()
         key = bind_expr(parse_expr(LAST_RANK_KEY), scope=scope, bundle=bundle).value_key
-        assert isinstance(key, AggregateKey) and key.agg == "last", key
-        assert len(key.args) == 1 and isinstance(key.args[0], TransformKey), key.args
+        assert isinstance(key, AggregateKey), key
+        assert key.agg == "last", key
+        assert len(key.args) == 1, key.args
+        assert isinstance(key.args[0], TransformKey), key.args
 
     def test_time_bucketed_partition_key_granularity_in_fragment(self):
         """A rank parameter partitioned by the same field at different

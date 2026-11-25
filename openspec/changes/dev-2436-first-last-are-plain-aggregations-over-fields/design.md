@@ -85,9 +85,9 @@ P9 (fail closed), P10 (one composition primitive), P12 (attach is cardinality-ne
   ranked `AggregateKey` (system P10).
 - Binding: an attached-only operand binds as a ranked second-order `AggregateKey`; the
   transform route for `first` / `last` is deleted. `_is_row_level_ranking_key` is replaced
-  by the one "determined by the home" predicate, judged by closure at the existing sites
-  (`_ranking_key_crossing` / `_checked_ranking_time_key`), extended to the operand
-  dataset — no second resolution path (DEV-1945 ruling).
+  by the one "determined by the home" predicate, row-level keys judged by closure at the existing sites
+  (`_ranking_key_crossing` / `_checked_ranking_time_key`); attached keys and keys over an aggregate judged in the
+  bind pass against the operand's or the home's grain — the key itself is resolved one way only (DEV-1945 ruling).
 - Grain: the consumption rule is applied where an aggregate's grain is computed; the
   collapsing branch of `_operand_grain`, `lower_collapsing_constituents`,
   `_collapsed_axis` and `RegroupAttachPlan.collapsed` are deleted; the collapse remedy of

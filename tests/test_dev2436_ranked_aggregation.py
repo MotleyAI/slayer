@@ -147,12 +147,14 @@ class TestDefaultRankingKeyOverAnAggregate:
         assert _per_customer(by_customer_month(resp)) == {100: 370.0, 200: 70.0}
 
     async def test_an_operand_without_the_bucket_fails(self, engine: SlayerQueryEngine) -> None:
+        query = _monthly(m(f"last(sum(account_snapshots.balance, partition_by={CUST}))"))
         with pytest.raises(TimeAxisError):
-            await engine.execute(_monthly(m(f"last(sum(account_snapshots.balance, partition_by={CUST}))")))
+            await engine.execute(query)
 
     async def test_no_time_dimension_fails(self, engine: SlayerQueryEngine) -> None:
+        query = snap_q(dimensions=[CUST], metrics=[m(LAST_BAL)])
         with pytest.raises(TimeAxisError):
-            await engine.execute(snap_q(dimensions=[CUST], metrics=[m(LAST_BAL)]))
+            await engine.execute(query)
 
 
 async def test_a_mixed_grain_operand_ranks_its_union_grain_cells(engine: SlayerQueryEngine) -> None:
@@ -165,12 +167,14 @@ async def test_a_mixed_grain_operand_ranks_its_union_grain_cells(engine: SlayerQ
 
 class TestReaggregationRefusals:
     async def test_window_is_refused(self, engine: SlayerQueryEngine) -> None:
+        query = _monthly(m(f"last({BAL}, window='60d')"))
         with pytest.raises(ReaggregationError):
-            await engine.execute(_monthly(m(f"last({BAL}, window='60d')")))
+            await engine.execute(query)
 
     async def test_filter_is_refused(self, engine: SlayerQueryEngine) -> None:
+        query = _monthly(m(f"{LAST_BAL} FILTER (WHERE account_snapshots.balance > 0)"))
         with pytest.raises(AggregationFilterError):
-            await engine.execute(_monthly(m(f"{LAST_BAL} FILTER (WHERE account_snapshots.balance > 0)")))
+            await engine.execute(query)
 
 
 # --------------------------------------------------------------------------- #
@@ -217,8 +221,10 @@ class TestGrainDropsTheRankingKey:
             m(f"last(account_snapshots.balance, date_trunc('month', {DATE}), window='60d')")))
         got = by_customer_month(resp)
         # January's rows tie on the bucket key; February has one latest-bucket row per customer.
-        assert got[(100, FEB)] == 160.0 and got[(100, JAN)] in {100.0, 150.0, 50.0, 70.0}
-        assert got[(200, FEB)] is None and got[(200, JAN)] in {30.0, 40.0}
+        assert got[(100, FEB)] == 160.0
+        assert got[(100, JAN)] in {100.0, 150.0, 50.0, 70.0}
+        assert got[(200, FEB)] is None
+        assert got[(200, JAN)] in {30.0, 40.0}
 
 
 # --------------------------------------------------------------------------- #
@@ -239,12 +245,14 @@ class TestOperandRankingKeys:
         f"sum(account_snapshots.balance, partition_by=account_snapshots.account_id))",
     ])
     async def test_a_key_the_operand_does_not_determine_fails_closed(self, engine, expr) -> None:
+        query = snap_q(time_dimensions=month_td(), metrics=[m(expr)])
         with pytest.raises(UnsafeRelationshipInputError, match="account_id"):
-            await engine.execute(snap_q(time_dimensions=month_td(), metrics=[m(expr)]))
+            await engine.execute(query)
 
     async def test_a_literal_key_over_an_aggregate_fails(self, engine) -> None:
+        query = _monthly(m(f"last({BAL}, 1)"))
         with pytest.raises(ValueError, match="ranks by a field"):
-            await engine.execute(_monthly(m(f"last({BAL}, 1)")))
+            await engine.execute(query)
 
 
 # --------------------------------------------------------------------------- #

@@ -84,10 +84,10 @@ class TestAttachedRowKeys:
         assert {(r[REG], _num(r["v"])) for r in resp.data} == {("EAST", 203.0), ("WEST", 303.0)}
 
     async def test_an_attached_key_the_home_does_not_determine_fails(self, backend: str) -> None:
+        metrics = [_m("last(customers.segment, count(orders.*, partition_by=orders.status))")]
         async with seed_engine(backend) as eng:
             with pytest.raises(UnsafeRelationshipInputError, match="status"):
-                await run(eng, dimensions=[REG], metrics=[_m(
-                    "last(customers.segment, count(orders.*, partition_by=orders.status))")])
+                await run(eng, dimensions=[REG], metrics=metrics)
 
 
 # --------------------------------------------------------------------------- #
@@ -173,9 +173,10 @@ async def test_a_second_order_last_as_a_dimension(region_engine: SlayerQueryEngi
 
 class TestRankedOverACityGrainedOperand:
     async def test_without_the_bucket_fails(self, region_engine: SlayerQueryEngine) -> None:
+        query = orders_q(dimensions=["orders.region"], time_dimensions=month_td(), metrics=[
+            QueryMetric(metric="last(sum(orders.amount, partition_by=[orders.city, orders.region]))", alias="v")])
         with pytest.raises(TimeAxisError):
-            await region_engine.execute(orders_q(dimensions=["orders.region"], time_dimensions=month_td(), metrics=[
-                QueryMetric(metric="last(sum(orders.amount, partition_by=[orders.city, orders.region]))", alias="v")]))
+            await region_engine.execute(query)
 
     async def test_with_the_bucket_executes_at_city_grain(self, region_engine: SlayerQueryEngine) -> None:
         expr = "last(sum(orders.amount, partition_by=[orders.city, orders.region, orders.ordered_at]))"
@@ -199,15 +200,16 @@ AXISLESS = "last(sum(orders.amount, partition_by=orders.region))"
     {"metrics": [QueryMetric(metric=f"max({AXISLESS})", alias="v")]},
 ], ids=["measure", "filter", "order", "aggregation_source"])
 async def test_a_ranked_aggregation_without_the_axis_fails_in_every_position(region_engine, kw) -> None:
+    query = orders_q(dimensions=["orders.region"], time_dimensions=month_td(), **kw)
     with pytest.raises(TimeAxisError) as info:
-        await region_engine.execute(orders_q(dimensions=["orders.region"], time_dimensions=month_td(), **kw))
+        await region_engine.execute(query)
     assert not isinstance(info.value, NotImplementedError)
 
 
 async def test_no_time_dimension_fails(region_engine: SlayerQueryEngine) -> None:
+    query = orders_q(dimensions=["orders.region"], metrics=[QueryMetric(metric="last(sum(orders.amount))", alias="v")])
     with pytest.raises(TimeAxisError):
-        await region_engine.execute(orders_q(dimensions=["orders.region"],
-                                             metrics=[QueryMetric(metric="last(sum(orders.amount))", alias="v")]))
+        await region_engine.execute(query)
 
 
 # --------------------------------------------------------------------------- #
@@ -271,7 +273,9 @@ class TestBooleanTyping:
         models = f2046.dev2046_datasets()
         bundle = ResolvedSourceBundle(dialect="duckdb", population=models[0], referenced_datasets=models[1:])
         planned = plan_query(query=_flag_query({"metrics": [_m(expr)]}), bundle=bundle)
-        (slot,) = [s for s in [*planned.aggregate_slots, *planned.combined_expression_slots] if s.public_name == "v"]
+        # A re-aggregation's value reaches the stage as a row slot; a comparison over it is a combined one.
+        (slot,) = [s for s in [*planned.row_slots, *planned.aggregate_slots, *planned.combined_expression_slots]
+                   if s.public_name == "v"]
         assert slot.type == DataType.BOOLEAN
 
     async def test_as_an_aggregation_source(self, backend: str) -> None:
@@ -373,6 +377,7 @@ async def test_an_associated_ranked_pick_associates(assoc_engine: SlayerQueryEng
 
 
 async def test_an_associated_ranked_pick_refuses_under_error_mode(assoc_engine: SlayerQueryEngine) -> None:
+    query = f1841.error_q(**ASSOC_KW)
     with pytest.raises((SlayerError, ValueError), match="status") as info:
-        await assoc_engine.execute(f1841.error_q(**ASSOC_KW))
+        await assoc_engine.execute(query)
     assert not isinstance(info.value, NotImplementedError)

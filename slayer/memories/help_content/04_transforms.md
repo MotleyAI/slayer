@@ -13,7 +13,6 @@ work in metrics, filters and order, and nest in either order
 | `change_pct(x)` | `(x - previous) / previous`; NULL when the previous value is 0 or missing |
 | `time_shift(x, n[, 'year'])` | the value `n` buckets (or another granularity's periods) away |
 | `lag(x, n)` / `lead(x, n)` | the value `n` result rows back / ahead |
-| `first(x)` / `last(x)` | the earliest / latest bucket's value, repeated on every row |
 | `consecutive_periods(p)` | length of the current trailing run where the predicate `p` holds |
 | `rank(x, direction=...)` | rank, ties share a rank, gaps after ties |
 | `dense_rank(x, direction=...)` | rank without gaps |

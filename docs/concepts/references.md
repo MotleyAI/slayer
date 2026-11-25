@@ -65,8 +65,10 @@ custom aggregations. Declared parameters may be passed positionally in
 declaration order — `percentile(orders.price, 0.9)` means `p=0.9` (`first`/`last`
 keep their positional ranking key instead). An aggregation that declares no
 parameters takes no positional value at all, and `first`/`last` at most one —
-their ranking key, a row-level expression (`last(accounts.balance, accounts.updated_at)`,
-`last(accounts.balance, CAST(accounts.updated_at AS DATE))`), never a literal or a nested aggregate.
+their ranking key, a field of the ranked dataset: over rows a row-level expression
+(`last(accounts.balance, accounts.updated_at)`, `last(accounts.balance, CAST(accounts.updated_at AS DATE))`) or an
+attached aggregate the rows determine, over an aggregate a grain member or an aggregate at a grain the operand
+determines (`last(sum(orders.revenue), sum(orders.units))`); never a literal.
 
 Naming and matching read the parse tree, not the text: a metric declared
 `{"metric": "sum(orders.revenue)", "alias": "rev"}` is matched by a filter written
@@ -74,10 +76,9 @@ Naming and matching read the parse tree, not the text: a metric declared
 
 Disambiguation rules:
 
-* `first` / `last` are both aggregations and transforms: a call whose first
-  argument resolves to a row-level value is the aggregation (`last(accounts.balance)`),
-  one whose argument resolves to aggregated values — including a saved metric —
-  is the transform (`last(sum(orders.revenue))`, `last(orders.rev)`).
+* `first` / `last` are always aggregations: a call whose first argument resolves to a row-level value ranks
+  its home's rows (`last(accounts.balance)`), one whose argument resolves to aggregated values — including a saved
+  metric — ranks that aggregate's cells (`last(sum(orders.revenue))`, `last(orders.rev)`).
 * An unknown call name whose first argument is aggregatable defers to binding
   — custom aggregations resolve there, and genuinely unknown names get the
   "Unknown function" error.

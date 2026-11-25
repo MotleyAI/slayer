@@ -37,12 +37,17 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    lower_collapsing_constituents,
     lower_sugar_transforms,
     normalize_transform_constituents,
     attached_operand_keys,
+    explicit_ranking_key,
+    is_ranked_over_cells,
     is_reaggregation_key,
     rewrite_rank_partition_keys,
+    operand_constituents,
+    settle_ranked_grains,
+    source_anchor_path,
+    transform_operand_grain,
     walk_value_keys,
     window_kwarg_of,
 )
@@ -104,13 +109,18 @@ from slayer.engine.elaborate_env import (
     check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
     check_time_transforms_resolved,
+    check_ranking_key_determined,
+    grain_display,
     coerce_text_numbers,
     coerce_zoned_comparisons,
     resolve_time_points,
     date_only_notices,
 )
-from slayer.engine.cardinality.relationship_safety import assert_partition_key_analysable
+from slayer.engine.cardinality.relationship_safety import (
+    assert_partition_key_analysable, grain_determines, grain_member_attributable,
+)
 from slayer.engine.population.home import as_home_field
+from slayer.engine.ranked_planner import temporal_row_dimension_key
 from slayer.engine.key_metadata import (
     SlotTyping,
     bundle_dialect,
@@ -151,7 +161,7 @@ from slayer.ir.bound import (
     DeclaredMetric,
     OrderSpec,
 )
-from slayer.ir.prebound import ModePolicy, PreboundQuery, partition_declared_metrics
+from slayer.ir.prebound import ModePolicy, PreboundQuery, partition_declared_metrics, walk_key_path
 from slayer.ir.source_bundle import InnerRestriction, ResolvedSourceBundle, resolve_scope
 from slayer.sql.naming import canonical_aggregate_alias, flat_name as _flatten_dotted, expression_text_alias
 
@@ -167,7 +177,8 @@ _TIME_NEEDING_TRANSFORM_OPS = TIME_TRANSFORMS
 
 
 def _attach_time_keys(key: ValueKey, *, td_key: TimeTruncKey) -> ValueKey:
-    """Set ``time_key=td_key`` on every time-needing TransformKey with a null one (identity-preserving)."""
+    """Set ``time_key=td_key`` on every time-needing TransformKey with a null one, and rank an unkeyed ``first`` /
+    ``last`` over an aggregate by it (identity-preserving)."""
     rebuilt = cast(ValueKey, key.map_children(lambda c: _attach_time_keys(c, td_key=td_key)))
     if (
         isinstance(rebuilt, TransformKey)
@@ -175,6 +186,8 @@ def _attach_time_keys(key: ValueKey, *, td_key: TimeTruncKey) -> ValueKey:
         and rebuilt.time_key is None
     ):
         return rebuilt.model_copy(update={"time_key": td_key})
+    if is_ranked_over_cells(rebuilt) and not rebuilt.args and window_kwarg_of(rebuilt) is None:
+        return rebuilt.model_copy(update={"args": (td_key,)})
     return rebuilt
 
 
@@ -838,6 +851,19 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
+    # A ranked aggregation's grain drops its ranking key (semantics Axiom 5), before any grain is read.
+    row_default_key = None if scope.population is None else temporal_row_dimension_key(
+        row_keys=[dm.bound.value_key for dm in declared_metrics[:n_dims + n_tds]],
+        source_dataset=scope.population, bundle=bundle,
+    )
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: settle_ranked_grains(
+            vk, query_grain=_query_grain, active_bucket=active_td_key, row_default_key=row_default_key,
+        ),
+        declared_metrics=declared_metrics,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+    )
     check_transform_partition_keys_in_operand_grain(
         roots=[
             *(dm.bound.value_key for dm in declared_metrics),
@@ -851,17 +877,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         declared_metrics, bound_filters=bound_filters, order_specs=order_specs,
         query_grain=_query_grain, active_bucket=active_td_key,
     )
-
-    # Lower a collapsing transform constituent (first/last, D4c) to an exact
-    # per-partition pick AFTER the axis check (which sees the raw transform); the
-    # synthesized max's partition_by is a carrier grain key, validated inside the
-    # carrier sub-plan, so it runs after _rw. All positions.
-    declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lower_collapsing_constituents,
-        declared_metrics=declared_metrics,
-        bound_filters=bound_filters,
-        order_specs=order_specs,
-    )
+    if scope.population is not None:
+        _check_ranking_keys_determined(
+            [*(dm.bound.value_key for dm in declared_metrics), *(bf.value_key for bf in bound_filters),
+             *(sp.bound.value_key for sp in order_specs)],
+            query_grain=_query_grain, active_bucket=active_td_key, host=scope.population, bundle=bundle,
+        )
     declared_metrics, bound_filters, order_specs, main_time_key = _home_value_positions(
         declared_metrics, bound_filters=bound_filters, order_specs=order_specs, n_grain=n_dims + n_tds,
         n_date_range=n_date_range, active_td_key=active_td_key, scope=scope, bundle=bundle,
@@ -888,6 +909,49 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
 
 # Helpers
+
+
+def _check_ranking_keys_determined(
+    roots: List[ValueKey], *, query_grain: Grain, active_bucket: Optional[TimeTruncKey],
+    host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    """A ranked aggregation's key is a field of its home dataset (semantics Axiom 2.4). Over an aggregate: a grain
+    member, a field the grain pins, or an attached value at a grain the operand determines; over rows, an attached
+    value at a grain the home's rows determine (row-level keys are judged by closure at plan time)."""
+    def grain_of(c: ValueKey) -> Grain:
+        if isinstance(c, AggregateKey):
+            return query_grain if c.partition_keys is None else c.partition_keys
+        if isinstance(c, TransformKey):
+            return transform_operand_grain(c.input, query_grain=query_grain, active_bucket=active_bucket)
+        return Grain.of([c])
+
+    for k in (k for root in roots for k in walk_value_keys(root)):
+        if not isinstance(k, AggregateKey):
+            continue
+        rk = explicit_ranking_key(k)
+        if rk is None or rk == active_bucket:  # the time axis is check_temporal_axis's
+            continue
+        if is_ranked_over_cells(k):
+            operand = transform_operand_grain(k.source, query_grain=query_grain, active_bucket=active_bucket)
+            check_ranking_key_determined(term=k, key=rk, home=f"the operand grain ({grain_display(operand)})",
+                                         determined=all(
+                m in operand or grain_determines(
+                    key=m, grain=operand, host_dataset=host, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+                )
+                for m in grain_of(rk)
+            ))
+            continue
+        path = source_anchor_path(k.source)
+        home = walk_key_path(dataset=host, path=path, bundle=bundle)
+        if home is None:
+            continue
+        check_ranking_key_determined(term=k, key=rk, home=f"the rows of {home.name}", determined=all(
+            grain_member_attributable(
+                key=m, target_path=path, root_dataset=home, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+                host_dataset=host, host_name=host.name,
+            )
+            for c in operand_constituents(rk) for m in grain_of(c)
+        ))
 
 
 def _home_reading(key: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ValueKey:

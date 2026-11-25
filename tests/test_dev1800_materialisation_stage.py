@@ -268,18 +268,18 @@ class TestConcreteStages:
 # --------------------------------------------------------------------------- #
 _LOCAL_STALL: dict = dict(
     metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="ch")],
-    filter=["last(change(sum(orders.amount))) < 0"],
+    filter=["lag(change(sum(orders.amount))) < 0"],
 )
 
 
 class TestTransparentCompositeLevels:
-    def test_last_over_change_shares_the_composites_level(self) -> None:
+    def test_lag_over_change_shares_the_composites_level(self) -> None:
         pq = _plan(**_LOCAL_STALL)
         by_key = {s.key: s for s in _all_slots(pq)}
         [ts] = [s for s in _transform_slots(pq) if _op(s) == "time_shift"]
-        [last] = [s for s in _transform_slots(pq) if _op(s) == "last"]
+        [lag] = [s for s in _transform_slots(pq) if _op(s) == "lag"]
         assert ts.stage == Stage(kind=StageKind.DERIVED, level=1)
-        assert last.stage == Stage(kind=StageKind.DERIVED, level=2)
+        assert lag.stage == Stage(kind=StageKind.DERIVED, level=2)
         change_comps = [
             c for c in _composite_slots(pq)
             if _transforms_read(key=c.key, by_key=by_key)
@@ -290,7 +290,7 @@ class TestTransparentCompositeLevels:
         for c in change_comps:
             assert c.stage == Stage(kind=StageKind.DERIVED, level=2)
 
-    def test_mask_level_is_one_above_the_last_transform(self) -> None:
+    def test_mask_level_is_one_above_the_lag_transform(self) -> None:
         """A mask's level is a validation / column-necessity fact only (D5);
         its placement stays the global wrapper, pinned by execution tests."""
         pq = _plan(**_LOCAL_STALL)
@@ -298,10 +298,10 @@ class TestTransparentCompositeLevels:
         [mask] = pq.masks
         assert by_id[mask.slot_id].stage == Stage(kind=StageKind.DERIVED, level=3)
 
-    def test_measure_only_last_over_change_is_level_two(self) -> None:
-        pq = _plan(metrics=[QueryMetric(metric="last(change(sum(orders.amount)))", alias="t")])
-        [last] = [s for s in _transform_slots(pq) if _op(s) == "last"]
-        assert last.stage == Stage(kind=StageKind.DERIVED, level=2)
+    def test_measure_only_lag_over_change_is_level_two(self) -> None:
+        pq = _plan(metrics=[QueryMetric(metric="lag(change(sum(orders.amount)))", alias="t")])
+        [lag] = [s for s in _transform_slots(pq) if _op(s) == "lag"]
+        assert lag.stage == Stage(kind=StageKind.DERIVED, level=2)
 
     def test_staging_is_a_function_of_the_term_alone(self) -> None:
         """The same term carries the same stage with and without ``change(x)``
@@ -321,12 +321,12 @@ class TestTransparentCompositeLevels:
     def test_deeper_alternation_stages_one_level_per_transform(self) -> None:
         pq = _plan(metrics=[
             QueryMetric(metric="change(cumsum(sum(orders.amount)))", alias="ch"),
-            QueryMetric(metric="last(change(cumsum(sum(orders.amount))))", alias="t"),
+            QueryMetric(metric="lag(change(cumsum(sum(orders.amount))))", alias="t"),
         ])
         by_op = {_op(s): s for s in _transform_slots(pq)}
         assert by_op["cumsum"].stage == Stage(kind=StageKind.DERIVED, level=1)
         assert by_op["time_shift"].stage == Stage(kind=StageKind.DERIVED, level=2)
-        assert by_op["last"].stage == Stage(kind=StageKind.DERIVED, level=3)
+        assert by_op["lag"].stage == Stage(kind=StageKind.DERIVED, level=3)
         by_key = {s.key: s for s in _all_slots(pq)}
         comps = [c for c in _composite_slots(pq) if _transforms_read(key=c.key, by_key=by_key)]
         assert comps, "the projected change composite should be interned"
@@ -359,14 +359,14 @@ class TestNeedsColumn:
         [agg] = [s for s in pq.aggregate_slots if isinstance(s.key, AggregateKey)]
         assert agg.needs_field is True
 
-    def test_measure_mask_over_hidden_last_marks_the_chain(self) -> None:
-        """A metric mask over a hidden ``last(change(x))`` marks ``last`` (mask
+    def test_measure_mask_over_hidden_lag_marks_the_chain(self) -> None:
+        """A metric mask over a hidden ``lag(change(x))`` marks ``lag`` (mask
         dep) and its ``time_shift`` (read by a later level) as columns."""
         pq = _plan(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
-                   filter=["last(change(sum(orders.amount))) < 0"])
-        [last] = [s for s in _transform_slots(pq) if _op(s) == "last"]
+                   filter=["lag(change(sum(orders.amount))) < 0"])
+        [lag] = [s for s in _transform_slots(pq) if _op(s) == "lag"]
         [ts] = [s for s in _transform_slots(pq) if _op(s) == "time_shift"]
-        assert last.needs_field is True
+        assert lag.needs_field is True
         assert ts.needs_field is True
 
     def test_derived_order_target_materialises_as_a_column(self) -> None:

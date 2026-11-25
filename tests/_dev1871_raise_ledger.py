@@ -65,7 +65,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="internal", family="internal", user=False, owner="compiler"),
     _row(module=_EE, function="check_temporal_axis", exc="TimeAxisError",
          message="The operand of …() is at a grain that does not contain the time axis '…', so it does not vary along it."
-         + AT + "transform …"
+         + AT + "… …"
          + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_WD, function="parse_window_duration", exc="WindowDurationError",
@@ -205,8 +205,8 @@ ROWS: Tuple[LedgerRow, ...] = (
          "or compare it with a plain value.",
          category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="check_time_transforms_resolved", exc="TimeAxisError",
-         message="The transform requires an unambiguous time dimension."
-         + AT + "transform …" + SUGGEST + "…",
+         message="The … requires an unambiguous time dimension."
+         + AT + "… …" + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
          message="The partition_by field '…' is ambiguous — it is a time dimension at multiple granularities."
@@ -327,6 +327,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "filter …"
          + SUGGEST + "Fix the referenced field's SQL, or remove the filter.",
          category="checker", family="filters", user=True, owner="checker"),
+    _row(module=_EE, function="check_ranking_key_determined", exc="UnsafeRelationshipInputError",
+         message="The ranking key … is not determined by …; each ranked row needs one key value."
+         + AT + "aggregation …"
+         + SUGGEST + "Rank by a field of the ranked dataset, or by an aggregate grained within it.",
+         category="checker", family="ranking-key", user=True, owner="checker"),
     _row(module=_EE, function="check_reaggregation_no_window", exc="ReaggregationError",
          message="The re-aggregation cannot carry window= on its outer aggregation."
          + AT + "metric …"

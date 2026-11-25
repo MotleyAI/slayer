@@ -267,4 +267,5 @@ class TestCumsumParity:
     def test_wrapper_of_wrapper_lacks_the_time_bucket(self, fn):
         """The inner pick drops the month bucket, so the outer one has no default key."""
         kind, got = _outcome(_q(metrics=[QueryMetric(metric=f"{fn}({fn}(sum(sales.revenue)))", alias="m")]))
-        assert kind == "err" and isinstance(got, TimeAxisError), got
+        assert kind == "err", got
+        assert isinstance(got, TimeAxisError), got

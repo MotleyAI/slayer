@@ -1392,7 +1392,10 @@ class TestFields:
             metrics=[QueryMetric(metric="sum(orders.revenue)"), QueryMetric(metric="last(sum(orders.revenue))", alias="latest_rev")],
         )
         sql = await _generate(generator, query, orders_dataset)
-        assert "FIRST_VALUE(" in sql
+        # The latest month's cell picked by the ranked kernel, never a FIRST_VALUE window.
+        assert "ROW_NUMBER()" in sql
+        assert "_ranked_rn" in sql
+        assert "FIRST_VALUE(" not in sql
         assert "DESC" in sql
 
     async def test_last_measure_type(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
@@ -1827,9 +1830,10 @@ class TestFields:
             filter=["last(change(sum(orders.revenue))) < 0"],
         )
         sql = await _generate(generator, query, orders_dataset)
-        assert "FIRST_VALUE" in sql  # last()
+        assert "ROW_NUMBER()" in sql  # last()
         assert "shifted_" in sql  # change() via self-join
-        assert "< 0" in post_filter_where(sql)
+        # last() is an aggregation attached to the query's rows, so its filter is the final select's WHERE.
+        assert "< 0" in sql.rsplit("WHERE", 1)[1]
 
     async def test_mixed_base_and_post_filters(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Base filters and post-filters should coexist correctly."""

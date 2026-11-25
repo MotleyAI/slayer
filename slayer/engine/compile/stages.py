@@ -29,12 +29,12 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from slayer.core.enums import AXIS_COLLAPSING_TRANSFORMS, DataType, RelationshipCardinality, JoinType
+from slayer.core.enums import DataType, RelationshipCardinality, JoinType
 from slayer.core.errors import (
     AmbiguousRelationshipPathError, PopulationErrorReason, PopulationInferenceError,
     UnresolvableDimensionRelationshipError,
 )
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, display_token, is_framed_path, is_reaggregation_key, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.keys import SLOT_COMPOSITE_KINDS, display_token, is_framed_path, is_ranked_over_cells, is_reaggregation_key, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.names import spelled_name
 from slayer.core.relationship_search import routes
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
@@ -791,7 +791,8 @@ def _ranking_key_crossing(
     path is provably to-one. An unanalysable definition fails closed through
     ``check_input_dependencies_analyzable`` naming the field (Axiom 2.8). An expression
     key is judged per leaf, naming the crossing one."""
-    for leaf_key in source_row_leaves(key) or [key]:
+    # An attached value is the row-attach's to judge; only the key's row leaves are read here.
+    for leaf_key in source_row_leaves(key) or ([] if operand_constituents(key) else [key]):
         leaf = field_leaf(leaf_key) if isinstance(leaf_key, (FieldKey, FieldSqlKey)) else key_display(leaf_key)
         closure = key_closure(
             key=leaf_key, anchor_dataset=root_dataset, anchor_relation=root_dataset.name, bundle=bundle,
@@ -1050,10 +1051,15 @@ def _decided_kernel(
             producer_plan=producer_plan, agg_key=decision.answer, root_dataset=root_dataset, bundle=bundle,
             alias=alias, target_rooted=target_rooted, ranking_candidates=ranking_candidates,
         )}
-    return {"kernel": _ranked_kernel(
+    kernel = _ranked_kernel(
         agg_key=decision.answer, root_dataset=root_dataset, bundle=bundle,
         alias=alias, target_rooted=target_rooted, ranking_candidates=ranking_candidates,
-    )}
+    )
+    # An attached ranking key reads its row-attach field (semantics Axiom 2.3).
+    attached = {sub.original_key: sub.placeholder for a in producer_plan.regroup_attach_plans for sub in a.substitutions}
+    return {"kernel": kernel.model_copy(update={
+        "ranking_time_key": substitute_value_keys(kernel.ranking_time_key, attached),
+    }) if attached else kernel}
 
 
 def _empty_value(key: ValueKey, *, bundle: ResolvedSourceBundle) -> EmptyValue:
@@ -2273,8 +2279,12 @@ class _HomeRooting(NamedTuple):
         return self.rerooted(k)
 
     def _aggregate(self, k: AggregateKey) -> AggregateKey:
+        # A pick over cells ranks by a grain key of its operand.
+        over_cells = is_ranked_over_cells(k)
         return k.model_copy(update={
-            "source": self.interior(k.source), "args": tuple(self.interior(a) for a in k.args),
+            "source": self.interior(k.source),
+            "args": tuple(self.grain(cast(ValueKey, a)) if over_cells and isinstance(a, VALUE_KEY_TYPES) else self.interior(a)
+                          for a in k.args),
             "kwargs": tuple((n, self.interior(v)) for n, v in k.kwargs),
             "filter": None if k.filter is None else self.interior(k.filter),
             "partition_keys": None if k.partition_keys is None else Grain.of(self.grain(p) for p in k.partition_keys),
@@ -3190,6 +3200,14 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     # Requested outer grain: explicit partition_by= else the query dimensions.
     requested = list(root.partition_keys if root.partition_keys is not None else proj)
 
+    # A first / last ranks the operand's cells by a field of the operand dataset (semantics Axiom 2.4; legality is
+    # the bind pass's): a grain member, a field the grain pins, or an attached value riding the carrier.
+    ranking_key = explicit_ranking_key(root)
+    key_fields: List[ValueKey] = []
+    if ranking_key is not None and ranking_key not in union_grain:
+        constituents.extend(c for c in operand_constituents(ranking_key) if c not in constituents)
+        key_fields = [k for k in outside_aggregates(ranking_key) if isinstance(k, (FieldKey, FieldSqlKey))]
+
     # Type each outer parameter against the operand grain; a legal aggregate-valued
     # parameter rides the carrier as an extra constituent, a legal field parameter
     # is picked once per cell. An UNGRAINED aggregate parameter types at the OUTER
@@ -3279,7 +3297,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
                     if isinstance(k, (FieldKey, FieldSqlKey))]
     for g in outer_grain:
         constituents.extend(c for c in operand_constituents(g) if c not in constituents)
-    carrier_grain = union_grain | Grain.of([*row_outer, *field_params, *mixed_fields])
+    carrier_grain = union_grain | Grain.of([*row_outer, *field_params, *mixed_fields, *key_fields])
     grain_placeholders: Dict[ValueKey, ValueKey] = (
         {g: registry.placeholder_for(g) for g in _regroup_partition_order(carrier_grain)}
         if union_grain and not _cells_are_the_carrier(
@@ -3360,6 +3378,8 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         population=NoInheritedPopulation(reason="a re-aggregation reads its operand's cells") if grain_placeholders
         else population,
         placeholder_originals={ph: c for c, ph in substitutions.items()},
+        # A ranked pick is the association kernel's own answer, never a producer of its own.
+        kernel_answer=outer_agg if ranking_key is not None else None,
     )
     # Keep any internal attach the outer plan desugared for an expression
     # grain key; the carrier rides alongside. Entity keys must render inside
@@ -3411,6 +3431,9 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         kernel=AssociationProducerKernel(
             entity_keys=entity_keys, null_safe=True,
             picked_params=reagg_picked_params,
+            ranking_key=None if ranking_key is None else substitute_value_keys(
+                substitute_value_keys(ranking_key, substitutions), internal_map,
+            ),
         ),
         join_pairs=join_pairs,
         substitutions=[RegroupSubstitution(
@@ -4030,28 +4053,18 @@ def _assert_local_regroup_safe(
     )
 
 
-def _collapsed_axis(root: ValueKey, *, phase: str, ordered_pks: Sequence[ValueKey]) -> List[ValueKey]:
-    """A measure-position collapsing transform's axis: its pick attaches on the grain without it (Axiom 11.3b)."""
-    if phase != "combined" or not isinstance(root, TransformKey) or root.op not in AXIS_COLLAPSING_TRANSFORMS:
-        return []
-    axis = root.time_key
-    return [axis] if axis is not None and axis in ordered_pks else []
-
-
 def _local_regroup_join_pairs(
-    *, producer_plan: PlannedQuery, ordered_pks: Sequence[ValueKey],
-    mapping: Mapping[ValueKey, ValueKey], collapsed: Sequence[ValueKey] = (),
+    *, producer_plan: PlannedQuery, ordered_pks: Sequence[ValueKey], mapping: Mapping[ValueKey, ValueKey],
 ) -> List[Tuple[ValueKey, Any]]:
     """Each grain key joined to its producer slot — by structural identity, else by
     projection position; a host-side key embedding another attach's aggregate
-    renders via that attach's placeholder. A ``collapsed`` key is not joined on."""
+    renders via that attach's placeholder."""
     join_pairs = [
         (substitute_value_keys(pk, mapping), _grain_slot(producer_plan, ordered_pks=ordered_pks, pk=pk))
-        for pk in ordered_pks if pk not in collapsed
+        for pk in ordered_pks
     ]
     _assert_attach_covers_producer_grain(
-        joined_slot_ids={slot_id for _, slot_id in join_pairs}
-        | {_grain_slot(producer_plan, ordered_pks=ordered_pks, pk=k) for k in collapsed},
+        joined_slot_ids={slot_id for _, slot_id in join_pairs},
         producer_grain_slot_ids=_producer_grain_slot_ids(producer_plan),
     )
     return join_pairs
@@ -4213,10 +4226,7 @@ def _synthesize_local_regroup(
         )
         for agg in aggs
     ]
-    axis = _collapsed_axis(aggs[0], phase=phase, ordered_pks=ordered_pks)
-    join_pairs = _local_regroup_join_pairs(
-        producer_plan=producer_plan, ordered_pks=ordered_pks, mapping=mapping, collapsed=axis,
-    )
+    join_pairs = _local_regroup_join_pairs(producer_plan=producer_plan, ordered_pks=ordered_pks, mapping=mapping)
     attach_kwargs = _local_regroup_kernel(
         decision, producer_plan=producer_plan, bundle=bundle,
         ranking_candidates=producer_prebound.ranking_candidates,
@@ -4244,7 +4254,6 @@ def _synthesize_local_regroup(
              if isinstance(a, AggregateKey) and a in alias_map]
             if producer_plan.semi_join_filters else []
         ),
-        collapsed=[_grain_slot(producer_plan, ordered_pks=ordered_pks, pk=k) for k in axis],
         **attach_kwargs,
     )
 
@@ -4473,9 +4482,10 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
             population=population,
         ))
     # A row-phase one is synthesized at its own declared grain (never widened to the
-    # query dimensions) and broadcast per partition onto the base rows.
+    # query dimensions) and broadcast per partition onto the base rows; a first / last's operand keeps the query's
+    # grain, its pick coarsening it (semantics Axiom 5).
     for c in row_reaggs:
-        c_grain = constituent_grain(
+        c_grain = Grain.of([*projected_dim_keys, *projected_td_keys]) if is_ranked_over_cells(c) else constituent_grain(
             c=c, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
         )
@@ -5205,7 +5215,7 @@ def _plan_domain(
     supplying = [
         a.substitutions[0].placeholder for a in attaches
         if a.attach_phase == "combined" and a.substitutions and a.unrelated_dataset is None
-        and not a.broadcast_dimensions and not a.collapsed and len(a.join_pairs) == len(grain or ())
+        and not a.broadcast_dimensions and len(a.join_pairs) == len(grain or ())
     ]
     if not grain or not supplying:
         return None
