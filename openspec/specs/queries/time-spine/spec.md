@@ -394,4 +394,4 @@ Saving a model SHALL be refused with a typed error naming the model and the join
 
 #### Scenario: A stored join to the spine is dropped on load
 - **WHEN** a store written before schema version 25 holds a model `ev` without a time axis whose join targets `time_spine`, and a query groups by `time_spine.timestamp` month over Jan–Mar and sums `ev.amount`
-- **THEN** `ev` loads without that join, with the warning naming `ev` and the join, the stored document is unchanged, and the query returns the monthly sums
+- **THEN** `ev` loads without that join, with the warning naming `ev` and the join, the stored document is unchanged, and the query returns the same rows as the same store without that join

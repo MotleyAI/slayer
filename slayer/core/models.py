@@ -46,6 +46,7 @@ from slayer.core.enums import (
 from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, SpellingConflictError, UnknownKeyError
 from slayer.core.names import NAME_PATTERN, folded_collisions, match_name
 from slayer.core import vocabulary
+from slayer.core.stored_rewrites import stored_input_rewritten
 from slayer.core.vocabulary import SOURCE_ORIGIN_KEYS, Spellings, attribute_used, converted_document, converted_input, method_twin, name_twins, old_keywords, renamed_input, same_ignoring_deprecations
 from slayer.core.warnings import DeprecatedInputWarning, NameCollisionWarning, SlayerUnknownStoredKeyWarning, UnknownStoredKeyWarning
 from slayer.core.format import NumberFormat
@@ -1739,6 +1740,7 @@ class DatasourceConfig(AtomicAssignment):
         data = _migrate_schema(entity="DatasourceConfig", data=data)
         if isinstance(data, dict) and "user" in data and "username" not in data:
             data["username"] = data.pop("user")
+            stored_input_rewritten()
         return data
 
     @field_validator("name")
@@ -1773,13 +1775,18 @@ class DatasourceConfig(AtomicAssignment):
         """Raise ``GranularityDefinitionError`` for the first entry breaking a save-time rule."""
         reserved = reserved_granularity_names()
         seen: set[str] = set()
+        formers: set[str] = set()
         for g in self.granularities:
             rule = definition_error(g, reserved=reserved)
             if rule is None and granularity_key(g.name) in seen:
                 rule = "the name duplicates another entry (names compare case-insensitively)"
+            if rule is None and g.renamed_from is not None and granularity_key(g.renamed_from) in formers:
+                rule = f"renamed_from {g.renamed_from!r} duplicates another entry's (compared case-insensitively)"
             if rule is not None:
                 raise GranularityDefinitionError(name=g.name, rule=rule)
             seen.add(granularity_key(g.name))
+            if g.renamed_from is not None:
+                formers.add(granularity_key(g.renamed_from))
 
     @property
     def granularity_definitions(self) -> dict[str, CustomGranularity]:
