@@ -488,7 +488,7 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
 | `--no-views` | No | (with `--ingest`) Skip views and materialized views (ingested by default) |
 | `--surface-internals` | No | (with `--ingest`) Ingest recognised ELT/migration internals visible instead of hidden |
-| `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
+| `--years` | No | (demo only) Years of synthetic data (default: reuse the existing demo, else 2); differing from the existing demo's years rebuilds it |
 | `-y`, `--yes` | No | Overwrite an existing datasource without prompting |
 | `--storage` | No | Storage path |
 

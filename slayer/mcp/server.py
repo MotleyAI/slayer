@@ -8,7 +8,7 @@ import sys
 import weakref
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
-from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from inspect import cleandoc
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -285,7 +285,7 @@ class StartupPreparation:
         self.outcome = StartupOutcome() if demo_setup or ingest else StartupOutcome(state="ready")
 
     @asynccontextmanager
-    async def lifespan(self, _app: object) -> AsyncIterator[None]:
+    async def lifespan(self, _app: object) -> AsyncGenerator[None]:
         """Run preparation while any session is open (mcp enters this per connection); the last one out cancels it."""
         if self.outcome.state != "pending":
             yield

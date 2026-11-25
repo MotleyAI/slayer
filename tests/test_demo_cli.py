@@ -145,8 +145,9 @@ class TestPrepareDemo:
 
         monkeypatch.setattr(cli, "ensure_demo_datasource", boom)
         store = str(tmp_path / "store")
+        args, storage = argparse.Namespace(storage=store), YAMLStorage(base_dir=store)
         with pytest.raises(jaffle_shop.DemoSetupError) as caught:
-            cli._prepare_demo(argparse.Namespace(storage=store), YAMLStorage(base_dir=store))
+            cli._prepare_demo(args, storage)
         assert caught.value.reason == "disk full"
         assert str(caught.value) == "Failed to set up the Jaffle Shop demo: disk full"
 
