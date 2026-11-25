@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextlib
 import datetime
 import re
-import sqlite3
 import uuid
 from collections.abc import AsyncGenerator, Generator, Sequence
 from decimal import Decimal
@@ -26,6 +25,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.database import engine_factory
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_conn import transaction as sqlite_transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1737_fixtures import TableSpec
 from tests._dev2215_fixtures import DS_FIELDS, NOW, TABLES, dev2215_datasets
@@ -321,7 +321,11 @@ class FileProvider(BaseModel):
 
     @contextlib.contextmanager
     def _connection(self) -> Generator[Any]:
-        connection = sqlite3.connect(self.path) if self.engine == "sqlite" else duckdb.connect(str(self.path))
+        if self.engine == "sqlite":
+            with sqlite_transaction(self.path) as connection:
+                yield connection
+            return
+        connection = duckdb.connect(str(self.path))
         try:
             yield connection
             connection.commit()

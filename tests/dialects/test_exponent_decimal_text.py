@@ -48,12 +48,12 @@ def test_exponent_text_keeps_every_digit(text: str, precision: int, scale: int, 
     assert duckdb.sql(f"SELECT {_cast(text, precision, scale).sql(dialect='duckdb')}").fetchone() == (Decimal(value),)
 
 
-@pytest.mark.parametrize("text", ["abc", "1e", "1ex", "e1", ".e1", "+e1", "1.2.3e1"])
+@pytest.mark.parametrize("text", ["abc", "1e", "1ex", "e1", ".e1", "+e1", "1.2.3e1", "+-1e1", "--1e1", "1-2e1"])
 def test_try_cast_of_text_that_is_no_number_is_null(text: str) -> None:
     assert duckdb.sql(f"SELECT {_cast(text, 10, 2, try_=True).sql(dialect='duckdb')}").fetchone() == (None,)
 
 
-@pytest.mark.parametrize("text", ["e1", "1.2.3e1"])
+@pytest.mark.parametrize("text", ["e1", "1.2.3e1", "+-1e1"])
 def test_cast_of_an_exponent_without_a_number_fails(text: str) -> None:
     relation = duckdb.sql(f"SELECT {_cast(text, 10, 2).sql(dialect='duckdb')}")
     with pytest.raises(duckdb.ConversionException):

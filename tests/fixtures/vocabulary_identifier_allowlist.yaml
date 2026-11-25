@@ -419,6 +419,10 @@ carve_outs:
   - {name: collect_model_entity_pairs, file: slayer/search/render.py, reason: "deprecated twin until 3.0"}
   - {name: _model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
   - {name: model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
+  - {name: PercentileColumns, file: slayer/sql/dialects/_ordered_set_split.py, reason: "physical database or result-set column"}
+  - {name: _COLUMN, file: slayer/sql/dialects/_ordered_set_split.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/sql/dialects/_ordered_set_split.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/dialects/_ordered_set_split.py, reason: "physical database or result-set column"}
   - {name: describe_cursor_column, file: slayer/sql/dialects/_tier2.py, reason: "physical database or result-set column"}
   - {name: _column_comments, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
   - {name: column, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
@@ -462,6 +466,8 @@ carve_outs:
   - {name: columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: referred_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: reflect_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
+  - {name: _group_by_columns_only, file: slayer/sql/dialects/tsql.py, reason: "physical database or result-set column"}
+  - {name: _reads_no_column, file: slayer/sql/dialects/tsql.py, reason: "physical database or result-set column"}
   - {name: describe_cursor_column, file: slayer/sql/dialects/tsql.py, reason: "physical database or result-set column"}
   - {name: reads_source_column, file: slayer/sql/field_expansion.py, reason: "physical database or result-set column"}
   - {name: _SemiJoinOps, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
@@ -491,6 +497,7 @@ carve_outs:
   - {name: src_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _join_alias_memo, file: slayer/sql/naming.py, reason: "SQL JOIN as an operation"}
   - {name: _join_alias_used, file: slayer/sql/naming.py, reason: "SQL JOIN as an operation"}
+  - {name: relation_column, file: slayer/sql/naming.py, reason: "physical database or result-set column"}
   - {name: columns, file: slayer/sql/render/cte_assembly.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/render/row_expr.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/render/value_expr.py, reason: "SQL column in a SQL AST, statement or wire surface"}

@@ -72,10 +72,16 @@ def test_an_unqualified_grouping_column_is_read_from_the_rows(dialect, projectio
     assert _rows(split.sql(dialect="duckdb")) == _rows(query)
 
 
-def test_sql_server_reads_a_descending_percentile_as_its_complement() -> None:
+def test_sql_server_reads_a_descending_percentile_as_its_literal_complement() -> None:
     query = _percentile_query("0.25", grouped=True).replace("ORDER BY t.x)", "ORDER BY t.x DESC)")
     sql = TsqlDialect().rewrite_statement(_parsed(query)).sql(dialect="tsql")
-    assert "PERCENTILE_CONT((1 - 0.25)) WITHIN GROUP (ORDER BY t.x) OVER (PARTITION BY t.k)" in sql
+    assert "PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY t.x) OVER (PARTITION BY t.k)" in sql
+
+
+def test_bigquery_reads_a_descending_percentile_as_its_literal_complement() -> None:
+    query = _percentile_query("0.1", grouped=True).replace("ORDER BY t.x)", "ORDER BY t.x DESC)")
+    sql = BigqueryDialect().rewrite_statement(_parsed(query)).sql(dialect="bigquery")
+    assert "PERCENTILE_CONT(t.x, 0.9) OVER (PARTITION BY t.k)" in sql
 
 
 def test_sql_server_reads_a_windowed_percentile_per_group() -> None:

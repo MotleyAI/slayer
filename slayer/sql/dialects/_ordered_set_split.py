@@ -7,6 +7,7 @@ becomes an aggregate of those values and every other column reads its row-level 
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Callable, Dict, List, Sequence, Tuple
 
 from sqlglot import exp
@@ -88,23 +89,39 @@ def _grouping_term(key: Expr, select: exp.Select) -> Expr:
     return (key.this if isinstance(key, exp.Alias) else key).copy()
 
 
+def _complement(p: Expr) -> Expr:
+    """``1 − p``; a literal for a literal ``p`` (SQL Server and BigQuery take only a literal fraction)."""
+    if isinstance(p, exp.Literal) and p.is_number:
+        return exp.Literal.number(str(Decimal(1) - Decimal(p.this)))
+    return exp.Paren(this=exp.Sub(this=exp.Literal.number(1), expression=p.copy()))
+
+
+def _named(projection: Expr) -> Expr:
+    """A bare column projection under its output name: it will read a row-level copy named otherwise."""
+    if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Identifier):
+        return exp.Alias(this=projection, alias=projection.this.copy())
+    return projection
+
+
+def _row_reads(select: exp.Select, nodes: List[Expr], percentiles: List[Expr]) -> List[exp.Column]:
+    """The columns outside the percentiles that read a row: an unqualified name reads a source column inside the
+    projections, and may name an output outside them."""
+    aliases = {e.alias for e in select.expressions if isinstance(e, exp.Alias)}
+    in_projections = {id(d) for e in select.expressions for d in e.walk()}
+    inside = {id(d) for p in percentiles for d in p.walk()}
+    return [c for c in nodes if isinstance(c, exp.Column) and id(c) not in inside
+            and (c.table or c.name not in aliases or id(c) in in_projections)]
+
+
 def _split(select: exp.Select, *, columns: PercentileColumns) -> None:
-    for projection in list(select.expressions):
-        if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Identifier):
-            # It reads the row-level copy below, whose name is not its output name.
-            projection.replace(exp.Alias(this=projection.copy(), alias=projection.this.copy()))
+    select.set("expressions", [_named(p) for p in select.expressions])
     group = select.args.get("group")
     partition = [_grouping_term(k, select) for k in group.expressions] if group is not None else []
-    aliases = {e.alias for e in select.expressions if isinstance(e, exp.Alias)}
-    # An unqualified name reads a source column inside the projections; outside them it may name an output.
-    in_projections = {id(d) for e in select.expressions for d in e.walk()}
     nodes = list(_own_nodes(select))
     if any(isinstance(n, exp.Star) and not isinstance(n.parent, exp.AggFunc) for n in nodes):
         raise ValueError("PERCENTILE_CONT beside a * projection cannot be split into a window subquery")
     percentiles = [n for n in nodes if is_percentile_cont(n)]
-    inside = {id(d) for p in percentiles for d in p.walk()}
-    reads = [c for c in nodes if isinstance(c, exp.Column) and id(c) not in inside
-             and (c.table or c.name not in aliases or id(c) in in_projections)]
+    reads = _row_reads(select, nodes, percentiles)
     names: Dict[Tuple[str, str], str] = {}
     projected: List[Expr] = []
 
@@ -119,7 +136,7 @@ def _split(select: exp.Select, *, columns: PercentileColumns) -> None:
     for node in percentiles:
         p, ordered = node.this.this, node.expression.expressions[0]
         if ordered.args.get("desc"):  # the p-th value descending is the (1 − p)-th ascending
-            p = exp.Paren(this=exp.Sub(this=exp.Literal.number(1), expression=p.copy()))
+            p = _complement(p)
         windowed, pick = columns(p, ordered.this, partition)
         outer: List[exp.Column] = []
         for window in windowed:
