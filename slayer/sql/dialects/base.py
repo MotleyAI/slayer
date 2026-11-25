@@ -1009,7 +1009,7 @@ class SqlDialect(BaseModel):
         return None
 
     def converted_zones(self, statement: Expr, *, zones: Iterable[str]) -> list[str]:  # NOSONAR(S1172) — hook signature
-        """Of the stage ``zones``, those ``statement`` converts to; default: all of them."""
+        """Of ``zones``, those ``statement`` converts between; default: all of them."""
         return sorted(zones)
 
     def zone_probe(self, zone: ZoneInfo) -> Optional[exp.Select]:  # NOSONAR(S1172) — hook signature

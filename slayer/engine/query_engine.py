@@ -224,6 +224,7 @@ from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.database.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
 from slayer.sql.zoned_reads import collect_zone_warnings
+from slayer.core.time_zones import CIVIL
 from slayer.sql.generator import (
     PlannedStatement,
     _finish_statement,
@@ -837,8 +838,16 @@ class _Prepared(BaseModel):
     #: The SQL evaluates ``now()`` / ``current_date()``: its result must never be cached.
     reads_clock: bool = False
     time_zone: Optional[str] = None
-    #: The stage zones the statement converts to.
+    #: The zones the statement converts between.
     zones: List[str] = PydanticField(default_factory=list)
+
+
+def _zones_in_play(rendered: "_Rendered") -> set[str]:
+    """Every zone a statement may convert between: its stages' zones and the source zones its datasets declare."""
+    bundles = [rendered.bundle, *(p.stage_bundle for p in rendered.emitted_list if p.stage_bundle is not None)]
+    zones = {b.time_zone for b in bundles} | {rendered.datasource.time_zone}
+    zones |= {f.time_zone for b in bundles for d in b.datasets_by_name.values() for f in d.fields}
+    return {z for z in zones if z is not None and z != CIVIL}
 
 
 class _Rendered(BaseModel):
@@ -1501,9 +1510,7 @@ class SlayerQueryEngine:
             row_sources=rendered.row_sources,
             reads_clock=plans_read_clock(rendered.emitted_list),
             time_zone=root_planned.stage_bundle.time_zone if root_planned.stage_bundle is not None else None,
-            zones=get_dialect(dialect).converted_zones(statement, zones={
-                p.stage_bundle.time_zone for p in rendered.emitted_list
-                if p.stage_bundle is not None and p.stage_bundle.time_zone is not None}),
+            zones=get_dialect(dialect).converted_zones(statement, zones=_zones_in_play(rendered)),
         )
 
     async def _plan_and_render(self, **kwargs: Any) -> _Rendered:

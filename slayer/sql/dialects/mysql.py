@@ -165,9 +165,9 @@ class MysqlDialect(SqlDialect):
             exp.Literal.string(iso_text(value)), exp.Literal.string(_UTC_OFFSET), exp.var("@@session.time_zone")])
 
     def converted_zones(self, statement: Expr, *, zones: Iterable[str]) -> list[str]:
-        targets = {node.args["target_tz"].name for node in statement.find_all(exp.ConvertTimezone)
-                   if isinstance(node.args.get("target_tz"), exp.Literal)}
-        return sorted(targets.intersection(zones))
+        named = {zone.name for node in statement.find_all(exp.ConvertTimezone)
+                 for zone in (node.args.get("source_tz"), node.args.get("target_tz")) if isinstance(zone, exp.Literal)}
+        return sorted(named.intersection(zones))
 
     def zone_probe(self, zone: ZoneInfo) -> Optional[exp.Select]:
         """``CONVERT_TZ`` is NULL for a named zone the server's time zone tables do not hold."""

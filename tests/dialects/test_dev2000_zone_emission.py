@@ -155,7 +155,7 @@ async def test_trino_conversions_keep_microseconds(name: str) -> None:
 async def test_mysql_probes_only_zones_the_statement_converts_to() -> None:
     mysql = get_dialect("mysql")
     converting = parse(await render("mysql", zoned_query(**_queries("ordered_at")["bucket"])), "mysql")
-    assert mysql.converted_zones(converting, zones={NY, TOKYO}) == [NY]
+    assert mysql.converted_zones(converting, zones={NY, TOKYO, "UTC"}) == [NY, "UTC"]  # source zone UTC too
     civil = parse(await render("mysql", zoned_query(
         dimensions=["orders.local_slot"], time_dimensions=[{"field": "orders.order_day", "granularity": "month"}],
         metrics=[m("count(orders.*)", "n")],
