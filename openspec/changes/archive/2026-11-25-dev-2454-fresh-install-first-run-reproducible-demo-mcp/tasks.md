@@ -13,7 +13,7 @@
 - [x] 2.1 Seeding bootstrap in `slayer/demo/jaffle_shop.py` (`generate_data` / `_jafgen_cmd`): seeded `random` and `np.random`, dedicated-RNG `uuid.uuid4` replacement, `PYTHONHASHSEED=0` in the child env, then `jafgen.cli.app()`; remove the `shutil.which("jafgen")` fallback. Verify: 1.1 passes.
 - [x] 2.2 Pin `jafgen = "0.4.14"` in `pyproject.toml` with a one-line comment that the demo data depends on this exact version; `poetry lock` (no unrelated upgrades). Verify: `poetry check --lock` passes.
 - [x] 2.3 Generator stamp as the DuckDB scalar macro `_slayer_demo_stamp()` (jafgen version, Faker version, seed-recipe constant, years), written into the sibling DB before the swap; `build_jaffle_shop` rebuilds on schema / stamp mismatch and on a years mismatch only for explicit years; `datasources create demo --years` default becomes unset (2 when building). Verify: 1.2 passes.
-- [ ] 2.4 Update `docs/getting-started/cli.md`'s expected-output block to the real output. Verify: 1.3 passes on 3.11 and 3.14 in CI.
+- [x] 2.4 Update `docs/getting-started/cli.md`'s expected-output block to the real output. Verify: 1.3 passes on 3.11 and 3.14 in CI.
 
 ## 3. MCP readiness gate
 
@@ -36,8 +36,8 @@
 ## 7. CI
 
 - [x] 7.1 Remove the rossbowen jafgen fork install from `ci.yml` (both unit jobs and `JAFGEN_SHA`), `latest-deps.yml` and `pg-facade-e2e.yml`. Verify: `grep -rn rossbowen .github` is empty.
-- [ ] 7.2 `latest-deps.yml`: clean venv on Python `["3.11", "3.14"]`; one `pip install ".[all]" <dev tools from [tool.poetry.group.dev.dependencies]>` resolve without the lockfile; `pip check`; print `pip freeze`; run the unit suite. Verify: the workflow runs green on the PR (it is path-triggered by its own change).
-- [ ] 7.3 Fix every test or notebook that depended on fork-shaped demo data (CI failures after 7.1); re-execute affected notebooks with saved outputs. Verify: CI unit and notebook jobs green.
+- [x] 7.2 `latest-deps.yml`: clean venv on Python `["3.11", "3.14"]`; one `pip install ".[all]" <dev tools from [tool.poetry.group.dev.dependencies]>` resolve without the lockfile; `pip check`; print `pip freeze`; run the unit suite. Verify: the workflow runs green on the PR (it is path-triggered by its own change).
+- [x] 7.3 Fix every test or notebook that depended on fork-shaped demo data (CI failures after 7.1); re-execute affected notebooks with saved outputs. Verify: CI unit and notebook jobs green.
 
 ## 8. Finish
 
