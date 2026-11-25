@@ -44,8 +44,8 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.field_expression import portable_text
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
 from slayer.core.granularity import bucket_type as granularity_bucket_type
-from slayer.core.time_spine import TIME_SPINE_DATASET, TIME_SPINE_FIELD, is_spine
-from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
+from slayer.core.time_spine import TIME_SPINE_FIELD, is_spine
+from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, display_token, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.relationship_walker import (
     OrientedRelationship,
     aggregation_owner,
@@ -231,10 +231,10 @@ class AggRenderSpec(BaseModel):
     element_type: Optional[DataType] = None
 
 
-def _is_spine_bucket(key: Any) -> bool:
+def _is_spine_bucket(key: Any, *, spine: SpineFactor) -> bool:
     """A bucket of the spine field, as a spine stage's host reads it."""
     return isinstance(key, TimeTruncKey) and isinstance(key.source, FieldKey) \
-        and key.source.leaf == TIME_SPINE_FIELD and source_anchor_path(key.source) in ((), (TIME_SPINE_DATASET,))
+        and key.source.leaf == TIME_SPINE_FIELD and source_anchor_path(key.source) in ((), spine.path)
 
 
 #: Window transforms stepping along the time axis one value per cell.
@@ -1016,7 +1016,7 @@ class SQLGenerator:
         """Mint the internal JOIN alias for cumulative ``path`` under ``root``"""
         alloc = self._gen_allocator
         if alloc is None:
-            return root if not path else "__".join(path)
+            return root if not path else "__".join(display_token(t) for t in path)
         return alloc.alias_for(
             root=root, path=path, limit=self._dialect.max_identifier_bytes,
         )
@@ -4224,7 +4224,8 @@ class SQLGenerator:
             return body, {names[public[sid]]: col for sid, col in zip(plan.projection, outputs)}
 
         # A spine stage's rows are every bucket × its tuples' union (semantics Axiom 15).
-        spine_sids = [sid for sid in dims if planned_query.spine is not None and _is_spine_bucket(slots_by_id[sid].key)]
+        spine_sids = [sid for sid in dims if planned_query.spine is not None
+                      and _is_spine_bucket(slots_by_id[sid].key, spine=planned_query.spine)]
         tuple_sids = [sid for sid in dims if sid not in spine_sids]
         branches = [
             self._row_supply_branch(index=i, branch=branch, cells=cells, dims=tuple_sids, key_names=key_names,
@@ -4302,7 +4303,8 @@ class SQLGenerator:
         if len(branches) == 1:
             union = cast(exp.Select, union).distinct()
         # Over the spine the domain is its tuples × every bucket in range (Axiom 11.6).
-        spine_sids = [sid for sid in dims if planned_query.spine is not None and _is_spine_bucket(slots_by_id[sid].key)]
+        spine_sids = [sid for sid in dims if planned_query.spine is not None
+                      and _is_spine_bucket(slots_by_id[sid].key, spine=planned_query.spine)]
         series_mark = len(self._gen_spine_ctes)
         if spine_sids:
             union = self._spine_crossed(
@@ -5715,7 +5717,7 @@ class SQLGenerator:
             )
             if owner_dataset is None:
                 return None
-            owner_relation = "__".join(key.path)
+            owner_relation = self._join_alias(root=source_relation, path=tuple(key.path))
         else:
             owner_dataset = source_dataset
             owner_relation = source_relation
@@ -5984,7 +5986,7 @@ class SQLGenerator:
                 # host-path alias, not the bare direct-join alias, or the FROM references an unjoined table.
                 expanded_sql = self._expand_derived_field_sql(
                     source_dataset=joined_dataset,
-                    source_relation="__".join(time_field.path),
+                    source_relation=self._join_alias(root=source_relation, path=tuple(time_field.path)),
                     field_name=time_field.field_name,
                     bundle=bundle,
                     owner_path=tuple(time_field.path),

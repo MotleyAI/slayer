@@ -19,7 +19,7 @@ from slayer.core.keys import anchor_token
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name, spelled_name
 from slayer.core.relationship_search import HopFilter, blocking_pairs, routes
-from slayer.core.relationship_walker import canonical_token, neighbors, product_token, walk_terminal
+from slayer.core.relationship_walker import canonical_token, neighbors, product_token, spine_token, walk_terminal
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population.dimension_routing import resolve_route
 
@@ -92,9 +92,9 @@ def anchor_route(
     is the reference after its anchor)."""
     if anchor.name == reader.name:
         return Anchor(dataset=anchor)
-    if is_spine(anchor) or anchor.name == TIME_SPINE_DATASET:
-        return Anchor(dataset=anchor, route=(anchor.name,))
     universe = {**datasets_by_name, reader.name: reader}
+    if is_spine(anchor) or anchor.name == TIME_SPINE_DATASET:
+        return Anchor(dataset=anchor, route=(spine_token(dataset=reader, datasets_by_name=universe),))
     declared = _declared_graph(universe)
     reached = _reach(reader=declared[reader.name], anchor=anchor, universe=declared, rest=rest)
     if reached is not None:

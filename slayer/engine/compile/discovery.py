@@ -193,7 +193,8 @@ class _Walker:
         # The population's spine is counted over each home's own axis, never the product; a member mixing an
         # untrusted to-one branch with other reads counts each home row once by association.
         return any(
-            reads_population_spine(g, host=host) or not self._attributable(g, host=host)
+            reads_population_spine(g, host=host, datasets_by_name=self.bundle.datasets_by_name)
+            or not self._attributable(g, host=host)
             or mixes_untrusted_branch(g, root_dataset=host, host_dataset=host, bundle=self.bundle)
             for g in self.grain
         )
