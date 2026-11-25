@@ -43,7 +43,8 @@ from slayer.core.enums import (
     builtin_empty_value,
     type_display,
 )
-from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, SpellingConflictError, UnknownKeyError
+from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, SpellingConflictError, TimeZoneError, UnknownKeyError
+from slayer.core.time_zones import check_zone
 from slayer.core.names import NAME_PATTERN, folded_collisions, match_name
 from slayer.core import vocabulary
 from slayer.core.vocabulary import SOURCE_ORIGIN_KEYS, Spellings, attribute_used, converted_document, converted_input, method_twin, name_twins, old_keywords, renamed_input, same_ignoring_deprecations
@@ -340,6 +341,13 @@ class DatasetField(DatasetPart):
             "field is then a typed error."
         ),
     )
+    time_zone: str | None = Field(
+        default=None,
+        description=(
+            "The zone a DateTime column's values are stored in: an IANA name, or 'civil' for zone-free time never "
+            "converted. Overrides the datasource's time_zone; only on a DateTime field reading a plain column."
+        ),
+    )
     allowed_aggregations: list[str] | None = None
     filter: str | None = None  # Desugars to CASE WHEN (filter) THEN (value) END in every position
     meta: dict[str, Any] | None = None
@@ -472,6 +480,23 @@ class DatasetField(DatasetPart):
     def _validate_element_type(self) -> "DatasetField":
         check_element_type(name=self.name, data_type=self.datatype, element_type=self.element_type)
         return self
+
+    @model_validator(mode="after")
+    def _validate_time_zone(self) -> "DatasetField":
+        """A source zone only on a ``DateTime`` field reading a plain column."""
+        if self.time_zone is None:
+            return self
+        check_zone(self.time_zone, owner=f"field {self.name!r}", civil=True)
+        if self.datatype is DataType.DATETIME_TZ:
+            reason = "it is DateTimeTz, an instant, which has no source zone"
+        elif self.datatype is not DataType.DATETIME:
+            reason = f"only a DateTime field takes one, and its type is {self.datatype.value if self.datatype else 'undeclared'}"
+        elif not self.is_base:
+            reason = "it is derived; only a field reading a plain column takes one (its reads are converted)"
+        else:
+            return self
+        raise TimeZoneError(f"Field {self.name!r} cannot declare time_zone {self.time_zone!r}: {reason}.",
+                            zone=self.time_zone)
 
     @property
     def _sql_is_nontrivial(self) -> bool:
@@ -1732,6 +1757,15 @@ class DatasourceConfig(AtomicAssignment):
             "at origin + k × multiple × base; usable wherever a built-in granularity is."
         ),
     )
+    time_zone: str | None = Field(
+        default=None,
+        description="The IANA zone its datasets' DateTime columns are stored in, unless a field declares its own.",
+    )
+
+    @field_validator("time_zone")
+    @classmethod
+    def _validate_time_zone(cls, v: str | None) -> str | None:
+        return check_zone(v, owner="a datasource")
 
     @model_validator(mode="before")
     @classmethod

@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Sequence
-from datetime import date
+from datetime import date, datetime
 from typing import Any, ClassVar, Optional
 
 from sqlglot import exp
@@ -43,6 +43,7 @@ from slayer.sql.dialects.base import (
     lit,
     number_literal_text,
     pad_fill,
+    zone_name,
 )
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
@@ -53,8 +54,11 @@ from slayer.sql.dialects.reflection import (
     col,
     eq_literal,
     relation,
+    unwrap_clickhouse_wrapper_str,
 )
 
+#: A ``DateTime`` / ``DateTime64`` type naming its zone: an instant.
+_ZONED_DATETIME = re.compile(r"^DateTime(64)?\s*\(.*'[^']+'\s*\)$", re.I)
 #: Byte-based string functions and their character (UTF-8) counterparts.
 _INDEX = "__slayer_i"
 _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.Upper: "upperUTF8"}
@@ -256,6 +260,21 @@ class ClickhouseDialect(SqlDialect):
     native_lists: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"PI"})
+
+    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+        """``toTimeZone(v, Q)``; a naive value is first read as ``S`` wall clock."""
+        if source is not None:
+            value = exp.Anonymous(this="toDateTime64", expressions=[
+                exp.Anonymous(this="toString", expressions=[value]), exp.Literal.number(6), zone_name(source)])
+        return exp.Anonymous(this="toTimeZone", expressions=[value, zone_name(target)])
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Anonymous(this="toDateTime64", expressions=[
+            exp.Literal.string(iso_text(value)), exp.Literal.number(6), exp.Literal.string("UTC")])
+
+    def is_instant_db_type(self, type_name: str) -> bool:
+        """A ``DateTime`` / ``DateTime64`` naming a zone."""
+        return _ZONED_DATETIME.match(unwrap_clickhouse_wrapper_str(type_name)) is not None
 
     def list_length(self, values: Expression) -> Expression:
         return anon("length", values)

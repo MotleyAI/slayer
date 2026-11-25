@@ -1328,6 +1328,14 @@ def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetFie
     return None
 
 
+def _retyped_instant(*, persisted: DatasetField, fresh: DatasetField) -> DatasetField | None:
+    """A stored ``DateTime`` field whose live column holds instants, re-typed ``DateTimeTz`` (live_schema P1's
+    exception); a source zone does not apply to an instant. ``None`` when nothing changes."""
+    if persisted.datatype is not DataType.DATETIME or fresh.datatype is not DataType.DATETIME_TZ:
+        return None
+    return persisted.model_copy(update={"datatype": DataType.DATETIME_TZ, "time_zone": None})
+
+
 def _merge_one_field(
     *,
     persisted_col: DatasetField,
@@ -1345,7 +1353,10 @@ def _merge_one_field(
     unique_filled = False
     described = False
     if fresh_col is not None:
-        retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) if _reads(persisted_col, fresh_col) else None
+        retyped = None
+        if _reads(persisted_col, fresh_col):
+            retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) or _retyped_instant(
+                persisted=merged_col, fresh=fresh_col)
         if retyped is not None:
             merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):

@@ -66,8 +66,12 @@ from slayer.core.window_duration import WINDOW_UNIT_GRANULARITY
 from slayer.sql.field_expansion import (
     is_trivial_base,
     collect_root_scope_joined_paths,
-    expand_field_definition_parts_sync,
-    wrap_field_filter,
+    expand_field_definition_parts_ast,
+    wrap_field_filter_ast,
+)
+from slayer.sql.zoned_read_check import maybe_check_zoned_reads
+from slayer.sql.zoned_reads import (
+    STORED, VALUE, Context, ReadSite, apply_reads, field_for_column, mark_read, read_column, zone_setting,
 )
 from slayer.ir.planned import (
     AssociationProducerKernel,
@@ -1023,6 +1027,36 @@ class SQLGenerator:
     def _join_alias_resolver(self, root: str) -> "Callable[[Tuple[str, ...]], str]":
         """A root-bound alias resolver for ``expand_derived_refs_sync`` so a"""
         return lambda path: self._join_alias(root=root, path=path)
+
+    def _read(
+        self, column: Expression, *, field: Optional[DatasetField], dataset: SlayerDataset, bundle,
+        path: Tuple[str, ...] = (), context: Context = VALUE, reads_naive: bool = True,
+    ) -> Expression:
+        """``column``, a read of ``dataset``'s source column, through the one read path (a non-column is a definition
+        whose reads went through it already)."""
+        if not isinstance(column, exp.Column):
+            return column
+        site = ReadSite(dataset=dataset, field=field, column=column.name, path=tuple(path), context=context,
+                        reads_naive=reads_naive)
+        return read_column(column, site=site, dialect=self._dialect, setting=zone_setting(bundle))
+
+
+    def _key_read(
+        self, *, table: str, name: str, quoted: bool, dataset: Optional[SlayerDataset], bundle,
+        context: Context = VALUE,
+    ) -> Expression:
+        """A semi-join key column ``table.name``: a dataset's source column through the read path, a derived table's
+        column as is."""
+        column = exp.Column(this=key_identifier(name, quoted=quoted), table=exp.to_identifier(table))
+        if dataset is None:
+            return column
+        return self._read(column, field=field_for_column(dataset, name), dataset=dataset, bundle=bundle,
+                          context=context, reads_naive=False)
+
+    def _derived_read(self, expr: Expression, *, declared: Optional[DatasetField]) -> Expression:
+        """A derived field's value: without a zone, a ``DateTimeTz`` one reads as the dialect's naive type."""
+        instant = declared is not None and declared.datatype is DataType.DATETIME_TZ
+        return self._dialect.read_column(expr, zoned=instant and self._dialect.time_zone is None)
 
     def _scope_frame(self, *, dataset, relation, bundle, allocator, attached_fields=None):
         """Build a ``ScopeFrame`` rooted at ``dataset`` / ``relation`` on the"""
@@ -2248,6 +2282,7 @@ class SQLGenerator:
                             source_dataset=source_dataset,
                             source_relation=source_relation,
                             leaf=key.field_name,
+                            bundle=bundle,
                         )
                     select_columns.append(col_expr.copy().as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, col_expr)
@@ -2883,17 +2918,16 @@ class SQLGenerator:
                 f"{root_dataset.name!r}",
             )
         if isinstance(source, FieldSqlKey):
-            # The value (and any DatasetField.filter CASE) with its type CAST baked in —
-            # parse without re-casting the whole expression.
-            expr = self._parse(self._expand_derived_field_sql(
+            # The value (and any DatasetField.filter CASE) with its type CAST baked in.
+            expr = self._expand_derived_field_ast(
                 source_dataset=root_dataset, source_relation=root_relation,
                 field_name=col.name, bundle=bundle,
-            ))
+            )
         else:
-            expr = self._dialect.read_column(self._resolve_sql(
+            expr = self._read(self._resolve_sql(
                 sql=col.definition_sql or col.name, name=col.name,
                 dataset_name=root_relation, type=col.datatype,
-            ), zoned=self._dialect.is_zoned_db_type(col.db_type))
+            ), field=col, dataset=root_dataset, bundle=bundle)
         for p in self._joined_paths_in_sql(
             sql_expr=expr, source_relation=root_relation,
             source_dataset=root_dataset, bundle=bundle,
@@ -4393,6 +4427,16 @@ class SQLGenerator:
             self._gen_dep_stack.pop()
 
     @contextmanager
+    def _in_zone(self, bundle) -> Generator[None, None, None]:
+        """Render a stage through the dialect carrying its zone and its wall-clock "now"."""
+        base = self._dialect
+        self._dialect = base.zoned(zone=getattr(bundle, "time_zone", None), now=getattr(bundle, "now", None))
+        try:
+            yield
+        finally:
+            self._dialect = base
+
+    @contextmanager
     def _stage_scope(self, relation: Optional[str]) -> Generator[None, None, None]:
         """One multi-stage statement's dep-registry frame; a non-root stage is also a split consumer."""
         self._gen_dep_stack.append({})
@@ -4883,6 +4927,7 @@ class SQLGenerator:
                     joins.append(self._hop_join(
                         edge=edge, prev_dataset=prev_dataset, next_dataset=next_dataset,
                         current_alias=current_alias, next_alias=next_alias, bundle=bundle,
+                        path=tuple(path[: hop_idx + 1]),
                     ))
                     emitted_aliases.add(next_alias)
                 current_alias = next_alias
@@ -4913,25 +4958,38 @@ class SQLGenerator:
         )
         return relation.relation, None, relation.join_kind
 
-    def _join_key(self, *, field: DatasetField, alias: str) -> Expression:
+    def _join_key(
+        self, *, field: DatasetField, dataset: SlayerDataset, alias: str, bundle, context: Context = VALUE,
+        path: Tuple[str, ...] = (),
+    ) -> Expression:
         # Table qualifiers are internal aliases.
         if not field.is_base:
-            return self._computed_key(text=field.definition_sql or field.name, alias=alias)
+            return self._computed_key(text=field.definition_sql or field.name, dataset=dataset, alias=alias,
+                                      bundle=bundle, context=context, path=path)
         key = exp.Column(this=key_identifier(field.physical_name, quoted=field.physical_quoted),
                          table=exp.to_identifier(alias))
-        return self._dialect.read_column(key, zoned=self._dialect.is_zoned_db_type(field.db_type))
+        return self._read(key, field=field, dataset=dataset, bundle=bundle, context=context, path=path)
 
-    def _computed_key(self, *, text: str, alias: str) -> Expression:
-        """A computed relationship key: its expression over ``alias``'s source columns."""
+    def _computed_key(
+        self, *, text: str, dataset: SlayerDataset, alias: str, bundle, context: Context = VALUE,
+        path: Tuple[str, ...] = (),
+    ) -> Expression:
+        """A computed relationship key: its expression over ``alias``'s source columns, each read through the read
+        path."""
         key = self._parse(text)
-        for column in key.find_all(exp.Column):
+        for column in list(key.find_all(exp.Column)):
             if not column.table:
                 column.set("table", exp.to_identifier(alias))
+                read = self._read(column.copy(), field=field_for_column(dataset, column.name), dataset=dataset,
+                                  bundle=bundle, context=context, reads_naive=False, path=path)
+                if column is key:
+                    return read
+                column.replace(read)
         return key
 
     def _hop_join(
         self, *, edge: OrientedRelationship, prev_dataset: SlayerDataset, next_dataset: SlayerDataset, current_alias: str,
-        next_alias: str, bundle,
+        next_alias: str, bundle, context: Context = VALUE, path: Tuple[str, ...] = (),
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
         """``(join_expr, on_expr, join_type)`` for one oriented hop; an unrelated product hop is crossed only under a
         product anchor (semantics 12.2), else fails closed."""
@@ -4947,8 +5005,10 @@ class SQLGenerator:
             )
         join_on_parts = [
             _key_equality(
-                self._join_key(field=src_col, alias=current_alias),
-                self._join_key(field=tgt_col, alias=next_alias),
+                self._join_key(field=src_col, dataset=prev_dataset, alias=current_alias, bundle=bundle, context=context,
+                               path=path[:-1]),
+                self._join_key(field=tgt_col, dataset=next_dataset, alias=next_alias, bundle=bundle, context=context,
+                               path=path),
             )
             for src_col, tgt_col in relationship_key_fields(
                 edge=edge, source=prev_dataset, target=next_dataset,
@@ -4980,6 +5040,7 @@ class SQLGenerator:
                 source_dataset=source_dataset,
                 source_relation=source_relation,
                 leaf=leaf,
+                bundle=bundle,
             )
         current_alias = source_relation
         chain = self._oriented_hop_chain(
@@ -5000,7 +5061,7 @@ class SQLGenerator:
                 f"{current_dataset.name!r}.",
             )
         column = exp.Column(this=exp.to_identifier(leaf), table=exp.to_identifier(current_alias))
-        return self._dialect.read_column(column, zoned=self._dialect.is_zoned_db_type(col_def.db_type))
+        return self._read(column, field=col_def, dataset=current_dataset, bundle=bundle, path=path)
 
     def _rank_family_window(
         self, *, fn: Expression, metric: Expression, partition_by: Iterable[Expression], descending: bool,
@@ -5777,18 +5838,11 @@ class SQLGenerator:
         else:
             owner_dataset = source_dataset
             owner_relation = source_relation
-        expanded_sql = self._expand_derived_field_sql(
+        return self._expand_derived_field_ast(
             source_dataset=owner_dataset, source_relation=owner_relation,
             field_name=key.field_name, bundle=bundle,
             owner_path=tuple(key.path), root_relation=source_relation,
             crossed_paths=crossed_paths,
-        )
-        col = next(
-            (c for c in owner_dataset.fields if c.name == key.field_name), None,
-        )
-        return _wrap_cast_for_type(
-            dialect=self._dialect, expr=self._parse(expanded_sql),
-            dt=self._field_cast_type(col) if col is not None else None,
         )
 
 
@@ -5894,7 +5948,7 @@ class SQLGenerator:
             edge, target = chain[-1]
             joins.append(self._hop_join(
                 edge=edge, prev_dataset=chain[-2][1] if len(chain) > 1 else dataset, next_dataset=target,
-                current_alias=path_alias(path[:-1]), next_alias=path_alias(path), bundle=bundle,
+                current_alias=path_alias(path[:-1]), next_alias=path_alias(path), bundle=bundle, context=STORED,
             ))
         select = exp.select(exp.Column(this=exp.Star(), table=exp.to_identifier(rows))).from_(backing)
         select = _apply_joins(select=select, joins=joins).where(_conjunction(conditions))
@@ -5933,13 +5987,16 @@ class SQLGenerator:
             )
             return relation.relation, relation.join_kind
 
+        by_alias = {path_alias(p): d for p, d in node_datasets.items()}
         ops = _SemiJoinOps(
             alias=path_alias,
-            col=lambda table_alias, name, quoted: exp.Column(
-                this=key_identifier(name, quoted=quoted), table=exp.to_identifier(table_alias)),
+            col=lambda table_alias, name, quoted: self._key_read(
+                table=table_alias, name=name, quoted=quoted, dataset=by_alias.get(table_alias), bundle=bundle,
+                context=STORED),
             table=table,
             attached={tuple(h.node_path) for h in hops if len(h.node_path) == 1},
-            computed=lambda table_alias, text: self._computed_key(text=text, alias=table_alias),
+            computed=lambda table_alias, text: self._computed_key(
+                text=text, dataset=by_alias[table_alias], alias=table_alias, bundle=bundle, context=STORED),
         )
         inner = _semi_join_spine(ops=ops, hops=hops, inner=exp.select(exp.Literal.number(1)))
         return exp.Exists(this=inner.where(predicate))
@@ -5990,7 +6047,7 @@ class SQLGenerator:
         return taken
 
     def _dim_field_expr_from_planned(
-        self, *, source_dataset: SlayerDataset, source_relation: str, leaf: str,
+        self, *, source_dataset: SlayerDataset, source_relation: str, leaf: str, bundle,
     ) -> Expression:
         col = next(
             (c for c in source_dataset.fields if c.name == leaf), None,
@@ -6002,7 +6059,7 @@ class SQLGenerator:
             )
         resolved = self._resolve_sql(sql=col.definition_sql, name=col.name, dataset_name=source_relation,
                                      type=col.datatype)
-        return self._dialect.read_column(resolved, zoned=self._dialect.is_zoned_db_type(col.db_type))
+        return self._read(resolved, field=col, dataset=source_dataset, bundle=bundle)
 
     def _bucket_source_expr(
         self, *, source: ValueKey, scope, source_dataset, source_relation: str, bundle,
@@ -6044,7 +6101,7 @@ class SQLGenerator:
                     )
                 # A joined derived TIME dim whose sql crosses a further relationship must anchor inner refs at the
                 # host-path alias, not the bare direct-join alias, or the FROM references an unjoined table.
-                expanded_sql = self._expand_derived_field_sql(
+                expanded = self._expand_derived_field_ast(
                     source_dataset=joined_dataset,
                     source_relation="__".join(time_field.path),
                     field_name=time_field.field_name,
@@ -6055,7 +6112,7 @@ class SQLGenerator:
                 )
                 owner = joined_dataset
             else:
-                expanded_sql = self._expand_derived_field_sql(
+                expanded = self._expand_derived_field_ast(
                     source_dataset=source_dataset,
                     source_relation=source_relation,
                     field_name=time_field.field_name,
@@ -6063,21 +6120,18 @@ class SQLGenerator:
                     cast=False,
                 )
                 owner = source_dataset
-            declared = owner.get_field(time_field.field_name)
-            return self._dialect.read_column(
-                self._parse(expanded_sql), zoned=self._dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
-            )
+            return self._derived_read(expanded, declared=owner.get_field(time_field.field_name))
         raise NotImplementedError(
             f"Unsupported TimeTruncKey field type: {type(time_field).__name__}",
         )
 
-    def _expand_derived_field_sql(
+    def _expand_derived_field_ast(
         self, *, source_dataset: SlayerDataset, source_relation: str, field_name: str, bundle: ResolvedSourceBundle,
         owner_path: Tuple[str, ...] = (),
         root_relation: "Optional[str]" = None,
         crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
         cast: bool = True,
-    ) -> str:
+    ) -> Expression:
         """Expand a ``FieldSqlKey`` target to SQL, casting the value to its
         declared type (a bare field is skipped) and desugaring any ``DatasetField.filter``
         to ``CASE WHEN <filter> THEN <value> END``. The type CAST rides
@@ -6093,17 +6147,19 @@ class SQLGenerator:
                 f"{source_dataset.name!r}",
             )
         resolver_root = root_relation if root_relation is not None else source_relation
-        value, filter_sql = expand_field_definition_parts_sync(
+        value, predicate = expand_field_definition_parts_ast(
             field=col, dataset=source_dataset, alias_path=source_relation,
             datasets_by_name=bundle.datasets_by_name, dialect=self.dialect,
             owner_path=owner_path, alias_resolver=self._join_alias_resolver(resolver_root),
-            crossed_paths=crossed_paths,
+            crossed_paths=crossed_paths, read=mark_read,
         )
-        value_ast = self._parse(value)
-        value_sql = (
-            _wrap_cast_for_type(dialect=self._dialect, expr=value_ast, dt=self._field_cast_type(col)) if cast else value_ast
-        ).sql(dialect=self.dialect)
-        return wrap_field_filter(value_sql=value_sql, filter_sql=filter_sql)
+        value = apply_ast_rewrites(tree=value, target_dialect=self._dialect, parse_dialect=self._dialect)
+        if cast:
+            value = _wrap_cast_for_type(dialect=self._dialect, expr=value, dt=self._field_cast_type(col))
+        if predicate is not None:
+            predicate = apply_ast_rewrites(tree=predicate, target_dialect=self._dialect, parse_dialect=self._dialect)
+        return apply_reads(wrap_field_filter_ast(value=value, predicate=predicate), dialect=self._dialect,
+                           setting=zone_setting(bundle))
 
     def _joined_paths_in_sql(
         self, *, sql_expr: Expression, source_relation: str, source_dataset,
@@ -6153,7 +6209,7 @@ class SQLGenerator:
 
         def _derived_paths(*, dataset, relation, field_name, owner_path) -> None:
             crossed: Set[Tuple[str, ...]] = set()
-            self._expand_derived_field_sql(
+            self._expand_derived_field_ast(
                 source_dataset=dataset, source_relation=relation,
                 field_name=field_name, bundle=bundle, owner_path=owner_path,
                 crossed_paths=crossed,
@@ -6414,7 +6470,8 @@ class SQLGenerator:
             # source_relation) and desugars any DatasetField.filter to CASE WHEN here;
             # a plain physical column stays bare for the aggregate.
             if isinstance(source, FieldSqlKey) and bundle is not None:
-                sql_text = self._expand_derived_field_sql(
+                # The declared-type CAST is baked into the value, so the aggregate must not re-cast it.
+                read_value = self._expand_derived_field_ast(
                     source_dataset=source_dataset,
                     source_relation=source_relation,
                     field_name=col.name,
@@ -6422,18 +6479,15 @@ class SQLGenerator:
                     owner_path=source.path if host_grain_root is not None else (),
                     root_relation=host_grain_root,
                 )
-                # The declared-type CAST is baked into sql_text (on the value), so
-                # the aggregate must not re-cast the whole expression.
+                sql_text = None
                 field_type = None
-                zoned_value = None
             else:
                 sql_text = col.definition_sql or col.name
                 field_type = col.datatype
-                # A zoned physical column reads as the dialect's naive type inside the aggregate too.
-                zoned_value = self._dialect.read_column(
-                    self._resolve_sql(sql=sql_text, name=col.name, dataset_name=source_relation, type=field_type),
-                    zoned=True,
-                ) if self._dialect.is_zoned_db_type(col.db_type) else None
+                read_value = self._resolve_sql(sql=sql_text, name=col.name, dataset_name=source_relation,
+                                               type=field_type)
+                if bundle is not None:
+                    read_value = self._read(read_value, field=col, dataset=source_dataset, bundle=bundle)
             expression = rendered_expression(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=col.name,
@@ -6445,7 +6499,7 @@ class SQLGenerator:
                 field_type=field_type,
                 input_type=input_type,
                 element_type=element_type,
-                value=zoned_value,
+                value=read_value,
                 agg_kwargs=self._agg_param_exprs(
                     key=key, expression=expression, resolved=resolved_agg_kwargs, scope=param_scope,
                 ),
@@ -6585,16 +6639,25 @@ class SQLGenerator:
             for condition in conditions[1:]:
                 combined = exp.And(this=combined, expression=condition)
             return combined
+        hop_names = {_alias(p): n for p, n in node_datasets.items()}
+
+        def hop_dataset(table: str) -> Optional[SlayerDataset]:
+            if table not in hop_names:
+                return None
+            return source_dataset if hop_names[table] == source_dataset.name else self._hop_dataset(
+                name=hop_names[table], bundle=bundle)
+
         ops = _SemiJoinOps(
             alias=_alias,
-            col=lambda table, name, quoted: exp.Column(
-                this=key_identifier(name, quoted=quoted), table=exp.to_identifier(table)),
+            col=lambda table, name, quoted: self._key_read(
+                table=table, name=name, quoted=quoted, dataset=hop_dataset(table), bundle=bundle),
             table=_table,
             attached={
                 tuple(h.node_path) for h in rest
                 if tuple(h.node_path[:-1]) not in in_group
             },
-            computed=lambda table, text: self._computed_key(text=text, alias=table),
+            computed=lambda table, text: self._computed_key(text=text, dataset=hop_dataset(table), alias=table,
+                                                            bundle=bundle),
         )
         inner = exp.select(exp.Literal.number(1))
         if any(h.null_extended for h in rest if ops.is_attached(h)):
@@ -7183,6 +7246,8 @@ def build_planned_statement(
     statement = project_untrusted_hops(_build_planned_stages_ast(
         planned_queries, bundle=bundle, dialect=dialect, kept_stages=kept,
     ))
+    maybe_check_zoned_reads(statement, datasets=_statement_datasets(planned_queries, bundle=bundle),
+                            stamp=_DATASET_STAMP)
     filter_associations = association_datasets(statement)
     if type_probe:
         statement = _as_dialect(dialect).type_probe(statement)
@@ -7201,6 +7266,15 @@ def build_planned_statement(
         exempt=_user_authored_exemptions(bundle=bundle, dialect=dialect), kept_stages=kept,
         associated=filter_associations,
     )
+
+
+def _statement_datasets(planned_queries, *, bundle) -> Dict[str, SlayerDataset]:
+    """Every dataset a statement's stages resolve, by name."""
+    out = dict(bundle.datasets_by_name)
+    for planned in planned_queries:
+        if planned.stage_bundle is not None:
+            out.update(planned.stage_bundle.datasets_by_name)
+    return out
 
 
 def generate_planned_stages(
@@ -7239,7 +7313,9 @@ def _build_planned_stages_ast(
         single._gen_splice_chain = getattr(bundle, "splice_chain", ())
         single._gen_splice_failures = getattr(bundle, "splice_failures", {})
         # The stage's own universe: its query extensions overlaid.
-        return single._build_from_planned(planned_queries[0], bundle=planned_queries[0].stage_bundle or bundle)
+        stage_bundle = planned_queries[0].stage_bundle or bundle
+        with single._in_zone(stage_bundle):
+            return single._build_from_planned(planned_queries[0], bundle=stage_bundle)
 
     schema_by_name = {
         p.stage_schema.relation_name: p.stage_schema
@@ -7277,7 +7353,7 @@ def _build_planned_stages_ast(
         generator._gen_splice_chain = stage_bundle.splice_chain
         generator._gen_splice_failures = stage_bundle.splice_failures
         spliced = is_spliced(planned)
-        with generator._stage_scope(relation):
+        with generator._stage_scope(relation), generator._in_zone(stage_bundle):
             statement = generator._build_from_planned(
                 planned, bundle=stage_bundle, reuse_allocator=True,
             )

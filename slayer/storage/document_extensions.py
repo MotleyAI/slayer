@@ -80,7 +80,7 @@ def apply_field_entry(field: DatasetField, entry: Entry | None, *, notes: list[E
     content: ext.FieldContent = entry.payload.field
     update: dict[str, Any] = {k: v for k in _ALWAYS if (v := getattr(content, k)) is not None and v is not False}
     if entry.matched:
-        update.update({k: v for k in ("filter", "granularity", "allowed_aggregations")
+        update.update({k: v for k in ("filter", "granularity", "time_zone", "allowed_aggregations")
                        if (v := getattr(content, k)) is not None})
         if content.expression is not None:
             update["expression"] = content.expression
@@ -88,7 +88,8 @@ def apply_field_entry(field: DatasetField, entry: Entry | None, *, notes: list[E
             update["expression"] = _dialect_only(content.sql, target=target)
         if content.datatype is not None:
             update["datatype"] = content.datatype
-    elif any(getattr(content, k) is not None for k in ("expression", "filter", "granularity", "allowed_aggregations")):
+    elif any(getattr(content, k) is not None for k in ("expression", "filter", "granularity", "time_zone",
+                                                         "allowed_aggregations")):
         notes.append(ExtensionNote(kind="field", entity=field.name, message=f"{label}: {STALE}; its definition is "
                                    "read from the document"))
     return field.model_copy(update=update)

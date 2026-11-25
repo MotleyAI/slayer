@@ -111,6 +111,7 @@ from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_
 from slayer.core.query import TimeDimension
 from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
+from slayer.core.time_zones import CIVIL
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
@@ -333,15 +334,18 @@ def bind_time_dimension(
         return BoundTimeDimension(
             bound=BoundExpr(value_key=TimeTruncKey(source=source, granularity=resolved)),
             bucketed_leaves=_bucketed_leaves(source, scope=scope, bundle=bundle),
+            bucketed_zones=_bucketed_zones(source, scope=scope, bundle=bundle),
             is_expression=True,
         )
     bound_col = _resolve_field_ref(parsed, scope=scope, bundle=bundle)
     field_type, upstream = _field_facts(bound_col, scope=scope, bundle=bundle)
     routed = _canonical_if_routed(parsed=parsed, value_key=bound_col)
+    zone = _bucket_zone(bound_col, scope=scope, bundle=bundle) if upstream is not None else None
     return BoundTimeDimension(
         bound=BoundExpr(value_key=TimeTruncKey(source=bound_col, granularity=resolved), routed_dotted=routed),
         field_type=field_type,
         bucketed_leaves=() if upstream is None else ((text, upstream),),
+        bucketed_zones=() if zone is None else ((text, zone),),
     )
 
 
@@ -402,6 +406,32 @@ def _bucketed_leaves(
         field_type, upstream = _field_facts(leaf, scope=scope, bundle=bundle)
         if upstream is not None and field_type in TEMPORAL_DATATYPES:
             out.setdefault(".".join((*field_path(leaf), field_leaf(leaf))), upstream)
+    return tuple(out.items())
+
+
+def _bucket_zone(col: FieldKey | FieldSqlKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Optional[str]:
+    """The zone a bucketed timestamp field's buckets are in: its own (a stage's zone state), else, on a dataset of the
+    datasource, the datasource's; ``None``: civil or undeclared."""
+    terminal = _terminal_dataset_for_path(path=field_path(col), scope=scope, bundle=bundle)
+    found = terminal.get_field(field_leaf(col)) if terminal is not None else None
+    if found is None or found.datatype is not DataType.DATETIME:
+        return None
+    zone = found.time_zone
+    if zone is None and terminal is not None and terminal.name not in bundle.stage_displays:
+        zone = bundle.datasource_time_zone
+    return None if zone == CIVIL else zone
+
+
+def _bucketed_zones(
+    source: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Tuple[Tuple[str, str], ...]:
+    """``(leaf, zone)`` of every bucketed timestamp leaf of ``source`` in a zone."""
+    out: Dict[str, str] = {}
+    for leaf in walk_value_keys(source):
+        if isinstance(leaf, (FieldKey, FieldSqlKey)) and _field_facts(leaf, scope=scope, bundle=bundle)[1] is not None:
+            zone = _bucket_zone(leaf, scope=scope, bundle=bundle)
+            if zone is not None:
+                out.setdefault(".".join((*field_path(leaf), field_leaf(leaf))), zone)
     return tuple(out.items())
 
 

@@ -122,7 +122,9 @@ from slayer.core.warnings import (
     SlayerWarning,
     SlayerWholeListWarning,
     SlayerDateOnlyMidnightWarning,
+    SlayerTimeZoneUndeclaredWarning,
     DateOnlyMidnightWarning,
+    TimeZoneUndeclaredWarning,
     SlayerWholePeriodsWarning,
     UnrelatedDatasetWarningPayload,
     WholeListWarning,
@@ -219,6 +221,7 @@ from slayer.sql.render.parse import parse_table
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.database.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
+from slayer.sql.zoned_reads import collect_zone_warnings
 from slayer.sql.generator import (
     PlannedStatement,
     _finish_statement,
@@ -745,6 +748,8 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerNameCollisionWarning(w), stacklevel=outside_stacklevel())
         elif isinstance(w, DateOnlyMidnightWarning):
             _warnings_module.warn(SlayerDateOnlyMidnightWarning(w), stacklevel=outside_stacklevel())
+        elif isinstance(w, TimeZoneUndeclaredWarning):
+            _warnings_module.warn(SlayerTimeZoneUndeclaredWarning(w), stacklevel=outside_stacklevel())
 
 
 def _projection_ordered(expected: List[str], rows: List[Dict[str, Any]]) -> List[str]:
@@ -770,6 +775,8 @@ class SlayerResponse(BaseModel):
     population_inferred: bool = False
     # The datasets supplying the rows (``["unit"]`` with no dimensions).
     row_sources: List[str] = PydanticField(default_factory=list)
+    # The query's time zone (its final stage's): the wall clock timestamps are bucketed and returned in.
+    time_zone: Optional[str] = None
     # The datasource the query ran on; never serialized.
     datasource: Optional[DatasourceConfig] = PydanticField(default=None, exclude=True, repr=False)
 
@@ -827,6 +834,7 @@ class _Prepared(BaseModel):
     row_sources: List[str] = PydanticField(default_factory=list)
     #: The SQL evaluates ``now()`` / ``current_date()``: its result must never be cached.
     reads_clock: bool = False
+    time_zone: Optional[str] = None
 
 
 class _Rendered(BaseModel):
@@ -1486,6 +1494,7 @@ class SlayerQueryEngine:
             population_inferred=rendered.population_inferred,
             row_sources=rendered.row_sources,
             reads_clock=plans_read_clock(rendered.emitted_list),
+            time_zone=root_planned.stage_bundle.time_zone if root_planned.stage_bundle is not None else None,
         )
 
     async def _plan_and_render(self, **kwargs: Any) -> _Rendered:
@@ -1638,7 +1647,7 @@ class SlayerQueryEngine:
         # Plan the DAG (root last) and compose the whole chain as one statement.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
         render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
-        with collect_stale_spellings() as render_stale_spellings:
+        with collect_stale_spellings() as render_stale_spellings, collect_zone_warnings() as zone_warnings:
             built = build_planned_statement(
                 planned_list, bundle=bundle, dialect=render_dialect,
                 # Plan-derived canonical projection keys drive the write-side length
@@ -1674,6 +1683,7 @@ class SlayerQueryEngine:
         warnings.extend(WholeListWarning(operation=r.operation, list=r.list)
                         for r in dict.fromkeys(r for p in plans for r in p.whole_list_reads))
         warnings.extend({n.message: n for p in plans for n in p.date_only_notices}.values())
+        warnings.extend(zone_warnings)
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
@@ -1916,6 +1926,7 @@ class SlayerQueryEngine:
                 population=prepared.population,
                 population_inferred=prepared.population_inferred,
                 row_sources=prepared.row_sources,
+                time_zone=prepared.time_zone,
             )
 
         use_cache = cache and not dry_run and not explain and not prepared.reads_clock
@@ -1935,6 +1946,7 @@ class SlayerQueryEngine:
                     "population": prepared.population,
                     "population_inferred": prepared.population_inferred,
                     "row_sources": prepared.row_sources,
+                    "time_zone": prepared.time_zone,
                     "warnings": list(prepared.slack_warnings),
                 })
 
@@ -1960,6 +1972,7 @@ class SlayerQueryEngine:
                 population=prepared.population,
                 population_inferred=prepared.population_inferred,
                 row_sources=prepared.row_sources,
+                time_zone=prepared.time_zone,
                 datasource=prepared.datasource,
             )
 
@@ -1980,6 +1993,7 @@ class SlayerQueryEngine:
             population=prepared.population,
             population_inferred=prepared.population_inferred,
             row_sources=prepared.row_sources,
+            time_zone=prepared.time_zone,
             datasource=prepared.datasource,
         )
 
@@ -2166,6 +2180,7 @@ class SlayerQueryEngine:
             population=prepared.population,
             population_inferred=prepared.population_inferred,
             row_sources=prepared.row_sources,
+            time_zone=prepared.time_zone,
             datasource=prepared.datasource,
         )
         return self._build_cache_entry(

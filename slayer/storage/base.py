@@ -104,6 +104,7 @@ from slayer.storage.document_keys import (
 )
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
 from slayer.storage.field_expression_migration import FIELD_EXPRESSION_VERSION, respell_source_paths
+from slayer.storage.instant_field_migration import INSTANT_FIELD_VERSION, typed_instant_fields
 from slayer.storage.granularity_rename import (
     Renames,
     granularity_renames,
@@ -1887,6 +1888,8 @@ class StorageBackend(ABC):
             if pre_version < FIELD_EXPRESSION_VERSION:
                 data = respell_source_paths(data, peer_relationships=await self._peer_relationships(
                     data=data, data_source=data_source))
+            if pre_version < INSTANT_FIELD_VERSION:
+                data = typed_instant_fields(data, ds_type=await self._datasource_type(data_source))
             changes = True
             if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
                 await self._apply_refinement_or_raise(
@@ -1900,12 +1903,16 @@ class StorageBackend(ABC):
         dataset, converted = await self._with_dialect_sql(SlayerDataset.model_validate(data), data_source=data_source)
         return dataset, changes or converted
 
+    async def _datasource_type(self, data_source: str) -> str | None:
+        """The datasource's type: stored, else the enclosing upgrade's, else unknown."""
+        datasource = await self.get_datasource(data_source)
+        return datasource.type if datasource is not None else DATASOURCE_TYPES.get().get(data_source)
+
     async def _with_dialect_sql(self, dataset: SlayerDataset, *, data_source: str) -> tuple[SlayerDataset, bool]:
         """``dataset`` with its field ``sql`` converted once its datasource's dialect is known; whether it was."""
         if all(c.sql is None for c in dataset.fields):
             return dataset, False
-        datasource = await self.get_datasource(data_source)
-        ds_type = datasource.type if datasource is not None else DATASOURCE_TYPES.get().get(data_source)
+        ds_type = await self._datasource_type(data_source)
         if ds_type is None:
             return dataset, False
         return with_converted_sql(dataset, ds_type=ds_type), True

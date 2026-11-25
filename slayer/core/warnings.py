@@ -638,6 +638,24 @@ class ChangedReferenceWarning(SlayerWarning):
         return self.message
 
 
+class TimeZoneUndeclaredWarning(SlayerWarning):
+    """Under a query zone, ``dataset.field`` (reached by ``path``) has no source zone, so it is read as stored."""
+
+    kind: Literal["time_zone_undeclared"] = "time_zone_undeclared"
+    dataset: str
+    field: str
+    path: List[str] = Field(default_factory=list)
+    time_zone: str
+
+    def human_message(self) -> str:
+        via = f" (via {'.'.join(self.path)})" if self.path else ""
+        return (
+            f"{self.dataset}.{self.field}{via} has no source time zone, so it is read as stored, not converted to "
+            f"{self.time_zone}. Declare the field's time_zone (an IANA name, or 'civil' for zone-free time), or the "
+            f"datasource's time_zone."
+        )
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -665,6 +683,7 @@ AnySlayerWarning = Annotated[
         DateOnlyMidnightWarning,
         ChangedReferenceWarning,
         StoredUpgradeNeededWarning,
+        TimeZoneUndeclaredWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -828,6 +847,17 @@ class SlayerDateOnlyMidnightWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``DateOnlyMidnightWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: DateOnlyMidnightWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerTimeZoneUndeclaredWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``TimeZoneUndeclaredWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: TimeZoneUndeclaredWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

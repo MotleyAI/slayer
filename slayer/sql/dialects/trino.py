@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine.url import URL, make_url
 from sqlglot import exp
+from sqlglot.dialects.trino import Trino
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
@@ -18,6 +20,8 @@ from slayer.sql.dialects.base import (
     LIST_POSITION, PORTABLE_LIBRARY,
     NativeFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit,
     non_null_elements, text_try_cast, unnest_elements,
+    iso_text,
+    zone_name,
 )
 from slayer.sql.dialects.patterns import JAVA, RegexFlavour
 
@@ -66,6 +70,10 @@ def _presto_path(path: JsonPath) -> str:
     return "".join(out)
 
 
+# Trino reads ``value AT TIME ZONE zone`` natively; sqlglot otherwise writes the Presto function ``AT_TIMEZONE``.
+Trino.Generator.TRANSFORMS.pop(exp.AtTimeZone, None)
+
+
 class PrestoFamilyDialect(SqlDialect):
     """Grammar and portable library shared by Trino, Presto and Athena."""
     enforces_unique_keys: ClassVar[bool] = False
@@ -83,6 +91,16 @@ class PrestoFamilyDialect(SqlDialect):
         "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "CHR", "PI", "CBRT", "GREATEST", "LEAST",
     })
     extremum_propagates_null: ClassVar[bool] = True
+
+    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+        """``CAST(with_timezone(v, S) AT TIME ZONE Q AS TIMESTAMP)``; an instant: ``CAST(v AT TIME ZONE Q AS
+        TIMESTAMP)``."""
+        instant = value if source is None else exp.Anonymous(this="with_timezone", expressions=[value, zone_name(source)])
+        return exp.Cast(this=exp.AtTimeZone(this=instant, zone=zone_name(target)), to=exp.DataType.build("TIMESTAMP"))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"),
+                        to=exp.DataType.build("TIMESTAMP WITH TIME ZONE", dialect="trino"))
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)

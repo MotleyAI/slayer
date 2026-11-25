@@ -1024,6 +1024,8 @@ def check_time_dimension_field(
     requested_granularity: Granularity,
     bucketed_leaves: Sequence[Tuple[str, Granularity]] = (),
     is_expression: bool = False,
+    zone: Optional[str] = None,
+    bucketed_zones: Sequence[Tuple[str, str]] = (),
 ) -> None:
     """A time dimension must be temporal (DATE / TIMESTAMP); every bucketed leaf — stage, query-backed cache, or hand-set ``DatasetField.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
     if field_type not in TEMPORAL_DATATYPES:
@@ -1035,6 +1037,15 @@ def check_time_dimension_field(
             suggestion="Wrap it in CAST(… AS TIMESTAMP) or CAST(… AS DATE)."
             if is_expression and field_type is None else None,
         )
+    for leaf, bucketed in bucketed_zones:
+        if zone is not None and bucketed != zone:
+            field = "field" if leaf == name else f"field {leaf!r}"
+            raise TimeDimensionFieldError(
+                summary=f"Cannot re-bucket in {zone}: the {field} is already bucketed in {bucketed}, and a "
+                f"{bucketed} bucket start is not a {zone} bucket boundary.",
+                location=f"time dimension {name!r}",
+                suggestion=f"Bucket the raw field instead, or run the stage that buckets it in {zone}.",
+            )
     for leaf, upstream in bucketed_leaves:
         if requested_granularity == upstream or nests_into(upstream, requested_granularity):
             continue

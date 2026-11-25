@@ -1973,6 +1973,8 @@ def _check_time_dimension(
         requested_granularity=granularity,
         bucketed_leaves=btd.bucketed_leaves,
         is_expression=btd.is_expression,
+        zone=bundle.time_zone,
+        bucketed_zones=btd.bucketed_zones,
     )
     assert field_type is not None  # the checker refuses a non-temporal one
     return field_type

@@ -894,9 +894,14 @@ def planned_keys(planned_list) -> Iterator[ValueKey]:
 
 
 def plans_read_clock(planned_list) -> bool:
-    """Whether any plan evaluates ``now()`` / ``current_date()``."""
+    """Whether any plan reads the clock at execution: ``now()`` anywhere, ``current_date()`` in a stage without a
+    zone (under one it is that day's literal)."""
+    def reads(planned, key) -> bool:
+        zoned = planned.stage_bundle is not None and planned.stage_bundle.time_zone is not None
+        return isinstance(key, ScalarCallKey) and (key.name == "now" or (key.name in CLOCK_FUNCTIONS and not zoned))
+
     return any(
-        isinstance(k, ScalarCallKey) and k.name in CLOCK_FUNCTIONS
+        reads(planned, k)
         for planned in planned_list
         for root in plan_value_keys(planned)
         for k in walk_value_keys(root)

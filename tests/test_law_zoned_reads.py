@@ -164,7 +164,8 @@ POSITIONS: dict[str, Position] = {
                                           "metrics": [m(f"sum({k.amount})", "a")]},
     "date_trunc_filter": lambda k, s: {"dimensions": [_id(k)], "filter": [f"date_trunc('day', {s}) = '2025-01-01'"]},
     "date_trunc_order": lambda k, s: {"dimensions": [_id(k), d(f"date_trunc('hour', {s})", "v")],
-                                      "order": [{"field": "v", "direction": "desc"}]},
+                                      "order": [{"field": "v", "direction": "desc"},
+                                                {"field": _id(k), "direction": "asc"}]},
     "custom_granularity": lambda k, s: {"time_dimensions": [{"field": s, "granularity": "fiscal_week"}],
                                         "metrics": [m(f"sum({k.amount})", "a")]},
     "date_range": lambda k, s: {"time_dimensions": [{"field": s, "granularity": "day",
@@ -209,7 +210,8 @@ def _cell(value: Any) -> Any:
     if isinstance(value, str) and len(value) >= 10 and value[4] == "-" and value[7] == "-":
         text = value.replace("T", " ")
         assert "+" not in text[10:], f"zoned result {value!r}"
-        return text if len(text) > 10 else f"{text} 00:00:00"
+        moment = datetime.fromisoformat(text if len(text) > 10 else f"{text} 00:00:00")
+        return moment.isoformat(sep=" ")  # ISO text in one spelling: a zero fraction dropped
     if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
         return round(float(value), 6)
     return value

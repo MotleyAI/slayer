@@ -106,7 +106,7 @@ A bucket start in Z converted to Q is not a Q boundary. For example, a January U
 - Snowflake: `CONVERT_TIMEZONE(S, Q, c)`; for an instant, `CONVERT_TIMEZONE(Q, c)::TIMESTAMP_NTZ`.
 - BigQuery: `DATETIME(TIMESTAMP(c, S), Q)`; for an instant, `DATETIME(c, Q)`.
 - Trino: `CAST(with_timezone(c, S) AT TIME ZONE Q AS TIMESTAMP)`; for an instant, `CAST(c AT TIME ZONE Q AS TIMESTAMP)`.
-- SQL Server: `AT TIME ZONE` twice plus `CAST(… AS datetime2)`, through a vendored CLDR `windowsZones` table (territory `001`, with its CLDR version recorded). An unmapped zone is a typed error.
+- SQL Server: `AT TIME ZONE` twice plus `CAST(… AS datetime2)`, through a vendored CLDR `windowsZones` table (all territories, with its CLDR version recorded). An unmapped zone is a typed error.
 - MySQL: `CONVERT_TZ(c, S, Q)`; for an instant, `CONVERT_TZ(DATE_ADD('1970-01-01', INTERVAL UNIX_TIMESTAMP(c) SECOND), '+00:00', Q)`.
 - ClickHouse: `toTimeZone(c, Q)`.
 - SQLite: `slayer_convert_tz(c, S, Q)`, which parses naive and offset text and returns fixed `YYYY-MM-DD HH:MM:SS.ffffff`. Malformed text gives NULL. Its comparisons go through normalisation, not the midnight raw-text fast path.

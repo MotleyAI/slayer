@@ -140,6 +140,23 @@ def definition_reads(
     return out
 
 
+def value_reads(
+    field: DatasetField, *, host: SlayerDataset, reachable: dict[str, SlayerDataset],
+) -> list[tuple[SlayerDataset, str, bool]]:
+    """What the value of derived ``field`` reads: ``(host, column, True)`` per source column, ``(dataset, field,
+    False)`` per field a path reaches; its ``filter`` is not part of its value."""
+    out: list[tuple[SlayerDataset, str, bool]] = []
+    for text, portable in value_fragments(field, host=host):
+        for quals, leaf in (_portable_refs(text) if portable else _fragment_refs(text)) or []:
+            if reads_source_column(tuple(quals), dataset=host):
+                out.append((host, leaf, True))
+                continue
+            target = resolve_ref_target(qualifiers=quals, source_dataset=host, datasets_by_name=reachable)
+            if target is not None:
+                out.append((target, leaf, False))
+    return out
+
+
 def _source_column_reads(fragment: tuple[str, bool], *, field: DatasetField, host: SlayerDataset) -> list[tuple[str, str]]:
     """``(host, reader)`` for each physical reader of a source column ``fragment`` reads, other than ``field``."""
     text, portable = fragment

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import Field
@@ -52,6 +53,8 @@ from slayer.sql.dialects.base import (
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
+    iso_text,
+    zone_name,
 )
 from slayer.sql.dialects.patterns import ICU, RegexFlavour
 from slayer.sql.dialects.reflection import (
@@ -142,6 +145,22 @@ class MysqlDialect(SqlDialect):
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "GREATEST", "LEAST",
     })
     extremum_propagates_null: ClassVar[bool] = True
+    zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
+
+    def convert_zone(self, value: Expression, *, source: Optional[str], target: str) -> Expression:
+        """``CONVERT_TZ(v, S, Q)``; an instant (a ``TIMESTAMP``) from its epoch seconds, independent of the session
+        zone."""
+        if source is None:
+            epoch = exp.Anonymous(this="UNIX_TIMESTAMP", expressions=[value])
+            value = exp.DateAdd(this=exp.Literal.string("1970-01-01"), expression=epoch, unit=exp.var("SECOND"))
+            source_tz: Expression = exp.Literal.string("+00:00")
+        else:
+            source_tz = zone_name(source)
+        return exp.ConvertTimezone(source_tz=source_tz, target_tz=zone_name(target), timestamp=value)
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Anonymous(this="CONVERT_TZ", expressions=[
+            exp.Literal.string(iso_text(value)), exp.Literal.string("+00:00"), exp.var("@@session.time_zone")])
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
         """Regex and numeric ``TRY_CAST`` need MySQL 8.0, ``json_value`` 8.0.21: the version decides."""

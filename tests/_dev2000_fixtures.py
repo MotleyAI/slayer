@@ -117,15 +117,15 @@ def instant(text: str) -> datetime:
 
 class Table(BaseModel):
     name: str
-    columns: list[tuple[str, str]]  # (name, kind): INT, DOUBLE, TEXT, DATE, TIMESTAMP, TIMESTAMPTZ
+    columns: list[tuple[str, str]]  # (name, kind): INT, DOUBLE, TEXT, DATE, TIMESTAMP, TIMESTAMPTZ, DECLARED_TIMESTAMP
     rows: list[tuple]
 
 
 _TYPES = {
     "sqlite": {"INT": "INTEGER", "DOUBLE": "REAL", "TEXT": "TEXT", "DATE": "TEXT", "TIMESTAMP": "TEXT",
-               "TIMESTAMPTZ": "TEXT"},
+               "TIMESTAMPTZ": "TEXT", "DECLARED_TIMESTAMP": "TIMESTAMP"},
     "duckdb": {"INT": "INTEGER", "DOUBLE": "DOUBLE", "TEXT": "VARCHAR", "DATE": "DATE", "TIMESTAMP": "TIMESTAMP",
-               "TIMESTAMPTZ": "TIMESTAMPTZ"},
+               "TIMESTAMPTZ": "TIMESTAMPTZ", "DECLARED_TIMESTAMP": "TIMESTAMP"},
 }
 
 
@@ -139,7 +139,9 @@ def orders_table(*, ordered_at: Optional[Mapping[int, str]] = None) -> Table:
     return Table(
         name="orders",
         columns=[("id", "INT"), ("amount", "DOUBLE"), ("ordered_at", "TIMESTAMP"), ("paid_at", "TIMESTAMPTZ"),
-                 ("local_slot", "TIMESTAMP"), ("order_day", "DATE"), ("created_raw", "TIMESTAMP")],
+                 ("local_slot", "TIMESTAMP"), ("order_day", "DATE"),
+                 # Typed TIMESTAMP on SQLite too: no field maps it, so its declared type is all that types it.
+                 ("created_raw", "DECLARED_TIMESTAMP")],
         rows=[(i, a, stored[i], _instant_text(ts), slot, d, ts) for i, (a, ts, slot, d) in ROWS.items()],
     )
 

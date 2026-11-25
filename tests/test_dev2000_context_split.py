@@ -33,7 +33,7 @@ from tests._dev2000_fixtures import (
 ORDER_DATE = field("order_date", DataType.DATE, expression="CAST(ordered_at AS DATE)")
 LATE_ORDERS = DatasetMetric(name="late_orders", expression="count(*) FILTER (WHERE hour(ordered_at) >= 18)")
 DAY_PART = field("day_part", DataType.INTEGER, expression="hour(ordered_at)")
-PAID_AMOUNT = field("paid_amount", DataType.FLOAT, expression="amount", filter="day_part >= 6")
+PAID_AMOUNT = field("paid_amount", DataType.FLOAT, expression="amount", filter="orders.day_part >= 6")
 CREATED_PLUS = field("created_plus", DataType.DATETIME, expression="date_add(created_raw, 1, 'hour')")
 NO_READ = field("fixed_at", DataType.DATETIME, expression="CAST('2025-01-01 00:00:00' AS TIMESTAMP)")
 

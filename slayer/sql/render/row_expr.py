@@ -466,6 +466,12 @@ def render_date_call(
     *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, field_type: FieldTypeFn,
 ) -> Expression:
     """Render a date-function call through the dialect's typed hooks; ``args`` are the rendered arguments."""
+    if key.name in CLOCK_FUNCTIONS and dialect.time_zone is not None and dialect.zone_now is not None:
+        # Under a zone the stage's one clock reading, in its wall clock.
+        now = dialect.zone_now
+        if key.name == "now":
+            return dialect.build_temporal_literal(value=now, dt=DataType.DATETIME)
+        return dialect.build_temporal_literal(value=now.date(), dt=DataType.DATE)
     if key.name == "now":
         return dialect.build_current_timestamp()
     if key.name == "current_date":

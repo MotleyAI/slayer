@@ -269,6 +269,15 @@ async def _model(engine: "SlayerQueryEngine", data_source: str) -> _Model:
                   metrics=await engine.storage.list_model_scoped_metrics(data_source))
 
 
+def _zoned_stages(query: _Query, model: _Model) -> None:
+    """A query-backed dataset the query reads whose stored stage sets a time zone runs a SLayer query part."""
+    for head, _ in _heads(query)[0]:
+        dataset = model.datasets.get(head)
+        if dataset is not None and any(q.time_zone is not None for q in dataset.source_queries or ()):
+            raise _invalid(f"'time_zone' is not a part of an Ossie query; the query-backed dataset {head!r} it reads "
+                           f"sets one")
+
+
 def _heads(query: _Query) -> Tuple[List[Tuple[str, bool]], List[Tuple[str, bool]]]:
     """The first segments of the query's dotted references and its bare names, each with whether it is quoted."""
     refs = [*(e.reference for e in (*query.dimensions, *query.metrics)), *query.reading.references]
@@ -651,6 +660,7 @@ async def execute_strict(
     if not shaped.dimensions and not shaped.metrics:
         raise OssieQueryError(Code.E_EMPTY_AGGREGATION_QUERY, "the query has neither dimensions nor metrics")
     model = await _model(engine, await _identify(engine, shaped, submitted.data_source))
+    _zoned_stages(shaped, model)
     _temporal_literals(shaped, model)
     judged = _names_and_kinds(shaped, model)
     names = _output_names(shaped, judged)
