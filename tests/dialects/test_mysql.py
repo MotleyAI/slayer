@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlglot
 from sqlglot import exp
 
 import pytest
@@ -30,22 +29,19 @@ def test_mysql_log_native_flags() -> None:
     assert d.should_use_native_log(2) is True
 
 
-# Median / percentile — not supported on MySQL
+# Median / percentile: the ordered-set aggregate, split into a window subquery at render
 
 
-def test_mysql_build_median_raises_not_implemented() -> None:
+def test_mysql_build_median_is_percentile_cont_at_half() -> None:
+    median = MysqlDialect().build_median(exp.column("amount"))
+    assert isinstance(median, exp.WithinGroup)
+    assert median.this.this.name == "0.5"
+
+
+def test_mysql_render_reads_no_ordered_set_aggregate() -> None:
     d = MysqlDialect()
-    inner = sqlglot.parse_one("amount", dialect="mysql")
-    with pytest.raises(NotImplementedError, match="median.*MySQL"):
-        d.build_median(inner)
-
-
-def test_mysql_build_percentile_raises_not_implemented() -> None:
-    d = MysqlDialect()
-    p = exp.Literal.number("0.5")
-    col_expr = exp.column("amount")
-    with pytest.raises(NotImplementedError, match="percentile.*MySQL"):
-        d.build_percentile(p=p, col_expr=col_expr)
+    select = exp.select(d.build_percentile(p=exp.Literal.number("0.9"), col_expr=exp.column("amount"))).from_("t")
+    assert not list(d.rewrite_statement(select).find_all(exp.WithinGroup))
 
 
 # stat aggs: var_samp / var_pop via Anonymous (sqlglot mis-renames otherwise)

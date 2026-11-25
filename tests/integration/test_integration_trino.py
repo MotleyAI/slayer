@@ -541,7 +541,7 @@ class TestTrinoInvariants:
 
 @pytest.mark.integration
 class TestTrinoMedianPercentile:
-    async def test_median_and_percentiles_equal_trinos_own(self, trino_env: SlayerQueryEngine, trino_direct) -> None:
+    async def test_median_and_percentiles_are_exact(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [
@@ -550,28 +550,24 @@ class TestTrinoMedianPercentile:
                 {"metric": "percentile(orders.total, p=0.25)", "alias": "p25"},
             ],
         }))
-        ((p50, p90, p25),) = trino_direct(
-            "SELECT approx_percentile(amount, 0.5), approx_percentile(amount, 0.9), "
-            "approx_percentile(amount, 0.25) FROM orders"
-        )
         row = result.data[0]
-        assert (float(row["p50"]), float(row["p90"]), float(row["p25"])) == (p50, p90, p25)
+        assert (float(row["p50"]), float(row["p90"]), float(row["p25"])) == pytest.approx((125.0, 250.0, 81.25))
 
-    async def test_grouped_median_equals_trinos_own(self, trino_env: SlayerQueryEngine, trino_direct) -> None:
+    async def test_grouped_median_is_exact(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["orders.status"],
             "metrics": [{"metric": "median(orders.total)", "alias": "p50"}],
         }))
-        expected = dict(trino_direct("SELECT status, approx_percentile(amount, 0.5) FROM orders GROUP BY status"))
-        assert {r["orders.status"]: float(r["p50"]) for r in result.data} == expected
+        by_status = {r["orders.status"]: float(r["p50"]) for r in result.data}
+        assert by_status == pytest.approx({"completed": 150, "pending": 175, "cancelled": 75})
 
-    async def test_p90_is_approximate_not_interpolated(self, trino_env: SlayerQueryEngine) -> None:
+    async def test_p90_is_interpolated(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery.model_validate({
             "population": "pct_amounts", "metrics": [{"metric": "percentile(pct_amounts.amount, p=0.9)", "alias": "p90"}],
         }))
-        assert float(result.data[0]["p90"]) == pytest.approx(300.0)
+        assert float(result.data[0]["p90"]) == pytest.approx(240.0)
 
-    async def test_emits_approx_percentile(self, trino_env: SlayerQueryEngine) -> None:
+    async def test_emits_no_approx_percentile(self, trino_env: SlayerQueryEngine) -> None:
         dry = await trino_env.execute(
             query=SlayerQuery.model_validate({
                 "population": "orders",
@@ -579,8 +575,7 @@ class TestTrinoMedianPercentile:
             }), dry_run=True,
         )
         assert dry.sql is not None
-        assert "APPROX_PERCENTILE(" in dry.sql.upper()
-        assert "PERCENTILE_CONT" not in dry.sql.upper()
+        assert "APPROX_PERCENTILE" not in dry.sql.upper()
 
 
 # ---------------------------------------------------------------------------

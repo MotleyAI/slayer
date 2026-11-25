@@ -1,8 +1,8 @@
 """MysqlDialect.
 
-MySQL has no native ``PERCENTILE_CONT`` (``build_median`` / ``build_percentile``
-raise ``NotImplementedError``) and no native ``CORR`` / ``COVAR_SAMP`` /
-``COVAR_POP`` (uses the variance-decomposition formula).
+MySQL has no ``PERCENTILE_CONT`` (it is interpolated over ``ROW_NUMBER`` / ``COUNT``
+windows) and no native ``CORR`` / ``COVAR_SAMP`` / ``COVAR_POP`` (uses the
+variance-decomposition formula).
 
 ``var_samp`` / ``var_pop`` need the ``exp.Anonymous`` workaround because
 sqlglot's MySQL transpiler rewrites them to ``VARIANCE`` (which on MySQL
@@ -57,6 +57,7 @@ from slayer.sql.dialects.base import (
     iso_text,
     zone_name,
 )
+from slayer.sql.dialects._ordered_set_split import interpolated_percentile, split_percentile_selects
 from slayer.sql.dialects.patterns import ICU, RegexFlavour
 from slayer.sql.dialects.reflection import (
     ResultColumnType,
@@ -379,7 +380,7 @@ class MysqlDialect(SqlDialect):
 
         sqlglot's emulation inlines an aliased projection, which ``ONLY_FULL_GROUP_BY`` can fail to match.
         """
-        statement = statement.copy()
+        statement = split_percentile_selects(statement.copy(), columns=interpolated_percentile)
         for select in statement.find_all(exp.Select):
             order = select.args.get("order")
             if order is not None:
@@ -436,25 +437,6 @@ class MysqlDialect(SqlDialect):
         """``DATE_ADD`` clamps at month-end and keeps a DATE a DATE for day-or-coarser units."""
         word = "WEEK" if unit is TimeGranularity.WEEK_SUNDAY else unit.value.upper()
         return exp.DateAdd(this=expr.copy(), expression=count.copy(), unit=exp.var(word))
-
-    def build_median(self, inner: Expression) -> Expression:
-        # ``MariadbDialect`` inherits this, so never suggest "use MariaDB".
-        raise NotImplementedError(
-            "Aggregation 'median' is not supported on MySQL: MySQL has no native "
-            "MEDIAN/PERCENTILE_CONT function and no Python UDF mechanism. "
-            "Use a datasource with native percentile support (Postgres, DuckDB, "
-            "ClickHouse, SQLite via UDF) or compute the value client-side."
-        )
-
-    def build_percentile(
-        self, p: Expression, col_expr: Expression,
-    ) -> Expression:
-        raise NotImplementedError(
-            "Aggregation 'percentile' is not supported on MySQL: "
-            "MySQL has no native PERCENTILE_CONT. "
-            "Use a datasource with native percentile support (Postgres, DuckDB, "
-            "ClickHouse, SQLite via UDF) or compute the value client-side."
-        )
 
     def build_stat_agg_1arg(
         self, agg_name: StatAgg1Name, col_expr: Expression,

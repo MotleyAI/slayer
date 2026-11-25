@@ -178,7 +178,7 @@ def test_array_length_with_a_dimension_clean_fails(sql: str):
 @pytest.mark.parametrize("formula", [
     "sum(length(tags))", "count(*) FILTER (WHERE contains(tags, 'a'))",
     "count(*) FILTER (WHERE contains_any(tags, tags))", "count(*) FILTER (WHERE contains_all(tags, tags))",
-    "collect(status)", "median(amount)", "percentile(amount, p=0.9)",
+    "collect(status)",
 ])
 def test_library_call_refused_by_the_target(formula: str):
     assert expression_refusal(formula, dialect=dialect_for_ds_type("mysql"))
@@ -186,10 +186,10 @@ def test_library_call_refused_by_the_target(formula: str):
 
 
 @pytest.mark.parametrize("ds_type", ["mysql", "mssql"])
-def test_percentile_on_a_refusing_dialect_clean_fails(ds_type: str):
+def test_percentile_converts_on_mysql_and_sql_server(ds_type: str):
     r = _run("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)", sql_dialect=dialect_for_ds_type(ds_type))
-    assert not r.ok
-    assert "not supported" in (r.reason or "")
+    assert r.ok
+    assert r.expression == "percentile(amount, p=0.9)"
 
 
 # ───────────────────────────── clean-fails ─────────────────────────────────
