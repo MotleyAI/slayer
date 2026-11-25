@@ -5818,33 +5818,34 @@ class SQLGenerator:
             raise _WindowRefused(unsafe[min(keep & set(unsafe))])
         while True:
             try:
-                layered = relation
-                for layer in _dependency_layers({n: d for n, d in reads.items() if n in keep}, dataset=dataset.name):
-                    select = exp.select(
-                        exp.Column(this=exp.Star(), table=exp.to_identifier(rows)),
-                        *(exp.Alias(this=rendered[name][0], alias=exp.to_identifier(windowed_column(name)))
-                          for name in layer),
-                    ).from_(layered)
-                    joins = self._window_layer_joins(layer=layer, rendered=rendered, chains=chains, dataset=dataset,
-                                                     rows=rows, allocator=allocator, bundle=bundle)
-                    layered = exp.Subquery(this=_apply_joins(select=select, joins=joins),
-                                           alias=exp.TableAlias(this=exp.to_identifier(rows)))
-                    layered.meta[_WINDOW_LAYER] = True
+                layered = self._window_stack(relation, keep=keep, reads=reads, rendered=rendered, chains=chains,
+                                             dataset=dataset, rows=rows, allocator=allocator, bundle=bundle)
                 break
             except _WindowRefused as refused:
-                # A window whose join target can't materialise what it reads: unread here, refused if read.
-                if demand is not None:
-                    raise _WindowRefused(refused.error) from None
-                failed = {n for n in keep if refused.path in rendered[n][1]}
-                if not failed:
-                    raise refused.error from None
-                for name in _read_closure(_reversed(reads), start=failed):
-                    unsafe.setdefault(name, refused.error)
-                keep -= set(unsafe)
+                keep = _refused_out(refused, demand=demand, keep=keep, rendered=rendered, reads=reads, unsafe=unsafe)
         layered.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         if unsafe:
             layered.meta[_UNSAFE_WINDOWS] = {windowed_column(name): exc for name, exc in unsafe.items()}
         return layered
+
+    def _window_stack(
+        self, relation: Expression, *, keep: Set[str], reads: Dict[str, Set[str]],
+        rendered: Dict[str, Tuple[Expression, List[Tuple[str, ...]]]],
+        chains: Dict[Tuple[str, ...], List[Tuple[OrientedRelationship, SlayerDataset]]], dataset: SlayerDataset,
+        rows: str, allocator: AliasAllocator, bundle,
+    ) -> Expression:
+        """``relation`` under one window layer per dependency depth of the ``keep`` windows."""
+        for layer in _dependency_layers({n: d for n, d in reads.items() if n in keep}, dataset=dataset.name):
+            select = exp.select(
+                exp.Column(this=exp.Star(), table=exp.to_identifier(rows)),
+                *(exp.Alias(this=rendered[name][0], alias=exp.to_identifier(windowed_column(name))) for name in layer),
+            ).from_(relation)
+            joins = self._window_layer_joins(layer=layer, rendered=rendered, chains=chains, dataset=dataset, rows=rows,
+                                             allocator=allocator, bundle=bundle)
+            relation = exp.Subquery(this=_apply_joins(select=select, joins=joins),
+                                    alias=exp.TableAlias(this=exp.to_identifier(rows)))
+            relation.meta[_WINDOW_LAYER] = True
+        return relation
 
     def _unemittable(
         self, *, name: str, paths: List[Tuple[str, ...]],
@@ -7216,6 +7217,23 @@ class _WindowRefused(Exception):
         super().__init__(str(error))
         self.error = error
         self.path = path
+
+
+def _refused_out(
+    refused: _WindowRefused, *, demand: Optional[AbstractSet[str]], keep: Set[str],
+    rendered: Dict[str, Tuple[Expression, List[Tuple[str, ...]]]], reads: Dict[str, Set[str]],
+    unsafe: Dict[str, Exception],
+) -> Set[str]:
+    """``keep`` without the windows reaching ``refused``'s hop and their readers, now ``unsafe``; a demanded build
+    propagates the refusal."""
+    if demand is not None:
+        raise _WindowRefused(refused.error) from None
+    failed = {n for n in keep if refused.path in rendered[n][1]}
+    if not failed:
+        raise refused.error from None
+    for name in _read_closure(_reversed(reads), start=failed):
+        unsafe.setdefault(name, refused.error)
+    return keep - set(unsafe)
 
 
 def _to_one_hop(chain: List[Tuple[OrientedRelationship, SlayerDataset]]) -> bool:
