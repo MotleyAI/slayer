@@ -47,3 +47,6 @@
 - title: Single-string in tests period membership
   one_x_hash: 2cd70240cc8fef0150205bcf2198b63f8f2b0ca12dd8018099aaa0551d02600a
   reason: "main's grammar reads a parenthesised single literal as the one-element tuple, against a temporal operand too; 1.x keeps the period reading there. Pinned by tests/test_dev2406_parenthesised_in.py."
+- title: A column reference renders the same in every clause
+  one_x_hash: 36aaf6f28ad5454ef9e9c9966fec899769797f4d30ca048ba0404c7cf6ee136a
+  reason: "main keeps its own wording, added by the DEV-2469 change: fields, datasets and relationship paths where 1.x says columns, models and joins; adds the untrusted hop's distinct projection, semi-join, aggregate-argument and same-leaf scenarios."
