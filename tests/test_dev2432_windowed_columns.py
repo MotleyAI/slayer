@@ -284,6 +284,14 @@ class TestRelationshipKeys:
         assert _num(_by(resp, "slots.label", "m")) == {"first": 1, "third": 1}
 
 
+@pytest.mark.parametrize("source, target", [("orders_s", "slots"), ("orders_wt", "slots_w"), ("orders_ws", "slots_w")],
+                         ids=["windowed-source", "windowed-target", "windowed-both"])
+async def test_cardinality_profiling_reads_a_windowed_key_as_a_column(engine, source, target):
+    report = await engine.detect_relationship_cardinality(dataset=source)
+    finding = next(f for f in report.findings if f.dataset == source and f.to == target)
+    assert finding.detected is RelationshipCardinality.MANY_TO_ONE, finding
+
+
 class TestBacking:
     async def test_sql_backed_dataset(self, engine):
         grouped = await _run(engine, _grouped("sql_orders", "sql_orders.rn", "sum(sql_orders.amount)"))

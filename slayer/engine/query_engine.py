@@ -3200,8 +3200,14 @@ class SlayerQueryEngine:
     def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[exp.Select, exp.Select]:
         """(row-count, distinct-count) profiling statements reading the table and keys as SLayer reads them; NULL key
         rows excluded from both."""
-        tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
+        tbl: Expr = parse_table(name=table, dialect=get_dialect(sqlglot_name))
         cols = [exp.column(c) if isinstance(c, exp.Identifier) else c for c in key_cols]
+        windows = {i: c for i, c in enumerate(cols) if c.find(exp.Window) is not None}
+        if windows:
+            # A windowed key is computed over the table's rows first, then read as a column.
+            tbl = exp.select(exp.Star(), *(exp.alias_(c.copy(), f"w{i}") for i, c in windows.items())).from_(
+                tbl).subquery("t")
+            cols = [exp.column(f"w{i}") if i in windows else c for i, c in enumerate(cols)]
         predicate = None
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
