@@ -54,8 +54,8 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
-| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
-| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo in the background (idempotent); tool calls wait for it. |
+| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion in the background, after the demo; tool calls wait for it. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 | `--always-load-query` | off | Mark the MCP `query` tool with Claude Code's `anthropic/alwaysLoad` flag so it is never deferred behind tool search. Also enabled by `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`. |
 
 ### `slayer pg-serve`

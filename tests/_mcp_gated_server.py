@@ -41,7 +41,7 @@ def tiny_orders_datasource(*, directory: str, name: str) -> tuple[DatasourceConf
     ds = DatasourceConfig(name=name, type="sqlite", database=db)
     dataset = SlayerDataset(
         name="orders", sql_table="orders", data_source=name,
-        fields=[DatasetField(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     return ds, dataset
 
