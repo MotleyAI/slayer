@@ -365,7 +365,7 @@ A fresh dataset carrying a key that SLayer does not read, on the dataset or on a
 
 ### Requirement: Datatype values are Ossie's names
 
-A `datatype` or list element type SHALL be one of `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` and `Array` (a list), matched by exact case, and SHALL be stored, dumped, exported and displayed as written. Each value SHALL behave in queries as the type it corresponds to before this change: `Decimal` and `Float` as the double type, `DateTime` and `DateTimeTz` as the timestamp type, `Time` and `Opaque` as the opaque type. A pre-2.0 value SHALL convert: `TEXT`, `INT`, `BOOLEAN`, `DATE`, `UNKNOWN` and `ARRAY` (and their lowercase legacy spellings) to `String`, `Integer`, `Boolean`, `Date`, `Opaque` and `Array`; `DOUBLE` and `number` to `Decimal` when the field's database type is exact numeric, else `Float`; `TIMESTAMP` and lowercase `time` to `DateTimeTz` when the field's database type carries a time zone, else `DateTime`. Ingestion and drift SHALL assign the finer value from the database type by the same rule, and the Ossie importer SHALL keep an Ossie datatype as written.
+A `datatype` or list element type SHALL be one of `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` and `Array` (a list), matched by exact case, and SHALL be stored, dumped, exported and displayed as written. Each value SHALL behave in queries as the type it corresponds to before this change: `Decimal` and `Float` as the double type, `DateTime` and `DateTimeTz` as the timestamp type (without a time zone, `queries/time-zones`), `Time` and `Opaque` as the opaque type. A pre-2.0 value SHALL convert: `TEXT`, `INT`, `BOOLEAN`, `DATE`, `UNKNOWN` and `ARRAY` (and their lowercase legacy spellings) to `String`, `Integer`, `Boolean`, `Date`, `Opaque` and `Array`; `DOUBLE` and `number` to `Decimal` when the field's database type is exact numeric, else `Float`; `TIMESTAMP` and lowercase `time` to `DateTimeTz` when the field's database type carries a time zone, else `DateTime`. Ingestion and drift SHALL assign the finer value from the database type by the same rule, and SHALL also assign `DateTimeTz` to BigQuery `TIMESTAMP`, ClickHouse `DateTime(tz)` / `DateTime64(p, tz)` and MySQL `TIMESTAMP` columns, which hold instants. A re-ingest SHALL re-type a stored `DateTime` field whose live column holds instants to `DateTimeTz`, and leave every other stored type as it is. The Ossie importer SHALL keep an Ossie datatype as written.
 
 #### Scenario: Ossie's types are kept as written
 - **WHEN** a dataset with fields typed `Decimal`, `DateTimeTz` and `Time` is saved, loaded, dumped and exported to Ossie
@@ -386,6 +386,14 @@ A `datatype` or list element type SHALL be one of `String`, `Integer`, `Decimal`
 #### Scenario: A list type shows its element
 - **WHEN** a list field of strings is inspected
 - **THEN** its type is shown as `Array<String>`
+
+#### Scenario: Instant columns ingest as DateTimeTz
+- **WHEN** a BigQuery `TIMESTAMP`, a ClickHouse `DateTime('UTC')`, a ClickHouse `DateTime64(3, 'Asia/Tokyo')` and a MySQL `TIMESTAMP` column are ingested, beside a BigQuery `DATETIME`, a ClickHouse `DateTime` and a MySQL `DATETIME`
+- **THEN** the first four are `DateTimeTz` and the last three `DateTime`
+
+#### Scenario: Re-ingest re-types an instant column
+- **WHEN** a stored MySQL dataset has a `DateTime` field over a `TIMESTAMP` column and a `DateTime` field over a `DATETIME` column, and the datasource is re-ingested
+- **THEN** the first becomes `DateTimeTz` and loses any `time_zone`, the second stays `DateTime`, and every other attribute of both is unchanged
 
 ### Requirement: Queries refuse unknown keys
 

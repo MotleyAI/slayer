@@ -51,6 +51,7 @@ from slayer.core.names import NAME_PATTERN, match_name, quoted_name
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.strict_flag import strict_flag, without_strict
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
+from slayer.core.time_zones import check_zone
 from slayer.core.vocabulary import (
     FIELD_REF_KEYS,
     ORDER_ITEM_KEYS,
@@ -1846,6 +1847,18 @@ class SlayerQuery(QueryInput):
             "partition_by= with the dimensions it is attributable to."
         ),
     )
+    time_zone: str | None = Field(
+        default=None,
+        description=(
+            "IANA zone (e.g. 'America/New_York') to bucket, filter and return timestamps in; 'today' and now() "
+            "follow it. A stage without one takes the final stage's."
+        ),
+    )
+
+    @field_validator("time_zone")
+    @classmethod
+    def _validate_time_zone(cls, v: str | None) -> str | None:
+        return check_zone(v, owner="a query")
 
     @model_validator(mode="after")
     def _validate_dsl_user_input(self) -> "SlayerQuery":
@@ -2019,6 +2032,7 @@ class QueryRefinement(QueryInput):
     whole_periods_only: bool | None = _refinement_field("whole_periods_only")
     distinct_dimension_values: bool | None = _refinement_field("distinct_dimension_values")
     to_many_handling: ManyHandling = _refinement_field("to_many_handling")
+    time_zone: str | None = _refinement_field("time_zone")
 
     _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
 
@@ -2056,6 +2070,11 @@ class QueryRefinement(QueryInput):
     def filter_conditions(self) -> list[str]:
         """The filter's conditions, all of which must hold."""
         return filter_conditions(self.filter)
+
+    @field_validator("time_zone")
+    @classmethod
+    def _validate_time_zone(cls, v: str | None) -> str | None:
+        return check_zone(v, owner="a refinement")
 
     @model_validator(mode="after")
     def _validate_inputs(self) -> "QueryRefinement":
@@ -2293,7 +2312,7 @@ def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQu
         "filter": _merged_filter(saved.filter, refinement.filter),
     }
     data.update((name, value) for name, value in merged_lists.items() if value is not getattr(saved, name))
-    for name in ("limit", "offset", "main_time_dimension", *_NON_NULLABLE_SETTINGS):
+    for name in ("limit", "offset", "main_time_dimension", "time_zone", *_NON_NULLABLE_SETTINGS):
         if name in supplied:
             data[name] = getattr(refinement, name)
     if refinement.to_many_handling is not None:

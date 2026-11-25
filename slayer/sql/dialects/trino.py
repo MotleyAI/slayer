@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine.url import URL, make_url
 from sqlglot import exp
+from sqlglot.dialects.trino import Trino
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
@@ -18,6 +21,8 @@ from slayer.sql.dialects.base import (
     LIST_POSITION, PORTABLE_LIBRARY,
     NativeFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit,
     non_null_elements, text_try_cast, unnest_elements,
+    iso_text,
+    zone_name,
 )
 from slayer.sql.dialects.patterns import JAVA, RegexFlavour
 
@@ -64,6 +69,10 @@ def _presto_path(path: JsonPath) -> str:
         else:
             out.append(f'["{step}"]')
     return "".join(out)
+
+
+# Trino reads ``value AT TIME ZONE zone`` natively; sqlglot otherwise writes the Presto function ``AT_TIMEZONE``.
+Trino.Generator.TRANSFORMS.pop(exp.AtTimeZone, None)
 
 
 class PrestoFamilyDialect(SqlDialect):
@@ -239,6 +248,17 @@ class TrinoDialect(PrestoFamilyDialect):
     install_extra: str | None = "trino"
     database_name: ClassVar[str] = "Trino"
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``CAST(with_timezone(v, S) AT TIME ZONE Q AS TIMESTAMP(6))``; an instant: ``CAST(v AT TIME ZONE Q AS
+        TIMESTAMP(6))``; microseconds kept (a bare ``TIMESTAMP`` rounds to milliseconds)."""
+        instant = value if source is None else exp.Anonymous(this="with_timezone", expressions=[value, zone_name(source)])
+        return exp.Cast(this=exp.AtTimeZone(this=instant, zone=zone_name(target)),
+                        to=exp.DataType.build("TIMESTAMP(6)", dialect="trino"))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"),
+                        to=exp.DataType.build("TIMESTAMP(6) WITH TIME ZONE", dialect="trino"))
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
         """``query_max_run_time`` as a client-session property: sent with the next statement only."""

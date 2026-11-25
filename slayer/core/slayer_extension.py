@@ -81,6 +81,7 @@ class FieldContent(BaseModel):
     hidden: bool = False
     format: NumberFormat | None = None
     granularity: GranularitySpec | None = None
+    time_zone: str | None = None
     allowed_aggregations: list[str] | None = None
     meta: dict[str, Any] | None = None
     element_type: DataType | None = None

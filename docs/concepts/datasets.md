@@ -87,6 +87,7 @@ A field is the unit of structure on the dataset. The same field entry can serve 
 | `allowed_aggregations` | list[str] | No | — | Whitelist (must be a subset of the type-default eligibility set, or a custom aggregation defined on this dataset) |
 | `filter` | string | No | — | SQL condition wrapping the field value in `CASE WHEN` — a value mask that fires in every position. See [Filtered fields](#filtered-fields) |
 | `granularity` | string | No | — | Time bucket a temporal field is already truncated to (`month`, `year`, …); a finer or non-nesting time dimension over it is a typed error. Query-backed datasets stamp it automatically; set it by hand only when the values are truly bucketed at that grain |
+| `time_zone` | string | No | — | The zone a `DateTime` column's values are stored in: an IANA name, or `civil` for zone-free time never converted; overrides the datasource's `time_zone`, see [time zones](time.md#time-zones) |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
 | `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the field (or via `slayer datasources refresh-samples`), not at ingest time |
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical values only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal fields |
@@ -111,7 +112,7 @@ Data types are Ossie's datatype names plus `Array`, stored and shown as written.
 | `Boolean` | True/false | BOOLEAN |
 | `Date` | Date only | DATE |
 | `DateTime` | Date and time | TIMESTAMP, DATETIME |
-| `DateTimeTz` | Date and time with a time zone; behave as `DateTime` | TIMESTAMPTZ, TIMESTAMP WITH TIME ZONE |
+| `DateTimeTz` | An instant; behaves as `DateTime`, and under a query [time zone](time.md#time-zones) reads as that zone's wall clock | TIMESTAMPTZ, TIMESTAMP WITH TIME ZONE, BigQuery / MySQL `TIMESTAMP`, ClickHouse `DateTime('UTC')` |
 | `Time` | Time of day; opaque, like `Opaque` | TIME |
 | `Opaque` | Stored and displayed, never grouped, aggregated or cast | Postgres `point`, `json`, range types |
 | `Array` | A list of `element_type` values, see [list fields](queries.md#list-fields); re-ingest re-types a `String` field whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |

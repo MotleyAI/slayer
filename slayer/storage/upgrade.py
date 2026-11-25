@@ -23,6 +23,7 @@ from slayer.storage.base import (
     one_upgrade_pass, without_none,
 )
 from slayer.storage.document_loading import Loaded
+from slayer.storage.instant_field_migration import awaits_datasource_type
 from slayer.storage.semantic_models import checked_document
 
 DocumentKind = Literal["dataset", "semantic model", "memory", "datasource"]
@@ -76,12 +77,17 @@ class _Plan(BaseModel):
     refused: str | None = None
 
 
+async def _awaits_type(storage: StorageBackend, *, data: dict[str, Any], data_source: str) -> bool:
+    return awaits_datasource_type(data) and await storage._datasource_type(data_source) is None
+
+
 def _store_dialect_remedy(data_source: str) -> str:
     return f"store the datasource or pass its type (--datasource-type {data_source}=TYPE)"
 
 
 async def _upgraded_or_refusal(
     upgraded: Awaitable[tuple[BaseModel, bool]], *, data_source: str | None, dialect_remedy: str,
+    awaits_type: bool = False,
 ) -> tuple[BaseModel, bool] | str:
     """One document's upgrade, or why it cannot complete; never raises, so the other documents go on."""
     try:
@@ -93,13 +99,16 @@ async def _upgraded_or_refusal(
         return str(exc)
     if isinstance(document, SlayerDataset) and any(f.sql is not None for f in document.fields):
         return f"its field sql waits for datasource {data_source!r}'s dialect; {dialect_remedy}"
+    if awaits_type:
+        return f"its DateTime fields' instant typing waits for datasource {data_source!r}'s type; {dialect_remedy}"
     return document, changes
 
 
-async def _planned(plan: _Plan, upgraded: Awaitable[tuple[BaseModel, bool]]) -> _Plan:
+async def _planned(plan: _Plan, upgraded: Awaitable[tuple[BaseModel, bool]], *, awaits_type: bool = False) -> _Plan:
     """``plan`` with its upgrade's outcome: refused on any failure, so the other documents go on."""
     outcome = await _upgraded_or_refusal(upgraded, data_source=plan.data_source,
-                                         dialect_remedy=_store_dialect_remedy(str(plan.data_source)))
+                                         dialect_remedy=_store_dialect_remedy(str(plan.data_source)),
+                                         awaits_type=awaits_type)
     if isinstance(outcome, str):
         return plan.model_copy(update={"refused": outcome})
     document, changes = outcome
@@ -108,7 +117,8 @@ async def _planned(plan: _Plan, upgraded: Awaitable[tuple[BaseModel, bool]]) -> 
 
 async def _dataset_plan(storage: StorageBackend, *, data_source: str, name: str, raw: dict[str, Any]) -> _Plan:
     plan = _Plan(kind="dataset", data_source=data_source, name=name, shown=f"{data_source}.{name}", raw=raw)
-    return await _planned(plan, storage._upgraded_dataset(name=name, data=copy.deepcopy(raw), data_source=data_source))
+    return await _planned(plan, storage._upgraded_dataset(name=name, data=copy.deepcopy(raw), data_source=data_source),
+                          awaits_type=await _awaits_type(storage, data=raw, data_source=data_source))
 
 
 async def _memory_plan(storage: StorageBackend, *, memory_id: str, raw: dict[str, Any]) -> _Plan:
@@ -329,7 +339,8 @@ async def _upgrade_datasets(snapshot: _Snapshot, documents: Sequence[dict[str, A
         name = str(document.get("name"))
         outcome = await _upgraded_or_refusal(
             snapshot._upgraded_dataset(name=name, data=copy.deepcopy(document), data_source=data_source),
-            data_source=data_source, dialect_remedy="pass datasource_type or datasource")
+            data_source=data_source, dialect_remedy="pass datasource_type or datasource",
+            awaits_type=await _awaits_type(snapshot, data=document, data_source=data_source))
         if isinstance(outcome, str):
             refused.append(Refusal(name=name, reason=outcome))
         else:

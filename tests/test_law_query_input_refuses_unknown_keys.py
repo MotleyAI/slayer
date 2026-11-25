@@ -33,9 +33,9 @@ MINIMAL: dict[str, dict[str, Any]] = {
 #: Every multi-word field of each model; a new one must be added here (and to ``VALUES``).
 MULTI_WORD_FIELDS: dict[str, set[str]] = {
     "SlayerQuery": {"population_inferred", "time_dimensions", "main_time_dimension", "whole_periods_only",
-                    "distinct_dimension_values", "to_many_handling"},
+                    "distinct_dimension_values", "to_many_handling", "time_zone"},
     "QueryRefinement": {"time_dimensions", "main_time_dimension", "whole_periods_only", "distinct_dimension_values",
-                        "to_many_handling"},
+                        "to_many_handling", "time_zone"},
     "QueryDimension": set(),
     "QueryMetric": set(),
     "TimeDimension": {"date_range"},
@@ -65,7 +65,7 @@ _TD = [{"field": "orders.ordered_at", "granularity": "month"}]
 #: A valid value per multi-word key (canonical or pre-2.0).
 VALUES: dict[str, Any] = {
     "population_inferred": True, "time_dimensions": _TD, "main_time_dimension": "orders.ordered_at",
-    "whole_periods_only": True, "distinct_dimension_values": True, "to_many_handling": "error",
+    "whole_periods_only": True, "distinct_dimension_values": True, "to_many_handling": "error", "time_zone": "UTC",
     "date_range": ["2024-01-01", "2024-06-30"], "raw_expression": "sum(orders.amount)",
     "source_model": "orders", "raw_formula": "sum(orders.amount)", "source_name": "orders",
 }

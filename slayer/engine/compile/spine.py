@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from math import ceil
 from typing import List, Optional, Tuple
 
-from slayer.core.enums import UNIT_MONTHS, UNIT_SECONDS, TimeGranularity
+from slayer.core.enums import UNIT_MONTHS, UNIT_SECONDS, DataType, TimeGranularity
 from slayer.core.granularity import Granularity, granularity_parts, nests_into, resolve_granularity
 from slayer.core.keys import (
     AggregateKey, ArithmeticKey, FieldKey, FieldSqlKey, LiteralKey, TimeTruncKey, TransformKey, ValueKey, source_anchor_path,
@@ -19,6 +19,7 @@ from slayer.core.relationship_walker import SPINE_TOKEN, reaches_spine, spine_to
 from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
 from slayer.core.time_points import add_units, floor_to
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, is_spine
+from slayer.core.time_zones import CIVIL
 from slayer.engine.elaborate_env import (
     check_time_dimension_field,
     check_spine_aggregation,
@@ -228,9 +229,13 @@ def check_axis_rebucket(
         return
     name = ".".join((*field.path, leaf))
     upstream = resolve_granularity(col.granularity, defined=bundle.granularities)
+    stage = owner is not None and owner.name in bundle.stage_displays
+    zone = col.time_zone if col.time_zone is not None or stage else bundle.datasource_time_zone
+    zoned = col.datatype is DataType.DATETIME and zone is not None and zone != CIVIL
     check_time_dimension_field(
         name=name, field_type=col.datatype, requested_granularity=rerooted.granularity,
         bucketed_leaves=() if upstream is None else ((name, upstream),),
+        zone=bundle.time_zone, bucketed_zones=((name, zone),) if zoned and zone is not None else (),
     )
 
 

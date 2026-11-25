@@ -10,6 +10,8 @@ import datetime as dt
 import re
 from collections.abc import Iterable, Sequence
 from decimal import Decimal
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, ClassVar, Literal, Optional
 
 from sqlglot import exp
@@ -21,6 +23,8 @@ from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.errors import TimeZoneError
+from slayer.sql.dialects._windows_zones import WINDOWS_ZONES
 from slayer.sql.dialects.base import (
     PORTABLE_LIBRARY,
     NativeFn,
@@ -44,6 +48,7 @@ from slayer.sql.dialects.base import (
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
+    iso_text,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import ResultColumnType, info_schema_type, result_column_type_of_name
@@ -194,6 +199,18 @@ def _bit_value(predicate: Expr) -> Expression:
     return exp.Cast(this=case, to=exp.DataType.build("BIT", dialect="tsql"))
 
 
+_DATETIME2 = exp.DataType.build("datetime2", dialect="tsql")
+
+
+def _windows_zone(zone: ZoneInfo) -> exp.Literal:
+    """``zone``'s Windows zone id, the one ``AT TIME ZONE`` reads; an IANA zone without one is refused."""
+    windows = WINDOWS_ZONES.get(zone.key)
+    if windows is None:
+        raise TimeZoneError(f"Time zone {zone.key!r} has no SQL Server (Windows) equivalent; choose another IANA "
+                            f"zone.", zone=zone.key)
+    return exp.Literal.string(windows)
+
+
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "tsql"
@@ -224,6 +241,16 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     like_brackets: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"CONCAT_WS", "PI", "GREATEST", "LEAST"})
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``CAST((v AT TIME ZONE S) AT TIME ZONE Q AS datetime2)`` in Windows zone ids; an instant (a
+        ``datetimeoffset``): ``CAST(v AT TIME ZONE Q AS datetime2)``."""
+        instant = value if source is None else exp.AtTimeZone(this=value, zone=_windows_zone(source))
+        return exp.Cast(this=exp.AtTimeZone(this=instant, zone=_windows_zone(target)), to=_DATETIME2.copy())
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"),
+                        to=exp.DataType.build("DATETIMEOFFSET", dialect="tsql"))
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
         """Regex needs SQL Server 2025, ``greatest`` / ``least`` and the strict ``json_value`` read 2022: the

@@ -77,7 +77,8 @@ async def test_list_element_coercion() -> None:
 
 async def test_bigquery_zoned_column_read() -> None:
     lib = lib_dataset()
-    zoned = lib.model_copy(update={"fields": [f.model_copy(update={"db_type": "TIMESTAMP"}) if f.name == "ts" else f
-                                              for f in lib.fields]})
+    zoned = lib.model_copy(update={"fields": [
+        f.model_copy(update={"db_type": "TIMESTAMP", "datatype": DataType.DATETIME_TZ}) if f.name == "ts" else f
+        for f in lib.fields]})
     sql = await emit_lib(lib_query("lib.ts"), dialect="bigquery", datasets=[zoned])
     assert "CAST(lib.ts AS DATETIME)" in sql, sql

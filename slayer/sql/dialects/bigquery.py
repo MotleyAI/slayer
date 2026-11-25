@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
@@ -49,6 +50,7 @@ from slayer.sql.dialects.base import (
     number_literal_text,
     operand_copy,
     text_try_cast,
+    zone_name,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
@@ -162,6 +164,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     like_escape_clause: ClassVar[bool] = False
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
+    naive_instant_reads: ClassVar[bool] = True
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON"})
 
     database_name: ClassVar[str] = "BigQuery"
@@ -171,6 +174,14 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "CBRT", "GREATEST", "LEAST",
     })
     extremum_propagates_null: ClassVar[bool] = True
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``DATETIME(TIMESTAMP(v, S), Q)``; an instant (a ``TIMESTAMP``): ``DATETIME(v, Q)``."""
+        instant = value if source is None else exp.Timestamp(this=value, zone=zone_name(source))
+        return exp.Datetime(this=instant, expression=zone_name(target))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Timestamp(this=exp.Literal.string(f"{iso_text(value)}+00"))
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
