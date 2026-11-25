@@ -210,7 +210,7 @@ from slayer.database.client import (
     render_type_probe,
     sql_dataset_trial_query,
 )
-from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect, ossie_token
 from slayer.sql.mode_a_variables import bind_mode_a, check_mode_a_placeholders, check_placeholders
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.render.library import check_library_support
@@ -3714,7 +3714,8 @@ class SlayerQueryEngine:
         datasets_by_name = {k: v for k, v in loaded.items() if v is not None}
         check_definition_reach(dataset=dataset, reachable=datasets_by_name)
         check_definition_ambiguity(dataset=dataset, reachable=datasets_by_name)
-        check_dataset_filters(dataset=dataset, reachable=datasets_by_name)
+        check_dataset_filters(dataset=dataset, reachable=datasets_by_name,
+                              dialect=ossie_token(datasource.type) if datasource is not None else None)
 
         def _expand(sql: str) -> None:
             expand_derived_refs_sync(

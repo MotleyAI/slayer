@@ -128,7 +128,9 @@ def _datasets() -> list[SlayerDataset]:
         orders, customers, slots, slots_w,
         _orders_like("big_orders", fields=[native("rn", RN)], filters=["amount >= 20"]),
         _orders_like("sql_orders", fields=[native("rn", RN)], sql_table=None, sql="SELECT * FROM orders"),
-        _orders_like("orders_s", fields=[native("rn", RN)], relationships=[
+        _orders_like("orders_s", fields=[
+            native("rn", RN), native("by_label", "ROW_NUMBER() OVER (PARTITION BY slots.label ORDER BY orders_s.id)")],
+                     relationships=[
             DatasetRelationship(to="slots", from_columns=["rn"], to_columns=["pos"], cardinality=RelationshipCardinality.MANY_TO_ONE)]),
         _orders_like("orders_wt", relationships=[
             DatasetRelationship(to="slots_w", from_columns=["slot"], to_columns=["pos"], cardinality=RelationshipCardinality.MANY_TO_ONE)]),
@@ -315,6 +317,10 @@ class TestRelationshipKeys:
     async def test_a_filter_across_a_fanning_hop_reads_the_computed_key(self, engine):
         resp = await _run(engine, _grouped("slots", "slots.label", "count(slots.*)", filter=["orders_s.amount >= 60"]))
         assert _num(_by(resp, "slots.label", "m")) == {"first": 1, "third": 1}
+
+    async def test_a_window_across_a_windowed_key_runs_a_layer_above_it(self, engine):
+        resp = await _run(engine, _grouped("orders_s", "orders_s.by_label", "count(orders_s.*)"))
+        assert _num(_by(resp, "orders_s.by_label", "m")) == {1: 3, 2: 3, 3: 1}
 
 
 @pytest.mark.parametrize("source, target", [
@@ -540,12 +546,41 @@ class TestModelFilterOnWindowedColumn:
         assert stored is not None
         assert stored.filters == []
 
+    async def test_cycle_through_a_chain_of_joined_windowed_columns(self, filter_engine, door):
+        await _save(filter_engine, _cycle_dataset("b", "a", extra=[
+            native("w1", "ROW_NUMBER() OVER (PARTITION BY b_to_a.flag ORDER BY id)"), native("w2", "SUM(b.w1) OVER ()")]),
+            door=door)
+        dataset = _cycle_dataset("a", "b", filters=["a_to_b.w2 >= 1"])
+        with pytest.raises(DatasetFilterCycleError) as exc:
+            await _save(filter_engine, dataset, door=door)
+        assert exc.value.cycle[0] == "a"
+        assert exc.value.cycle[-1] == "a"
+
+    async def test_a_window_in_another_dialects_entry_is_not_a_cycle(self, filter_engine, door):
+        flag = DatasetField(name="flag2", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[
+            DialectEntry(dialect="DUCKDB", expression="ROW_NUMBER() OVER (ORDER BY id)"),
+            DialectEntry(dialect="SQLITE", expression="flag")]))
+        await _save(filter_engine, _cycle_dataset("a", "b", extra=[flag], filters=["a.flag2 = 1"]), door=door)
+        resp = await _run(filter_engine, {"population": "a", "dimensions": ["a.id"]})
+        assert [int(r["a.id"]) for r in resp.data] == [1]
+
     async def test_joined_windowed_column_is_accepted_and_evaluated(self, filter_engine, door):
         await filter_engine.storage.save_dataset(_ranked("ranked_orders"))
         await _save(filter_engine, _returns_ranked(filters=["ranked_orders.ranked > 1"]), door=door)
         resp = await _run(filter_engine, {"population": "returns_ranked",
                                           "metrics": [{"metric": "count(returns_ranked.*)", "alias": "m"}]})
         assert [int(r["m"]) for r in resp.data] == [2]
+
+
+async def test_windows_of_two_datasets_reading_each_other_across_to_one_hops(filter_engine):
+    await filter_engine.save_dataset(_cycle_dataset("a", "b", extra=[
+        native("w", "ROW_NUMBER() OVER (PARTITION BY a_to_b.flag ORDER BY id)")]))
+    await filter_engine.save_dataset(_cycle_dataset("b", "a", extra=[
+        native("w", "ROW_NUMBER() OVER (PARTITION BY b_to_a.flag ORDER BY id)")]))
+    ids = await _run(filter_engine, {"population": "a", "dimensions": ["a.id"]})
+    assert sorted(int(r["a.id"]) for r in ids.data) == [1, 2]
+    windows = await _run(filter_engine, _grouped("a", "a.w", "count(a.*)"))
+    assert _num(_by(windows, "a.w", "m")) == {1: 2}
 
 
 async def test_a_stored_own_windowed_filter_fails_the_query(filter_engine):

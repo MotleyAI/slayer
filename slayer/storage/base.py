@@ -125,7 +125,7 @@ from slayer.storage.legacy_alias_rewrite import (
 )
 from slayer.database.client import SqlClient
 from slayer.sql.definitions import check_forms, with_converted_sql
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields, without_extension_fields
 from slayer.storage.qualified_references import qualified_stages, stage_readings
@@ -1033,7 +1033,8 @@ class StorageBackend(ABC):
         await self._validate_mode_a_placeholders(dataset)
         check_field_agg(dataset)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
-        check_dataset_filters(dataset=dataset, reachable=peers)
+        check_dataset_filters(dataset=dataset, reachable=peers,
+                              dialect=ossie_token(datasource.type) if datasource is not None else None)
         stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
         check_evaluated_metrics(dataset=dataset, reachable=peers, stored=stored, model_metrics={
             m.name for m in await self.list_model_scoped_metrics(dataset.data_source)})

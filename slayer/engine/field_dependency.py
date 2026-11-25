@@ -17,6 +17,7 @@ remain authoritative.
 """
 from __future__ import annotations
 
+import contextlib
 import warnings
 from collections.abc import Iterator, Set as AbstractSet
 
@@ -32,11 +33,12 @@ from slayer.core.errors import (
     DerivedFieldCircularError,
     DerivedFieldFanningError,
     DatasetFilterCycleError,
+    FieldExpressionError,
     UnevaluableEntityError,
     UnreachableDefinitionError,
     UnresolvableDimensionRelationshipError,
 )
-from slayer.core.field_expression import portable_text
+from slayer.core.field_expression import portable_text, running_form
 from slayer.core.ossie_validity import SOURCE_MEASURE_REASON, reads_source_measure
 from slayer.core.relationship_search import unreachable_target
 from slayer.core.relationship_walker import OrientedRelationship, provably_to_one, walk, walk_miss, walk_terminal
@@ -552,11 +554,11 @@ def validate_derived_fields(
 
 
 def filter_references(
-    fragment: str, *, host: SlayerDataset, reachable: dict[str, SlayerDataset],
+    fragment: str, *, host: SlayerDataset, reachable: dict[str, SlayerDataset], dialect: str | None = None,
 ) -> Iterator[tuple[SlayerDataset, str, tuple[str, ...]]]:
     """``(owner, leaf, datasets on its path)`` for each field path ``fragment`` reads from ``host``,
     recursing through the derived fields it names; unresolvable references are skipped."""
-    yield from _references(_native(fragment), host=host, reachable=reachable, via=(), seen=set())
+    yield from _references(_native(fragment), host=host, reachable=reachable, via=(), seen=set(), dialect=dialect)
 
 
 def _resolve_owner(
@@ -574,16 +576,20 @@ def _resolve_owner(
     return None if owner is None else (owner, chain)
 
 
-def windowed_field(field: DatasetField) -> bool:
-    """Whether ``field`` is windowed: as resolved, else when any of its native forms holds a window."""
+def windowed_field(field: DatasetField, *, dialect: str | None = None) -> bool:
+    """Whether ``field`` is windowed: as resolved, else its form running on ``dialect`` holds a window (any native
+    form, when the dialect or that form is unknown)."""
     if field.resolved:
         return field.windowed
+    if dialect is not None and field.expression is not None:
+        with contextlib.suppress(FieldExpressionError):
+            return holds_window(running_form(owner=field.name, expression=field.expression, dialect=dialect).text)
     return any(holds_window(text) for text in field.native_texts)
 
 
 def _references(
     fragment: Fragment, *, host: SlayerDataset, reachable: dict[str, SlayerDataset], via: tuple[str, ...],
-    seen: set[tuple[str, str]],
+    seen: set[tuple[str, str]], dialect: str | None,
 ) -> Iterator[tuple[SlayerDataset, str, tuple[str, ...]]]:
     """A windowed column reads its owner's dataset: its owner joins the path, its definition is the owner's read."""
     for quals, leaf in _refs(fragment, host=host):
@@ -593,7 +599,7 @@ def _references(
         owner, chain = resolved
         on_path = (*via, *(edge.to for edge in chain))
         field = owner.get_field(leaf, quoted=True)
-        if field is not None and windowed_field(field):
+        if field is not None and windowed_field(field, dialect=dialect):
             yield owner, leaf, (*on_path, owner.name)
             continue
         yield owner, leaf, on_path
@@ -601,11 +607,11 @@ def _references(
             continue
         seen.add((owner.name, leaf))
         for inner in _arity_reference_sources(field, host=owner):
-            yield from _references(inner, host=owner, reachable=reachable, via=on_path, seen=seen)
+            yield from _references(inner, host=owner, reachable=reachable, via=on_path, seen=seen, dialect=dialect)
 
 
 def _dataset_reads(
-    dataset: SlayerDataset, *, windowed: AbstractSet[str], reachable: dict[str, SlayerDataset],
+    dataset: SlayerDataset, *, windowed: AbstractSet[str], reachable: dict[str, SlayerDataset], dialect: str | None,
 ) -> dict[str, set[str]]:
     """The datasets ``dataset``'s rows read through its filters and its ``windowed`` columns' definitions, each with
     the windowed columns read of it."""
@@ -614,35 +620,40 @@ def _dataset_reads(
                   for fragment in _arity_reference_sources(field, host=dataset)]
     out: dict[str, set[str]] = {}
     for fragment in fragments:
-        for owner, leaf, path in _references(fragment, host=dataset, reachable=reachable, via=(), seen=set()):
+        for owner, leaf, path in _references(fragment, host=dataset, reachable=reachable, via=(), seen=set(),
+                                             dialect=dialect):
             for name in path:
                 out.setdefault(name, set())
             field = owner.get_field(leaf, quoted=True)
-            if field is not None and windowed_field(field):
+            if field is not None and windowed_field(field, dialect=dialect):
                 out[owner.name].add(field.name)
     return out
 
 
 def _filter_cycle(
-    *, dataset: SlayerDataset, reachable: dict[str, SlayerDataset],
+    *, dataset: SlayerDataset, reachable: dict[str, SlayerDataset], dialect: str | None,
 ) -> tuple[list[str], str | None] | None:
     """The first chain of datasets from ``dataset``'s filters back to it, with the windowed column of ``dataset`` that
     closes it, else ``None``."""
     stack = [dataset.name]
     done: set[tuple[str, frozenset[str]]] = set()
+    active: set[tuple[str, frozenset[str]]] = set()
 
     def visit(name: str, windowed: frozenset[str]) -> tuple[list[str], str | None] | None:
         current = reachable.get(name)
-        reads = _dataset_reads(current, windowed=windowed, reachable=reachable) if current is not None else {}
+        reads = (_dataset_reads(current, windowed=windowed, reachable=reachable, dialect=dialect)
+                 if current is not None else {})
         for dep, columns in reads.items():
             if dep == dataset.name:
                 return [*stack, dep], min(columns, default=None)
             key = (dep, frozenset(columns))
-            if key in done or dep in stack:
+            if key in done or key in active:
                 continue
             stack.append(dep)
+            active.add(key)
             found = visit(dep, frozenset(columns))
             stack.pop()
+            active.discard(key)
             if found is not None:
                 return found
             done.add(key)
@@ -715,16 +726,20 @@ def _check_agg_argument(
                                reason=f"{parts[0]!r} is a model-scoped metric")
 
 
-def check_dataset_filters(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:
+def check_dataset_filters(
+    *, dataset: SlayerDataset, reachable: dict[str, SlayerDataset], dialect: str | None = None,
+) -> None:
     """Refuse ``dataset``'s filters naming a metric (``DatasetFilterError``) or reading its own dataset
-    (:class:`DatasetFilterCycleError`, only a cycle through ``dataset``)."""
+    (:class:`DatasetFilterCycleError`, only a cycle through ``dataset``); an unresolved field is windowed by its form
+    running on ``dialect``."""
     if not dataset.filters:
         return
     datasets = {**reachable, dataset.name: dataset}
     for fragment in dataset.filters:
         validate_dataset_filter(mf=fragment, references=(
-            (owner, leaf) for owner, leaf, _path in filter_references(fragment, host=dataset, reachable=datasets)
+            (owner, leaf) for owner, leaf, _path in filter_references(
+                fragment, host=dataset, reachable=datasets, dialect=dialect)
         ))
-    found = _filter_cycle(dataset=dataset, reachable=datasets)
+    found = _filter_cycle(dataset=dataset, reachable=datasets, dialect=dialect)
     if found is not None:
         raise DatasetFilterCycleError(found[0], windowed=found[1])

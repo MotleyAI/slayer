@@ -4940,13 +4940,15 @@ class SQLGenerator:
 
     def _hop_join(
         self, *, edge: OrientedRelationship, prev_dataset: SlayerDataset, next_dataset: SlayerDataset, current_alias: str,
-        next_alias: str, bundle,
+        next_alias: str, bundle, windows: Optional[AbstractSet[str]] = None,
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
-        """``(join_expr, on_expr, join_type)`` for one oriented hop; an unrelated product hop is crossed only under a
-        product anchor (semantics 12.2), else fails closed."""
+        """``(join_expr, on_expr, join_type)`` for one oriented hop, ``next_dataset`` materialising ``windows`` (every
+        windowed field when ``None``); an unrelated product hop is crossed only under a product anchor (semantics
+        12.2), else fails closed."""
         if is_unrelated_edge(edge):
             if bundle.row_supply is not None and bundle.row_supply.product:
-                return self._emit_relation(dataset=next_dataset, alias=next_alias, bundle=bundle), None, "CROSS"
+                return self._emit_relation(
+                    dataset=next_dataset, alias=next_alias, bundle=bundle, windows=windows), None, "CROSS"
             raise ValueError(f"The product hop {edge.source_dataset} × {edge.to} cannot be joined.")
         if edge.lateral is not None:
             if next_dataset.list_of is None:
@@ -4963,7 +4965,7 @@ class SQLGenerator:
                 edge=edge, source=prev_dataset, target=next_dataset,
             )
         ]
-        join_expr = self._emit_relation(dataset=next_dataset, alias=next_alias, bundle=bundle)
+        join_expr = self._emit_relation(dataset=next_dataset, alias=next_alias, bundle=bundle, windows=windows)
         if not join_on_parts:
             return join_expr, None, "CROSS"  # the population's product with its spine
         if provably_to_one(edge=edge, target_dataset=next_dataset) and not trusted_to_one(
@@ -5801,12 +5803,15 @@ class SQLGenerator:
         )
 
 
-    def _emit_relation(self, *, dataset: SlayerDataset, alias: str, bundle) -> Expression:
-        """The one door a dataset reaches the SQL through (FROM, join target, semi-join
-        hop, list parent), always as its filtered dataset (python.sql P13)."""
+    def _emit_relation(
+        self, *, dataset: SlayerDataset, alias: str, bundle, windows: Optional[AbstractSet[str]] = None,
+    ) -> Expression:
+        """The one door a dataset reaches the SQL through (FROM, join target, semi-join hop, list parent), always as
+        its filtered dataset (python.sql P13), materialising ``windows`` and what they read (every windowed field
+        when ``None``)."""
         if is_spine(dataset):
             return self._spine_relation(alias=alias)
-        windowed = [c for c in dataset.fields if c.windowed]
+        windowed = [c for c in dataset.fields if c.windowed] if windows is None or windows else []
         outer_alias, alias = alias, (dataset.name if windowed else alias)
         filters = list(dataset.filters or [])
         if not filters:
@@ -5832,6 +5837,7 @@ class SQLGenerator:
         if windowed:
             relation = self._materialised_windows(
                 dataset=dataset, relation=relation, rows=alias, alias=outer_alias, fields=windowed, bundle=bundle,
+                demand=windows,
             )
         if any(c.name == ROW_IDENTITY_FIELD for c in dataset.fields):
             relation = self._numbered_relation(relation, alias=outer_alias)
@@ -5839,10 +5845,11 @@ class SQLGenerator:
 
     def _materialised_windows(
         self, *, dataset: SlayerDataset, relation: Expression, rows: str, alias: str, fields: List[DatasetField],
-        bundle,
+        bundle, demand: Optional[AbstractSet[str]] = None,
     ) -> Expression:
-        """``relation`` (the filtered rows, aliased ``rows``) with each windowed field a column: one
-        ``(SELECT rows.*, <window> AS <column> FROM … AS rows [to-one joins]) AS rows`` per dependency depth."""
+        """``relation`` (the filtered rows, aliased ``rows``) with each windowed field (``demand`` and what it reads,
+        when given) a column: one ``(SELECT rows.*, <window> AS <column> FROM … AS rows [to-one joins]) AS rows`` per
+        dependency depth."""
         allocator = self._gen_allocator or self._new_allocator()
         limit = self._dialect.max_identifier_bytes
         columns = {windowed_column(f.name): f.name for f in fields}
@@ -5853,24 +5860,38 @@ class SQLGenerator:
                 f.definition_sql or f.name, location=f"definition of field {f.name!r} on dataset {dataset.name!r}",
             )
             rendered[f.name] = (window, _prefix_closed(frame.relationship_paths.as_list()))
+        chains = {path: self._oriented_hop_chain(source_dataset=dataset, path=path, bundle=bundle)
+                  for _, paths in rendered.values() for path in paths}
         reads = {
             name: {columns[c.name] for c in window.find_all(exp.Column) if c.table == rows and c.name in columns}
-            for name, (window, _) in rendered.items()
+                  | {src.name for path in paths if len(path) == 1
+                     for src, _ in self._hop_keys(chains[path], source=dataset) if src.name in rendered}
+            for name, (window, paths) in rendered.items()
         }
+        if demand is not None:
+            keep = _read_closure(reads, start=demand)
+            reads = {name: deps for name, deps in reads.items() if name in keep}
         for layer in _dependency_layers(reads, dataset=dataset.name):
             joins = []
-            for path in dict.fromkeys(p for name in layer for p in rendered[name][1]):
-                chain = self._oriented_hop_chain(source_dataset=dataset, path=path, bundle=bundle)
+            paths = list(dict.fromkeys(p for name in layer for p in rendered[name][1]))
+            for path in paths:
+                chain = chains[path]
                 edge, target = chain[-1]
                 if is_lateral_edge(edge) or not provably_to_one(edge=edge, target_dataset=target):
                     raise ValueError(
                         f"A windowed field of dataset {dataset.name!r} reads across {'.'.join(path)!r}, "
                         f"which is not a proven to-one hop."
                     )
+                next_alias = allocator.alias_for(root=rows, path=path, limit=limit)
+                read = {c.name for name in layer for c in rendered[name][0].find_all(exp.Column) if c.table == next_alias}
+                keys = [tgt for _, tgt in self._hop_keys(chain, source=dataset)]
+                keys += [src for p in paths if p[:-1] == path for src, _ in self._hop_keys(chains[p], source=dataset)]
                 join, on, _kind = self._hop_join(
                     edge=edge, prev_dataset=chain[-2][1] if len(chain) > 1 else dataset, next_dataset=target,
                     current_alias=allocator.alias_for(root=rows, path=path[:-1], limit=limit),
-                    next_alias=allocator.alias_for(root=rows, path=path, limit=limit), bundle=bundle,
+                    next_alias=next_alias, bundle=bundle,
+                    windows={f.name for f in target.fields
+                             if f.windowed and (windowed_column(f.name) in read or any(k.name == f.name for k in keys))},
                 )
                 joins.append((join, on, "LEFT"))  # a row definition never drops its dataset's rows
             select = exp.select(
@@ -5882,6 +5903,16 @@ class SQLGenerator:
             relation.meta[_WINDOW_LAYER] = True
         relation.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         return relation
+
+    @staticmethod
+    def _hop_keys(
+        chain: List[Tuple[OrientedRelationship, SlayerDataset]], *, source: SlayerDataset,
+    ) -> List[Tuple[DatasetField, DatasetField]]:
+        """The key fields of ``chain``'s last hop; none for a lateral or product hop."""
+        edge, target = chain[-1]
+        if is_lateral_edge(edge) or is_unrelated_edge(edge):
+            return []
+        return relationship_key_fields(edge=edge, source=chain[-2][1] if len(chain) > 1 else source, target=target)
 
     def _numbered_relation(self, relation: Expression, *, alias: str) -> Expression:
         """``(SELECT alias.*, <row number> AS row_id FROM relation) AS alias``: the filtered rows, each numbered once."""
@@ -7176,6 +7207,18 @@ def _dependency_layers(reads: Dict[str, Set[str]], *, dataset: str) -> List[List
     for name in reads:
         visit(name, ())
     return [[n for n in reads if depth[n] == d] for d in range(max(depth.values(), default=-1) + 1)]
+
+
+def _read_closure(reads: Dict[str, Set[str]], *, start: AbstractSet[str]) -> Set[str]:
+    """``start`` and every windowed field it reads, transitively."""
+    out: Set[str] = set()
+    todo = [n for n in start if n in reads]
+    while todo:
+        name = todo.pop()
+        if name not in out:
+            out.add(name)
+            todo.extend(reads[name])
+    return out
 
 
 def _prune_window_layers(statement: Expression) -> None:

@@ -464,6 +464,7 @@ carve_outs:
   - {name: reflect_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: describe_cursor_column, file: slayer/sql/dialects/tsql.py, reason: "physical database or result-set column"}
   - {name: reads_source_column, file: slayer/sql/field_expansion.py, reason: "physical database or result-set column"}
+  - {name: windowed_column_sql, file: slayer/sql/field_expansion.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: _SemiJoinOps, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _apply_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _build_from_and_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
@@ -473,11 +474,14 @@ carve_outs:
   - {name: _join_alias_resolver, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _join_key, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _list_join, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _prune_window_columns, file: slayer/sql/generator.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _prune_window_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _semi_join_exists_conditions, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _semi_join_flat, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _semi_join_spine, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: base_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: column, file: slayer/sql/generator.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: columns, file: slayer/sql/generator.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: join, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: join_expr, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: join_on_parts, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
@@ -491,6 +495,8 @@ carve_outs:
   - {name: src_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
   - {name: _join_alias_memo, file: slayer/sql/naming.py, reason: "SQL JOIN as an operation"}
   - {name: _join_alias_used, file: slayer/sql/naming.py, reason: "SQL JOIN as an operation"}
+  - {name: _WINDOWED_COLUMN_BYTES, file: slayer/sql/naming.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: windowed_column, file: slayer/sql/naming.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: columns, file: slayer/sql/render/cte_assembly.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/render/row_expr.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/render/value_expr.py, reason: "SQL column in a SQL AST, statement or wire surface"}
