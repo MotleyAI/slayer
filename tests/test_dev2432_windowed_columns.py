@@ -616,6 +616,22 @@ class TestModelFilterOnWindowedColumn:
         resp = await _run(filter_engine, {"population": "a", "dimensions": ["a.id"]})
         assert [int(r["a.id"]) for r in resp.data] == [1]
 
+    async def test_an_unread_window_reaching_back_through_another_window_blocks_no_filter(self, filter_engine, door):
+        c = SlayerDataset(name="c", data_source="test", sql_table="b", fields=[
+            _col("id", primary_key=True), _col("flag"), _col("a_id"),
+            native("cw", "ROW_NUMBER() OVER (PARTITION BY c_to_a.flag ORDER BY id)")], relationships=[
+            DatasetRelationship(to="a", name="c_to_a", from_columns=["a_id"], to_columns=["id"],
+                                cardinality=RelationshipCardinality.MANY_TO_ONE)])
+        b = SlayerDataset(name="b", data_source="test", sql_table="b", fields=[
+            _col("id", primary_key=True), _col("flag"), _col("a_id"), native("w", "SUM(b_to_c.cw) OVER ()")],
+            relationships=[DatasetRelationship(to="c", name="b_to_c", from_columns=["id"], to_columns=["id"],
+                                               cardinality=RelationshipCardinality.MANY_TO_ONE)])
+        await _save(filter_engine, c, door=door)
+        await _save(filter_engine, b, door=door)
+        await _save(filter_engine, _cycle_dataset("a", "b", filters=["a_to_b.flag = 1"]), door=door)
+        resp = await _run(filter_engine, {"population": "a", "dimensions": ["a.id"]})
+        assert [int(r["a.id"]) for r in resp.data] == [1]
+
     async def test_a_hop_keyed_by_its_own_window_is_a_cycle(self, filter_engine, door):
         keyed = SlayerDataset(
             name="a", data_source="test", sql_table="a", filters=["a_rn.flag = 1"],
@@ -719,8 +735,9 @@ async def test_a_field_across_a_long_joined_path_reads_the_fitted_alias(tmp_path
     tree = sqlglot.parse_one(resp.sql, dialect="postgres")
     terminal = next(j.this.alias_or_name for j in tree.find_all(exp.Join)
                     if any(t.name == "c" for t in j.this.find_all(exp.Table)))
-    reads = {c.table for c in tree.find_all(exp.Column) if c.name == read}
-    assert reads == {terminal}, resp.sql
+    projected = {c.table for s in tree.find_all(exp.Select) for p in s.expressions for c in p.find_all(exp.Column)
+                 if c.name == read}
+    assert projected == {terminal}, resp.sql
 
 
 async def test_a_stored_own_windowed_filter_fails_the_query(filter_engine):

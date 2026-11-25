@@ -5815,21 +5815,36 @@ class SQLGenerator:
                   for name in _read_closure(_reversed(reads), start=set(reasons))}
         keep = set(rendered) - set(unsafe) if demand is None else _read_closure(reads, start=demand)
         if keep & set(unsafe):
-            raise unsafe[min(keep & set(unsafe))]
-        for layer in _dependency_layers({n: d for n, d in reads.items() if n in keep}, dataset=dataset.name):
-            select = exp.select(
-                exp.Column(this=exp.Star(), table=exp.to_identifier(rows)),
-                *(exp.Alias(this=rendered[name][0], alias=exp.to_identifier(windowed_column(name))) for name in layer),
-            ).from_(relation)
-            joins = self._window_layer_joins(layer=layer, rendered=rendered, chains=chains, dataset=dataset, rows=rows,
-                                             allocator=allocator, bundle=bundle)
-            relation = exp.Subquery(this=_apply_joins(select=select, joins=joins),
-                                    alias=exp.TableAlias(this=exp.to_identifier(rows)))
-            relation.meta[_WINDOW_LAYER] = True
-        relation.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
+            raise _WindowRefused(unsafe[min(keep & set(unsafe))])
+        while True:
+            try:
+                layered = relation
+                for layer in _dependency_layers({n: d for n, d in reads.items() if n in keep}, dataset=dataset.name):
+                    select = exp.select(
+                        exp.Column(this=exp.Star(), table=exp.to_identifier(rows)),
+                        *(exp.Alias(this=rendered[name][0], alias=exp.to_identifier(windowed_column(name)))
+                          for name in layer),
+                    ).from_(layered)
+                    joins = self._window_layer_joins(layer=layer, rendered=rendered, chains=chains, dataset=dataset,
+                                                     rows=rows, allocator=allocator, bundle=bundle)
+                    layered = exp.Subquery(this=_apply_joins(select=select, joins=joins),
+                                           alias=exp.TableAlias(this=exp.to_identifier(rows)))
+                    layered.meta[_WINDOW_LAYER] = True
+                break
+            except _WindowRefused as refused:
+                # A window whose join target can't materialise what it reads: unread here, refused if read.
+                if demand is not None:
+                    raise _WindowRefused(refused.error) from None
+                failed = {n for n in keep if refused.path in rendered[n][1]}
+                if not failed:
+                    raise refused.error from None
+                for name in _read_closure(_reversed(reads), start=failed):
+                    unsafe.setdefault(name, refused.error)
+                keep -= set(unsafe)
+        layered.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         if unsafe:
-            relation.meta[_UNSAFE_WINDOWS] = {windowed_column(name): exc for name, exc in unsafe.items()}
-        return relation
+            layered.meta[_UNSAFE_WINDOWS] = {windowed_column(name): exc for name, exc in unsafe.items()}
+        return layered
 
     def _unemittable(
         self, *, name: str, paths: List[Tuple[str, ...]],
@@ -5878,12 +5893,15 @@ class SQLGenerator:
             read = {c.name for name in layer for c in rendered[name][0].find_all(exp.Column) if c.table == next_alias}
             keys = {tgt.name for _, tgt in self._hop_keys(chain, source=dataset)}
             keys |= {src.name for p in paths if p[:-1] == path for src, _ in self._hop_keys(chains[p], source=dataset)}
-            join, on, _kind = self._hop_join(
-                edge=edge, prev_dataset=chain[-2][1] if len(chain) > 1 else dataset, next_dataset=target,
-                current_alias=allocator.alias_for(root=rows, path=path[:-1], limit=limit), next_alias=next_alias,
-                bundle=bundle, windows={f.name for f in target.fields
-                                        if f.windowed and (windowed_column(f.name) in read or f.name in keys)},
-            )
+            try:
+                join, on, _kind = self._hop_join(
+                    edge=edge, prev_dataset=chain[-2][1] if len(chain) > 1 else dataset, next_dataset=target,
+                    current_alias=allocator.alias_for(root=rows, path=path[:-1], limit=limit), next_alias=next_alias,
+                    bundle=bundle, windows={f.name for f in target.fields
+                                            if f.windowed and (windowed_column(f.name) in read or f.name in keys)},
+                )
+            except _WindowRefused as refused:
+                raise _WindowRefused(refused.error, path=path) from None
             joins.append((join, on, "LEFT"))  # a row definition never drops its dataset's rows
         return joins
 
@@ -7189,6 +7207,15 @@ def _dependency_layers(reads: Dict[str, Set[str]], *, dataset: str) -> List[List
 
 
 _UNSAFE_WINDOWS = "slayer_unsafe_windows"
+
+
+class _WindowRefused(Exception):
+    """A demanded window can't be materialised: ``error`` is what a read of it raises, ``path`` the hop reaching it."""
+
+    def __init__(self, error: Exception, *, path: Tuple[str, ...] = ()) -> None:
+        super().__init__(str(error))
+        self.error = error
+        self.path = path
 
 
 def _to_one_hop(chain: List[Tuple[OrientedRelationship, SlayerDataset]]) -> bool:
