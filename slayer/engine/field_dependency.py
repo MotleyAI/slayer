@@ -160,17 +160,23 @@ def value_reads(
 ) -> list[tuple[SlayerDataset, str, bool]]:
     """What the value of derived ``field`` reads: ``(host, column, True)`` per source column, ``(dataset, field,
     False)`` per field a path reaches; its ``filter`` is not part of its value."""
-    out: list[tuple[SlayerDataset, str, bool]] = []
-    for text, portable in value_fragments(field, host=host):
-        for quals, leaf, quoted in (_portable_refs(text) if portable else _fragment_refs(text)) or []:
-            if reads_source_column(tuple(quals), dataset=host):
-                out.append((host, leaf, True))
-                continue
-            target = resolve_ref_target(qualifiers=quals, source_dataset=host, datasets_by_name=reachable)
-            if target is not None:
-                read = target.get_field(leaf, quoted=quoted)
-                out.append((target, read.name if read is not None else leaf, False))
-    return out
+    sites = [site for text, portable in value_fragments(field, host=host)
+             for site in (_portable_refs(text) if portable else _fragment_refs(text)) or []]
+    return [read for site in sites if (read := _value_read(site, host=host, reachable=reachable)) is not None]
+
+
+def _value_read(
+    site: RefSite, *, host: SlayerDataset, reachable: dict[str, SlayerDataset],
+) -> tuple[SlayerDataset, str, bool] | None:
+    """One reference site of a value as ``value_reads`` reports it; ``None`` when its target is unresolved."""
+    quals, leaf, quoted = site
+    if reads_source_column(tuple(quals), dataset=host):
+        return host, leaf, True
+    target = resolve_ref_target(qualifiers=quals, source_dataset=host, datasets_by_name=reachable)
+    if target is None:
+        return None
+    read = target.get_field(leaf, quoted=quoted)
+    return target, read.name if read is not None else leaf, False
 
 
 def _source_column_reads(fragment: tuple[str, bool], *, field: DatasetField, host: SlayerDataset) -> list[tuple[str, str]]:
