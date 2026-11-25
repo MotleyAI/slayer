@@ -2046,27 +2046,42 @@ class SlayerQueryEngine:
     ) -> Optional[TimeZoneError]:
         """``zone``'s cached check, probing it when none is cached or in flight; a cancelled probe is retried."""
         while True:
-            with self._zone_lock:
-                checks = self._zone_checks.setdefault(key, {})
-                check = checks.get(zone)
-                owner = check is None
-                if check is None:
-                    check = checks[zone] = concurrent.futures.Future()
+            check, owner = self._claim_zone_check(key=key, zone=zone)
             if owner:
-                try:
-                    check.set_result(await self._probe_zone(dialect=dialect, zone=zone, client=client))
-                except BaseException as exc:
-                    with self._zone_lock:
-                        if checks.get(zone) is check:
-                            del checks[zone]  # a failed probe is retried by the next statement
-                    check.set_exception(exc)
-                    raise
+                await self._settle_zone_check(check, key=key, zone=zone, dialect=dialect, client=client)
             try:
                 return await asyncio.shield(asyncio.wrap_future(check))
             except asyncio.CancelledError:
                 task = asyncio.current_task()
                 if owner or (task is not None and task.cancelling()):
                     raise  # this statement itself was cancelled
+
+    def _claim_zone_check(
+        self, *, key: tuple, zone: str,
+    ) -> tuple[concurrent.futures.Future[Optional[TimeZoneError]], bool]:
+        """The cached or in-flight check of ``zone``, else a new one this caller owns (and whether it does)."""
+        with self._zone_lock:
+            checks = self._zone_checks.setdefault(key, {})
+            check = checks.get(zone)
+            if check is not None:
+                return check, False
+            check = checks[zone] = concurrent.futures.Future()
+            return check, True
+
+    async def _settle_zone_check(
+        self, check: concurrent.futures.Future[Optional[TimeZoneError]], *, key: tuple, zone: str,
+        dialect: SqlDialect, client: SqlClient,
+    ) -> None:
+        """Probe ``zone`` into ``check``; on any failure uncache it (the next statement retries) and re-raise."""
+        try:
+            check.set_result(await self._probe_zone(dialect=dialect, zone=zone, client=client))
+        except BaseException as exc:
+            with self._zone_lock:
+                checks = self._zone_checks.get(key, {})
+                if checks.get(zone) is check:
+                    del checks[zone]
+            check.set_exception(exc)
+            raise
 
     @staticmethod
     async def _probe_zone(*, dialect: SqlDialect, zone: str, client: SqlClient) -> Optional[TimeZoneError]:
