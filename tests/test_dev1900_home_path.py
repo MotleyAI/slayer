@@ -1,12 +1,11 @@
-"""DEV-1900 — definition defaults join the home-rule candidates (gap 4).
+"""Definition defaults join the home-rule candidates.
 
 The home dataset is chosen over every resolved input, definition defaults
 included. A source ``customers.regions.pop`` whose aggregation defaults the
 weight to ``customers.spend`` has a valid shallower home (``customers``
 determines ``pop`` to-one and ``spend`` locally); the explicit spelling already
 widens the home, so the definition default must produce the identical plan and
-value. A reverse-hop default with no forward home stays failing closed
-(reverse-hop cancellation is DEV-1908).
+value. A reverse-hop default homes on the dataset across that hop.
 """
 
 from __future__ import annotations
@@ -47,13 +46,13 @@ class TestDefinitionDefaultJoinsHomeCandidates:
         assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
 
-class TestReverseHopDefaultFailsClosed:
-    async def test_back_hop_default_stays_failing_closed(self, engine):
-        """Rooted at regions there is no forward home for the customers.spend
-        default; customers is not on the path, so nothing cancels and there is
-        no forward home."""
-        q = SlayerQuery(
-            source_model="regions",
-            measures=[ModelMeasure(formula="pop:wsum_cust_spend", name="w")])
-        with pytest.raises(ValueError, match="unproven join hop"):
-            await engine.execute(q)
+class TestReverseHopDefaultHomesOnCustomers:
+    async def test_back_hop_default_homes_on_customers(self, engine):
+        """Rooted at regions, the customers.spend default homes on customers, which determines its region's pop:
+        the value equals the same aggregate rooted at customers."""
+        from_regions = await engine.execute(SlayerQuery(
+            source_model="regions", measures=[ModelMeasure(formula="pop:wsum_cust_spend", name="w")]))
+        from_customers = await engine.execute(SlayerQuery(
+            source_model="customers", measures=[ModelMeasure(formula="sum(regions.pop * spend)", name="w")]))
+        assert float(from_regions.data[0]["regions.w"]) == pytest.approx(
+            float(from_customers.data[0]["customers.w"]))

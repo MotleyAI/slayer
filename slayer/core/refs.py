@@ -113,6 +113,7 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     TimePointCmpKey: ("TimePointCmpKey", (
         ("op", attrgetter("op")), ("operand", attrgetter("operand")),
         ("point", attrgetter("point")), ("literal_on_left", attrgetter("literal_on_left")),
+        ("parenthesised", attrgetter("parenthesised")),
     )),
     InKey: ("InKey", (
         ("column", attrgetter("column")), ("values", attrgetter("values")),
@@ -258,7 +259,8 @@ def _arithmetic_display(key: ArithmeticKey) -> str:
 def _time_point_cmp_display(key: TimePointCmpKey) -> str:
     if key.literal_on_left:
         return f"{_scalar_display(key.point)} {MIRRORED_TIME_POINT_OP[key.op]} {key_display(key.operand)}"
-    return f"{key_display(key.operand)} {key.op} {_scalar_display(key.point)}"
+    point = _scalar_display(key.point)
+    return f"{key_display(key.operand)} {key.op} {f'({point})' if key.parenthesised else point}"
 
 
 def _fragment_display(key: SqlFragmentKey) -> str:

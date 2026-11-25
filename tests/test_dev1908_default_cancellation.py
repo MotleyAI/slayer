@@ -1,4 +1,4 @@
-"""DEV-1908 — reverse-hop cancellation for definition defaults.
+"""Reverse-hop cancellation for definition defaults.
 
 A definition default whose qualifier names a dataset already on the query's path
 to the owner cancels the path back to that dataset (`a.b.a ≡ a`), reading its row
@@ -53,7 +53,7 @@ def _cells(resp) -> dict:
 
 
 def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
-    """`home_path` of a measure's outer aggregate over the DEV-1908 graph."""
+    """`home_path` of a measure's outer aggregate over the cancellation graph."""
     elab = elaborate_query(
         query=orders_q(dimensions=dimensions or [],
                        measures=[ModelMeasure(formula=formula, name="m")]),
@@ -291,6 +291,15 @@ class TestCancelThenFanningHop:
         assert plain == pytest.approx(explicit)
 
 
+class TestReverseHopNotOnThePath:
+    async def test_reverse_hop_default_homes_on_customers(self):
+        # Rooted at regions, `customers` is not on the path: nothing cancels, the
+        # default homes on customers, and it plans exactly as its explicit twin.
+        default = await _gen("pop:wsum_cust_spend", source_model="regions")
+        explicit = await _gen("pop:wsum_cust_spend(weight=customers.spend)", source_model="regions")
+        assert default == explicit
+
+
 class TestFailClosed:
     async def test_cancel_then_miss_fails_closed(self):
         # D3: `regions` cancels, then `plans` misses (not a hop from regions) —
@@ -307,14 +316,3 @@ class TestFailClosed:
         # revisit is pinned here.
         with pytest.raises(ValueError, match="(?i)circular"):
             await _gen("customers.regions.customers.spend:sum")
-
-    @pytest.mark.parametrize("formula", [
-        "pop:wsum_cust_spend",
-        "pop:wsum_cust_spend(weight=customers.spend)"])
-    async def test_reverse_hop_not_on_the_path_stays_refused(self, formula):
-        # Rooted at regions, `customers` is not on the path: nothing cancels, and
-        # BOTH the default and its explicit twin fail with the same input-safety
-        # error naming customers.
-        with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
-            await _gen(formula, source_model="regions")
-        assert "customers" in str(ei.value)

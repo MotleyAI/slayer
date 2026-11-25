@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import Any, Optional
 
+import duckdb
 import pytest
 import sqlalchemy as sa
 import sqlglot
@@ -41,6 +42,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
 from slayer.sql import client as sql_client
 from slayer.sql import engine_factory
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Dialect → file extension for a seeded on-disk database (cosmetic; the
@@ -127,6 +129,14 @@ async def seeded_exec_engine(
         finally:
             engine.close()
             engine_factory.invalidate_engine(ds_config)
+
+
+def seed_tables(db_path: str, tables: dict[str, tuple[str, list[tuple[Any, ...]]]]) -> None:
+    """Create and fill ``{name: (column DDL, rows)}`` in the SQLite or DuckDB file at ``db_path``."""
+    with duckdb.connect(db_path) if db_path.endswith(".duckdb") else transaction(db_path) as con:
+        for name, (columns, rows) in tables.items():
+            con.execute(f"CREATE TABLE {name} ({columns})")
+            con.executemany(f"INSERT INTO {name} VALUES ({', '.join('?' * len(rows[0]))})", rows)
 
 
 async def make_seeded_sqlite_engine(

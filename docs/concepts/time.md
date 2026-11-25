@@ -42,7 +42,7 @@ A comparison of a temporal operand `x` with a period `P` reads the period as a w
 | `x = P`, `x in 'P'` | `start(P) <= x < next_start(P)` |
 | `x != P`, `x not in 'P'` | outside `[start(P), next_start(P))` |
 
-So `ordered_at <= '2024-12-31'` includes Dec 31 10:00, and `ordered_at = '2024-06'` is June. A literal on the left mirrors the comparison; an instant keeps a plain comparison. `in` with a tuple (`code in ('2025-Q1',)`) keeps its value-list meaning.
+So `ordered_at <= '2024-12-31'` includes Dec 31 10:00, and `ordered_at = '2024-06'` is June. A literal on the left mirrors the comparison; an instant keeps a plain comparison. `in` with a tuple (`code in ('2025-Q1',)`) keeps its value-list meaning, and so does a parenthesised single value (`state in ('paid')`, `id in (5)`) unless the operand is DATE or TIMESTAMP, where `x in ('2025')` is the period.
 
 A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal column keeps its string meaning; a relative token or single-string `in` there is a type error naming the column — declare its `type`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
 
