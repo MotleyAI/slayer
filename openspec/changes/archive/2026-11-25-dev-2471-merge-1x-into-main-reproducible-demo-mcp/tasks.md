@@ -39,4 +39,4 @@ relationships, `population` / `metrics`, `slayer.live_schema.ingestion`, `storag
 
 ## 5. Archive (pr-review)
 
-- [ ] 5.1 At archive, remove the temporary ledger entries (design decision 20). Verify: the guard passes on the archived head, and `openspec/specs` keeps every `main`-only requirement.
+- [x] 5.1 At archive, remove the temporary ledger entries (design decision 20). Verify: the guard passes on the archived head, and `openspec/specs` keeps every `main`-only requirement.

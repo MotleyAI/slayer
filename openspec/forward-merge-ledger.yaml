@@ -59,10 +59,3 @@
 - title: A stale demo database is rebuilt
   one_x_hash: fd5d12fdac0bb772cbe2128ab0515ab751aa60eb8f3442aa7dc78c447fd1ae31
   reason: "main keeps its own wording: datasets where 1.x says models."
-# Temporary until the DEV-2471 change is archived into main's living specs; remove at archive.
-- title: Startup preparation never delays the handshake
-  one_x_hash: 3e3016e19fa253290e2b37e7790a69e17c36e1c08d955b86c20ca3fce93f3874
-  reason: "Temporary: the open DEV-2471 change adds it verbatim; archive merges it into main's living specs."
-- title: A release uploads only a wheel that runs the README's queries on a fresh install
-  one_x_hash: a3841afb4c7dcff774b43faeee8a26f1443b92d0de95ab3aa39ff2dded3c837d
-  reason: "Temporary: the open DEV-2471 change modifies it verbatim; archive merges it into main's living specs."
