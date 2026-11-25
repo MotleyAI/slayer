@@ -1,0 +1,15 @@
+## 1. Tests (pr-tests stage — all fail before the fix unless marked as a guard)
+
+- [x] 1.1 `tests/test_dev2021_stored_conversion.py::TestQualification`: an extension column `customers.cl = lower("REGIONS".lbl)` (beside `Regions.lbl = upper(label)`, only `Regions` declared) refuses the load with "does not resolve"; `lower("Regions".lbl)` loads with `customers.cl` inlined through `Regions`. Reuse `_quoted_hop_store`'s fixture shape. Remove the now-resolved `DEV-2438` comment at line 248. Verify: the refusal test fails on current code (it is inlined today, probed).
+- [x] 1.2 New syntax test file: canonical text round-trip comparing the full parse dump (segments + quoted flags) for `lower("REGIONS".lbl)`, `"Regions"."Lbl"`, `"a b".c`, `date_part("year", d)`, `datediff("day", a, b)`, `lower("x" = 1)`, `sum(x) FILTER (WHERE "y" = 1)`, `"null"`, `"true"`, `not "not"`, `AGG("Rev")`, `count("Regions".*)`; unquoted inputs (`lower(REGIONS.lbl)`, `x.null`, `a.b.not`) stay bare. Verify: quoted cases fail on current code.
+- [x] 1.3 Built reserved-word segments, position-aware: `metric_text_at_path("amount", path=("null",))` → `"null".amount`; path `("a", "null")` → `a.null.amount`; also a built head `true` / tail `not`. Verify: the head case fails on current code.
+- [x] 1.4 Guards (pass today, must keep passing): time dimensions `customers.created_at` + `"customers".created_at` at month under one alias collapse to one; a saved-query refinement restating an unnamed measure with quote-only differences adds no second measure and raises no conflict (confirm today's behaviour first); `count("customers".id)` gets the same result name as `count(customers.id)`; the quote-blind identity form keeps functional aggregation and canonical operator spellings (`x == 1` and `x = 1` one identity).
+- [x] 1.5 Codex-review the tests against this change's spec scenarios; fold valid findings.
+
+## 2. Implementation (pr-implement stage)
+
+- [x] 2.1 `slayer/core/syntax.py`: give the renderer a quoting policy independent of `legacy` (design decision 5); faithful policy quotes a segment iff written quoted or its bare spelling does not read back in its position, via a cached grammar-derived probe (decision 3). `canonical_metric_text` uses the faithful policy; expose the quote-blind identity form (today's output, byte-identical); `legacy_result_name_seed` unchanged. Verify: 1.2 and 1.3 pass.
+- [x] 2.2 `slayer/core/query.py`: `_parsed_identity` and `_canonical_expression_text` use the quote-blind identity form; `extension_field_text` keeps the faithful text. Verify: 1.1 and the 1.4 time-dimension / refinement guards pass.
+- [x] 2.3 `slayer/sql/naming.py` `expression_text_alias`: take the `<source>_<agg>` base from the quote-blind form. Verify: the 1.4 result-name guard passes.
+- [x] 2.4 Re-audit every `canonical_metric_text` / `metric_text_at_path` caller against design.md Context (re-read → faithful; identity or name → quote-blind); verify by listing each caller and its form in the PR description.
+- [x] 2.5 Gates: local test scope per `/la:pr`, `poetry run ruff check slayer/ tests/`, `la-typecheck`, `poetry run la-arch-check`; all green.

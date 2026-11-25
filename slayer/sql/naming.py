@@ -38,7 +38,7 @@ from slayer.core.refs import (
     key_display,
     partition_by_suffix,
 )
-from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_metric_text, legacy_result_name_seed
+from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, legacy_result_name_seed, quote_blind_metric_text
 from slayer.sql._identifier_fit import fit_identifier
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, get_dialect
 from slayer.sql.dialects.base import LIST_POSITION
@@ -124,10 +124,10 @@ class AliasAllocator(BaseModel):
         if cached is not None:
             return cached
         if len(path) == 1:
-            base = path[0]
+            base = display_token(path[0])
         else:
             parent = self.alias_for(root=root, path=path[:-1], limit=limit)
-            base = f"{parent}__{path[-1]}"
+            base = f"{parent}__{display_token(path[-1])}"
         used = self._join_alias_used.setdefault(root, {self._fold(root)})
         candidate = fit_identifier(name=base, limit=limit)
         suffix = 2
@@ -156,6 +156,7 @@ def result_key(*, source_relation: str, path: Tuple[str, ...] = (), leaf: str) -
             f"result_key leaf must not contain '.': {leaf!r}. Pass hops via "
             f"`path`, or use result_key_from_alias for a canonical dotted alias."
         )
+    path = tuple(display_token(t) for t in path)
     if path and path[0] == TIME_SPINE_DATASET:
         return ".".join((*path, leaf))
     return ".".join((source_relation, *path, leaf))
@@ -356,7 +357,7 @@ def expression_text_alias(parsed: object) -> str:
     field or star, else the sanitised legacy naming seed."""
     if (isinstance(parsed, AggCall) and not parsed.args and not parsed.kwargs and parsed.filter is None
             and isinstance(parsed.source, (Ref, DottedRef, StarSource)) and _PLAIN_NAME_RE.fullmatch(parsed.agg)):
-        base = canonical_metric_text(parsed.source)
+        base = quote_blind_metric_text(parsed.source)
         if _PLAIN_SOURCE_RE.fullmatch(base):
             if base.endswith(".*"):
                 return f"{base[:-2]}.{canonical_agg_name(metric_name='*', aggregation_name=parsed.agg)}"
