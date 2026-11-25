@@ -30,7 +30,7 @@ present the exact edit and wait for the OK, even when a broader plan already men
 ```bash
 poetry install -E all                                # install with all extras
 poetry run pytest -m "not integration"               # unit tests (excludes integration)
-poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
+SLAYER_GATE_ENGINES=postgres poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
   --ignore=tests/integration/test_integration_mysql.py \
   --ignore=tests/integration/test_integration_clickhouse.py \
   --ignore=tests/integration/test_integration_sqlserver.py \
@@ -76,7 +76,7 @@ ClickHouse / SQL Server / Trino run in CI only in their path-gated `integration-
 
 ```bash
 poetry run pytest -m "not integration"                        # unit only
-poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
+SLAYER_GATE_ENGINES=postgres poetry run pytest tests/ -m "integration and not metabase_e2e" -n logical --dist loadscope \
   --ignore=tests/integration/test_integration_mysql.py \
   --ignore=tests/integration/test_integration_clickhouse.py \
   --ignore=tests/integration/test_integration_sqlserver.py \

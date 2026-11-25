@@ -19,8 +19,11 @@ on:
       - 'pyproject.toml'
       - 'poetry.lock'
       - 'tests/integration/test_integration_clickhouse.py'
+      - 'tests/integration/test_integration_ossie_gate.py'
+      - 'tests/fixtures/ossie_corpus/**'
       - '.github/workflows/integration-clickhouse.yml'
       - '.github/actions/poetry-env/**'
+      - '.github/actions/engine-setup/**'
   push:
     branches: [main]
     paths:
@@ -31,8 +34,11 @@ on:
       - 'pyproject.toml'
       - 'poetry.lock'
       - 'tests/integration/test_integration_clickhouse.py'
+      - 'tests/integration/test_integration_ossie_gate.py'
+      - 'tests/fixtures/ossie_corpus/**'
       - '.github/workflows/integration-clickhouse.yml'
       - '.github/actions/poetry-env/**'
+      - '.github/actions/engine-setup/**'
   workflow_dispatch:
 
 jobs:
@@ -41,15 +47,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/poetry-env
+      - uses: ./.github/actions/engine-setup
         with:
-          python-version: "3.11"
+          engine: clickhouse
 
-      - name: Verify testcontainers[clickhouse] extra is importable
-        run: poetry run python -c "import testcontainers.clickhouse"
-
-      - name: Run ClickHouse integration tests
+      - name: Run the ClickHouse integration tests and compliance gate
         timeout-minutes: 20
+        env:
+          SLAYER_GATE_ENGINES: clickhouse
         run: |
           poetry run pytest tests/integration/test_integration_clickhouse.py \
+            tests/integration/test_integration_ossie_gate.py \
             -v -m integration --timeout=300

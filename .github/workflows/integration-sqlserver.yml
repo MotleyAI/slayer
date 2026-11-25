@@ -22,8 +22,11 @@ on:
       - 'pyproject.toml'
       - 'poetry.lock'
       - 'tests/integration/test_integration_sqlserver.py'
+      - 'tests/integration/test_integration_ossie_gate.py'
+      - 'tests/fixtures/ossie_corpus/**'
       - '.github/workflows/integration-sqlserver.yml'
       - '.github/actions/poetry-env/**'
+      - '.github/actions/engine-setup/**'
   push:
     branches: [main]
     paths:
@@ -34,8 +37,11 @@ on:
       - 'pyproject.toml'
       - 'poetry.lock'
       - 'tests/integration/test_integration_sqlserver.py'
+      - 'tests/integration/test_integration_ossie_gate.py'
+      - 'tests/fixtures/ossie_corpus/**'
       - '.github/workflows/integration-sqlserver.yml'
       - '.github/actions/poetry-env/**'
+      - '.github/actions/engine-setup/**'
   workflow_dispatch:
 
 jobs:
@@ -44,40 +50,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ODBC Driver 18 for SQL Server
-        # The pytest suite uses pyodbc IN-PROCESS on the runner host (unlike
-        # the Docker example in examples.yml, where pyodbc lives only inside
-        # the image built from examples/sqlserver/Dockerfile). Microsoft's apt repo
-        # is the canonical install path on Ubuntu — derive the version from
-        # /etc/os-release so this keeps working when `ubuntu-latest` rolls
-        # from 24.04 → 26.04 etc.
-        run: |
-          UBUNTU_VERSION="$(. /etc/os-release && echo "$VERSION_ID")"
-          echo "Installing msodbcsql18 for Ubuntu ${UBUNTU_VERSION}"
-          curl -sSL https://packages.microsoft.com/keys/microsoft.asc \
-            | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc > /dev/null
-          curl -sSL "https://packages.microsoft.com/config/ubuntu/${UBUNTU_VERSION}/prod.list" \
-            | sudo tee /etc/apt/sources.list.d/mssql-release.list > /dev/null
-          sudo apt-get update
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
-
-      - uses: ./.github/actions/poetry-env
+      - uses: ./.github/actions/engine-setup
         with:
-          python-version: "3.11"
+          engine: tsql
 
-      - name: Verify testcontainers[mssql] extra is importable
-        run: poetry run python -c "import testcontainers.mssql"
-
-      - name: Verify ODBC Driver 18 is visible to pyodbc
-        run: |
-          poetry run python -c "import pyodbc; \
-            drivers = pyodbc.drivers(); \
-            assert 'ODBC Driver 18 for SQL Server' in drivers, \
-              f'Missing ODBC Driver 18 — installed: {drivers!r}'; \
-            print('ODBC drivers:', drivers)"
-
-      - name: Run SQL Server integration tests
+      - name: Run the SQL Server integration tests and compliance gate
         timeout-minutes: 25
+        env:
+          SLAYER_GATE_ENGINES: tsql
         run: |
           poetry run pytest tests/integration/test_integration_sqlserver.py \
+            tests/integration/test_integration_ossie_gate.py \
             -v -m integration --timeout=300

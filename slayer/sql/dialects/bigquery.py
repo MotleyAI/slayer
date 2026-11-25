@@ -9,13 +9,14 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine.url import URL
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.granularity import bucket_type
@@ -50,6 +51,7 @@ from slayer.sql.dialects.base import (
     operand_copy,
     text_try_cast,
 )
+from slayer.sql.dialects._ordered_set_split import split_percentile_selects
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 from slayer.sql.dialects.reflection import TableLocation, clean_comment, col, eq_literal, relation
@@ -136,6 +138,13 @@ def _durable_oauth_material(raw: str) -> str:
     return json.dumps(durable, sort_keys=True, default=str)
 
 
+def _analytic_percentile(p: Expr, value: Expr, partition: Sequence[Expr]):
+    """``PERCENTILE_CONT(v, p) OVER (PARTITION BY <keys>)`` per row, its MAX per group."""
+    window = exp.Window(this=exp.PercentileCont(this=value.copy(), expression=p.copy()),
+                        partition_by=[k.copy() for k in partition])
+    return [window], lambda reads: exp.Max(this=reads[0])
+
+
 class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     """BigQuery dialect."""
     enforces_unique_keys: ClassVar[bool] = False
@@ -174,6 +183,10 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """``PERCENTILE_CONT`` is analytic only."""
+        return split_percentile_selects(statement.copy(), columns=_analytic_percentile)
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
         """``BIGNUMERIC`` holds 38 integer and 38 fractional digits; a wider ``DECIMAL`` cannot be expressed."""

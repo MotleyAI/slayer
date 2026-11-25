@@ -240,6 +240,9 @@ jobs:
         # -n logical --dist loadscope: parallelise across all vCPUs, but pin each
         # test module to one worker so the notebook suite's fixed-path DuckDB
         # (single-writer) can't hit a cross-process lock. --durations logs slowest.
+        # The compliance gate runs here on Postgres; each other server engine's workflow runs it on that engine.
+        env:
+          SLAYER_GATE_ENGINES: postgres
         run: |
           poetry run pytest tests/ -m "integration and not metabase_e2e" --timeout=180 --durations=25 \
             -n logical --dist loadscope \
@@ -289,19 +292,13 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The full install: the compliance gate's server harness imports every engine's driver.
       - if: steps.gate.outputs.skip != 'true'
-        uses: ./.github/actions/poetry-env
+        uses: ./.github/actions/engine-setup
         with:
-          python-version: "3.11"
-          install-args: "-E bigquery"
-
-      - name: Decode service-account JSON key
-        if: steps.gate.outputs.skip != 'true'
-        env:
-          GCP_SA_KEY_B64: ${{ secrets.GCP_SA_KEY_B64 }}
-        run: |
-          echo "$GCP_SA_KEY_B64" | base64 -d > "$RUNNER_TEMP/sa-key.json"
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa-key.json" >> "$GITHUB_ENV"
+          engine: bigquery
+          gcp-project-id: ${{ secrets.GCP_PROJECT_ID }}
+          gcp-sa-key-b64: ${{ secrets.GCP_SA_KEY_B64 }}
 
       - name: Start SLayer server
         if: steps.gate.outputs.skip != 'true'
@@ -336,6 +333,13 @@ jobs:
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: poetry run pytest tests/integration/test_integration_bigquery.py -m integration -v
+
+      - name: Run the compliance gate on BigQuery
+        if: steps.gate.outputs.skip != 'true'
+        timeout-minutes: 20
+        env:
+          SLAYER_GATE_ENGINES: bigquery
+        run: poetry run pytest tests/integration/test_integration_ossie_gate.py -m integration -v --timeout=600
 
       - name: Dump server logs on failure
         if: failure() && steps.gate.outputs.skip != 'true'

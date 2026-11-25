@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
+from slayer.sql.dialects.base import cast_target
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 
 from tests._engine_helpers import _engine_generate
@@ -140,3 +143,43 @@ def test_clickhouse_windowed_projection_keeps_its_alias() -> None:
     window = exp.Window(this=exp.func("SUM", exp.column("x")), order=exp.Order(expressions=[exp.column("x")]))
     statement = exp.select(window.as_("w")).from_("t").order_by(exp.column("w", quoted=True))
     assert ClickhouseDialect().rewrite_statement(statement).sql(dialect="clickhouse").endswith('ORDER BY "w"')
+
+
+# Layer 1 meanings on ClickHouse
+
+
+@pytest.mark.parametrize("author", ["TIME", "TIME WITH TIME ZONE"])
+def test_clickhouse_refuses_a_time_of_day_cast(author: str) -> None:
+    """No time-of-day type: the cast would read NULL."""
+    dialect = ClickhouseDialect()
+    with pytest.raises(ValueError, match="cannot be expressed on clickhouse"):
+        cast_target(author, dialect=dialect)
+
+
+def _parsed(sql: str) -> Expression:
+    tree = sqlglot.parse_one(sql)
+    assert isinstance(tree, Expression)
+    return tree
+
+
+@pytest.mark.parametrize(("value", "digits", "sql"), [
+    ("2.5", 0, "ROUND(toDecimal128OrNull('2.5', 1), 0)"),
+    ("-2.5", 0, "ROUND(toDecimal128OrNull('-2.5', 1), 0)"),
+    ("0.125", 2, "ROUND(toDecimal128OrNull('0.125', 3), 2)"),
+])
+def test_clickhouse_rounds_a_number_literal_tie_away_from_zero(value: str, digits: int, sql: str) -> None:
+    """A number literal is exact; read as a Float64, ``round`` would break its tie to even."""
+    rounded = ClickhouseDialect().build_round(_parsed(value), exp.Literal.number(digits))
+    assert rounded is not None
+    assert rounded.sql(dialect="clickhouse") == sql
+
+
+@pytest.mark.parametrize("digits", ["-1", "orders.d"])
+def test_clickhouse_keeps_its_own_round_otherwise(digits: str) -> None:
+    assert ClickhouseDialect().build_round(_parsed("2.5"), _parsed(digits)) is None
+
+
+def test_clickhouse_number_cast_to_boolean_is_a_bool() -> None:
+    """A comparison yields UInt8; a boolean cast reads Bool, like ClickHouse's own TRUE."""
+    sql = ClickhouseDialect().number_to_boolean(exp.column("qty")).sql(dialect="clickhouse")
+    assert sql == "CAST(qty <> 0 AS Nullable(Bool))"

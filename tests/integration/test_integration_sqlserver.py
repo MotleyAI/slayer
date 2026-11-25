@@ -13,8 +13,8 @@ test_integration_postgres.py focused on T-SQL specifics:
   via the ``exp.Anonymous`` overrides in ``TsqlDialect``).
 * ``CORR`` / ``COVAR_SAMP`` / ``COVAR_POP`` via the variance-decomposition
   formula (no native function in T-SQL).
-* ``MEDIAN`` / ``PERCENTILE_CONT`` as GROUP BY aggregates raise
-  ``NotImplementedError`` — ``PERCENTILE_CONT`` in T-SQL is window-only.
+* ``MEDIAN`` / ``PERCENTILE_CONT`` read a window per row (``PERCENTILE_CONT`` in
+  T-SQL is window-only), regrouped.
 * Native ``LOG10`` (``TsqlDialect.log10_native = True``).
 
 The pytest job's CI step (.github/workflows/integration-sqlserver.yml)
@@ -948,34 +948,37 @@ class TestRollupIngestionSQLServer:
 
 
 # ---------------------------------------------------------------------------
-# Median / percentile — T-SQL raises NotImplementedError
+# Median / percentile — a window per row
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-class TestSQLServerMedianPercentileRaises:
-    async def test_median_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
+class TestSQLServerMedianPercentile:
+    async def test_median(self, sqlserver_env: SlayerQueryEngine) -> None:
+        # amounts = [100, 200, 50, 150, 75, 300] -> median 125
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
-        with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
-            await sqlserver_env.execute(query=query)
+        result = await sqlserver_env.execute(query=query)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
-    async def test_median_grouped_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
-        """Grouped median goes through the same TsqlDialect.build_median hook."""
+    async def test_percentile_quartiles(self, sqlserver_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"metric": "percentile(orders.total, p=0.25)"}, {"metric": "percentile(orders.total, p=0.75)"}],
+        })
+        row = (await sqlserver_env.execute(query=query)).data[0]
+        assert float(row["orders.total_percentile_p_0_25"]) == pytest.approx(81.25)
+        assert float(row["orders.total_percentile_p_0_75"]) == pytest.approx(187.5)
+
+    async def test_median_grouped(self, sqlserver_env: SlayerQueryEngine) -> None:
+        # completed: [100, 150, 200] -> 150; pending: [50, 300] -> 175; cancelled: [75] -> 75
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "median(orders.total)"}],
             "dimensions": ["orders.status"],
         })
-        with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
-            await sqlserver_env.execute(query=query)
-
-    async def test_percentile_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({
-            "population": "orders",
-            "metrics": [{"metric": "percentile(orders.total, p=0.5)"}],
-        })
-        with pytest.raises(NotImplementedError, match="(?i)percentile.*t-sql"):
-            await sqlserver_env.execute(query=query)
+        result = await sqlserver_env.execute(query=query)
+        by_status = {r["orders.status"]: float(r["orders.total_median"]) for r in result.data}
+        assert by_status == pytest.approx({"completed": 150, "pending": 175, "cancelled": 75})
 
 
 # ---------------------------------------------------------------------------

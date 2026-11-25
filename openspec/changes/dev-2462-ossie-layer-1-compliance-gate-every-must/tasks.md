@@ -1,7 +1,7 @@
 ## 1. Harness (tests)
 
 - [x] 1.1 One corpus-root resolver (`$SLAYER_OSSIE_CORPUS`, else vendored) used by every corpus-reading module before any collection-time constant (`DOCUMENTS`, `CASES`, `RUNGS`, spec path) is built; verify with the alternate-corpus test (task 2.6).
-- [ ] 1.2 One `TIER1` source and one engine provider per Tier-1 database (in-process SQLite/DuckDB; Postgres via pytest-postgresql; MySQL/ClickHouse/SQL Server/Trino via testcontainers; Snowflake/BigQuery via credentials), failing rather than skipping when a provider the run requires is unavailable; verify each provider opens an executing engine.
+- [x] 1.2 One `TIER1` source and one engine provider per Tier-1 database (in-process SQLite/DuckDB; Postgres via pytest-postgresql; MySQL/ClickHouse/SQL Server/Trino via testcontainers; Snowflake/BigQuery via credentials), failing rather than skipping when a provider the run requires is unavailable; verify each provider opens an executing engine.
 - [x] 1.3 Canonical fixture form: parse upstream wide-table fixture SQL (`retail.sql`, `stores.sql`) with sqlglot into tables, column types and rows, failing closed on any statement it cannot classify; emit per-engine create / insert / cleanup with the engine's schema, dataset or catalog; the Layer 1 seed (`_dev2215_fixtures.TABLES`) and the DEV-2395 synthetic fixture go through the same emitter; verify with the per-engine seeding smoke test (task 2.5).
 - [x] 1.4 Logical-type comparator (exact `Decimal`, bool ≠ int, temporal at the row's precision, NULL only to NULL, tolerance only for approximate rows) and multiset row comparison; verify with its own unit tests (task 2.4).
 - [x] 1.5 Cell-state declarations keyed by (row or case id, engine): pass / refused (error class) / gap (issue, error class); discovered cells must equal declared cells both ways.
@@ -19,13 +19,13 @@
 - [x] 2.9 DEV-2449 rows in the Layer 1 table (`CAST AS DECIMAL`, evaluated as dimensions): `'9007199254740993e0'`→`DECIMAL(20,0)`, `'12345e-2'`→`DECIMAL(10,2)`, `'1.2345e1'`→`DECIMAL(10,3)`, `'1.25e0'`→`DECIMAL(5,1)` on every Tier-1 engine.
 - [x] 2.10 Corpus compile on all nine dialects (dry run, unit suite): SQL or the same typed error in every dialect.
 - [x] 2.11 Compliance-page check: per-engine pass / refused / gap counts and lists equal the declarations; Layer 3 claimed on all nine with the Layer 1 caveat; "full Layer 1" claimed iff zero REQUIRED gaps or refusals.
-- [ ] 2.12 Probe: run the whole gate on every engine; group engine-specific failures (fail on an engine, pass on DuckDB) by root cause; more than 10 root causes → stop and ask the user; a REQUIRED cell proposed as refused (no translation on that engine) → ask the user.
+- [x] 2.12 Probe: run the whole gate on every engine; group engine-specific failures (fail on an engine, pass on DuckDB) by root cause; more than 10 root causes → stop and ask the user; a REQUIRED cell proposed as refused (no translation on that engine) → ask the user.
 
 ## 3. Fixes (pr-implement stage)
 
-- [ ] 3.1 DEV-2449: exponent-form numeric text → `DECIMAL(p, s)` exact on Trino and SQL Server, in `slayer/sql/dialects/` (no `if dialect ==` elsewhere); verify the 2.9 rows pass on Trino and SQL Server.
-- [ ] 3.2 DEV-2395: a joined dataset's source column renders with the same identity, quoting included, as on its own root, through the one naming / quoting authority; verify 2.8 on Postgres and Snowflake.
-- [ ] 3.3 Every engine-specific failure from 2.12, each in its dialect file; verify its cells pass on the engine.
+- [x] 3.1 DEV-2449: exponent-form numeric text → `DECIMAL(p, s)` exact on Trino and SQL Server, in `slayer/sql/dialects/` (no `if dialect ==` elsewhere); verify the 2.9 rows pass on Trino and SQL Server.
+- [x] 3.2 DEV-2395: a joined dataset's source column renders with the same identity, quoting included, as on its own root, through the one naming / quoting authority; verify 2.8 on Postgres and Snowflake.
+- [x] 3.3 Every engine-specific failure from 2.12, each in its dialect file; verify its cells pass on the engine.
 
 ## 4. CI
 
@@ -35,8 +35,8 @@
 
 ## 5. Docs
 
-- [ ] 5.1 `docs/interfaces/ossie-compliance.md`: Layer 3 full on all nine (with the Layer 1 caveat for expressions inside a query); Layer 1 per-engine counts and refused / gap lists; corpus compile on all nine dialects; verify with 2.11.
-- [ ] 5.2 Remove the DEV-2449 limitation sentence from `docs/upgrading/2.0.md`; update `docs/database-support.md` where it states per-engine Ossie coverage.
+- [x] 5.1 `docs/interfaces/ossie-compliance.md`: Layer 3 full on all nine (with the Layer 1 caveat for expressions inside a query); Layer 1 per-engine counts and refused / gap lists; corpus compile on all nine dialects; verify with 2.11.
+- [x] 5.2 Remove the DEV-2449 limitation sentence from `docs/upgrading/2.0.md`; update `docs/database-support.md` where it states per-engine Ossie coverage.
 
 ## 6. Close-out
 

@@ -19,6 +19,7 @@ from slayer.sql.dialects.base import (
     NativeFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit,
     non_null_elements, text_try_cast, unnest_elements,
 )
+from slayer.sql.dialects._ordered_set_split import interpolated_percentile, split_percentile_selects
 from slayer.sql.dialects.patterns import JAVA, RegexFlavour
 
 if TYPE_CHECKING:
@@ -83,6 +84,10 @@ class PrestoFamilyDialect(SqlDialect):
         "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "CHR", "PI", "CBRT", "GREATEST", "LEAST",
     })
     extremum_propagates_null: ClassVar[bool] = True
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """``PERCENTILE_CONT`` exactly: sqlglot would emit the approximate ``APPROX_PERCENTILE``."""
+        return split_percentile_selects(statement.copy(), columns=interpolated_percentile)
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)

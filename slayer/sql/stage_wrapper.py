@@ -17,8 +17,7 @@ from slayer.sql.naming import STAGE_INNER_ALIAS, flat_name
 def _select_source_names(select: exp.Select) -> set:
     """The relation names in ``select``'s own FROM / JOINs (not nested ones)."""
     names: set = set()
-    # sqlglot stores the FROM clause under ``from`` or ``from_`` by version.
-    frm = select.args.get("from") or select.args.get("from_")
+    frm = select.args.get("from_")
     if frm is not None and frm.this is not None:
         names |= _source_names(frm.this)
     for join in select.args.get("joins") or []:

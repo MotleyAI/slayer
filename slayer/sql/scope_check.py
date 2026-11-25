@@ -16,6 +16,7 @@ from typing import Dict, Optional
 import sqlglot
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
+from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 from sqlglot.optimizer.scope import Scope, ScopeType, traverse_scope
 
 from slayer.sql.naming import assert_unique_cte_names, dialect_folds_case
@@ -126,6 +127,8 @@ def check_scope_closed(
     ast = sqlglot.parse_one(sql, dialect=dialect)
     if ast is None:
         return ScopeCheckResult(closed=True, skipped=True, skip_reason="empty parse")
+    # A qualifier binds only to a source the database resolves it to: quoted ``"_keys"`` is not ``_keys`` on Snowflake.
+    ast = normalize_identifiers(ast, dialect=dialect)
 
     leaks: list[ScopeLeak] = []
     seen: set = set()
@@ -197,15 +200,8 @@ def _array_joined(col: exp.Column, qualifier: str) -> bool:
 
 
 def _resolve_source(scope: Scope, qualifier: str):
-    """Look up ``qualifier`` among the scope's sources, case-insensitively."""
-    source = scope.sources.get(qualifier)
-    if source is not None:
-        return source
-    folded = qualifier.casefold()
-    for name, src in scope.sources.items():
-        if name.casefold() == folded:
-            return src
-    return None
+    """``qualifier`` among the scope's sources, both read as the dialect reads them (normalised by the caller)."""
+    return scope.sources.get(qualifier)
 
 
 def _resolve_correlated(scope: Scope, qualifier: str):

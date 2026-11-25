@@ -1,8 +1,9 @@
 name: Ossie corpus (upstream main)
 
-# Weekly: fetch apache/ossie main, harvest its validator test documents, and run the corpus, wide-table oracle and
-# portability-grader tests against that fresh copy. PRs run the same tests on the vendored snapshot. Never runs on PRs;
-# a red run is the signal to re-vendor tests/fixtures/ossie_corpus.
+# Weekly: fetch apache/ossie main, harvest its validator test documents, and run every suite of the Ossie compliance
+# gate against that fresh copy on every Tier-1 database. PRs run the same suites on the vendored snapshot. Never runs
+# on PRs; a red run is the signal to re-vendor tests/fixtures/ossie_corpus and adjust the gate's declarations. The
+# compliance-page check pins the vendored revision and is left out.
 on:
   schedule:
     - cron: "41 5 * * 1"
@@ -23,21 +24,65 @@ jobs:
         with:
           python-version: "3.11"
 
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+      - uses: ./.github/actions/ossie-upstream
 
-      - name: Fetch apache/ossie main
-        run: git clone --depth 1 https://github.com/apache/ossie.git "$RUNNER_TEMP/ossie"
-
-      - name: Harvest upstream's validator test documents
-        run: poetry run python scripts/ossie_schema_drift.py --harvest "$RUNNER_TEMP/ossie" --out "$RUNNER_TEMP/ossie/harvested"
-
-      - name: Run the corpus, oracle and grader tests against upstream main
-        env:
-          SLAYER_OSSIE_CORPUS: ${{ runner.temp }}/ossie
+      - name: Run the corpus, oracle, grader and in-process gate suites against upstream main
         run: >-
           poetry run pytest tests/test_dev2243_corpus.py tests/test_dev2243_wide_table_oracle.py
           tests/test_dev2217_appendix_b.py tests/test_dev2217_shape.py tests/test_dev2217_errors.py
           tests/test_dev2217_filter.py tests/test_dev2217_output_names.py tests/test_dev2217_model_view.py
           tests/test_dev2217_run_by_name.py tests/test_dev2217_surfaces.py
-          tests/test_dev2243_portability_grader.py -m "not integration" -n logical
-          --timeout=600
+          tests/test_dev2243_portability_grader.py tests/test_dev2446_required_constructs.py
+          tests/test_ossie_gate.py tests/test_ossie_gate_compile.py
+          -m "not integration" -n logical --timeout=600
+
+  server:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [postgres, mysql, clickhouse, tsql, trino, snowflake, bigquery]
+    # BigQuery shares one GCP project with ci.yml: queue behind its runs, never cancel.
+    concurrency:
+      group: ${{ matrix.engine == 'bigquery' && 'bigquery-shared-gcp-project' || format('ossie-gate-{0}-{1}', matrix.engine, github.run_id) }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Missing Snowflake or BigQuery secrets fail here: a skipped engine fails the run.
+      - uses: ./.github/actions/engine-setup
+        with:
+          engine: ${{ matrix.engine }}
+          snowflake-connections-toml: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+          snowflake-private-key: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          gcp-project-id: ${{ secrets.GCP_PROJECT_ID }}
+          gcp-sa-key-b64: ${{ secrets.GCP_SA_KEY_B64 }}
+
+      - uses: ./.github/actions/ossie-upstream
+
+      - name: Run the compliance gate on ${{ matrix.engine }} against upstream main
+        timeout-minutes: 30
+        env:
+          # A named engine that cannot start fails rather than skips.
+          SLAYER_GATE_ENGINES: ${{ matrix.engine }}
+          SLAYER_SNOWFLAKE_CONNECTION: slayer_test
+        run: poetry run pytest tests/integration/test_integration_ossie_gate.py -v -rs -m integration --timeout=600
+
+      - name: Wipe credentials
+        if: always()
+        run: rm -f ~/.snowflake/connections.toml ~/.snowflake/slayer_ci_key.p8 "$RUNNER_TEMP/sa-key.json"
+
+  all-engines:
+    needs: [corpus, server]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every suite passed on every engine
+        env:
+          CORPUS: ${{ needs.corpus.result }}
+          SERVER: ${{ needs.server.result }}
+        run: |
+          echo "in-process: $CORPUS; server engines: $SERVER"
+          [[ "$CORPUS" == "success" && "$SERVER" == "success" ]]

@@ -117,14 +117,16 @@ class _Answering:
 async def test_a_wrong_value_is_never_a_refusal() -> None:
     row = refused("Regular Expressions (RECOMMENDED)", "REGEXP_COUNT", "REGEXP_COUNT(orders.status, 'n')", 2,
                   error=UnknownFunctionError)
+    engine = _Answering()
     with pytest.raises(pytest.fail.Exception):
-        await check_layer1(_Answering(), row, engine_name="duckdb")
+        await check_layer1(engine, row, engine_name="duckdb")
 
 
 async def test_a_wrong_value_fails_a_passing_cell() -> None:
     row = Row(section="Basic Math (REQUIRED)", form="ABS", expression="ABS(-3)", value=3)
+    engine = _Answering()
     with pytest.raises(AssertionError):
-        await check_layer1(_Answering(), row, engine_name="duckdb")
+        await check_layer1(engine, row, engine_name="duckdb")
 
 
 def test_a_required_row_is_never_refused_everywhere() -> None:

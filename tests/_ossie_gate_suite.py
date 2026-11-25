@@ -159,12 +159,13 @@ async def check_case_under_strict(engines: Mapping[str, QueryRunner], case: Path
     """Ossie's rows, header and order, or Ossie's error code."""
     expected = read_expected(case)
     engine = engines[expected.fixture]
+    query = case_query(case)
     if expected.error is not None:
         with pytest.raises(OssieQueryError) as raised:
-            await engine.execute(case_query(case), conformance=STRICT)
+            await engine.execute(query, conformance=STRICT)
         assert raised.value.code == expected.error, raised.value
         return
-    response = await engine.execute(case_query(case), conformance=STRICT)
+    response = await engine.execute(query, conformance=STRICT)
     assert response.columns == expected.header
     problem = rows_problem(response, expected.header, expected, engine=engine_name)
     assert problem is None, f"{problem}\n{response.sql}"

@@ -197,6 +197,59 @@ def case(*branches: tuple[Expression, Expression], default: Optional[Expression]
     return exp.Case(ifs=[exp.If(this=c, true=v) for c, v in branches], default=default)
 
 
+#: Zeros a shift pads with at most: past it the value overflows, or rounds to zero, at any DECIMAL precision.
+_SHIFT_PAD_LIMIT = 40
+
+
+def _exponent_shifted(text: Expression, *, convert: Callable[[Expression, exp.DataType], Expression],
+                      repeat: Callable[[Expression, Expression], Expression]) -> Expression:
+    """Upper-case exponent-form numeric text (``-1.2345E1``) as plain decimal text (``-12.345``), digit for digit."""
+    def sub(of: Expression, start: Expression, length: Expression) -> Expression:
+        return exp.Substring(this=of.copy(), start=start, length=length)
+
+    def at(of: Expression, char: str) -> Expression:
+        return exp.StrPosition(this=of.copy(), substr=lit(char))
+
+    def length(of: Expression) -> Expression:
+        return exp.Length(this=of.copy())
+
+    def plus(a: Expression, b: Expression) -> Expression:
+        return exp.Add(this=a, expression=b)
+
+    def minus(a: Expression, b: Expression) -> Expression:
+        return exp.Sub(this=a, expression=b)
+
+    def zeros(count: Expression) -> Expression:
+        # Clamped both ways: a branch not taken may still be folded.
+        capped = case((exp.LT(this=count.copy(), expression=lit(0)), lit(0)),
+                      (exp.GT(this=count.copy(), expression=lit(_SHIFT_PAD_LIMIT)), lit(_SHIFT_PAD_LIMIT)),
+                      default=count.copy())
+        return repeat(lit("0"), capped)
+
+    def concat(*parts: Expression) -> Expression:
+        return exp.Concat(expressions=[p.copy() for p in parts])
+
+    mark = at(text, "E")
+    mantissa = sub(text, lit(1), minus(mark.copy(), lit(1)))
+    power = convert(sub(text, plus(mark.copy(), lit(1)), length(text)), exp.DataType.build("INT"))
+    head = sub(mantissa, lit(1), lit(1))
+    signed = exp.In(this=head.copy(), expressions=[lit("-"), lit("+")])
+    sign = case((exp.EQ(this=head.copy(), expression=lit("-")), lit("-")), default=lit(""))
+    body = case((signed, sub(mantissa, lit(2), length(mantissa))), default=mantissa.copy())
+    dot = at(body, ".")
+    no_dot = exp.EQ(this=dot.copy(), expression=lit(0))
+    whole = case((no_dot, body.copy()), default=sub(body, lit(1), minus(dot.copy(), lit(1))))
+    fraction = case((no_dot.copy(), lit("")), default=sub(body, plus(dot.copy(), lit(1)), length(body)))
+    digits = concat(whole, fraction)
+    point = plus(length(whole), power)
+    shifted = case(
+        (exp.LTE(this=point.copy(), expression=lit(0)), concat(lit("0."), zeros(exp.Neg(this=exp.Paren(this=point.copy()))), digits)),
+        (exp.GTE(this=point.copy(), expression=length(digits)), concat(digits, zeros(minus(point.copy(), length(digits))))),
+        default=concat(sub(digits, lit(1), point.copy()), lit("."), sub(digits, plus(point.copy(), lit(1)), length(digits))),
+    )
+    return concat(sign, shifted)
+
+
 def lit(value: int | str) -> Expression:
     return exp.Literal.number(value) if isinstance(value, int) else exp.Literal.string(value)
 
@@ -353,7 +406,8 @@ def cast_target(type_text: str, *, dialect: "SqlDialect") -> exp.DataType:
     if parts.array_rank > 1:
         raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}: there is no array of arrays.")
     readings = [r for r in (_read_type(type_text, readers=(reader,)) for reader in (sqlglot_name, "postgres")) if r]
-    built = next((r for r in readings if _keeps_author_parts(parts, r)), readings[0] if readings else None)
+    built = next((r for r in readings if _keeps_author_parts(parts, r) and dialect.cast_type_supported(r)),
+                 readings[0] if readings else None)
     if (built is None or built.this == exp.DataType.Type.USERDEFINED or not dialect.cast_type_supported(built)
             or not _keeps_author_parts(parts, built) or not _renders_losslessly(built, dialect=dialect)):
         raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}.")
@@ -1045,8 +1099,8 @@ class SqlDialect(BaseModel):
         if source is None and not self.decimal_text_exponent:
             text = exp.Trim(this=value.copy())
             exponent = self.build_ilike(text, lit("%e%"))
-            through_double = convert(convert(text.copy(), exp.DataType.build("DOUBLE")), to)
-            return case((exponent, through_double), default=convert(text.copy(), to))
+            shifted = convert(_exponent_shifted(exp.Upper(this=text.copy()), convert=convert, repeat=self.text_repeat), to)
+            return case((exponent, shifted), default=convert(text.copy(), to))
         if source is DataType.FLOAT and not self.number_cast_rounds:
             value = self.round_half_away(value, scale)
         return convert(value, to)

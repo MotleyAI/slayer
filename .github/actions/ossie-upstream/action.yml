@@ -1,0 +1,19 @@
+name: Ossie upstream corpus
+description: >-
+  Clone apache/ossie main and harvest its validator test documents; sets SLAYER_OSSIE_CORPUS to the clone, so every
+  suite of the compliance gate reads upstream instead of the vendored snapshot. Needs the Poetry environment.
+
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+
+    - name: Fetch apache/ossie main
+      shell: bash
+      run: git clone --depth 1 https://github.com/apache/ossie.git "$RUNNER_TEMP/ossie"
+
+    - name: Harvest upstream's validator test documents
+      shell: bash
+      run: |
+        poetry run python scripts/ossie_schema_drift.py --harvest "$RUNNER_TEMP/ossie" --out "$RUNNER_TEMP/ossie/harvested"
+        echo "SLAYER_OSSIE_CORPUS=$RUNNER_TEMP/ossie" >> "$GITHUB_ENV"
