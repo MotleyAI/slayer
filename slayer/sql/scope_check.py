@@ -128,6 +128,10 @@ def check_scope_closed(
     if ast is None:
         return ScopeCheckResult(closed=True, skipped=True, skip_reason="empty parse")
     # A qualifier binds only to a source the database resolves it to: quoted ``"_keys"`` is not ``_keys`` on Snowflake.
+    # A table's implicit alias normalises as an alias (BigQuery folds ``Orders`` as an alias, not as a table).
+    for tbl in ast.find_all(exp.Table):
+        if not tbl.alias and isinstance(tbl.this, exp.Identifier):
+            tbl.set("alias", exp.TableAlias(this=tbl.this.copy()))
     ast = normalize_identifiers(ast, dialect=dialect)
 
     leaks: list[ScopeLeak] = []

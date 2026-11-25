@@ -179,6 +179,17 @@ def test_clickhouse_keeps_its_own_round_otherwise(digits: str) -> None:
     assert ClickhouseDialect().build_round(_parsed("2.5"), _parsed(digits)) is None
 
 
+@pytest.mark.parametrize(("value", "digits"), [("1", 37), ("1", 38), ("123.5", 35)])
+def test_clickhouse_keeps_its_own_round_past_decimal128(value: str, digits: int) -> None:
+    """The guard digit needs ``integer digits + digits + 1`` ≤ 38: past it the Decimal128 read is NULL."""
+    assert ClickhouseDialect().build_round(_parsed(value), exp.Literal.number(digits)) is None
+
+
+@pytest.mark.parametrize(("value", "digits"), [("1", 36), ("0.5", 37), ("123.5", 34)])
+def test_clickhouse_rounds_exactly_up_to_decimal128(value: str, digits: int) -> None:
+    assert ClickhouseDialect().build_round(_parsed(value), exp.Literal.number(digits)) is not None
+
+
 def test_clickhouse_number_cast_to_boolean_is_a_bool() -> None:
     """A comparison yields UInt8; a boolean cast reads Bool, like ClickHouse's own TRUE."""
     sql = ClickhouseDialect().number_to_boolean(exp.column("qty")).sql(dialect="clickhouse")

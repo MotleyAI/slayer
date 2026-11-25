@@ -89,16 +89,22 @@ def _grouping_term(key: Expr, select: exp.Select) -> Expr:
 
 
 def _split(select: exp.Select, *, columns: PercentileColumns) -> None:
+    for projection in list(select.expressions):
+        if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Identifier):
+            # It reads the row-level copy below, whose name is not its output name.
+            projection.replace(exp.Alias(this=projection.copy(), alias=projection.this.copy()))
     group = select.args.get("group")
     partition = [_grouping_term(k, select) for k in group.expressions] if group is not None else []
     aliases = {e.alias for e in select.expressions if isinstance(e, exp.Alias)}
+    # An unqualified name reads a source column inside the projections; outside them it may name an output.
+    in_projections = {id(d) for e in select.expressions for d in e.walk()}
     nodes = list(_own_nodes(select))
     if any(isinstance(n, exp.Star) and not isinstance(n.parent, exp.AggFunc) for n in nodes):
         raise ValueError("PERCENTILE_CONT beside a * projection cannot be split into a window subquery")
     percentiles = [n for n in nodes if is_percentile_cont(n)]
     inside = {id(d) for p in percentiles for d in p.walk()}
     reads = [c for c in nodes if isinstance(c, exp.Column) and id(c) not in inside
-             and (c.table or c.name not in aliases)]
+             and (c.table or c.name not in aliases or id(c) in in_projections)]
     names: Dict[Tuple[str, str], str] = {}
     projected: List[Expr] = []
 
@@ -111,7 +117,10 @@ def _split(select: exp.Select, *, columns: PercentileColumns) -> None:
             names[ident] = f"{_COLUMN}{len(projected)}"
             projected.append(column.copy().as_(names[ident]))
     for node in percentiles:
-        windowed, pick = columns(node.this.this, node.expression.expressions[0].this, partition)
+        p, ordered = node.this.this, node.expression.expressions[0]
+        if ordered.args.get("desc"):  # the p-th value descending is the (1 − p)-th ascending
+            p = exp.Paren(this=exp.Sub(this=exp.Literal.number(1), expression=p.copy()))
+        windowed, pick = columns(p, ordered.this, partition)
         outer: List[exp.Column] = []
         for window in windowed:
             name = f"{_COLUMN}{len(projected)}"

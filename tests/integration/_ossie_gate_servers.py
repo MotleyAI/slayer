@@ -31,9 +31,8 @@ from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from tests._engine_helpers import disposable_engine
 from tests._ossie_gate import unavailable
-from tests._ossie_gate_fixtures import Placement, run_token, seed_statements
+from tests._ossie_gate_fixtures import Placement, gate_schemas, run_token, seed_statements
 
-GATE_SCHEMAS = ("retail", "stores")
 #: The gate's SQL Server; 2025 adds the regular-expression functions.
 SQLSERVER_2022 = "mcr.microsoft.com/mssql/server:2022-latest"
 SQLSERVER_2025 = "mcr.microsoft.com/mssql/server:2025-latest"
@@ -223,7 +222,7 @@ def snowflake_provider() -> Generator[ServerProvider]:
         connection = snowflake.connector.connect(connection_name=_SNOWFLAKE_CONNECTION)
     except Exception as exc:  # noqa: BLE001 — any failure means no Snowflake
         unavailable("snowflake", f"cannot connect via {_SNOWFLAKE_CONNECTION!r}: {exc}")
-    schemas = [schema, *(placement.schema(s).upper() for s in GATE_SCHEMAS)]
+    schemas = [schema, *(placement.schema(s).upper() for s in gate_schemas())]
 
     def execute(statements: Sequence[str]) -> None:
         cursor = connection.cursor()
@@ -274,7 +273,7 @@ def bigquery_provider() -> Generator[ServerProvider]:
     token = run_token()
     dataset = f"gate_{token}"
     placement = Placement(engine="bigquery", token=token)
-    datasets = [dataset, *(placement.schema(s) for s in GATE_SCHEMAS)]
+    datasets = [dataset, *(placement.schema(s) for s in gate_schemas())]
 
     def execute(statements: Sequence[str]) -> None:
         config = bigquery.QueryJobConfig(default_dataset=f"{project}.{dataset}")

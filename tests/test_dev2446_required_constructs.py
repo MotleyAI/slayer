@@ -56,6 +56,13 @@ def test_frame_clauses_are_checked() -> None:
             "RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"} <= spec_constructs(syntax)
 
 
+def test_a_new_frame_clause_fails() -> None:
+    clause = "- `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`"
+    mutated = SPEC.replace(clause, f"{clause}\n- `GROUPS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`")
+    assert mutated != SPEC
+    assert "Syntax: no row for GROUPS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" in problems(mutated)
+
+
 def test_a_new_table_row_fails() -> None:
     mutated = SPEC.replace("| `LEAST` | `LEAST(x, y, ...)` | Minimum of arguments |",
                            "| `LEAST` | `LEAST(x, y, ...)` | Minimum of arguments |\n"

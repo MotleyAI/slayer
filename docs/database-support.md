@@ -229,7 +229,7 @@ register_sqlite_udfs(connection)
 ### MySQL caveats
 
 MySQL has no `PERCENTILE_CONT` or `MEDIAN`: SLayer ranks each group's values with `ROW_NUMBER` and `COUNT` windows in
-a subquery and interpolates between the two middle ranks, exactly. It has no native `CORR` or `COVAR_SAMP` /
+a subquery and interpolates between the two ranks either side of the requested percentile, exactly. It has no native `CORR` or `COVAR_SAMP` /
 `COVAR_POP` and no Python-UDF mechanism (UDFs are loadable C `.so` files requiring server-side install); SLayer raises
 `NotImplementedError` for those at SQL generation time.
 

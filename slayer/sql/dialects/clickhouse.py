@@ -11,6 +11,7 @@ import math
 import re
 from collections.abc import Callable, Sequence
 from datetime import date
+from decimal import Decimal
 from typing import Any, ClassVar, Optional
 
 from sqlglot import exp
@@ -403,7 +404,10 @@ class ClickhouseDialect(SqlDialect):
     def build_round(self, value: Expression, digits: Expression) -> Optional[Expression]:
         """A number literal is exact, though ClickHouse reads it as a Float64 whose ties ``round`` breaks to even."""
         known = literal_int(digits)
-        if known is None or known < 0 or number_literal_text(value) is None:
+        text = number_literal_text(value)
+        if known is None or known < 0 or text is None:
+            return None
+        if max(Decimal(text).adjusted() + 1, 0) + known + 1 > _DECIMAL128_DIGITS:  # no room for the guard digit
             return None
         return self.round_half_away(value, known)
 

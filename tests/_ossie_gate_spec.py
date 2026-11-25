@@ -176,7 +176,11 @@ def spec_constructs(section: Section) -> set[str]:
     elif section.heading.startswith("CAST"):
         out |= {f"CAST AS {t}" for t in _bullet_spans(section.lines)}
     elif section.heading == "Syntax":
-        out |= {s for s in _bullet_spans(section.lines) if s.startswith(("ROWS ", "RANGE ", "NULLS "))}
+        # Every listed frame clause, whatever its keyword; before the list, only the NULL placements.
+        frames = next((i for i, line in enumerate(section.lines) if line.strip() == "Frame clause options:"),
+                      len(section.lines))
+        out |= set(_bullet_spans(section.lines[frames + 1:]))
+        out |= {s for s in _bullet_spans(section.lines[:frames]) if s.startswith("NULLS ")}
     if not out:
         out = {line.strip()[3:].upper() for line in section.lines if line.strip().startswith("-- ")}
     return out or {section.name}

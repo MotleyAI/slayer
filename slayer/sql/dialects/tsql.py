@@ -610,7 +610,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                 node.replace(_bit_value(node.copy()))
             elif isinstance(node, exp.Boolean):  # sqlglot spells it ``(1 = 1)`` under a CAST
                 node.replace(exp.Literal.number(1 if node.this else 0))
-        for select in list(statement.find_all(exp.Select)):
+        for select in list(statement.find_all(exp.Select)):  # NOSONAR(S7504) — each call edits the tree being walked
             _group_by_columns_only(select)
         return statement
 

@@ -270,13 +270,21 @@ def table_statements(placement: Placement, table: Table) -> list[str]:
     return out
 
 
+def _all_tables() -> list[Table]:
+    return [t for group in gate_tables().values() for t in group]
+
+
+def gate_schemas() -> list[str]:
+    """The schemas the fixtures' tables live in, besides the gate's own."""
+    return sorted({t.schema_name for t in _all_tables() if t.schema_name})
+
+
 def seed_statements(placement: Placement) -> list[str]:
     """Every gate fixture: wide-table schemas first, then each table."""
-    tables = [t for group in gate_tables().values() for t in group]
     out: list[str] = []
-    for schema in sorted({t.schema_name for t in tables if t.schema_name}):
+    for schema in gate_schemas():
         out += schema_statements(placement, schema)
-    for table in tables:
+    for table in _all_tables():
         out += table_statements(placement, table)
     return out
 

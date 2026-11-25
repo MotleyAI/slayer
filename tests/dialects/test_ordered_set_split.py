@@ -47,6 +47,37 @@ def test_mysql_interpolation_equals_percentile_cont(p: str, grouped: bool, where
     assert _rows(split.sql(dialect="duckdb")) == _rows(query)
 
 
+@pytest.mark.parametrize("dialect", [MysqlDialect(), TrinoDialect()], ids=["mysql", "trino"])
+@pytest.mark.parametrize("p", ["0.25", "0.9"])
+def test_a_descending_order_keeps_its_direction(dialect, p: str) -> None:
+    query = _percentile_query(p, grouped=True).replace("ORDER BY t.x)", "ORDER BY t.x DESC)")
+    split = dialect.rewrite_statement(_parsed(query))
+    assert _rows(split.sql(dialect="duckdb")) == _rows(query)
+
+
+@pytest.mark.parametrize("dialect", [MysqlDialect(), TrinoDialect(), BigqueryDialect()], ids=["mysql", "trino", "bigquery"])
+def test_a_bare_column_projection_keeps_its_output_name(dialect) -> None:
+    query = _percentile_query("0.5", grouped=True)
+    split = dialect.rewrite_statement(_parsed(query))
+    assert split.named_selects == ["k", "v", "n"]
+
+
+@pytest.mark.parametrize("dialect", [MysqlDialect(), TrinoDialect()], ids=["mysql", "trino"])
+@pytest.mark.parametrize("projection", ["k", "k AS k"], ids=["bare", "self-aliased"])
+def test_an_unqualified_grouping_column_is_read_from_the_rows(dialect, projection: str) -> None:
+    query = _percentile_query("0.5", grouped=True).replace("SELECT t.k", f"SELECT {projection}").replace(
+        "GROUP BY t.k", "GROUP BY k")
+    split = dialect.rewrite_statement(_parsed(query))
+    assert split.named_selects == ["k", "v", "n"]
+    assert _rows(split.sql(dialect="duckdb")) == _rows(query)
+
+
+def test_sql_server_reads_a_descending_percentile_as_its_complement() -> None:
+    query = _percentile_query("0.25", grouped=True).replace("ORDER BY t.x)", "ORDER BY t.x DESC)")
+    sql = TsqlDialect().rewrite_statement(_parsed(query)).sql(dialect="tsql")
+    assert "PERCENTILE_CONT((1 - 0.25)) WITHIN GROUP (ORDER BY t.x) OVER (PARTITION BY t.k)" in sql
+
+
 def test_sql_server_reads_a_windowed_percentile_per_group() -> None:
     query = _percentile_query("0.25", grouped=True)
     sql = TsqlDialect().rewrite_statement(_parsed(query)).sql(dialect="tsql")

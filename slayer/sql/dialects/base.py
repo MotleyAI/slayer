@@ -247,7 +247,10 @@ def _exponent_shifted(text: Expression, *, convert: Callable[[Expression, exp.Da
         (exp.GTE(this=point.copy(), expression=length(digits)), concat(digits, zeros(minus(point.copy(), length(digits))))),
         default=concat(sub(digits, lit(1), point.copy()), lit("."), sub(digits, plus(point.copy(), lit(1)), length(digits))),
     )
-    return concat(sign, shifted)
+    # No digits (``E1``, ``.E1``) or a second point: the text as is, which the cast refuses.
+    malformed = exp.Or(this=exp.EQ(this=length(digits), expression=lit(0)),
+                       expression=exp.GT(this=at(digits, "."), expression=lit(0)))
+    return case((malformed, text.copy()), default=concat(sign, shifted))
 
 
 def lit(value: int | str) -> Expression:
