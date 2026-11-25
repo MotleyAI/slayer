@@ -231,7 +231,8 @@ def _exponent_shifted(text: Expression, *, convert: Callable[[Expression, exp.Da
 
     mark = at(text, "E")
     mantissa = sub(text, lit(1), minus(mark.copy(), lit(1)))
-    power = convert(sub(text, plus(mark.copy(), lit(1)), length(text)), exp.DataType.build("INT"))
+    exponent = sub(text, plus(mark.copy(), lit(1)), length(text))
+    power = convert(exponent, exp.DataType.build("INT"))
     head = sub(mantissa, lit(1), lit(1))
     signed = exp.In(this=head.copy(), expressions=[lit("-"), lit("+")])
     sign = case((exp.EQ(this=head.copy(), expression=lit("-")), lit("-")), default=lit(""))
@@ -247,9 +248,12 @@ def _exponent_shifted(text: Expression, *, convert: Callable[[Expression, exp.Da
         (exp.GTE(this=point.copy(), expression=length(digits)), concat(digits, zeros(minus(point.copy(), length(digits))))),
         default=concat(sub(digits, lit(1), point.copy()), lit("."), sub(digits, plus(point.copy(), lit(1)), length(digits))),
     )
-    # No digits (``E1``, ``.E1``), a second point or a second sign: the text as is, which the cast refuses.
+    # No digits (``E1``, ``.E1``), a second point or sign, or no exponent digits (``1E``, ``1E-``: SQL Server reads
+    # them as 0): the text as is, which the cast refuses.
     malformed = either(exp.EQ(this=length(digits), expression=lit(0)),
-                       *(exp.GT(this=at(digits, c), expression=lit(0)) for c in ".+-"))
+                       *(exp.GT(this=at(digits, c), expression=lit(0)) for c in ".+-"),
+                       exp.In(this=exponent.copy(), expressions=[lit(""), lit("+"), lit("-")]),
+                       exp.GT(this=at(exponent, " "), expression=lit(0)))
     return case((malformed, text.copy()), default=concat(sign, shifted))
 
 

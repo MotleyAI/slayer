@@ -87,6 +87,7 @@ from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
+from sqlglot import exp
 from tests.integration._dev2015_server import (
     check_all,
     server_datasets,
@@ -945,6 +946,39 @@ class TestRollupIngestionSQLServer:
         for orig, loaded_j in zip(orders.relationships, loaded.relationships):
             assert orig.to == loaded_j.to
             assert orig.column_pairs == loaded_j.column_pairs
+
+
+# ---------------------------------------------------------------------------
+# Exponent-form numeric text cast to DECIMAL
+# ---------------------------------------------------------------------------
+
+
+def _decimal_cast_sql(text: str, *, try_: bool) -> str:
+    cast = TsqlDialect().build_decimal_cast(exp.Literal.string(text), exp.DataType.build("DECIMAL(10, 2)"),
+                                            precision=10, scale=2, source=None, try_=try_)
+    return f"SELECT {cast.sql(dialect='tsql')}"
+
+
+@pytest.mark.integration
+class TestSQLServerExponentText:
+    """SQL Server reads ``''``, ``'+'`` and ``'-'`` as INT 0, so an exponent without digits must not reach that read."""
+
+    @pytest.mark.parametrize("text", ["1e", "1e-", "1e+", "1e 1", "e1", "+-1e1"])
+    def test_try_cast_of_malformed_exponent_text_is_null(self, sqlserver_container, text: str) -> None:
+        with disposable_engine(_admin_url(sqlserver_container)) as engine, engine.connect() as conn:
+            assert conn.exec_driver_sql(_decimal_cast_sql(text, try_=True)).scalar() is None
+
+    @pytest.mark.parametrize("text", ["1e", "1e-"])
+    def test_cast_of_malformed_exponent_text_fails(self, sqlserver_container, text: str) -> None:
+        sql = _decimal_cast_sql(text, try_=False)
+        with disposable_engine(_admin_url(sqlserver_container)) as engine, engine.connect() as conn:
+            with pytest.raises(sqlalchemy.exc.DBAPIError):
+                conn.exec_driver_sql(sql)
+
+    @pytest.mark.parametrize(("text", "value"), [("1.2345e1", "12.35"), ("-1.5E-1", "-0.15"), ("12e+0", "12.00")])
+    def test_exponent_text_casts_exactly(self, sqlserver_container, text: str, value: str) -> None:
+        with disposable_engine(_admin_url(sqlserver_container)) as engine, engine.connect() as conn:
+            assert conn.exec_driver_sql(_decimal_cast_sql(text, try_=False)).scalar() == Decimal(value)
 
 
 # ---------------------------------------------------------------------------

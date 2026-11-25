@@ -53,6 +53,23 @@ def test_try_cast_of_text_that_is_no_number_is_null(text: str) -> None:
     assert duckdb.sql(f"SELECT {_cast(text, 10, 2, try_=True).sql(dialect='duckdb')}").fetchone() == (None,)
 
 
+class _EmptyIntIsZero(_NoTextExponent):
+    """Reads ``''``, ``'+'`` and ``'-'`` as INT 0, as SQL Server does."""
+
+    def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
+        if to.this != exp.DataType.Type.INT:
+            return super().build_try_cast(value, to)
+        empty = exp.In(this=exp.Trim(this=value.copy()), expressions=[exp.Literal.string(s) for s in ("", "+", "-")])
+        return exp.Case(ifs=[exp.If(this=empty, true=exp.Literal.number(0))], default=super().build_try_cast(value, to))
+
+
+@pytest.mark.parametrize("text", ["1e", "1e-", "1e+", "1e 1"])
+def test_an_exponent_without_digits_is_null_where_empty_text_reads_as_zero(text: str) -> None:
+    cast = _EmptyIntIsZero().build_decimal_cast(exp.Literal.string(text), exp.DataType.build("DECIMAL(10, 2)"),
+                                                precision=10, scale=2, source=None, try_=True)
+    assert duckdb.sql(f"SELECT {cast.sql(dialect='duckdb')}").fetchone() == (None,)
+
+
 @pytest.mark.parametrize("text", ["e1", "1.2.3e1", "+-1e1"])
 def test_cast_of_an_exponent_without_a_number_fails(text: str) -> None:
     relation = duckdb.sql(f"SELECT {_cast(text, 10, 2).sql(dialect='duckdb')}")
