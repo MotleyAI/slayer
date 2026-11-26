@@ -27,6 +27,7 @@ from slayer.core.keys import (
     CLOCK_FUNCTIONS,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
+    DIGITS_SCALARS,
     NULL_SAFE_COMPARISON_OPS,
     LIST_ONLY_FUNCTIONS,
     ArithmeticKey,
@@ -70,6 +71,7 @@ from slayer.sql.dialects.base import (
     func,
     is_list_fn,
     lit,
+    literal_int,
     operand_copy,
     require_library,
     temporal_type_of,
@@ -342,6 +344,12 @@ def render_scalar_call(
         rounded = dialect.build_round(args[0], args[1])
         if rounded is not None:
             return rounded
+    if name == "trunc" and len(args) == 2:
+        raise RuntimeError("trunc(x, digits) renders only from its key (render_scalar_key).")
+    if name == "zeroifnull":
+        return exp.Coalesce(this=args[0], expressions=[exp.Literal.number(0)])
+    if name == "nullifzero":
+        return exp.Nullif(this=args[0], expression=exp.Literal.number(0))
     if name == "log" and len(args) == 1:
         # Postgres's one-argument log is base 10; elsewhere bare LOG is often ln.
         return passthrough_call(name="log10", args=args, dialect=dialect)
@@ -416,13 +424,34 @@ def _shared_element(
     return types.pop() if len(types) == 1 else None
 
 
+#: Digits past this change no number: PostgreSQL's NUMERIC, the widest, holds 131072 integer digits, so even its
+#: largest value rounds to 0 at -131073.
+_DIGITS_BOUND = 131_073
+
+
+def _bounded_digits(digits: Expression) -> Expression:
+    """``round`` / ``trunc`` digits within ±``_DIGITS_BOUND`` as an INT: engines taking INTEGER digits never
+    narrow a BIGINT, and a value past INT range would overflow the narrowing."""
+    known = literal_int(digits)
+    if known is not None:
+        return lit(max(-_DIGITS_BOUND, min(known, _DIGITS_BOUND))) if abs(known) > _DIGITS_BOUND else digits
+    bounded = case((exp.GT(this=digits.copy(), expression=lit(_DIGITS_BOUND)), lit(_DIGITS_BOUND)),
+                   (exp.LT(this=digits.copy(), expression=lit(-_DIGITS_BOUND)), lit(-_DIGITS_BOUND)),
+                   default=digits.copy())
+    return exp.Cast(this=bounded, to=exp.DataType.build("INT"))
+
+
 def render_scalar_key(
     *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, field_type: FieldTypeFn,
     part: Callable[[Any], Expression], field_element: Optional[FieldElementFn] = None,
 ) -> Expression:
-    """A non-date scalar key: ``mod`` by its operand types, else ``render_scalar_call``."""
+    """A non-date scalar key: ``mod`` and ``trunc`` by their operand types, else ``render_scalar_call``."""
     if key.name == "mod":
         return render_modulo(key=key, operands=args, dialect=dialect, field_type=field_type)
+    if key.name in DIGITS_SCALARS and len(args) == 2:
+        args = [args[0], _bounded_digits(args[1])]
+        if key.name == "trunc":
+            return dialect.build_trunc(args[0], args[1], integer=integer_valued(key.args[0], field_type=field_type))
     if is_list_fn(key.name) and is_list_call(key, field_type=field_type):
         numbers = numbers_read_list(key, field_type=field_type)
         if numbers is not None:

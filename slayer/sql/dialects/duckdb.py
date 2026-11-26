@@ -118,6 +118,8 @@ class DuckdbDialect(SqlDialect):
     windowed_holistic: ClassVar[frozenset[str]] = frozenset({"count_distinct", "median", "percentile_cont"})
     sqlglot_name: str = "duckdb"
     number_cast_rounds: ClassVar[bool] = True
+    #: An unsigned HUGEINT stays below 10^39.
+    _WIDEST_INTEGER: ClassVar[tuple[str, int]] = ("HUGEINT", 38)
     array_cast_types: ClassVar[bool] = True
     unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
         exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
@@ -180,6 +182,13 @@ class DuckdbDialect(SqlDialect):
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement), lit("g"))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("LEN", anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive)))
+
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:
+        """``TRUNC(x, d)`` arrived in DuckDB 1.5."""
+        return self.rounded_trunc(value, digits, integer=integer)
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         text = lit(path.text)

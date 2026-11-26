@@ -610,6 +610,7 @@ Omit `population` and the rows are the **row supply**:
 - A metric whose aggregates don't reach every dimension (`partition_by=`, an [unrelated dataset](#cross-dataset-metrics)) supplies the rows of the **dimension anchor** that agree with it.
 - With no metrics, the rows are the dimension anchor's: the smallest dataset that determines every dimension along to-one paths, read from the dimensions only, never from filters or metrics. Dimension groups no relationship path connects take the product of their anchors.
 - With no dimensions there is exactly one row, even when a filter matches nothing.
+- Only `metrics` supply rows: an aggregate in a filter, an order entry or a computed dimension reads them and adds none.
 - Filters restrict every home's rows (and the anchor's) before anything is counted. They never pick where rows come from, so adding a filter never adds a row or changes a result key — except a computed dimension read from an aggregate over the filtered rows.
 
 <!-- doc-check: not-a-query -->

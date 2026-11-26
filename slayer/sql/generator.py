@@ -288,6 +288,24 @@ class _WindowedEmission(BaseModel):
     picked_params: List[Any] = []
 
 
+class _StageRows(BaseModel):
+    """An inferred stage's row-supply relation and its column per grain key."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    relation: str
+    columns: Dict[Any, str]
+
+
+class _WindowRows(BaseModel):
+    """A windowed producer's cells read from its stage's rows: the relation and its column per producer slot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    relation: str
+    columns: Dict[str, str]
+
+
 def _windowed_emission_from_kernel(*, planned_query, kernel) -> _WindowedEmission:
     """Derive the windowed emission from a trailing-window kernel producer."""
     if (
@@ -998,6 +1016,8 @@ class SQLGenerator:
         self._gen_spines: List[SpineFactor] = []
         # CTEs a rendered spine series reads (a recursive integer sequence), awaiting ``_base``.
         self._gen_spine_ctes: List[CteEntry] = []
+        # Handed to the next kernel producer body only: a windowed attach's cells read from its stage's rows.
+        self._gen_window_rows: Optional[_WindowRows] = None
         self._gen_stage_relations: FrozenSet[str] = frozenset()
         self._gen_stage_reads: FrozenSet[str] = frozenset()
         self._gen_splice_chain: Tuple[str, ...] = ()
@@ -1510,9 +1530,10 @@ class SQLGenerator:
             and producer_kernel is not None
             and producer_kernel.kind != "plain"
         ):
+            window_rows, self._gen_window_rows = self._gen_window_rows, None
             return self._render_kernel_producer_body(
                 planned_query=planned_query, bundle=bundle,
-                kernel=producer_kernel,
+                kernel=producer_kernel, window_rows=window_rows,
             )
 
         if _combined_attaches or planned_query.row_supply is not None:
@@ -3222,8 +3243,11 @@ class SQLGenerator:
         ))
         return parts
 
-    def _render_kernel_producer_body(self, *, planned_query, bundle: ResolvedSourceBundle, kernel) -> exp.Select:
-        """The aggregate phase of a ranked / trailing-window kernel producer"""
+    def _render_kernel_producer_body(
+        self, *, planned_query, bundle: ResolvedSourceBundle, kernel, window_rows: Optional[_WindowRows] = None,
+    ) -> exp.Select:
+        """The aggregate phase of a ranked / trailing-window kernel producer; a windowed one's cells are
+        ``window_rows`` when given."""
         source_dataset = bundle.population
         source_relation = planned_query.source_relation
         slots_by_id = {
@@ -3275,18 +3299,20 @@ class SQLGenerator:
                 )]
                 for s in slots_by_id.values()
             }
-            grain_base = (
-                self._window_endpoints_base(
+            if window_rows is not None:
+                grain_base = self._window_rows_base(window_rows, plan=plan, aliases_by_slot_id=aliases_by_slot_id)
+            elif kernel.endpoints is not None:
+                grain_base = self._window_endpoints_base(
                     kernel=kernel, plan=plan, slots_by_id=slots_by_id,
                     aliases_by_slot_id=aliases_by_slot_id,
                 )
-                if kernel.endpoints is not None else self._build_windowed_grain_base(
+            else:
+                grain_base = self._build_windowed_grain_base(
                     planned_query=planned_query, plan=plan, slots_by_id=slots_by_id,
                     aliases_by_slot_id=aliases_by_slot_id, source_dataset=source_dataset,
                     source_relation=source_relation, bundle=bundle,
                     regroup_env=regroup_env, regroup_join_specs=regroup_join_specs,
                 )
-            )
             base_subq = exp.Subquery(
                 this=grain_base,
                 alias=exp.TableAlias(this=exp.to_identifier("_base")),
@@ -3583,6 +3609,21 @@ class SQLGenerator:
             outer = outer.group_by(self._grain_key(_base_col(alias), key=grain_key_of[alias]))
         return outer
 
+    @staticmethod
+    def _window_rows_base(rows: _WindowRows, *, plan, aliases_by_slot_id) -> exp.Select:
+        """The windowed producer's cells: its stage's rows at the producer's grain."""
+        grain_sids = [
+            *plan.dimension_slot_ids, *plan.other_time_dimension_slot_ids, plan.window_time_dimension_slot_id,
+        ]
+        missing = [sid for sid in grain_sids if sid not in rows.columns]
+        if missing:
+            raise ValueError(f"a windowed producer's grain slots {missing} are no columns of its stage's rows")
+        return exp.select(*(
+            relation_column(rows.columns[sid], relation=rows.relation).as_(
+                exp.to_identifier(aliases_by_slot_id[sid][0], quoted=True))
+            for sid in grain_sids
+        )).distinct().from_(rows.relation)
+
     def _ranked_pick_over_cells(
         self, *, base: exp.Subquery, grain_key_of: Mapping[str, Any], agg_slot, agg_alias: str, value_alias: str,
         value_type: Optional[DataType],
@@ -3729,6 +3770,9 @@ class SQLGenerator:
         # One lowering per render: filter placements + scoped order entries.
         lowered = _lower_positions(planned_query)
         slot_by_key = {s.key: s for s in slots_by_id.values()}
+        stage_rows = self._stage_rows(
+            planned_query=planned_query, slots_by_id=slots_by_id, source_relation=source_relation,
+        )
 
         # Combined regroup producers render as _cm_ CTEs joined at the combined SELECT; prepared before the ROW
         # producers so a dual-role aggregate dedups onto them.
@@ -3741,7 +3785,7 @@ class SQLGenerator:
             reused_combined_ctes,
         ) = self._prepare_combined_regroup_attaches(
             planned_query=planned_query, bundle=bundle,
-            source_relation=source_relation, slot_by_key=slot_by_key,
+            source_relation=source_relation, slot_by_key=slot_by_key, stage_rows=stage_rows,
         )
 
         _combined_attaches = [
@@ -3764,7 +3808,7 @@ class SQLGenerator:
         row_regroup_ctes, row_regroup_env, row_regroup_join_specs, reused_cm_ctes = (
             self._prepare_regroup_attaches(
                 planned_query=planned_query, bundle=bundle,
-                dedup_producers=combined_dedup_index,
+                dedup_producers=combined_dedup_index, stage_rows=stage_rows,
             )
             if any(r.attach_phase == "row" for r in planned_query.regroup_attach_plans)
             else ([], {}, [], [])
@@ -4122,7 +4166,7 @@ class SQLGenerator:
         if planned_query.row_supply is not None:
             base_select, supply_ctes, base_deps = self._row_supply_base(
                 planned_query=planned_query, base_select=base_select, aliases_by_slot_id=aliases_by_slot_id,
-                slots_by_id=slots_by_id, bundle=bundle, base_deps=base_deps,
+                slots_by_id=slots_by_id, bundle=bundle, base_deps=base_deps, stage_rows=stage_rows,
             )
         elif planned_query.domain is not None:
             base_select, supply_ctes, base_deps = self._domain_base(
@@ -4307,9 +4351,36 @@ class SQLGenerator:
             entries=entries, final=final, external_names=external_names,
         )
 
+    def _stage_rows(self, *, planned_query, slots_by_id: Dict[str, ValueSlot],
+                    source_relation: str) -> Optional[_StageRows]:
+        """An inferred stage's rows relation, named before the windowed producers reading it render."""
+        if planned_query.row_supply is None or not any(
+            isinstance(a.kernel, TrailingWindowProducerKernel) for a in planned_query.regroup_attach_plans
+        ):
+            return None
+        allocator = self._gen_allocator or self._new_allocator()
+        return _StageRows(relation=allocator.allocate("_keys"), columns={
+            slots_by_id[sid].key: self._full_alias_for_slot(
+                slot=slots_by_id[sid], source_relation=source_relation, alias_index={})
+            for sid in planned_query.grain or []
+        })
+
+    def _window_rows(self, attach, *, stage_rows: Optional[_StageRows],
+                     host_key_of: Callable[[Any], Any] = lambda k: k) -> Optional[_WindowRows]:
+        """A windowed ``attach``'s cells: its stage's rows, its grain read through the join-back pairs."""
+        if stage_rows is None or not isinstance(attach.kernel, TrailingWindowProducerKernel):
+            return None
+        columns = {}
+        for key, sid in attach.join_pairs:
+            col = stage_rows.columns.get(key) or stage_rows.columns.get(host_key_of(key))
+            if col is not None:
+                columns[sid] = col
+        return _WindowRows(relation=stage_rows.relation, columns=columns)
+
     def _row_supply_base(
         self, *, planned_query, base_select: exp.Select, aliases_by_slot_id: Dict[str, List[str]],
         slots_by_id: Dict[str, ValueSlot], bundle: ResolvedSourceBundle, base_deps: List[str],
+        stage_rows: Optional[_StageRows] = None,
     ) -> Tuple[exp.Select, List[CteEntry], List[str]]:
         """``_base`` over an inferred stage's row supply: the null-safe union of its branches' cells (each cast to
         its dimension's type, never chained FULL JOINs), left-joined to the host's own base, a local aggregate
@@ -4317,6 +4388,9 @@ class SQLGenerator:
         allocator = self._gen_allocator or self._new_allocator()
         dims = [sid for sid in planned_query.grain or [] if aliases_by_slot_id.get(sid)]
         key_names = {sid: aliases_by_slot_id[sid][0] for sid in dims}
+        if stage_rows is not None and any(stage_rows.columns.get(slots_by_id[sid].key) != key_names[sid]
+                                          for sid in dims):
+            raise ValueError("the stage's rows were named apart from its base's dimension columns")
         # A cell plan spells a dimension by its alias, or by its field when it is a coarser grain's restriction.
         names = {
             name: sid for sid in dims
@@ -4355,7 +4429,8 @@ class SQLGenerator:
             union = self._spine_crossed(union=union, tuple_names=[key_names[sid] for sid in tuple_sids],
                                         buckets=[(key_names[sid], slots_by_id[sid].key) for sid in spine_sids])
         series_ctes = [e.name for e in self._gen_spine_ctes[series_mark:]]
-        host, keys = allocator.allocate("_base_host"), allocator.allocate("_keys")
+        host = allocator.allocate("_base_host")
+        keys = stage_rows.relation if stage_rows is not None else allocator.allocate("_keys")
         local = [
             (sid, alias) for sid, als in aliases_by_slot_id.items() if sid not in key_names for alias in als
         ]
@@ -4643,6 +4718,7 @@ class SQLGenerator:
 
     def _prepare_combined_regroup_attaches(  # NOSONAR(S3776) — one cohesive combined-attach render (producer CTE → placeholder env → join-back); the phases share local state and reads clearer inline.
         self, *, planned_query: PlannedQuery, bundle, source_relation, slot_by_key,
+        stage_rows: Optional[_StageRows] = None,
     ):
         """Render each combined regroup producer as a ``_cm_*`` CTE."""
         ctes: List[Node] = []
@@ -4652,14 +4728,25 @@ class SQLGenerator:
         shift_specs: List[Tuple[str, List[Tuple[Any, str, Optional[DataType]]]]] = []
         reused_cte_names: List[str] = []
         allocator = self._gen_allocator or self._new_allocator()
+        # A combined attach carries the RAW grain key while the host slot carries the desugared one.
+        row_desugar_map = {
+            sub.original_key: sub.placeholder
+            for a in planned_query.regroup_attach_plans
+            if a.attach_phase == "row"
+            for sub in a.substitutions
+        }
         for attach in planned_query.regroup_attach_plans:
             if attach.attach_phase != "combined":
                 continue
+            window_rows = self._window_rows(
+                attach, stage_rows=stage_rows,
+                host_key_of=lambda k: substitute_value_keys(key=k, mapping=row_desugar_map) if row_desugar_map else k,
+            )
             # A producer already rendered in any scope of this generation reuses its CTE; checked before minting so no
-            # _cm_ suffix is burned.
+            # _cm_ suffix is burned. One reading its stage's rows is that stage's own.
             rendered_map = self._gen_rendered_producers
             ident = (
-                regroup_producer_identity(attach)
+                self._producer_identity(attach, window_rows=window_rows)
                 if rendered_map is not None else None
             )
             rec = rendered_map.get(ident) if rendered_map is not None else None
@@ -4678,7 +4765,7 @@ class SQLGenerator:
                     limit=self._dialect.max_identifier_bytes,
                 )
                 entries, col_by_sid = self._producer_ctes(
-                    attach=attach, bundle=bundle, cte_name=cte_name,
+                    attach=attach, bundle=bundle, cte_name=cte_name, window_rows=window_rows,
                 )
                 ctes.extend(entries)
                 if rendered_map is not None:
@@ -4696,14 +4783,6 @@ class SQLGenerator:
                 ph_slot = slot_by_key.get(sub.placeholder)
                 if ph_slot is not None:
                     placeholder_slot_ids.add(ph_slot.id)
-            # A combined attach carries the RAW grain key while the host slot carries the desugared one; desugar
-            # host_key with the same map so slot_by_key finds it.
-            row_desugar_map = {
-                sub.original_key: sub.placeholder
-                for a in planned_query.regroup_attach_plans
-                if a.attach_phase == "row"
-                for sub in a.substitutions
-            }
             pairs: List[Tuple[str, str, Optional[DataType]]] = []
             shift_pairs: List[Tuple[Any, str, Optional[DataType]]] = []
             producer_types = self._producer_slot_types(attach)
@@ -4732,6 +4811,14 @@ class SQLGenerator:
             reused_cte_names,
         )
 
+    @staticmethod
+    def _producer_identity(attach, *, window_rows: Optional[_WindowRows]) -> Any:
+        """A producer's reuse identity; one reading its stage's rows is that stage's own."""
+        ident = regroup_producer_identity(attach)
+        if window_rows is None:
+            return ident
+        return ident, window_rows.relation, frozenset(window_rows.columns.items())
+
     def _record_reuse_edges(self, shared_cte: str) -> None:
         """A reuse under an active producer split: every enclosing"""
         for consumer in self._gen_split_consumers:
@@ -4758,6 +4845,7 @@ class SQLGenerator:
 
     def _prepare_regroup_attaches(  # NOSONAR(S3776) — one linear pass over the planned regroup producers (dedup → render → hoist); splitting would thread the CTE registry through every helper
         self, *, planned_query: PlannedQuery, bundle, dedup_producers=None,
+        stage_rows: Optional[_StageRows] = None,
     ):
         """Render each regroup producer as a ``_cm_*`` CTE."""
         dedup_producers = dedup_producers or {}
@@ -4780,9 +4868,10 @@ class SQLGenerator:
                 join_specs.append((dedup_cte, list(grain_pairs)))
                 reused_cte_names.append(dedup_cte)
                 continue
+            window_rows = self._window_rows(attach, stage_rows=stage_rows)
             rendered_map = self._gen_rendered_producers
             ident = (
-                regroup_producer_identity(attach)
+                self._producer_identity(attach, window_rows=window_rows)
                 if rendered_map is not None else None
             )
             rec = rendered_map.get(ident) if rendered_map is not None else None
@@ -4823,12 +4912,8 @@ class SQLGenerator:
 
             self._gen_split_consumers.append(cte_name)
             try:
-                producer_hoisted, producer_body = self._render_producer_split(
-                    producer=producer,
-                    bundle=self._producer_render_bundle(
-                        attach=attach, bundle=bundle,
-                    ),
-                    kernel=attach.kernel,
+                producer_hoisted, producer_body = self._render_window_aware_split(
+                    attach=attach, bundle=bundle, window_rows=window_rows,
                 )
             finally:
                 self._gen_split_consumers.pop()
@@ -4850,6 +4935,7 @@ class SQLGenerator:
                 name=cte_name, phase="producer", query=wrapped,
                 depends_on=[
                     *[h.name for h in producer_hoisted],
+                    *([window_rows.relation] if window_rows else []),
                     *self._reuse_deps_of(cte_name),
                 ],
                 schema_by_slot={sid: [col] for sid, col in exposed_by_sid.items()},
@@ -5459,18 +5545,14 @@ class SQLGenerator:
         return cte_name, col_by_sid[attach.answer_slot_id], pairs
 
     def _producer_ctes(
-        self, *, attach, bundle, cte_name: str,
+        self, *, attach, bundle, cte_name: str, window_rows: Optional[_WindowRows] = None,
     ) -> Tuple[List[Node], Dict[str, str]]:
         """Render ``attach``'s producer as ``cte_name`` after its hoisted CTEs, and map
         each producer slot id to its output column (sql P6: declared edges only)."""
         producer = attach.producer_plan
         self._gen_split_consumers.append(cte_name)
         try:
-            hoisted, body = self._render_producer_split(
-                producer=producer,
-                bundle=self._producer_render_bundle(attach=attach, bundle=bundle),
-                kernel=attach.kernel,
-            )
+            hoisted, body = self._render_window_aware_split(attach=attach, bundle=bundle, window_rows=window_rows)
         finally:
             self._gen_split_consumers.pop()
         entries: List[Node] = [
@@ -5487,9 +5569,24 @@ class SQLGenerator:
         }
         entries.append(Node(
             name=cte_name, phase="producer", query=body,
-            depends_on=[*[h.name for h in hoisted], *self._reuse_deps_of(cte_name)],
+            depends_on=[*[h.name for h in hoisted], *([window_rows.relation] if window_rows else []),
+                        *self._reuse_deps_of(cte_name)],
         ))
         return entries, col_by_sid
+
+    def _render_window_aware_split(
+        self, *, attach, bundle, window_rows: Optional[_WindowRows],
+    ) -> Tuple[List[CteEntry], exp.Select]:
+        """``attach``'s producer split, a windowed one reading ``window_rows`` as its cells."""
+        self._gen_window_rows = window_rows
+        try:
+            return self._render_producer_split(
+                producer=attach.producer_plan,
+                bundle=self._producer_render_bundle(attach=attach, bundle=bundle),
+                kernel=attach.kernel,
+            )
+        finally:
+            self._gen_window_rows = None
 
     def _emit_time_shift_ctes_for_planned(
         self,

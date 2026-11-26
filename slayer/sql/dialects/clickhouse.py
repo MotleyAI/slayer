@@ -25,6 +25,7 @@ from slayer.core.granularity import Granularity, bucket_type
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    AngleFn,
     NativeFn,
     LIST_ELEMENT,
     LIST_POSITION,
@@ -447,6 +448,9 @@ class ClickhouseDialect(SqlDialect):
     def cube_root(self, value: Expression) -> Expression:
         return anon("cbrt", value)
 
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        return anon(fn, value)
+
     def natural_log(self, value: Expression) -> Expression:
         """``ln`` is approximate (~1e-9); ``log2`` is exact."""
         return exp.Mul(this=anon("log2", value), expression=exp.Literal.number(repr(math.log(2))))
@@ -545,6 +549,9 @@ class ClickhouseDialect(SqlDialect):
     ) -> Expression:
         return anon("replaceRegexpAll", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("countMatches", value, self.regex_text(pattern, case_insensitive=case_insensitive))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """A native input is serialised from the cast's operand: a ``CAST(… AS JSON)`` needs an experimental
@@ -737,6 +744,9 @@ class ClickhouseDialect(SqlDialect):
 
     def _date_part(self, part: DatePart, expr: Expression) -> Expression:
         """``to<Part>`` functions; ``toDayOfWeek`` is ISO (Monday=1) in its default mode."""
+        if part is DatePart.MILLISECOND:
+            micros = anon("toUnixTimestamp64Micro", anon("toDateTime64", expr, lit(6)))
+            return anon("intDiv", anon("positiveModulo", micros, lit(1_000_000)), lit(1000))
         return exp.Anonymous(this=_CH_PART_FUNCTIONS[part], expressions=[expr])
 
     def build_date_diff(

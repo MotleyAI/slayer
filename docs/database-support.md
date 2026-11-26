@@ -93,6 +93,7 @@ Each database runs a [portable library function](concepts/references.md) only wh
 | `concat_ws` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `contains` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `cos` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `degrees` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `div` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `ends_with` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `greatest` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -105,6 +106,8 @@ Each database runs a [portable library function](concepts/references.md) only wh
 | `lpad` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `ltrim` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `radians` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `regexp_count` | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | — | — | — |
 | `regexp_extract` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `regexp_like` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `regexp_replace` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
@@ -121,6 +124,8 @@ Each database runs a [portable library function](concepts/references.md) only wh
 | `tan` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `trim` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `try_cast` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+
+`regexp_count` of a pattern that can match the empty string (`'x*'`) runs only on Postgres; elsewhere it fails at plan time.
 
 ## Identifier length limits
 
@@ -210,7 +215,7 @@ connection via SQLAlchemy's `connect` event (see
 - `log(B, X)` — base-first 2-arg logarithm (log_B(X)), registered on **every** SQLite version, in the same argument order as SQLite ≥3.35's built-in and Postgres's `LOG(b, x)`.
 - `pow(x, n)` and `power(x, n)` — both spellings registered (sqlglot may emit
   either).
-- The portable library's own `slayer_*` functions: `slayer_like_glob`, `slayer_regexp_like` / `_extract` / `_replace`, `slayer_try_cast`, `slayer_date_add`, `slayer_lpad` / `_rpad` / `_reverse` / `_repeat` / `_split_part` / `_concat_ws`, `slayer_trunc`, `slayer_fmod`, `slayer_pi`, `slayer_cbrt` and the trigonometric `slayer_sin` … `slayer_atan2`.
+- The portable library's own `slayer_*` functions: `slayer_like_glob`, `slayer_regexp_like` / `_extract` / `_replace` / `_count`, `slayer_try_cast`, `slayer_date_add`, `slayer_lpad` / `_rpad` / `_reverse` / `_repeat` / `_split_part` / `_concat_ws`, `slayer_trunc` (one and two arguments), `slayer_fmod`, `slayer_pi`, `slayer_cbrt`, `slayer_radians`, `slayer_degrees` and the trigonometric `slayer_sin` … `slayer_atan2`.
 
 NULL inputs return NULL on every UDF, and so do math-domain inputs (`ln(0)`,
 `sqrt(-1)`, `pow(0, -1)`), as on every database (overflow still raises).
@@ -281,6 +286,8 @@ Other T-SQL specifics surfaced by the dialect:
 ### Postgres caveats
 
 `TRY_CAST`'s NULL for an unconvertible value, the text-to-number coercion that reads through it, and `json_value`'s NULL for malformed JSON need Postgres 16 (`pg_input_is_valid`); on an older or unknown server they are a plain cast, so one bad row fails the query.
+
+`regexp_count` needs Postgres 15; an older server fails at plan time.
 
 `ANY_VALUE` also needs Postgres 16; on an older or unknown server SLayer reads `mode() WITHIN GROUP`, which needs a sortable type, so a `json`, `xml` or geometric value there fails the query.
 

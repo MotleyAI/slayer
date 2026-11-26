@@ -170,7 +170,7 @@ class TestExtractParsesAsDatePart:
 
 
 class TestAmbiguousWeekdays:
-    @pytest.mark.parametrize("name", AMBIGUOUS_WEEKDAYS)
+    @pytest.mark.parametrize("name", ("dow", "weekday"))
     @pytest.mark.parametrize("template", ["date_part('{n}', created_at)", "extract({n} from created_at)"])
     def test_part_names_both_conventions(self, name: str, template: str) -> None:
         text = template.format(n=name) + " = 1"

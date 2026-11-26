@@ -31,54 +31,38 @@ cases are:
 
 | Database | Pass | Refused | Gap |
 |---|---|---|---|
-| SQLite | 176 | 4 | 24 |
-| DuckDB | 178 | 4 | 22 |
-| PostgreSQL | 178 | 4 | 22 |
-| MySQL | 178 | 4 | 22 |
-| ClickHouse | 176 | 4 | 24 |
-| SQL Server | 175 | 7 | 22 |
-| Trino | 178 | 4 | 22 |
-| Snowflake | 178 | 4 | 22 |
-| BigQuery | 178 | 4 | 22 |
+| SQLite | 196 | 1 | 7 |
+| DuckDB | 198 | 1 | 5 |
+| PostgreSQL | 198 | 1 | 5 |
+| MySQL | 197 | 2 | 5 |
+| ClickHouse | 196 | 1 | 7 |
+| SQL Server | 194 | 5 | 5 |
+| Trino | 198 | 1 | 5 |
+| Snowflake | 198 | 1 | 5 |
+| BigQuery | 198 | 1 | 5 |
 
 | Construct | Example | Status |
 |---|---|---|
 | `APPROX_PERCENTILE` | `APPROX_PERCENTILE(orders.amount, 0.5)` (RECOMMENDED) | refused |
-| `RADIANS` | `RADIANS(180)` (RECOMMENDED) | refused |
-| `DEGREES` | `DEGREES(0)` (RECOMMENDED) | refused |
-| `REGEXP_COUNT` | `REGEXP_COUNT(orders.status, 'n')` (RECOMMENDED) | refused |
+| `REGEXP_COUNT` | `REGEXP_COUNT(orders.status, 'n')` (RECOMMENDED), on MySQL and on SQL Server before 2025 | refused |
 | `REGEXP_LIKE` | `REGEXP_LIKE(orders.status, '^pe')`, on SQL Server before 2025 | refused |
 | `REGEXP_EXTRACT` | `REGEXP_EXTRACT(orders.status, 'e.d')`, on SQL Server before 2025 | refused |
 | `REGEXP_REPLACE` | `REGEXP_REPLACE(orders.status, 'n', 'N')`, on SQL Server before 2025 | refused |
 | `PERCENTILE_DISC` | `PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY orders.amount)` | planned |
 | `DISTINCT MODIFIER` | `SUM(DISTINCT orders.qty)` (only `COUNT(DISTINCT …)` is supported) | planned |
 | `CURRENT_TIME` | `CURRENT_TIME`, `CURRENT_TIME()` | planned |
-| `EXTRACT(DAYOFWEEK)` | `EXTRACT(DAYOFWEEK FROM orders.created_at)` | planned |
-| `DATE_PART(DAYOFWEEK)` | `DATE_PART('dayofweek', orders.created_at)` | planned |
-| `EXTRACT(MILLISECOND)` | `EXTRACT(MILLISECOND FROM orders.created_at)` | planned |
-| `DATE_PART(MILLISECOND)` | `DATE_PART('millisecond', orders.created_at)` | planned |
-| `TIMESTAMP_NTZ '2024-01-15 10:30:00'` | a `TIMESTAMP_NTZ` literal | planned |
 | `TIME '10:30:00'` | a time-of-day literal | planned |
 | `CAST('10:30:00' AS TIME)` | a cast to a time of day (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
 | `CAST AS TIME` | `CAST('10:30:00' AS TIME)` (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
-| `TO_DATE` | `TO_DATE('2024-01-15')` | planned |
-| `TO_TIMESTAMP` | `TO_TIMESTAMP('2024-01-15 10:30:00')` | planned |
-| `CHARINDEX` | `CHARINDEX('d', orders.status)` | planned |
-| `STARTSWITH` | `STARTSWITH(orders.status, 'pe')` | planned |
-| `ENDSWITH` | `ENDSWITH(orders.status, 'ing')` | planned |
-| `TRUNC` | `TRUNC(2.789, 1)` (the one-argument form is SLayer's) | planned |
-| `TRUNCATE` | `TRUNCATE(2.789, 1)` | planned |
-| `IF` | `IF(orders.amount > 20, 1, 0)` (`IFF` is supported) | planned |
-| `NVL` | `NVL(orders.note, 'x')` (`COALESCE` and `IFNULL` are supported) | planned |
-| `NVL2` | `NVL2(orders.status, 'y', 'n')` | planned |
-| `ZEROIFNULL` | `ZEROIFNULL(orders.amount)` | planned |
-| `NULLIFZERO` | `NULLIFZERO(orders.amount)` | planned |
 
 Ossie's window functions run in every position (see
 [SQL window functions](../concepts/expressions.md#sql-window-functions-over)); `COUNT(DISTINCT …)`, `MEDIAN` and
 `PERCENTILE_CONT` under `OVER` run only where the database windows them (see
 [Database support](../database-support.md#window-functions)). Ossie does not fix `DAYOFWEEK`'s numbering or
-`MILLISECOND`'s meaning; SLayer's own `date_part('day_of_week', x)` is ISO (Monday 1, Sunday 7).
+`MILLISECOND`'s meaning, so SLayer rules them: `EXTRACT(DAYOFWEEK FROM x)` is ISO (Monday 1, Sunday 7), as
+`date_part('day_of_week', x)` is, and `EXTRACT(MILLISECOND FROM x)` is the millisecond component (0 to 999, truncated).
+Both are parts only: `DAYOFWEEK(x)` and `MILLISECOND(x)` are refused, as those function names mean other numberings
+on several databases.
 
 ## Layer 2: SQL queries
 

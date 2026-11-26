@@ -9,7 +9,7 @@ from typing import Any
 import hashlib
 
 import sqlglot
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 from sqlglot.expressions.core import Expression as SqlExpression
 
@@ -29,6 +29,7 @@ from slayer.core.relationship_walker import dataset_field_element, dataset_field
 from slayer.core.scope import DatasetScope
 from slayer.core.syntax import DottedRef, Ref, parse_expr, walk_parsed
 from slayer.engine.binding import bind_expr
+from slayer.engine.elaborate_env import check_numeric_arguments
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.definitions import check_metric_forms, with_converted_sql
 from slayer.sql.dialects import dialect_for_ds_type, ossie_token
@@ -37,7 +38,8 @@ from slayer.sql.window_detect import holds_window
 from slayer.engine.window_columns import WINDOW_FIELD_PREFIX
 
 __all__ = [
-    "SOURCE_READER_PREFIX", "ColumnTypes", "check_metric_forms", "needs_live_types", "portable_columns",
+    "SOURCE_READER_PREFIX", "ColumnTypes", "check_metric_forms", "check_portable_fields", "needs_live_types",
+    "portable_columns",
     "portable_native", "resolved_dataset", "source_reader",
 ]
 
@@ -162,11 +164,21 @@ class _Translation:
         return _dotted((*(ref.path or (self.dataset.name,)), leaf))
 
 
-def portable_native(
+class _BoundPortable(BaseModel):
+    """A portable definition bound against its dataset, its source columns as typed readers."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    key: Any
+    host: SlayerDataset
+    peers: list[SlayerDataset]
+    translation: Any
+
+
+def _bound_portable(
     text: str, *, field: str, dataset: SlayerDataset, datasets: Sequence[SlayerDataset], ds_type: str | None,
     live: ColumnTypes,
-) -> str:
-    """A portable definition as the datasource's own SQL: Mode B's meaning, source columns bare, fields by path."""
+) -> _BoundPortable:
     sql_dialect = dialect_for_ds_type(ds_type)
     translation = _Translation(dataset=dataset, live=live)
     parsed = parse_expr(text)
@@ -181,14 +193,47 @@ def portable_native(
     if key.phase is not Phase.ROW:
         raise FieldExpressionError(owner=f"Field {field!r}", reason=f"expression {text!r} is not row-level.",
                                    suggestion="Aggregate it in a metric instead.")
-    by_name = {d.name: d for d in peers}
+    return _BoundPortable(key=key, host=host, peers=peers, translation=translation)
+
+
+def _checked_field_type(bound: _BoundPortable) -> Callable[[Any], DataType | None]:
+    """The bound definition's field types, its number functions checked against them."""
+    field_type = dataset_field_type(dataset=bound.host, datasets_by_name={d.name: d for d in bound.peers})
+    check_numeric_arguments(bound.key, field_type=field_type)
+    return field_type
+
+
+def portable_native(
+    text: str, *, field: str, dataset: SlayerDataset, datasets: Sequence[SlayerDataset], ds_type: str | None,
+    live: ColumnTypes,
+) -> str:
+    """A portable definition as the datasource's own SQL: Mode B's meaning, source columns bare, fields by path."""
+    sql_dialect = dialect_for_ds_type(ds_type)
+    bound = _bound_portable(text, field=field, dataset=dataset, datasets=datasets, ds_type=ds_type, live=live)
     rendered = render_row_expression(
-        key=key, dialect=sql_dialect,
-        resolve_field=translation.column,
-        field_type=dataset_field_type(dataset=host, datasets_by_name=by_name),
-        field_element=dataset_field_element(dataset=host, datasets_by_name=by_name),
+        key=bound.key, dialect=sql_dialect,
+        resolve_field=bound.translation.column,
+        field_type=_checked_field_type(bound),
+        field_element=dataset_field_element(dataset=bound.host, datasets_by_name={d.name: d for d in bound.peers}),
     )
     return rendered.sql(dialect=sql_dialect.sqlglot_name)
+
+
+def check_portable_fields(dataset: SlayerDataset, *, datasets: Sequence[SlayerDataset], ds_type: str | None) -> None:
+    """Refuse a portable field definition whose number function reads a TEXT value its declared types show; one
+    that does not bind yet is reported by the query reading it."""
+    for field in dataset.fields:
+        if field.resolved or field.load_warning is not None or field.expression is None:
+            continue
+        form = running_form(owner=f"Field {field.name!r}", expression=field.expression, dialect=ossie_token(ds_type))
+        if form.native or unquoted_identifier(form.text) is not None:
+            continue
+        try:
+            bound = _bound_portable(form.text, field=field.name, dataset=dataset, datasets=datasets, ds_type=ds_type,
+                                    live={})
+        except Exception:  # noqa: BLE001 — binding without live types; the query reading it reports the problem
+            continue
+        _checked_field_type(bound)
 
 
 def _resolved_field(

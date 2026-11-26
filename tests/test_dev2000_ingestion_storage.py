@@ -191,7 +191,7 @@ async def _v30_store(tmp_path: Path, *, backend: str, datasource: DatasourceConf
 
 
 def test_the_dataset_version_is_bumped() -> None:
-    assert CURRENT_VERSIONS["SlayerModel"] == 31
+    assert CURRENT_VERSIONS["SlayerModel"] == 32
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

@@ -528,14 +528,14 @@ In Mode-A SQL (a field's dialect entry, `Aggregation.expression`) any database f
 | `exp(x)` | 1 | `e^x` |
 | `sqrt(x)` | 1 | Square root |
 | `pow(x, n)` / `power(x, n)` | 2 | `x^n`. Both spellings are accepted (sqlglot may emit either depending on origin dialect). |
-| `round(x[, ndigits])` | 1–2 | Round to `ndigits` decimal places (default 0); a negative `ndigits` rounds left of the point (`round(1250, -2)` is `1300`). `ndigits` must be an integer literal. |
+| `round(x[, ndigits])` | 1–2 | Round to `ndigits` decimal places (default 0); a negative `ndigits` rounds left of the point (`round(1250, -2)` is `1300`). `ndigits` must be a whole number: a literal or an integer value. |
 | `abs(x)` | 1 | Absolute value. |
 | `floor(x)` / `ceil(x)` | 1 | Round down / up to an integer value (`ceiling` is `ceil`). |
-| `trunc(x)` | 1 | Round toward zero. |
+| `trunc(x[, ndigits])` | 1–2 | Cut toward zero to `ndigits` decimal places (default 0), as `round` takes them (`trunc(2.789, 1)` is `2.7`); `truncate` is the same. |
 | `sign(x)` | 1 | -1, 0 or 1. |
 | `mod(a, b)` | 2 | Remainder, with the sign of `a` (as `a % b`). |
 
-Query and metric expressions also take `div`, `pi`, `sin` … `atan2` and `cbrt` from the [portable function library](references.md#the-portable-function-library).
+Query and metric expressions also take `div`, `pi`, `sin` … `atan2`, `cbrt`, `radians`, `degrees`, `zeroifnull` and `nullifzero` from the [portable function library](references.md#the-portable-function-library), and Ossie's spellings such as `NVL` and `IF` ([Ossie spellings](references.md#ossie-spellings)).
 
 Any scalar function can wrap aggregates as the **top-level** form of a query metric or `DatasetMetric.expression` (`ln(sum(x))`, `coalesce(sum(a), 0)`, `greatest(sum(a), 1)`):
 
