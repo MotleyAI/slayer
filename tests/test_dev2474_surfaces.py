@@ -6,6 +6,8 @@ refused with every problem; CLI round trip).
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -217,3 +219,10 @@ async def test_the_cli_lists_an_unresolved_mapping_with_its_problems(tmp_path: P
     assert listed.returncode == 0, listed.stderr
     assert FLIGHTS_MAPPING in listed.stdout
     assert "dep_delay" in listed.stdout
+
+
+def test_starting_the_cli_does_not_import_jsonschema() -> None:
+    """``jsonschema`` can cost ~1s to import; it loads on the first schema check, never on CLI/MCP start."""
+    code = "import sys, slayer.cli, slayer.mcp.server; print(sorted(m for m in sys.modules if m.startswith('jsonschema')))"
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "[]"

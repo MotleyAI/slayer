@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from functools import cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
+
+if TYPE_CHECKING:
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import ValidationError
 
 SchemaKind = Literal["ontology", "mapping"]
 
@@ -26,6 +28,7 @@ def _schema(file: str) -> dict[str, Any]:
 
 @cache
 def _validator(kind: SchemaKind) -> Draft202012Validator:
+    from jsonschema import Draft202012Validator  # noqa: PLC0415  # ALLOW(import-not-top): optional heavy dependency; a top-level import costs ~0.9s on every CLI/MCP start
     registry = Registry().with_resources(
         (base + upstream, Resource.from_contents(_schema(file))) for upstream, file in _FILES.items() for base in _BASES)
     return Draft202012Validator(_schema(f"{kind}.json"), registry=registry)
