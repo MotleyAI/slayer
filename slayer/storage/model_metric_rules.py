@@ -106,13 +106,7 @@ def _check_column(column: exp.Column, *, name: str, scope: DocumentScope) -> Non
         raise ModelMetricReferenceError(metric=name, reference=reference,
                                         reason="it is neither a model-scoped metric nor a qualified field")
     if table not in scope.fields:
-        if table == "source":
-            reason = "a model-scoped metric reads fields, never source columns"
-        elif table in scope.datasource_datasets:
-            reason = f"{column.table!r} is not a dataset of this semantic model"
-        else:
-            reason = f"{column.table!r} is not a dataset"
-        raise ModelMetricReferenceError(metric=name, reference=reference, reason=reason)
+        raise ModelMetricReferenceError(metric=name, reference=reference, reason=_foreign_table_reason(column, scope=scope))
     if leaf in scope.fields[table]:
         if not _aggregated(column) and not aggregate_window_key(column):
             raise ModelMetricReferenceError(metric=name, reference=reference,
@@ -123,6 +117,15 @@ def _check_column(column: exp.Column, *, name: str, scope: DocumentScope) -> Non
                                         reason=f"a dataset metric is evaluated as AGG({reference})")
     raise ModelMetricReferenceError(metric=name, reference=reference,
                                     reason=f"{column.table!r} declares no field {column.name!r}")
+
+
+def _foreign_table_reason(column: exp.Column, *, scope: DocumentScope) -> str:
+    table = column.table.casefold()
+    if table == "source":
+        return "a model-scoped metric reads fields, never source columns"
+    if table in scope.datasource_datasets:
+        return f"{column.table!r} is not a dataset of this semantic model"
+    return f"{column.table!r} is not a dataset"
 
 
 def _check_windows(name: str, *, text: str) -> None:

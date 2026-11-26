@@ -80,6 +80,17 @@ async def test_sql_server_window_avg_keeps_a_decimal_input_exact() -> None:
     assert not isinstance(window.this.this, exp.Cast), sql
 
 
+@pytest.mark.parametrize("body", [raw("orders", "AVG(orders.amount) OVER (PARTITION BY orders.region)"),
+                                  {"population": "orders", "metrics": [{"metric": "avg(orders.amount)"}]}],
+                         ids=["window", "aggregate"])
+async def test_mysql_avg_reads_an_integer_input_as_double(body: dict) -> None:
+    # MySQL cuts an integer AVG to div_precision_increment (4) decimals.
+    sql = await emit(SlayerQuery.model_validate(body), dialect="mysql", datasets=window_datasets())
+    (avg,) = sqlglot.parse_one(sql, dialect="mysql").find_all(exp.Avg)
+    assert isinstance(avg.this, exp.Cast), sql
+    assert avg.this.to.is_type(exp.DataType.Type.DOUBLE), sql
+
+
 def test_sqlite_sliding_deviation_survives_round_off() -> None:
     """Removing rows from a frame of near-equal large values must not drive the variance state below zero."""
     agg = _StddevPopAgg()

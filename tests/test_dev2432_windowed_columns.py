@@ -707,6 +707,15 @@ def test_variable_substitution_keeps_the_window_flag():
     assert field.windowed
 
 
+def test_variable_substitution_keeps_the_null_placement_flag():
+    rn = native("rn", RN).with_native(RN, windowed=True, states_nulls=True)
+    dataset = _orders_like("orders_v", fields=[rn], filters=["region <> '{r}'"])
+    bound = substitute_dataset_sql_surfaces(dataset=dataset, variables={"r": "AS"}, bind_mode_a=lambda text, _v, **_kw: text)
+    field = bound.get_field("rn")
+    assert field is not None
+    assert field.states_nulls
+
+
 def test_collapsing_an_unread_window_layer_keeps_the_untrusted_mark():
     layer = exp.select("t.*").from_("tbl AS t").subquery("t")
     layer.meta[_WINDOW_LAYER] = True

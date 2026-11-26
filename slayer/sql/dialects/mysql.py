@@ -150,6 +150,9 @@ class MysqlDialect(SqlDialect):
     })
     database_name: ClassVar[str] = "MySQL"
     nulls_clause: bool = False
+    # ``AVG`` over integers keeps only ``div_precision_increment`` decimals.
+    integer_avg: bool = True
+    avg_input_type: str = "DOUBLE"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     sa_backend_names: frozenset[str] = frozenset({"mysql"})

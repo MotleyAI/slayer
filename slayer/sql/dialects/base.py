@@ -949,8 +949,9 @@ class SqlDialect(BaseModel):
     #: The database enforces primary-key and unique constraints (every dialect states it).
     enforces_unique_keys: ClassVar[bool]
 
-    # ``AVG`` over integers returns a truncated integer, so a non-DOUBLE input is read as a float.
+    # ``AVG`` over integers is not a full-precision fraction, so a non-DOUBLE input is read as ``avg_input_type``.
     integer_avg: bool = False
+    avg_input_type: str = "FLOAT"
 
     # Identifier budget in bytes (``None`` = unbounded); defaults to Postgres, the tightest.
     max_identifier_bytes: int | None = 63
@@ -1707,10 +1708,15 @@ class SqlDialect(BaseModel):
             )
         if function in _WINDOW_STATS:
             return self.build_stat_agg_1arg(_WINDOW_STATS[function], args[0])
-        # A DOUBLE input is already fractional (and may be an exact decimal whose precision is kept).
-        if function == "avg" and self.integer_avg and kind_of(input_type) is not TypeKind.DOUBLE:
-            args = [exp.Cast(this=args[0], to=exp.DataType.build("FLOAT")), *args[1:]]
+        if function == "avg":
+            args = [self.avg_input(args[0], input_type=input_type), *args[1:]]
         return _WINDOW_CALLS[function](args)
+
+    def avg_input(self, value: Expression, *, input_type: Optional[DataType]) -> Expression:
+        """``value`` as ``AVG``'s input; a DOUBLE input is already fractional (an exact decimal keeps its precision)."""
+        if not self.integer_avg or kind_of(input_type) is TypeKind.DOUBLE:
+            return value
+        return exp.Cast(this=value, to=exp.DataType.build(self.avg_input_type))
 
     def row_number(self) -> Expression:
         """An arbitrary distinct number per row of the enclosing relation."""
