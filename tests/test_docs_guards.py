@@ -94,11 +94,15 @@ def _docs_files() -> tuple[Path, ...]:
 # --------------------------------------------------------------------------- #
 # Nav coverage
 # --------------------------------------------------------------------------- #
-def _nav_paths(node: Any) -> set[str]:
+def _nav_entries(node: Any) -> list[str]:
     if isinstance(node, str):
-        return {node}
+        return [node]
     values = node.values() if isinstance(node, dict) else node
-    return set().union(*(_nav_paths(v) for v in values))
+    return [path for v in values for path in _nav_entries(v)]
+
+
+def _nav_paths(node: Any) -> set[str]:
+    return set(_nav_entries(node))
 
 
 def _zensical() -> dict[str, Any]:
@@ -116,6 +120,11 @@ def test_every_docs_page_is_in_the_nav() -> None:
 
 def test_every_nav_entry_exists() -> None:
     assert sorted(p for p in _nav() if not (_DOCS / p).is_file()) == []
+
+
+def test_no_page_is_listed_twice_in_the_nav() -> None:
+    entries = _nav_entries(_zensical()["project"]["nav"])
+    assert sorted({p for p in entries if entries.count(p) > 1}) == []
 
 
 def test_nav_exemptions_exist_and_stay_out_of_the_nav() -> None:
