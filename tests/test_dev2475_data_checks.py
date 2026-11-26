@@ -7,13 +7,14 @@ the data.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tests._dev2243_fixtures import STORAGES
-from tests._dev2474_fixtures import FLIGHTS, FLIGHTS_MAPPING, component, edited, example
+from tests._dev2474_fixtures import FLIGHTS, FLIGHTS_MAPPING, component, concept_mapping, dump, edited, example, load
 from tests._dev2475_fixtures import (
     SEATING, SEATING_DS, SEATING_MAPPING, flights_engine, flights_model, ontology_findings, seating_engine,
     seating_mapping, seating_ontology, validate, violating,
@@ -161,6 +162,25 @@ async def test_a_computed_single_dataset_position(tmp_path: Path) -> None:
     assert (found.violations, found.samples) == (1, [13])
 
 
+def _renamed_airport(node: Any) -> Any:
+    """``node`` with dataset ``AIRPORT`` renamed ``AIRPORT DATA``, references quoted."""
+    if isinstance(node, dict):
+        return {k: _renamed_airport(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_renamed_airport(v) for v in node]
+    if node == "AIRPORT":
+        return "AIRPORT DATA"
+    return re.sub(r"\bAIRPORT\.", '"AIRPORT DATA".', node) if isinstance(node, str) else node
+
+
+async def test_a_dataset_name_needing_quotes_is_checked(tmp_path: Path) -> None:
+    model = dump(_renamed_airport(load(flights_model())))
+    mapping = dump(_renamed_airport(load(example("flights.mapping.yaml"))))
+    async with flights_engine("yaml", tmp_path, model=model, mapping=mapping) as engine:
+        [found] = broken(await validate(engine), "DegreesLatitude")
+    assert (found.violations, found.samples) == (1, [95])
+
+
 async def test_a_query_sourced_dataset_is_checked_through_its_query(tmp_path: Path) -> None:
     model = flights_model().replace("source: AIRPORTS", "source: SELECT * FROM AIRPORTS WHERE code <> 'DCA'")
     async with flights_engine("yaml", tmp_path, model=model) as engine:
@@ -190,6 +210,20 @@ def test_an_airport_known_only_from_routes(flights_findings: list[Any]) -> None:
         assert "ZZZ" in samples(found)
     assert not violating(links(flights_findings, "Airport.latitude", "ROUTE.orig_airport_code"))
     assert not violating(links(flights_findings, "Airport.latitude", "RUNWAY.airport_code"))
+
+
+def _flat_runway_airport(document: dict[str, Any]) -> None:
+    """The Runway object mapping's ``airport`` referent written as an ``expression`` instead of nested referents."""
+    for node in (concept_mapping(document, "Runway")["object_mappings"][0],
+                 concept_mapping(document, "Runway")["link_mappings"][0]["object_mapping"]):
+        node["referent_mappings"][1] = {"relationship": "airport", "expression": "RUNWAY.airport_code"}
+
+
+async def test_an_entity_referenced_by_an_expression_is_checked(tmp_path: Path) -> None:
+    mapping = edited(example("flights.mapping.yaml"), _flat_runway_airport)
+    async with flights_engine("yaml", tmp_path, mapping=mapping) as engine:
+        findings = await validate(engine)
+    assert links(findings, "Airport.latitude", "RUNWAY.airport_code")
 
 
 def test_a_compound_identifier_with_a_null_part_makes_no_object(seating_findings: list[Any]) -> None:

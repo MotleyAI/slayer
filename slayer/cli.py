@@ -2904,6 +2904,7 @@ def _ontologies_save(storage: StorageBackend, args) -> None:
     _refused(storage.save_ontology_text(name=name, text=text, warnings_out=notes))
     print(f"Stored ontology '{name}'.")
     _print_save_warnings(notes)
+    _refresh_concepts(storage)
 
 
 def _ontologies_delete(storage: StorageBackend, args) -> None:
@@ -2913,6 +2914,7 @@ def _ontologies_delete(storage: StorageBackend, args) -> None:
     if not _refused(storage.delete_ontology(args.name)):
         _fail(f"Ontology '{args.name}' not found.")
     print(f"Deleted ontology '{args.name}'.")
+    _refresh_concepts(storage)
 
 
 def _mappings_list(storage: StorageBackend, args) -> None:
@@ -2941,6 +2943,12 @@ def _mappings_save(storage: StorageBackend, args) -> None:
     for note in notes:
         print(note)
     _print_save_warnings(warnings_out)
+    _refresh_concepts(storage, data_source=args.datasource)
+
+
+def _refresh_concepts(storage: StorageBackend, *, data_source: str | None = None) -> None:
+    for warning in run_sync(SearchService(storage=storage).refresh_after_concept_change(data_source)):
+        print(f"Warning: {warning}")
 
 
 def _print_save_warnings(notes: list[SlayerWarning]) -> None:
@@ -2955,6 +2963,7 @@ def _mappings_delete(storage: StorageBackend, args) -> None:
     if not _refused(storage.delete_ontology_mapping(args.name, args.datasource)):
         _fail(f"Mapping '{args.name}' not found in datasource '{args.datasource}'.")
     print(f"Deleted mapping '{args.name}'.")
+    _refresh_concepts(storage, data_source=args.datasource)
 
 
 _DOCUMENT_COMMANDS = {

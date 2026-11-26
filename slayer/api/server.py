@@ -827,6 +827,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(status_code=404, detail=f"Semantic model '{data_source}.{name}' not found")
         return {"status": "deleted", "name": name}
 
+    # Pass the engine so the search service's post-fusion
+    # field-hit hook can auto-refresh stale categorical fields.
+    search_service = SearchService(storage=storage, engine=engine)
+
     @app.get("/ontologies")
     async def list_ontologies() -> list[dict[str, str]]:
         return [{"name": n} for n in await storage.list_ontologies()]
@@ -845,21 +849,23 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         name = _named(text)
         notes: list[SlayerWarning] = []
         await _refused_as_400(storage.save_ontology_text(name=name, text=text, warnings_out=notes))
-        return {"status": "created", "name": name, "warnings": _dumped(notes)}
+        return {"status": "created", "name": name, "warnings": _dumped(notes),
+                "notes": await search_service.refresh_after_concept_change()}
 
     @app.put("/ontologies/{name}", responses={400: {"description": "The document was refused."}})
     async def replace_ontology(name: str, body: DocumentRequest) -> dict[str, Any]:
         notes: list[SlayerWarning] = []
         await _refused_as_400(storage.save_ontology_text(name=name, text=content_text(body.content),
                                                          warnings_out=notes))
-        return {"status": "replaced", "name": name, "warnings": _dumped(notes)}
+        return {"status": "replaced", "name": name, "warnings": _dumped(notes),
+                "notes": await search_service.refresh_after_concept_change()}
 
     @app.delete("/ontologies/{name}", responses={404: {"description": "Ontology not found."},
                                                 400: {"description": "A stored mapping resolves against it."}})
     async def delete_ontology(name: str) -> dict[str, Any]:
         if not await _refused_as_400(storage.delete_ontology(name)):
             raise HTTPException(status_code=404, detail=f"Ontology '{name}' not found")
-        return {"status": "deleted", "name": name}
+        return {"status": "deleted", "name": name, "notes": await search_service.refresh_after_concept_change()}
 
     @app.get("/ontology-mappings")
     async def list_ontology_mappings(data_source: str | None = None) -> list[dict[str, str]]:
@@ -880,6 +886,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         warnings_out: list[SlayerWarning] = []
         notes = await _refused_as_400(storage.save_ontology_mapping_text(data_source=body.data_source, name=name,
                                                                          text=text, warnings_out=warnings_out))
+        notes += await search_service.refresh_after_concept_change(body.data_source)
         return {"status": "created", "name": name, "notes": notes, "warnings": _dumped(warnings_out)}
 
     @app.put("/ontology-mappings/{data_source}/{name}", responses={400: {"description": "The document was refused."}})
@@ -888,6 +895,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         notes = await _refused_as_400(storage.save_ontology_mapping_text(data_source=data_source, name=name,
                                                                          text=content_text(body.content),
                                                                          warnings_out=warnings_out))
+        notes += await search_service.refresh_after_concept_change(data_source)
         return {"status": "replaced", "name": name, "notes": notes, "warnings": _dumped(warnings_out)}
 
     @app.delete("/ontology-mappings/{data_source}/{name}", responses={
@@ -895,7 +903,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def delete_ontology_mapping(data_source: str, name: str) -> dict[str, Any]:
         if not await _refused_as_400(storage.delete_ontology_mapping(name, data_source)):
             raise HTTPException(status_code=404, detail=f"Mapping '{data_source}.{name}' not found")
-        return {"status": "deleted", "name": name}
+        return {"status": "deleted", "name": name, "notes": await search_service.refresh_after_concept_change(data_source)}
 
     @app.get("/datasources/priority")
     async def get_datasource_priority() -> dict[str, list[str]]:
@@ -1157,9 +1165,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     # ---------- Semantic search -----------------------------
 
-    # Pass the engine so the search service's post-fusion
-    # field-hit hook can auto-refresh stale categorical fields.
-    search_service = SearchService(storage=storage, engine=engine)
 
     @app.post(
         "/search",

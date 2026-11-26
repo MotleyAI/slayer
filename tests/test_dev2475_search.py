@@ -9,15 +9,19 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
+from slayer.api.server import create_app
+from slayer.client.slayer_client import SlayerClient
 from slayer.embeddings import client as embedding_client
 from slayer.search.retrievers.tantivy import TantivyRetriever
 from slayer.search.service import SearchResponse, SearchService
 from slayer.storage.base import StorageBackend
+from tests._cli_inprocess import run_cli_in_process
 from tests._dataset_access_fixtures import mcp_text
 from tests._dev2474_fixtures import (
     FLIGHTS, FLIGHTS_DS, FLIGHTS_MAPPING, component, concept_mapping, dump, edited, example, flights_store, hide,
-    load, view,
+    load, view, write,
 )
 
 DEP_DELAY = f"{FLIGHTS_DS}.FLIGHT.dep_delay"
@@ -200,6 +204,41 @@ async def test_embeddings_are_refreshed_on_ontology_save(tmp_path: Path, embedde
     text = example("flights.ontology.yaml").replace("Unit of measure for time in minutes", "Elapsed clock minutes")
     embedded.texts.clear()
     await mcp_text(storage, "create_ontology", content=text)
+    assert [t for t in embedded.take("dep_delay") if "Elapsed clock minutes" in t]
+
+
+RENAMED_ONTOLOGY = example("flights.ontology.yaml").replace("Unit of measure for time in minutes",
+                                                            "Elapsed clock minutes")
+
+
+async def _write_through(surface: str, storage: StorageBackend, tmp_path: Path, *, kind: str, content: str) -> None:
+    """Save mapping or ontology ``content`` through REST, the local Python client or the CLI."""
+    if surface == "rest":
+        client = TestClient(create_app(storage=storage))
+        response = client.post("/ontology-mappings", json={"data_source": FLIGHTS_DS, "content": content}) \
+            if kind == "mapping" else client.put(f"/ontologies/{FLIGHTS}", json={"content": content})
+        assert response.status_code == 200, response.text
+    elif surface == "client":
+        local = SlayerClient(storage=storage)
+        if kind == "mapping":
+            await local.create_ontology_mapping(data_source=FLIGHTS_DS, content=content, warnings_out=[])
+        else:
+            await local.replace_ontology(FLIGHTS, content=content, warnings_out=[])
+    else:
+        path = write(tmp_path / f"{kind}.yaml", content)
+        args = ["ontology-mappings", "create", str(path), "--datasource", FLIGHTS_DS] if kind == "mapping" \
+            else ["ontologies", "replace", FLIGHTS, str(path)]
+        result = run_cli_in_process([*args, "--storage", str(tmp_path / "store")])
+        assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("surface", ["rest", "client", "cli"])
+async def test_embeddings_are_refreshed_on_every_surface(tmp_path: Path, embedded: _Recorder, surface: str) -> None:
+    storage = await flights_store("yaml", tmp_path, mapping=False)
+    embedded.texts.clear()
+    await _write_through(surface, storage, tmp_path, kind="mapping", content=example("flights.mapping.yaml"))
+    assert [t for t in embedded.take("dep_delay") if "NrMinutes" in t]
+    await _write_through(surface, storage, tmp_path, kind="ontology", content=RENAMED_ONTOLOGY)
     assert [t for t in embedded.take("dep_delay") if "Elapsed clock minutes" in t]
 
 

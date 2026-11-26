@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.models import DatasetRelationship, SlayerDataset, is_key_set_unique
+from slayer.core.names import qualified_reference
 from slayer.core.syntax import (
     BoolOp, Cmp, DottedRef, Literal as LiteralNode, Ref, TupleLit, UnaryOp, mapped_value, parse_mapping_expression,
     read_requires, requires_violation, walk_parsed,
@@ -55,7 +56,7 @@ class UnresolvedMapping(BaseModel):
     """A stored mapping that does not resolve, with its problems."""
 
     name: str
-    ontology: str
+    ontology: str | None
     problems: list[str]
 
 
@@ -189,6 +190,10 @@ class _Walker:
             target = relationship.last_role
             if "expression" in referent:
                 leaves = [self.leaf(referent["expression"], concept=target, via=relationship.label)]
+                if self.ontology.is_entity(target):
+                    referenced = ObjectMap(concept=target, entity=True, leaves=leaves)
+                    self.occurrences.append(Occurrence(kind="referent", object=referenced, relationship=relationship))
+                    nested.append((relationship, referenced))
             else:
                 inner, deeper = self.referents(referent.get("referent_mappings"), concept=target)
                 inner_object = ObjectMap(concept=target, entity=True, leaves=inner)
@@ -243,6 +248,17 @@ class _Walker:
             self.child(grandchild, subject=subject, concept=concept, roles=chain)
 
 
+def _slot(slots: list[tuple[str, str | None, ObjectMap | None]], *, used: set[int], name: str,
+          role: str | None) -> int | None:
+    """The slot a placeholder fills: the first unused one it names, else the only one it names, else the first
+    unused one."""
+    named = [i for i, (c, n, _) in enumerate(slots) if (n == role if role else name in (c, n))]
+    index = next((i for i in named if i not in used), None)
+    if index is None and len(named) == 1:
+        return named[0]
+    return index if index is not None else next((i for i in range(len(slots)) if i not in used), None)
+
+
 def verbalized(relationship: Relationship, *, subject: ObjectMap, roles: list[ObjectMap]) -> str | None:
     """``relationship``'s first verbalization, each placeholder filled by its concept and mapped expressions."""
     if not relationship.verbalizes:
@@ -254,10 +270,7 @@ def verbalized(relationship: Relationship, *, subject: ObjectMap, roles: list[Ob
 
     def fill(match: re.Match[str]) -> str:
         name, role = match.group(1).strip(), match.group(2)
-        index = next((i for i, (c, n, _) in enumerate(slots)
-                      if i not in used and (n == role if role else name in (c, n))), None)
-        if index is None:
-            index = next((i for i in range(len(slots)) if i not in used), None)
+        index = _slot(slots, used=used, name=name, role=role)
         if index is None:
             return match.group(0)
         used.add(index)
@@ -785,7 +798,7 @@ def _value_plan(mapped: _Mapped, *, leaf: Leaf, declaring: str, text: str,
     return CheckPlan(
         finding=finding, width=1,
         count={"population": dataset, "filter": filters,
-               "metrics": [{"metric": f"count({dataset}.*)", "alias": "n"}]},
+               "metrics": [{"metric": f"count({qualified_reference(dataset)}.*)", "alias": "n"}]},
         sample={"population": dataset, "filter": filters, "dimensions": [{"field": value, "alias": "s0"}],
                 "limit": SAMPLE_SIZE})
 

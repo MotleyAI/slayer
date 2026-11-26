@@ -114,12 +114,36 @@ async def test_a_semantic_model_made_from_standalone_datasets_warns(tmp_path: Pa
     assert aircraft_key(notes)
 
 
+async def test_an_access_filtered_edit_adding_a_dataset_returns_its_mismatches(tmp_path: Path) -> None:
+    storage, names = await _standalone_flights(tmp_path)
+    await storage.create_semantic_model(data_source=FLIGHTS_DS, name=FLIGHTS_MODEL, warnings_out=[],
+                                        datasets=[n for n in names if n != "AIRCRAFT"])
+    notes: list[Any] = []
+    await view(storage).edit_semantic_model(FLIGHTS_MODEL, data_source=FLIGHTS_DS, add_datasets=["AIRCRAFT"],
+                                            warnings_out=notes)
+    assert aircraft_key(notes)
+
+
 async def test_a_mismatch_raised_as_an_error_leaves_the_adopted_semantic_model_whole(tmp_path: Path) -> None:
     storage, names = await _standalone_flights(tmp_path)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(UserWarning):
             await storage.create_semantic_model(data_source=FLIGHTS_DS, name=FLIGHTS_MODEL, datasets=names)
+    owners = [(await storage.get_dataset(n, data_source=FLIGHTS_DS)).semantic_model for n in names]
+    assert owners == [FLIGHTS_MODEL] * len(names)
+
+
+async def test_a_failing_mismatch_read_leaves_the_adopted_semantic_model_whole(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage, names = await _standalone_flights(tmp_path)
+
+    async def failing(**_: Any) -> list[Any]:
+        raise RuntimeError("mismatch read failed")
+
+    monkeypatch.setattr(storage, "ontology_mismatches", failing)
+    with pytest.raises(RuntimeError, match="mismatch read failed"):
+        await storage.create_semantic_model(data_source=FLIGHTS_DS, name=FLIGHTS_MODEL, datasets=names)
     owners = [(await storage.get_dataset(n, data_source=FLIGHTS_DS)).semantic_model for n in names]
     assert owners == [FLIGHTS_MODEL] * len(names)
 

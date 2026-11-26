@@ -127,6 +127,18 @@ async def test_departure_delay_verbalization(tmp_path: Path) -> None:
     assert found["verbalization"] == "Flight `FLIGHT.id` has departure Delay `FLIGHT.dep_delay`"
 
 
+async def test_a_repeated_placeholder_is_filled_each_time(tmp_path: Path) -> None:
+    def repeat(document: dict[str, Any]) -> None:
+        [delay] = [r for r in component(document, "Flight")["relationships"] if r["name"] == "departure_delay"]
+        delay["verbalizes"] = ["{Flight} has departure- {Delay}; {Flight} left late"]
+
+    storage = await flights_store("yaml", tmp_path)
+    await storage.save_ontology_text(name=FLIGHTS, text=edited(ONTOLOGY, repeat), warnings_out=[])
+    found = annotation(await field_annotations(storage, "FLIGHT.dep_delay"), relationship="Flight.departure_delay")
+    assert found["verbalization"] == ("Flight `FLIGHT.id` has departure Delay `FLIGHT.dep_delay`; "
+                                      "Flight `FLIGHT.id` left late")
+
+
 async def test_a_range_and_an_enumeration(tmp_path: Path) -> None:
     """Spec scenario: A range and an enumeration."""
     storage = await flights_store("yaml", tmp_path)

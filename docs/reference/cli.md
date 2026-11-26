@@ -549,7 +549,7 @@ slayer inspect --type datasource    # collection: all datasources
 | Flag | Required | Description |
 |------|----------|-------------|
 | `reference` | No | Zero or more entity references: canonical id, bare name, relationship path (resolved to the owning dataset), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`dataset` or `datasource` only). |
-| `--type` | Yes | Entity kind: `datasource`, `dataset`, `field`, `metric`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
+| `--type` | Yes | Entity kind: `datasource`, `dataset`, `field`, `metric`, `aggregation`, `memory`, `semantic_model`, `ontology`, or `ontology_mapping`. Disambiguates same-named entities and asserts the kind. |
 | `--no-compact` | No | Return the full render. The compact default is description-only for field/metric/aggregation/datasource/memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does), and a cheap **schema skeleton** (field/metric/aggregation names + relationship targets, zero DB calls) for `--type dataset`; `--no-compact` on a datasource renders a per-dataset skeleton for each visible dataset. |
 | `--format` | No | `markdown` (default) or `json`. |
 | `--num-rows` | No | (dataset only) Sample-data rows. Ignored with a warning for other kinds. |

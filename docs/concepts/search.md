@@ -125,7 +125,8 @@ edges as `DatasetField.sampled`:
   refreshes the datasource doc plus every visible dataset + its visible
   children (fields, named metrics, aggregations);
 - `edit_dataset` — refreshes the dataset's whole subtree;
-- `save_memory` — refreshes that one memory.
+- `save_memory` — refreshes that one memory;
+- saving, editing or deleting an [ontology or mapping](ontologies.md), from MCP, REST, the Python client or the CLI — refreshes the datasets and fields whose concept text changes (a mapping: its datasource; an ontology: every datasource holding a mapping).
 
 Each refresh hashes the rendered indexed text and compares it to the
 stored `content_hash`; the litellm call is skipped when the source text

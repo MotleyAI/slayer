@@ -22,7 +22,7 @@ from slayer.storage.base import StorageBackend
 from tests._cli_inprocess import run_cli_in_process
 from tests._dataset_access_fixtures import mcp_text
 from tests._dev2243_fixtures import STORAGES
-from tests._dev2474_fixtures import FLIGHTS, FLIGHTS_DS, example, flights_store, hide, view
+from tests._dev2474_fixtures import FLIGHTS, FLIGHTS_DS, FLIGHTS_MAPPING, edited, example, flights_store, hide, view
 from tests._dev2475_fixtures import FLIGHT_AIRCRAFT, flights_model, inspect_json, squashed
 
 DEP_DELAY = f"{FLIGHTS_DS}.FLIGHT.dep_delay"
@@ -90,6 +90,51 @@ async def test_inspect_shows_lined_up_relationships(tmp_path: Path) -> None:
     assert "Flight.aircraft" in text
     assert "ManyToOne" in text
     assert "Flight `FLIGHT.id` uses Aircraft `FLIGHT.tail_nr`" in text
+
+
+CUT_DESCRIPTION = "Unit ... [truncated]"
+LINED_UP = "`flight_aircraft`: `Flight.aircraft`"
+
+
+async def test_concept_descriptions_follow_the_description_limit(tmp_path: Path) -> None:
+    storage = await flights_store("yaml", tmp_path)
+    dataset = f"{FLIGHTS_DS}.FLIGHT"
+    full = await markdown(storage, dataset, "dataset", compact=False, descriptions_max_chars=4)
+    assert CUT_DESCRIPTION in full
+    assert "Unit of measure for time in minutes" not in full
+    payload = await inspect_json(storage, dataset, "dataset", compact=False, descriptions_max_chars=4)
+    [dep_delay] = [f for f in payload["fields"] if f["name"] == "dep_delay"]
+    assert {c["description"] for c in dep_delay["concepts"]} == {CUT_DESCRIPTION}
+    assert CUT_DESCRIPTION in await markdown(storage, DEP_DELAY, "field", compact=False, descriptions_max_chars=4)
+
+
+async def test_the_ontology_section_follows_the_sections_shown(tmp_path: Path) -> None:
+    storage = await flights_store("yaml", tmp_path, model=flights_model(relationships=[FLIGHT_AIRCRAFT]))
+    relationships_only = await markdown(storage, f"{FLIGHTS_DS}.FLIGHT", "dataset", compact=False,
+                                        sections=["relationships"])
+    assert "Field `dep_delay`" not in relationships_only
+    assert LINED_UP in relationships_only
+    fields_only = await markdown(storage, f"{FLIGHTS_DS}.FLIGHT", "dataset", compact=False, sections=["fields"])
+    assert "Field `dep_delay`" in fields_only
+    assert LINED_UP not in fields_only
+
+
+async def test_the_ontology_section_skips_hidden_fields(tmp_path: Path) -> None:
+    storage = await flights_store("yaml", tmp_path)
+    flight = await storage.get_dataset("FLIGHT", data_source=FLIGHTS_DS)
+    assert flight is not None
+    await storage.save_dataset(flight.model_copy(update={"fields": [
+        f.model_copy(update={"hidden": True}) if f.name == "dep_delay" else f for f in flight.fields]}))
+    assert "Field `dep_delay`" not in await markdown(storage, f"{FLIGHTS_DS}.FLIGHT", "dataset", compact=False)
+
+
+async def test_inspect_a_stored_mapping_of_the_wrong_shape(tmp_path: Path) -> None:
+    storage = await flights_store("yaml", tmp_path)
+    mapping_file = tmp_path / "store" / "ontology_mappings" / FLIGHTS_DS / f"{FLIGHTS_MAPPING}.yaml"
+    mapping_file.write_text(edited(example("flights.mapping.yaml"), lambda d: d.update(
+        ontology_ref=FLIGHTS, semantic_model_ref=["x"])), encoding="utf-8")
+    payload = await inspect_json(storage, f"{FLIGHTS_DS}.{FLIGHTS_MAPPING}", "ontology_mapping")
+    assert (payload["ontology"], payload["semantic_model"], payload["resolves"]) == (None, None, False)
 
 
 # --------------------------------------------------------------------------- #

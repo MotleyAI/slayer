@@ -80,3 +80,13 @@ async def test_an_unresolved_mapping(tmp_path: Path) -> None:
         found = ontology_findings(await validate(engine))
     assert [(f.check, f.mapping, f.ontology) for f in found] == [("not_checked", FLIGHTS_MAPPING, FLIGHTS)]
     assert "dep_delay" in found[0].reason
+
+
+async def test_a_stored_mapping_of_the_wrong_shape_is_listed_not_checked(tmp_path: Path) -> None:
+    async with flights_engine("yaml", tmp_path) as engine:
+        mapping_file = tmp_path / "store" / "ontology_mappings" / FLIGHTS_DS / f"{FLIGHTS_MAPPING}.yaml"
+        mapping_file.write_text(edited(example("flights.mapping.yaml"), lambda d: d.update(ontology_ref=FLIGHTS)),
+                                encoding="utf-8")
+        found = ontology_findings(await validate(engine))
+    assert [(f.check, f.mapping, f.ontology) for f in found] == [("not_checked", FLIGHTS_MAPPING, None)]
+    assert "ontology 'None'" not in found[0].summary

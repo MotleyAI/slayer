@@ -31,6 +31,7 @@ from slayer.inspect.collection_render import (
 )
 from slayer.inspect.dataset_render import (
     _TRUNCATION_MARKER,
+    _resolve_inspect_sections,
     _truncate_description,
     load_visible_datasets,
     dataset_skeleton_fields,
@@ -50,7 +51,7 @@ from slayer.search.render import (
     render_model_scoped_metric_text,
 )
 from slayer.inspect.ontology_render import (
-    dataset_concept_lines, dataset_concepts_payload, field_concept_lines, ontology_document_view,
+    capped_descriptions, dataset_concept_lines, dataset_concepts_payload, field_concept_lines, ontology_document_view,
     relationship_concept_lines,
 )
 from slayer.ontology.use import DatasetAnnotations, FieldAnnotation, RelationshipAnnotation
@@ -764,7 +765,7 @@ class InspectService:
                 f"(reference '{reference}')."
             ))
         warnings = [*warnings, *load_warnings(dataset)]
-        held = await self._dataset_concepts(dataset)
+        held = await self._dataset_concepts(dataset, max_chars=descriptions_max_chars)
         if compact:
             return await self._compact_dataset(dataset=dataset, data_source=ds_name, canonical=canonical, held=held,
                                                fmt=fmt, descriptions_max_chars=descriptions_max_chars,
@@ -786,7 +787,7 @@ class InspectService:
             return _OneResult(
                 canonical, False, json.dumps(payload, indent=2, default=str),
             )
-        concepts = await self._dataset_concept_markdown(dataset, held)
+        concepts = await self._dataset_concept_markdown(dataset, held, sections=sections)
         return _OneResult(
             canonical, False, self._markdown_with_warnings("\n\n".join([rendered, *concepts]), warnings),
         )
@@ -816,22 +817,26 @@ class InspectService:
             f"# `{dataset.name}`\n{body}", warnings,
         ))
 
-    async def _dataset_concepts(self, dataset: SlayerDataset) -> DatasetAnnotations:
-        """``dataset``'s concept annotations as the caller sees them."""
+    async def _dataset_concepts(self, dataset: SlayerDataset, *, max_chars: int | None = None) -> DatasetAnnotations:
+        """``dataset``'s concept annotations as the caller sees them, descriptions cut to ``max_chars``."""
         held = await concept_annotations(self._storage, dataset.data_source) if dataset.data_source else None
-        return held.of(dataset.name) if held is not None else DatasetAnnotations()
+        return capped_descriptions(held.of(dataset.name), max_chars) if held is not None else DatasetAnnotations()
 
-    async def _dataset_concept_markdown(self, dataset: SlayerDataset, held: DatasetAnnotations) -> list[str]:
-        """The ontology section of a full dataset view: its concepts, its fields' and its relationships'."""
+    async def _dataset_concept_markdown(self, dataset: SlayerDataset, held: DatasetAnnotations, *,
+                                        sections: list[str] | None) -> list[str]:
+        """The ontology section of a full dataset view: its concepts, and its visible fields' and its relationships'
+        when those sections are shown."""
         if held.empty and not held.lineups:
             return []
+        shown, _ = _resolve_inspect_sections(sections)
         lines = [*dataset_concept_lines(held)]
-        for field in dataset.fields:
+        for field in (f for f in dataset.fields if not f.hidden and "fields" in shown):
             found = field_concept_lines(held.of_field(field.name))
             lines += [f"Field `{field.name}`:", *found[1:]] if found else []
-        peers, _ = await self._storage.load_datasets(data_source=dataset.data_source)
-        for name, lined_up in self._relationship_concepts(dataset, held, peers=peers):
-            lines += relationship_concept_lines(name, lined_up)
+        if "relationships" in shown:
+            peers, _ = await self._storage.load_datasets(data_source=dataset.data_source)
+            for name, lined_up in self._relationship_concepts(dataset, held, peers=peers):
+                lines += relationship_concept_lines(name, lined_up)
         return ["## Ontology concepts\n" + "\n".join(lines)] if lines else []
 
     @staticmethod
@@ -918,7 +923,8 @@ class InspectService:
             if p.canonical_id == canonical and p.kind == entity_type
         ]
         if len(matches) == 1:
-            concepts = (await self._dataset_concepts(dataset)).of_field(leaf) if entity_type == "field" else []
+            concepts = (await self._dataset_concepts(dataset, max_chars=descriptions_max_chars)).of_field(leaf) \
+                if entity_type == "field" else []
             body = self._render_leaf_entry(
                 entry=matches[0], canonical=canonical, entity_type=entity_type,
                 compact=compact, fmt=fmt,

@@ -1855,13 +1855,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
 
     async def _refreshed_concepts(data_source: str | None = None) -> str:
         """Best-effort search refresh of the datasets whose concepts a mapping or ontology change touches."""
-        try:
-            sources = [data_source] if data_source else sorted({ds for ds, _ in await storage.list_ontology_mappings()})
-            found = await search_service.refresh_concepts(data_sources=sources)
-        except Exception as exc:  # noqa: BLE001 — best-effort post-save refresh
-            logger.warning("concept search refresh failed: %s", exc)
-            found = [f"search refresh failed: {exc}"]
-        return "".join(f"\nWarning: {w}" for w in found)
+        return "".join(f"\nWarning: {w}" for w in await search_service.refresh_after_concept_change(data_source))
 
     @tool()
     async def create_ontology(

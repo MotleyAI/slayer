@@ -150,7 +150,7 @@ from slayer.storage.semantic_models import (
 )
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.ontology.documents import (
-    checked_mapping_shape, edited_mapping, edited_ontology, read_ontology, stored_name_reasons,
+    checked_mapping_shape, edited_mapping, edited_ontology, read_ontology, ref_name, stored_name_reasons,
 )
 from slayer.ontology.scope import MappingScope, check_mapping
 from slayer.ontology.use import MappingDocument, StoredUse, UnresolvedMapping, model_findings
@@ -1318,6 +1318,11 @@ class StorageBackend(ABC):
                                        warnings_out: list[SlayerWarning] | None = None) -> None:
         """Store ``text`` verbatim as document ``name`` of ``data_source`` after the Ossie validity and namespace checks;
         replaces a stored document of that name. Its datasets' ontology mismatches go to ``warnings_out``."""
+        datasets = await self._store_semantic_model_text(data_source=data_source, name=name, text=text)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(data_source=data_source, datasets=datasets))
+
+    async def _store_semantic_model_text(self, *, data_source: str, name: str, text: str) -> list[str]:
+        """``save_semantic_model_text`` without its warnings; the stored document's dataset names."""
         _validate_path_component(data_source, kind=DATASOURCE_NAME)
         _validate_path_component(name, kind=SEMANTIC_MODEL_NAME)
         if not self._supports_semantic_models():
@@ -1332,18 +1337,20 @@ class StorageBackend(ABC):
             await self._guard_mappings(change=f"Saving semantic model {name!r}", data_source=data_source,
                                        changed=lambda scope: scope.with_document(name, datasets))
         await self._save_semantic_model_text_impl(data_source=data_source, name=name, text=text)
-        report_save_warnings(warnings_out, await self.ontology_mismatches(
-            data_source=data_source, datasets=[d.name for d in doc.datasets]))
+        return [d.name for d in doc.datasets]
 
     async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str],
                                    warnings_out: list[SlayerWarning] | None = None) -> None:
         """Store document ``name`` in place of the standalone datasets ``replacing`` (same names, so references keep
         resolving); the standalone datasets are restored when the document is refused."""
         replaced = [d for n in replacing if (d := await self.get_dataset(n, data_source=data_source)) is not None]
-        found: list[SlayerWarning] = []
-        await self._moving_standalone(data_source=data_source, datasets=replaced, write=lambda: self.save_semantic_model_text(
-            data_source=data_source, name=name, text=text, warnings_out=found))
-        report_save_warnings(warnings_out, found)
+        stored: list[str] = []
+
+        async def write() -> None:
+            stored.extend(await self._store_semantic_model_text(data_source=data_source, name=name, text=text))
+
+        await self._moving_standalone(data_source=data_source, datasets=replaced, write=write)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(data_source=data_source, datasets=stored))
 
     async def _moving_standalone(self, *, data_source: str, datasets: list[SlayerDataset],
                                  write: Callable[[], Awaitable[Any]]) -> None:
@@ -1712,8 +1719,8 @@ class StorageBackend(ABC):
         unresolved = []
         for error in errors:
             data = stored_data(await self.get_ontology_mapping_text(error.name, data_source))
-            ontology = str(((data.get("ontology_ref") if isinstance(data, dict) else None) or {}).get("name"))
-            unresolved.append(UnresolvedMapping(name=error.name, ontology=ontology, problems=[error.cause_text]))
+            unresolved.append(UnresolvedMapping(name=error.name, ontology=ref_name(data, "ontology_ref"),
+                                                problems=[error.cause_text]))
         mappings = [MappingDocument(name=m.name, data=data) for m in loaded
                     if isinstance(data := stored_data(m.text), dict)]
         return StoredUse(data_source=data_source, ontologies=ontologies, documents=documents, datasets=datasets,

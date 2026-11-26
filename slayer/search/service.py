@@ -966,6 +966,17 @@ class SearchService:
             hook_name="refresh_documents", invoke=lambda r: r.refresh_documents(documents),
         )
 
+    async def refresh_after_concept_change(self, data_source: str | None = None) -> list[str]:
+        """Best-effort refresh after a mapping (of ``data_source``) or ontology (every mapped datasource) change; a
+        failure becomes a warning."""
+        try:
+            sources = [data_source] if data_source else sorted(
+                {ds for ds, _ in await self._storage.list_ontology_mappings()})
+            return await self.refresh_concepts(data_sources=sources)
+        except Exception as exc:  # NOSONAR(S112) — best-effort post-save refresh
+            logger.warning("concept search refresh failed: %s", exc)
+            return [f"search refresh failed: {exc}"]
+
     async def refresh_concepts(self, *, data_sources: list[str]) -> list[str]:
         """Refresh every visible dataset of ``data_sources`` after a mapping or ontology change; unchanged text is
         skipped."""

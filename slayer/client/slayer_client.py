@@ -527,6 +527,11 @@ class SlayerClient:
 
     # ----- Ontologies and mappings -----
 
+    async def _refresh_concepts(self, data_source: str | None = None) -> list[str]:
+        """The local search refresh after a mapping or ontology change; its warnings."""
+        assert self._storage is not None
+        return await SearchService(storage=self._storage).refresh_after_concept_change(data_source)
+
     async def list_ontologies(self) -> list[dict[str, str]]:
         """Every stored ontology as ``{name}``."""
         if self._storage is not None:
@@ -546,6 +551,7 @@ class SlayerClient:
             text = content_text(content)
             name = document_name(text)
             await self._storage.save_ontology_text(name=name, text=text, warnings_out=warnings_out)
+            await self._refresh_concepts()
             return name
         found = await self._request(method="POST", path="/ontologies", json={"content": content})
         _received(warnings_out, found)
@@ -555,13 +561,17 @@ class SlayerClient:
         """Replace ontology ``name``'s text; its mappings' mismatches go to ``warnings_out``."""
         if self._storage is not None:
             await self._storage.save_ontology_text(name=name, text=content_text(content), warnings_out=warnings_out)
+            await self._refresh_concepts()
             return
         _received(warnings_out, await self._request(method="PUT", path=_ontology_path(name), json={"content": content}))
 
     async def delete_ontology(self, name: str) -> bool:
         """Delete an ontology; ``False`` when absent."""
         if self._storage is not None:
-            return await self._storage.delete_ontology(name)
+            deleted = await self._storage.delete_ontology(name)
+            if deleted:
+                await self._refresh_concepts()
+            return deleted
         return await self._request_or_none(method="DELETE", path=_ontology_path(name)) is not None
 
     async def list_ontology_mappings(self, data_source: str | None = None) -> list[dict[str, str]]:
@@ -584,8 +594,9 @@ class SlayerClient:
         mismatches go to ``warnings_out``."""
         if self._storage is not None:
             text = content_text(content)
-            return await self._storage.save_ontology_mapping_text(data_source=data_source, name=document_name(text),
-                                                                  text=text, warnings_out=warnings_out)
+            notes = await self._storage.save_ontology_mapping_text(data_source=data_source, name=document_name(text),
+                                                                   text=text, warnings_out=warnings_out)
+            return notes + await self._refresh_concepts(data_source)
         found = await self._request(method="POST", path="/ontology-mappings",
                                     json={"data_source": data_source, "content": content})
         _received(warnings_out, found)
@@ -596,9 +607,10 @@ class SlayerClient:
         """Replace mapping ``name`` of ``data_source``; the save's informational notes. Its ontology mismatches go
         to ``warnings_out``."""
         if self._storage is not None:
-            return await self._storage.save_ontology_mapping_text(data_source=data_source, name=name,
-                                                                  text=content_text(content),
-                                                                  warnings_out=warnings_out)
+            notes = await self._storage.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                                   text=content_text(content),
+                                                                   warnings_out=warnings_out)
+            return notes + await self._refresh_concepts(data_source)
         found = await self._request(method="PUT", path=_mapping_path(data_source=data_source, name=name),
                                     json={"content": content})
         _received(warnings_out, found)
@@ -607,7 +619,10 @@ class SlayerClient:
     async def delete_ontology_mapping(self, name: str, *, data_source: str) -> bool:
         """Delete a mapping; ``False`` when absent."""
         if self._storage is not None:
-            return await self._storage.delete_ontology_mapping(name, data_source)
+            deleted = await self._storage.delete_ontology_mapping(name, data_source)
+            if deleted:
+                await self._refresh_concepts(data_source)
+            return deleted
         return await self._request_or_none(method="DELETE",
                                            path=_mapping_path(data_source=data_source, name=name)) is not None
 

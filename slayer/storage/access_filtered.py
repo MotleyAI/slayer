@@ -421,8 +421,8 @@ class AccessFilteredStorage(StorageBackend):
         await self._visible_mismatches(
             lambda out: self._inner.edit_semantic_model(name, data_source=data_source, warnings_out=out, **edits),
             warnings_out=warnings_out, data_source=data_source,
-            datasets=[d.name for d in (await self.load_datasets(data_source=data_source))[0]
-                      if d.semantic_model == name])
+            datasets=[*(d.name for d in (await self.load_datasets(data_source=data_source))[0]
+                        if d.semantic_model == name), *(edits.get("add_datasets") or [])])
 
     # ---- ontologies (visible to every caller) and mappings (entries reading hidden datasets redacted) --------
 

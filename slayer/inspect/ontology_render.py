@@ -7,6 +7,8 @@ from typing import Any
 
 from slayer.core.document_text import parse_document_text
 from slayer.core.errors import UnreadableDocumentError
+from slayer.inspect.dataset_render import _truncate_description
+from slayer.ontology.documents import ref_name
 from slayer.ontology.ontology import Ontology
 from slayer.ontology.use import ConceptRef, DatasetAnnotations, FieldAnnotation, RelationshipAnnotation
 
@@ -34,8 +36,8 @@ def ontology_document_view(*, kind: str, name: str, data_source: str | None, tex
     payload: dict[str, Any] = {"name": name, "entity_type": kind, "description": data.get("description"),
                                "concept_mappings" if mapping else "concepts": names}
     if mapping:
-        payload.update(data_source=data_source, ontology=(data.get("ontology_ref") or {}).get("name"),
-                       semantic_model=(data.get("semantic_model_ref") or {}).get("name"),
+        payload.update(data_source=data_source, ontology=ref_name(data, "ontology_ref"),
+                       semantic_model=ref_name(data, "semantic_model_ref"),
                        resolves=not problems, problems=problems or [])
     else:
         payload["concept_graph"] = concept_graph(Ontology.of(data), fields=fields or {})
@@ -102,6 +104,15 @@ def _relationship_line(concept: str, r: dict[str, Any]) -> str:
 
 def _refs(refs: list[ConceptRef]) -> str:
     return ", ".join(f"`{r.concept}` (`{r.ontology}`, mapping `{r.mapping}`)" for r in refs)
+
+
+def capped_descriptions(held: DatasetAnnotations, max_chars: int | None) -> DatasetAnnotations:
+    """``held`` with each field annotation's concept description cut to ``max_chars`` (``None``: whole)."""
+    if max_chars is None:
+        return held
+    return held.model_copy(update={"fields": {
+        key: [a.model_copy(update={"description": _truncate_description(a.description, max_chars)}) for a in found]
+        for key, found in held.fields.items()}})
 
 
 def dataset_concepts_payload(held: DatasetAnnotations) -> dict[str, Any]:

@@ -22,7 +22,7 @@ class OntologyFinding(BaseModel):
     check: OntologyCheck
     data_source: str
     mapping: str
-    ontology: str
+    ontology: str | None
     concept: str | None = None
     dataset_name: str | None = None
     fields: list[str] = []
@@ -39,7 +39,7 @@ class OntologyFinding(BaseModel):
     @computed_field
     @property
     def summary(self) -> str:
-        head = f"Mapping '{self.mapping}' (ontology '{self.ontology}')"
+        head = f"Mapping '{self.mapping}'" + (f" (ontology '{self.ontology}')" if self.ontology else "")
         if self.check == "identifier":
             return (f"{head}: '{self.concept}' is identified by {_listed(self.fields)} of dataset "
                     f"'{self.dataset_name}', which its keys do not make unique; {self.suggestion}.")
@@ -61,7 +61,7 @@ class OntologyFinding(BaseModel):
 
     def as_warning(self) -> OntologyMismatchWarning:
         """This identifier or multiplicity finding as a save warning."""
-        assert self.check in ("identifier", "multiplicity"), self.check
+        assert self.check in ("identifier", "multiplicity") and self.ontology is not None, self.check
         return OntologyMismatchWarning(
             check="identifier" if self.check == "identifier" else "multiplicity", data_source=self.data_source,
             mapping=self.mapping, ontology=self.ontology, concept=self.concept, dataset=self.dataset_name, fields=self.fields, relationship=self.relationship,
