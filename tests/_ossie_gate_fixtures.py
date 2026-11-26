@@ -29,9 +29,10 @@ from slayer.storage.sqlite_conn import transaction as sqlite_transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1737_fixtures import TableSpec
 from tests._dev2215_fixtures import DS_FIELDS, NOW, TABLES, dev2215_datasets
-from tests._dev2217_fixtures import FIXTURES, fixture_texts
+from tests._dev2217_fixtures import DATA, WIDE_TABLE
 from tests._dev2243_fixtures import store_document
 from tests._engine_helpers import owned_query_engine
+from tests._ossie_case_scripts import cases
 from tests._time_points_fixtures import PinnedClock
 
 Kind = Literal["INT", "DOUBLE", "TEXT", "BOOLEAN", "DATE", "TIMESTAMP", "DECIMAL"]
@@ -155,13 +156,14 @@ INVOICE = Table(name="Invoice",
 
 
 def wide_table_fixture(name: str) -> tuple[Table, ...]:
-    return parse_fixture_sql(fixture_texts(name)[0])
+    """The tables of upstream's data a case script ``connect``s to as ``name``."""
+    return parse_fixture_sql((WIDE_TABLE / DATA[name]).read_text(encoding="utf-8"))
 
 
 def gate_tables() -> dict[str, tuple[Table, ...]]:
-    """Every seeded fixture: Layer 1, upstream's wide-table SQL (``stores_ambiguous`` shares ``stores``), mixed case."""
-    return {"layer1": tuple(from_table_spec(t) for t in TABLES), "retail": wide_table_fixture("retail"),
-            "stores": wide_table_fixture("stores"), "mixed_case": (CUSTOMER, INVOICE)}
+    """Every seeded fixture: Layer 1, upstream's wide-table data, mixed case."""
+    return {"layer1": tuple(from_table_spec(t) for t in TABLES), **{name: wide_table_fixture(name) for name in DATA},
+            "mixed_case": (CUSTOMER, INVOICE)}
 
 
 # --------------------------------------------------------------------------- #
@@ -399,11 +401,11 @@ async def layer1_engine(provider: Provider, base: Path) -> AsyncGenerator[Slayer
 
 @contextlib.asynccontextmanager
 async def wide_table_engines(provider: Provider, base: Path) -> AsyncGenerator[dict[str, SlayerQueryEngine]]:
-    """One engine per upstream wide-table fixture model."""
+    """One engine per model the wide-table cases load, keyed by its name."""
     async with contextlib.AsyncExitStack() as stack:
         engines = {}
-        for name in FIXTURES:
-            model = placed_model(fixture_texts(name)[1], provider.placement)
+        for name, path in {case.model: case.model_path for case in cases()}.items():
+            model = placed_model(path.read_text(encoding="utf-8"), provider.placement)
             engines[name] = await stack.enter_async_context(
                 gate_engine(provider, base / name, data_source=WIDE_TABLE_DS, documents=[model]))
         yield engines
