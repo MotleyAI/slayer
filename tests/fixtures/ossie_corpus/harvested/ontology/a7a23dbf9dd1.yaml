@@ -1,0 +1,28 @@
+document:
+  name: OrganizationOntology
+  prefixes:
+    foaf: http://xmlns.com/foaf/0.1/
+    org: http://www.w3.org/ns/org#
+  ontology:
+  - concept: Agent
+    type: EntityType
+    iri: foaf:Agent
+    description: A generic agent (person, organization, etc.)
+    relationships:
+    - name: has_homepage
+      iri: foaf:homepage
+      roles:
+      - concept: Homepage
+      multiplicity: ManyToOne
+      verbalizes:
+      - '{Agent} has {Homepage}'
+  - concept: Homepage
+    type: ValueType
+    extends:
+    - String
+  - concept: Organization
+    type: EntityType
+    extends:
+    - Agent
+    iri: http://www.w3.org/ns/org#Organization
+files: {}

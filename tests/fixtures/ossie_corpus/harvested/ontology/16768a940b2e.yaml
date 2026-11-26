@@ -1,0 +1,9 @@
+document:
+  ontology:
+  - concept: Employee
+    type: EntityType
+    extends:
+    - Person
+    derived_by:
+    - EXISTS ( Person.earns )
+files: {}

@@ -1,0 +1,24 @@
+document:
+  ontology:
+  - concept: OrderLineItem
+    type: EntityType
+    identify_by:
+    - nr
+    - order
+    requires:
+    - OrderLineItem.nr
+    - OrderLineItem.order
+    relationships:
+    - name: nr
+      roles:
+      - concept: LineNr
+      multiplicity: ManyToOne
+      verbalizes:
+      - '{OrderLineItem} has line number {LineNr}'
+    - name: order
+      roles:
+      - concept: CustOrder
+      multiplicity: ManyToOne
+      verbalizes:
+      - '{OrderLineItem} belongs to {CustOrder}'
+files: {}

@@ -1,0 +1,6 @@
+document:
+  concept_mappings:
+  - concept: Person
+    object_mappings:
+    - expression: PERSONS.SSN
+files: {}

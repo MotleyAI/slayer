@@ -240,6 +240,7 @@ from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend, one_upgrade_pass, with_canonical_spellings
 from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
+from slayer.storage.ontology_documents import database_driven
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
 from slayer.core.models import DatasetRelationship
@@ -3048,7 +3049,12 @@ class SlayerQueryEngine:
         return await self.storage.delete_dataset(dataset_name, data_source=data_source)
 
     async def apply_untyped_findings(self, findings: "Sequence[schema_drift.UntypedFinding]") -> List[str]:
-        """Write each untyped finding's live type into its document field; returns one message per failed write."""
+        """Write each untyped finding's live type into its document field (a database-driven change); returns one
+        message per failed write."""
+        with database_driven():
+            return await self._apply_untyped_findings(findings)
+
+    async def _apply_untyped_findings(self, findings: "Sequence[schema_drift.UntypedFinding]") -> List[str]:
         errors: List[str] = []
         for finding in findings:
             try:
@@ -3066,7 +3072,14 @@ class SlayerQueryEngine:
         self,
         deletes: "Sequence[schema_drift.DriftReportEntry]",
     ) -> "schema_drift.ApplyDriftResult":
-        """Apply each ``ToDeleteEntry`` → ``ApplyDriftResult``; per-entry failures land in ``errors``, ``residual`` from a re-validate."""
+        """Apply each ``ToDeleteEntry`` (a database-driven change) → ``ApplyDriftResult``; per-entry failures land in
+        ``errors``, ``residual`` from a re-validate."""
+        with database_driven():
+            return await self._apply_drift_deletes(deletes)
+
+    async def _apply_drift_deletes(
+        self, deletes: "Sequence[schema_drift.DriftReportEntry]",
+    ) -> "schema_drift.ApplyDriftResult":
         applied: List[schema_drift.AppliedEntry] = []
         errors: List[schema_drift.ApplyError] = []
         touched_ds: set[str] = set()
