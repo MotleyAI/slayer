@@ -126,7 +126,7 @@ JAN_15 = datetime.date(2024, 1, 15)
 JAN_15_1030 = datetime.datetime(2024, 1, 15, 10, 30)
 TEN_THIRTY = datetime.time(10, 30)
 #: Engines where ``CAST(… AS TIME)`` already answers outside strict.
-TIME_CASTS = frozenset({"duckdb", "postgres", "mysql", "tsql", "trino", "snowflake"})
+TIME_CASTS = frozenset({"duckdb", "postgres", "mysql", "tsql", "trino", "snowflake", "bigquery"})
 #: ISO numbering: row 3 is a Monday.
 DAYOFWEEK = 1
 #: The millisecond component of a whole-second timestamp.
