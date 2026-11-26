@@ -271,7 +271,8 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None,
     documented = len(metrics)
     if entry is not None:
         metrics += [ModelScopedMetric(name=m.name, semantic_model=doc.name, data_source=data_source,
-                                      expression=m.expression, description=m.description, datatype=m.datatype)
+                                      expression=m.expression, description=m.description, datatype=m.datatype,
+                                      slayer_held=True)
                     for m in entry.payload.metrics]
     names = {m.name.casefold() for m in metrics}
     for i, metric in enumerate(metrics):
@@ -530,7 +531,7 @@ def _admit_metrics(index: DocumentIndex, decomposed: list[Decomposition]) -> Non
             gone = sorted(t for t in expression_datasets(metric.expression)[0] if t in index.quarantined)
             direct[metric.name.casefold()] = {gone[0]: (gone[0], "is unloadable")} if gone else unresolved_references(
                 metric.expression, fields=fields, dataset_metrics=dataset_metrics, metric_names=names,
-                document=doc.name, data_source=index.data_source)
+                document=doc.name, data_source=index.data_source, bare_metrics=metric.slayer_held)
     failed = unresolved_metrics(direct, graph=metric_graph(metrics))
     for metric in metrics:
         why = failed.get(metric.name.casefold())

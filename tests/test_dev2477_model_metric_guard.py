@@ -386,6 +386,17 @@ async def test_deleting_a_documents_last_dataset_removes_its_metrics_embeddings(
 
 
 @pytest.mark.parametrize("kind", STORAGES)
+async def test_a_metric_reading_a_metric_a_database_driven_change_removed_is_unloadable(
+        tmp_path: Path, kind: str) -> None:
+    storage = await _cross_document(kind, tmp_path)
+    with caught() as seen, database_driven():
+        await storage.delete_dataset("staff", data_source=DS)
+    assert "per_head" in unresolved(seen)
+    assert "per_head" not in await loadable_metrics(storage)
+    assert "heads" in (await metric_failures(storage))["per_head"]
+
+
+@pytest.mark.parametrize("kind", STORAGES)
 async def test_removing_a_metric_another_document_reads_is_refused(tmp_path: Path, kind: str) -> None:
     storage = await _cross_document(kind, tmp_path)
     before = await text_of(storage, "heads")

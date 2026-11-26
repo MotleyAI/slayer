@@ -64,7 +64,7 @@ def _direct(scope: DatasourceScope, *, gone: AbstractSet[str] = frozenset()) -> 
         for metric in metrics:
             out[metric.name.casefold()] = unresolved_references(
                 metric.expression, fields=fields, dataset_metrics=dataset_metrics, metric_names=names,
-                gone_metrics=gone, document=document, data_source=scope.data_source)
+                gone_metrics=gone, document=document, data_source=scope.data_source, bare_metrics=metric.slayer_held)
     return out
 
 

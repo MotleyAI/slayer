@@ -270,11 +270,12 @@ def metric_references(expression: Expression) -> tuple[set[str], set[str]]:
 
 def _unresolved(column: exp.Column, *, fields: Mapping[str, AbstractSet[str]],
                 dataset_metrics: Mapping[str, AbstractSet[str]], metric_names: AbstractSet[str],
-                gone_metrics: AbstractSet[str], document: str, data_source: str) -> tuple[str, str, str] | None:
+                gone_metrics: AbstractSet[str], document: str, data_source: str,
+                bare_metrics: bool) -> tuple[str, str, str] | None:
     """``(key, spelling, why)`` when ``column`` names what is not there."""
     table, leaf = column.table.casefold(), column.name.casefold()
     if not table:
-        if leaf in metric_names or leaf not in gone_metrics:
+        if leaf in metric_names or (leaf not in gone_metrics and not bare_metrics):
             return None  # any other bare name is an unqualified field, which Ossie rejects as such
         return leaf, column.name, f"is not a model-scoped metric of datasource {data_source!r}"
     if table not in fields:
@@ -295,10 +296,12 @@ def _unresolved(column: exp.Column, *, fields: Mapping[str, AbstractSet[str]],
 
 def unresolved_references(expression: Expression, *, fields: Mapping[str, AbstractSet[str]],
                           dataset_metrics: Mapping[str, AbstractSet[str]], metric_names: AbstractSet[str],
-                          document: str, data_source: str, gone_metrics: AbstractSet[str] = frozenset()) -> Unresolved:
+                          document: str, data_source: str, gone_metrics: AbstractSet[str] = frozenset(),
+                          bare_metrics: bool = False) -> Unresolved:
     """The references of a model-scoped metric of ``document`` that its datasets (``fields`` and ``dataset_metrics``
     by dataset) and the datasource's ``metric_names`` do not resolve, every name case-folded; a bare name is a metric
-    reference only while it names a metric, or one of ``gone_metrics`` a change removes. Never raises."""
+    reference while it names a metric, is one of ``gone_metrics`` a change removes, or always under ``bare_metrics``
+    (a metric held in ``SLAYER``). Never raises."""
     out: Unresolved = {}
     for text in _texts(expression):
         tree, _ = parse_ossie_sql(text, _OSSIE_SQL)
@@ -307,7 +310,8 @@ def unresolved_references(expression: Expression, *, fields: Mapping[str, Abstra
         stars = (c for c in tree.find_all(exp.Column) if isinstance(c.this, exp.Star) and c.table)
         for column in (*columns(tree, _OSSIE_SQL), *stars):
             found = _unresolved(column, fields=fields, dataset_metrics=dataset_metrics, metric_names=metric_names,
-                                gone_metrics=gone_metrics, document=document, data_source=data_source)
+                                gone_metrics=gone_metrics, document=document, data_source=data_source,
+                                bare_metrics=bare_metrics)
             if found is not None:
                 out.setdefault(found[0], (found[1], found[2]))
     return out
