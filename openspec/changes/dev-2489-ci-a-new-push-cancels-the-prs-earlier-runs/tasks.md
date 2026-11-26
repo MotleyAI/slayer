@@ -23,11 +23,11 @@
 ## 4. Shard rebalance
 
 - [x] 4.1 Rebuild `tests/shard_durations.json` from the `shard-durations-*` artifacts of ≥ 20 recent successful CI runs (both Pythons): `gh run download <id> -p 'shard-durations-*' -D <dir>/<id>` per run, then `poetry run python -m tests._sharding tests/shard_durations.json <dir>/*/*/shard-durations.json` — verify the file lists every module the runs measured and the 4-shard plan's stored loads are within 2% of each other
-- [ ] 4.2 Fix any test that fails only under worksteal or the new shard membership (never fall back to `--dist load`) — verify the PR's CI is green
+- [x] 4.2 Fix any test that fails only under worksteal or the new shard membership (never fall back to `--dist load`) — verify the PR's CI is green
 
 ## 5. Gates and CI evidence
 
 - [x] 5.1 Lint, `la-typecheck` (no new errors vs the baseline), `la-arch-check` — verify all pass
-- [ ] 5.2 On this PR's first CI run, compare the gate's five names with the job names `gh api repos/MotleyAI/slayer/actions/runs/<id>/jobs` reports — verify they match exactly
+- [x] 5.2 On this PR's first CI run, compare the gate's five names with the job names `gh api repos/MotleyAI/slayer/actions/runs/<id>/jobs` reports — verify they match exactly
 - [ ] 5.3 On this PR: a second push cancels the first push's `CI` run still in progress (and no other workflow's run); an ordinary push after a green 3.14 run skips all five 3.14 jobs with the reason in the `py314-gate` log; the 3.11 jobs start without waiting for the gate — verify from the runs
 - [ ] 5.4 Shard balance evidence from this PR's own CI runs (pytest step per shard) — verify and record in the PR description; the 20-run post-merge median check is recorded on DEV-2489
