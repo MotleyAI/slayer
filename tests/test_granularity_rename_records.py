@@ -44,7 +44,7 @@ from tests._granularity_rename_fixtures import (
     write_raw_store,
 )
 from tests._storage_upgrade_cli import store_path, upgrade
-from tests._stored_upgrade_fixtures import run
+from tests._stored_upgrade_fixtures import assert_current, ossie_document, parse_text, run, source_queries
 
 RECORDED_DATASOURCE_VERSION = 4
 CALENDAR_BUCKETS = {"2025-01-01": 1.0, "2025-02-01": 6.0, "2025-03-01": 8.0}
@@ -391,6 +391,8 @@ def test_the_upgrade_leaves_a_current_dependent_as_written(backend: str, tmp_pat
         backend=backend, base=base, datasources=[datasource_doc(db_path=live_db(base), granularities=["left"])],
         datasets=[events_doc(), backed],
     ))
-    before = raw_documents(backend=backend, base=base)[f"models/{DS}/initials"]
+    before = parse_text(raw_documents(backend=backend, base=base)[f"models/{DS}/initials"])
     assert upgrade(store_path(reopen(backend=backend, base=base))).code == 0
-    assert raw_documents(backend=backend, base=base)[f"models/{DS}/initials"] == before
+    after = ossie_document(backend=backend, base=base, name="initials", data_source=DS)
+    assert_current(after)
+    assert source_queries(after["dataset"]) == before["source_queries"]

@@ -274,10 +274,10 @@ async def test_two_documents_and_a_standalone_dataset_merge(tmp_path: Path) -> N
     storage = make_storage("yaml", tmp_path / "dst")
     await storage.save_datasource(config)
     await import_text(storage, text, base=tmp_path / "dst")
-    assert sorted(await storage.list_semantic_models(DS)) == [(DS, "sales"), (DS, "support")]
+    assert sorted(await storage.list_semantic_models(DS)) == [(DS, DS), (DS, "sales"), (DS, "support")]
     assert await storage.semantic_model_owner("orders", DS) == "sales"
     assert await storage.semantic_model_owner("returns", DS) == "support"
-    assert await storage.semantic_model_owner("stores", DS) is None
+    assert await storage.semantic_model_owner("stores", DS) == DS
     restored_stores = await storage.get_dataset("stores", data_source=DS)
     assert restored_stores is not None
     assert [r.to for r in restored_stores.relationships] == ["orders"]

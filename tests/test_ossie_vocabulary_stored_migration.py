@@ -25,9 +25,11 @@ from tests._ossie_vocabulary_fixtures import (
     shop_customers,
     shop_orders,
     shop_store,
-    stored_document,
 )
-from tests._stored_upgrade_fixtures import AMOUNT_BY_REGION, BACKENDS, DS, by_dimension, memory_v2, run
+from tests._stored_upgrade_fixtures import (
+    AMOUNT_BY_REGION, BACKENDS, DS, assert_current, by_dimension, memory_v2, ossie_dataset, ossie_document, run,
+    slayer_payload, source_queries,
+)
 from tests._upgrade_corpus import MEMORY_PREFIX, Corpus, load_all, offline, online
 from tests._upgrade_corpus import run as run_recorded
 
@@ -193,10 +195,14 @@ class TestStores:
             assert loaded is not None
             await storage.save_dataset(loaded)
         for name in ("orders", "by_region"):
-            doc = stored_document(backend=backend, base=str(tmp_path), name=name)
-            assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
-            assert_new_dataset_keys(doc)
-        assert "fields" in stored_document(backend=backend, base=str(tmp_path), name="orders")
+            doc = ossie_document(backend=backend, base=str(tmp_path), name=name)
+            assert_current(doc)
+            assert_new_dataset_keys(doc["dataset"])
+            assert_new_dataset_keys(slayer_payload(doc["dataset"]))
+            for query in source_queries(doc["dataset"]):
+                assert_new_query_keys(query)
+        assert "fields" in ossie_dataset(backend=backend, base=str(tmp_path), name="orders")
+        assert source_queries(ossie_dataset(backend=backend, base=str(tmp_path), name="by_region"))
 
     @pytest.mark.parametrize("query_version", [None, PRE["SlayerQuery"]])
     async def test_a_nested_stored_query_loads_silently(

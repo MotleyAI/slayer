@@ -5,8 +5,10 @@ Spec: queries/population › A population is named, and typed at construction.
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict
 
 import pytest
@@ -97,12 +99,14 @@ class TestStoredModelsReject:
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
             await storage.save_dataset(rev_by_status_dataset(), _validate=False)
-            path = storage._dataset_path("test", "rev_by_status")
-            with open(path) as fh:
-                raw = yaml.safe_load(fh)
-            raw["source_queries"][0]["population"] = INLINE_QB
-            with open(path, "w") as fh:
-                yaml.safe_dump(raw, fh)
+            [path] = [p for p in Path(tmp, "semantic_models", "test").glob("*.yaml")
+                      if (yaml.safe_load(p.read_text()).get("dataset") or {}).get("name") == "rev_by_status"]
+            raw = yaml.safe_load(path.read_text())
+            [entry] = [e for e in raw["dataset"]["nonportable_extensions"] if e["vendor_name"] == "SLAYER"]
+            payload = json.loads(entry["data"]) if isinstance(entry["data"], str) else entry["data"]
+            payload["source"]["source_queries"][0]["population"] = INLINE_QB
+            entry["data"] = json.dumps(payload) if isinstance(entry["data"], str) else payload
+            path.write_text(yaml.safe_dump(raw))
             reloaded = YAMLStorage(base_dir=tmp)
             with pytest.raises(StoredDocumentLoadError, match="(?i)inline") as exc:
                 await reloaded.get_dataset("rev_by_status", data_source="test")

@@ -25,8 +25,8 @@ from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._deprecated_input_helpers import errors_in, recorded
 from tests._engine_helpers import owned_query_engine
 from tests._dataset_access_fixtures import mcp_text
-from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store, stored_document
-from tests._stored_upgrade_fixtures import DS
+from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store
+from tests._stored_upgrade_fixtures import DS, assert_current, ossie_document, slayer_payload
 
 #: Where a stray key goes in ``orders()``, by the dataset-side model holding it.
 LOCATIONS: dict[str, tuple[tuple[str | int, ...], str]] = {
@@ -191,9 +191,10 @@ class TestStored:
             loaded = await storage.get_dataset("orders", data_source=DS)
             assert loaded is not None
             await storage.save_dataset(loaded)
-        doc = stored_document(backend="yaml", base=str(tmp_path), name="orders")
-        assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
-        assert "colour" not in doc["fields"][0]
+        doc = ossie_document(backend="yaml", base=str(tmp_path), name="orders")
+        assert_current(doc)
+        assert "colour" not in doc["dataset"]["fields"][0]
+        assert "colour" not in (slayer_payload(doc["dataset"]["fields"][0]).get("field") or {})
 
     def test_a_stored_query_backed_dataset_warns_once(self) -> None:
         doc = current({"name": "by_status", "data_source": DS, "x_owner": "team",

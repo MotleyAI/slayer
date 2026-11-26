@@ -33,10 +33,9 @@ from tests._ossie_vocabulary_fixtures import (
     shop_customers,
     shop_orders,
     shop_store,
-    stored_document,
     vocab_engine,
 )
-from tests._stored_upgrade_fixtures import DS
+from tests._stored_upgrade_fixtures import DS, ossie_dataset, stored_relationships
 
 Check = Callable[[Any], bool]
 
@@ -283,10 +282,10 @@ def old_orders() -> dict[str, Any]:
 
 
 def assert_stored_new(*, backend: str, base: Path) -> None:
-    doc = stored_document(backend=backend, base=str(base), name="orders")
+    doc = ossie_dataset(backend=backend, base=str(base), name="orders")
     assert "fields" in doc
     assert "columns" not in doc
-    [rel] = doc["relationships"]
+    [rel] = stored_relationships(backend=backend, base=str(base), name="orders")
     assert rel["to"] == "customers"
     assert "target_model" not in rel
 

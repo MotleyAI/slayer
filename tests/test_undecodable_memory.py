@@ -16,6 +16,7 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._integrator_1x import DATA_SOURCE
 from tests._storage_upgrade_cli import raw, store_path, upgrade, warehouse_store
+from tests._stored_upgrade_fixtures import assert_current, ossie_document
 
 BAD = "undecodable"
 BAD_BYTES = b"---\nversion: 4\nentities: []\n---\nrevenue \xff\xfe by status\n"
@@ -54,7 +55,7 @@ def test_a_whole_store_upgrade_reports_it_and_upgrades_the_rest(tmp_path: Path) 
     assert Path(base, "memories", f"{BAD}.md").read_bytes() == BAD_BYTES
     stored = raw(backend="yaml", base=base)
     assert _version(stored["memories/m1"]) == CURRENT_VERSIONS["Memory"]
-    assert _version(stored[f"models/{DATA_SOURCE}/customers"]) == CURRENT_VERSIONS["SlayerModel"]
+    assert_current(ossie_document(backend="yaml", base=base, name="customers", data_source=DATA_SOURCE))
 
 
 def test_a_scoped_upgrade_completes(tmp_path: Path) -> None:
@@ -62,5 +63,4 @@ def test_a_scoped_upgrade_completes(tmp_path: Path) -> None:
     result = upgrade(store_path(storage), "--data-source", DATA_SOURCE)
     assert result.code == 0, result
     assert Path(base, "memories", f"{BAD}.md").read_bytes() == BAD_BYTES
-    stored = raw(backend="yaml", base=base)
-    assert _version(stored[f"models/{DATA_SOURCE}/customers"]) == CURRENT_VERSIONS["SlayerModel"]
+    assert_current(ossie_document(backend="yaml", base=base, name="customers", data_source=DATA_SOURCE))

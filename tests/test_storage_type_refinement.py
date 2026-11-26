@@ -864,10 +864,11 @@ class TestCliMigrateTypes:
             data_source=None,
         )
         _run_storage(args)
-        with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
-            raw = yaml.safe_load(f)
-        assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        types_by_name = {c["name"]: c["datatype"] for c in raw["fields"]}
+        assert not os.path.exists(storage_with_v4_model["model_path"])
+        [raw] = [doc for p in Path(storage_with_v4_model["base"], "semantic_models", "live").glob("*.yaml")
+                 if (doc := yaml.safe_load(p.read_text())).get("dataset", {}).get("name") == "items"]
+        assert raw["version"] == "0.3.0.dev0"
+        types_by_name = {c["name"]: c["datatype"] for c in raw["dataset"]["fields"]}
         assert types_by_name["id"] == "Integer"
         assert types_by_name["qty"] == "Integer"
 

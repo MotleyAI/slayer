@@ -16,7 +16,6 @@ import yaml
 
 from slayer.core.models import DatasourceConfig
 from slayer.storage.base import StorageBackend
-from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -164,9 +163,9 @@ async def test_a_save_persists_the_upgraded_form(backend: str, tmp_path: Path) -
     assert orders is not None
     assert (await su.raw_doc(storage, "orders"))["version"] == 10
     await storage.save_dataset(orders)
-    stored = await su.raw_doc(storage, "orders")
-    assert stored["version"] == CURRENT_VERSIONS["SlayerModel"]
-    assert [f["name"] for f in stored["fields"]] == [f.name for f in orders.fields]
+    stored = await su.raw_ossie(storage, "orders")
+    su.assert_current(stored)
+    assert [f["name"] for f in stored["dataset"]["fields"]] == [f.name for f in orders.fields]
 
 
 async def test_opening_a_pre_v4_flat_layout_store_moves_its_files_only(tmp_path: Path) -> None:

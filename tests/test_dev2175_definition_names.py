@@ -43,6 +43,7 @@ from tests._dev2175_fixtures import (
     to_customers,
 )
 from tests._engine_helpers import owned_query_engine
+from tests._stored_upgrade_fixtures import raw_ossie, slayer_payload
 
 BACKEND = pytest.mark.parametrize("dialect", BACKENDS)
 STATUS_IS_STATE = fld("status", "state")
@@ -127,10 +128,10 @@ class TestDialectSelection:
         legacy = dataset(orders_doc(fld("n", sql="amount + 1")))
         async with engine_with(dialect="duckdb") as (_, storage, _):
             await storage.save_dataset(legacy)
-            raw = await storage._load_raw_dataset_dict(name="orders", data_source=legacy.data_source)
-        assert raw is not None
-        (n,) = [f for f in raw["fields"] if f["name"] == "n"]
-        assert (n.get("sql"), n["expression"]) == (None, {"dialects": [{"dialect": "DUCKDB", "expression": "amount + 1"}]})
+            raw = await raw_ossie(storage, "orders", data_source=legacy.data_source)
+        (n,) = [f for f in raw["dataset"]["fields"] if f["name"] == "n"]
+        assert ((slayer_payload(n).get("field") or {}).get("sql"), n["expression"]) == (
+            None, {"dialects": [{"dialect": "DUCKDB", "expression": "amount + 1"}]})
 
 
 # ── portable vs dialect meaning ───────────────────────────────────────────

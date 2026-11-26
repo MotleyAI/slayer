@@ -932,7 +932,7 @@ async def _reimport(engine: SlayerQueryEngine, base: Path) -> Any:
 
 async def test_reimport_replaces_the_converted_datasets(legacy_1x: SlayerQueryEngine, tmp_path: Path) -> None:
     storage = legacy_1x.storage
-    assert await storage.semantic_model_owner("orders", DS) is None
+    assert await storage.semantic_model_owner("orders", DS) == DS
     result = await _reimport(legacy_1x, tmp_path)
     assert result.stored == ["sales"]
     text = await storage.get_semantic_model_text("sales", DS)

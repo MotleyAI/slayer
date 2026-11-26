@@ -61,6 +61,8 @@ def stored_documents(store: AccessStore) -> str:
         return "\n".join(texts)
     with transaction(os.path.join(store.base, "store.db")) as conn:
         rows = conn.execute("SELECT data FROM models UNION ALL SELECT data FROM memories").fetchall()
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'").fetchone():
+            rows += conn.execute("SELECT text FROM documents").fetchall()
     return "\n".join(r[0] for r in rows)
 
 

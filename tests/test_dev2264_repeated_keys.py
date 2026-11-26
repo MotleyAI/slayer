@@ -326,7 +326,8 @@ async def hand_placed(kind: str, base: Path, text: str, *, name: str = "sales") 
     await storage.save_datasource(DatasourceConfig(name=DS, type="duckdb", database=str(base / "absent.duckdb")))
     if kind == "sqlite":
         with transaction(base / "store.db") as con:
-            con.execute("INSERT INTO semantic_models (data_source, name, text) VALUES (?, ?, ?)", (DS, name, text))
+            con.execute("INSERT INTO documents (data_source, file_name, text) VALUES (?, ?, ?)",
+                        (DS, f"{name}.yaml", text))
     return storage
 
 

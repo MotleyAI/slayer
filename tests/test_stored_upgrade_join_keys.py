@@ -16,10 +16,12 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
-from slayer.storage import migrations as mig
 from slayer.storage.base import _RAW_PASS
 from slayer.storage.document_keys import keys_for
 from tests._stored_upgrade_fixtures import (
+    assert_current,
+    raw_ossie,
+    slayer_payload,
     AMOUNT_BY_REGION,
     BACKENDS,
     DS,
@@ -83,10 +85,11 @@ class TestSourceSide:
         assert col.hidden is True
         assert stored_bytes(backend=backend, base=base, name="orders") == before
         assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
-        doc = await raw_doc(storage, "orders")
-        assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert _hidden(doc, "customer_id")["hidden"] is True
-        assert _hidden(doc, "customer_id")["datatype"] == "Integer"
+        doc = await raw_ossie(storage, "orders")
+        assert_current(doc)
+        [key] = [f for f in doc["dataset"]["fields"] if f["name"] == "customer_id"]
+        assert (slayer_payload(key).get("field") or {}).get("hidden") is True
+        assert key["datatype"] == "Integer"
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_query_returns_the_0_10_2_rows_with_cast_free_on(self, tmp_path, shop_ds: DatasourceConfig, backend):

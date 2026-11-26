@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 from collections.abc import AsyncGenerator
@@ -15,9 +16,10 @@ from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.inspect.service import InspectService
 from slayer.storage.base import StorageBackend
-from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._storage_upgrade_cli import store_path, upgrade
 from tests._stored_upgrade_fixtures import (
+    assert_current,
+    raw_ossie,
     BACKENDS,
     DS,
     customers_v10,
@@ -59,9 +61,9 @@ async def test_v14_model_loads_without_backing_sql(storage: StorageBackend) -> N
     assert "backing_query_sql" not in model.model_dump()
     assert (await raw_doc(storage, "rev"))["backing_query_sql"] == CACHED_SQL
     assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
-    doc = await raw_doc(storage, "rev")
-    assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
-    assert "backing_query_sql" not in doc
+    doc = await raw_ossie(storage, "rev")
+    assert_current(doc)
+    assert "backing_query_sql" not in json.dumps(doc)
 
 
 @pytest.mark.parametrize("fmt", ["markdown", "json"])

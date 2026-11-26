@@ -9,6 +9,8 @@ The YAML store SHALL keep each datasource's datasets, relationships and models i
 - a **model document** is a flat Ossie document (`datasets`) or a split model document (`dataset_refs`, optionally with inline `datasets`), as Ossie's multi-file models define it;
 - a **dataset document** holds `version` and one `dataset`, and is listed in `dataset_refs` of exactly one model document of the same folder.
 
+A dataset a save adds to a model SHALL be stored inline in its `datasets` when the model document is flat, and as a new dataset document listed in its `dataset_refs` when the model document is split; the datasource model is always split.
+
 The SQLite store SHALL hold the same documents, as their text exactly as written, in a `documents` table keyed by datasource and the file name the YAML store would use. Datasource configs, the datasource priority, memories and embeddings are not part of this layout and SHALL keep their 2.0 storage.
 
 #### Scenario: A standalone dataset is a dataset document
@@ -20,7 +22,7 @@ The SQLite store SHALL hold the same documents, as their text exactly as written
 - **THEN** the `documents` table holds the text of `orders.dataset.yaml` and of the model document `shop`, under those file names for datasource `shop`
 
 ### Requirement: The datasource model holds every dataset not in a named document
-The model whose `name` equals its datasource's name SHALL be the datasource model. It SHALL hold every dataset of the datasource that no other model holds, each as a dataset document. Relationships among its datasets SHALL be its core `relationships`. A relationship between datasets of two different models SHALL be held in the `SLAYER` entry of its `from` dataset. The datasource model SHALL be created by the first save that adds a dataset to it, and SHALL be deleted when its last dataset leaves it. It SHALL be a semantic model like any other: listed, inspected, edited (description, `ai_context`, model-scoped metrics, relationships) and deleted, with the same cascade, through every semantic-model surface. Saving a document whose name equals that of an existing datasource model SHALL be refused as a name collision.
+The model whose `name` equals its datasource's name SHALL be the datasource model. It SHALL hold every dataset of the datasource that no other model holds, each as a dataset document. Relationships among its datasets SHALL be its core `relationships`. A relationship between datasets of two different models SHALL be held in the `SLAYER` entry of the model document holding its `from` dataset. The datasource model SHALL be created by the first save that adds a dataset to it, and SHALL be deleted when its last dataset leaves it. It SHALL be a semantic model like any other: listed, inspected, edited (description, `ai_context`, model-scoped metrics, relationships) and deleted, with the same cascade, through every semantic-model surface. Creating a document whose name equals that of an existing datasource model (`create_semantic_model`, or an import adding a document) SHALL be refused as a name collision; replacing the datasource model's text SHALL be a replace like any other, and saving a document named like the datasource when it has no datasource model SHALL create it.
 
 #### Scenario: A model-scoped metric over standalone datasets
 - **WHEN** datasource `shop` holds datasets `orders` and `customers` in no named document, and `edit_semantic_model(name="shop", data_source="shop")` adds the metric `revenue_per_customer` with expression `SUM(orders.amount) / COUNT(DISTINCT customers.id)`
@@ -31,11 +33,15 @@ The model whose `name` equals its datasource's name SHALL be the datasource mode
 - **THEN** the datasource model `shop` no longer exists
 
 ### Requirement: A dataset moves between models by its reference
-Moving a dataset from one model of a datasource to another (`create_semantic_model` with `datasets`, `edit_semantic_model` with `add_datasets`, and removal from a named document) SHALL move its `dataset_refs` entry and the relationships it takes part in, and SHALL leave the text of its dataset document unchanged. A dataset declared inline in a model document SHALL stay inline when the model is edited.
+Moving a dataset from one model of a datasource to another (`create_semantic_model` with `datasets` and `edit_semantic_model` with `add_datasets`, each taking a dataset from any model of the datasource, the datasource model included) SHALL move its `dataset_refs` entry and the relationships it takes part in, and SHALL leave the text of its dataset document unchanged. A dataset declared inline in a model document SHALL stay inline when the model is edited.
 
 #### Scenario: A move keeps the dataset file
 - **WHEN** `create_semantic_model(name="sales", data_source="shop", datasets=["orders"])` moves `orders` out of the datasource model `shop`
 - **THEN** the text of `orders.dataset.yaml` is unchanged, `sales` lists it in `dataset_refs`, `shop` no longer does, and `orders` answers queries as before
+
+#### Scenario: A move back into the datasource model
+- **WHEN** `edit_semantic_model(name="shop", data_source="shop", add_datasets=["orders"])` runs while `orders` belongs to `sales`
+- **THEN** `orders` belongs to the datasource model `shop`, and the text of its dataset document is unchanged
 
 ### Requirement: Stored file names are derived from names and recorded in the reference
 A new model document SHALL be stored as `<stem>.semantic_model.yaml` and a new dataset document as `<stem>.dataset.yaml`. `<stem>` SHALL be the entity's name when the name is made only of ASCII letters, digits, `_` and `-`, and otherwise the name with every other UTF-8 byte percent-encoded. A stem longer than 120 bytes, one equal to a Windows-reserved device name, or one equal, ignoring case, to an existing entry of the folder SHALL be cut to fit and get `-` followed by the first 12 hexadecimal digits of the SHA-256 of the name. The file name SHALL be recorded, percent-encoded as a single path segment, as the dataset document's `iri`, and SHALL be kept while the entity keeps its name. A model document stored by 2.0 SHALL keep its file name.
@@ -86,7 +92,7 @@ SLayer's versioning of what it stores SHALL be the `version` of each `SLAYER` pa
 - `dataset`: `source` (`sql_table`, `sql`, `filters`, `source_queries`, `query_variables`), `hidden`, `access_tags`, `default_time_dimension`, `meta`, `aggregations`, `fields`, `metrics`, `relationships` (SLayer-only members) and `enforced_keys`;
 - `metric`: `dataset` and `metric`;
 - `relationship`: `declarations`, each a `dataset` and a `relationship`;
-- `semantic_model`: `metrics` (model-scoped metrics core cannot hold) and `documents` (boundaries of a merged export).
+- `semantic_model`: `metrics` (model-scoped metrics core cannot hold), `relationships` (relationships whose `from` dataset it holds and whose `to` dataset another model holds) and `documents` (boundaries of a merged export).
 
 This shape SHALL NOT change without a new payload version that every later release reads.
 

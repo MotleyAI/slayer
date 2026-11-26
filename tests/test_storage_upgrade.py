@@ -55,6 +55,21 @@ def _versions(docs: dict[str, str]) -> dict[str, int]:
     return out
 
 
+def _legacy(docs: dict[str, str]) -> dict[str, str]:
+    """``docs`` without the stored format's Ossie documents."""
+    return {k: v for k, v in docs.items() if not k.startswith("semantic_models/")}
+
+
+def _datasets(docs: dict[str, str], *, data_source: str = DATA_SOURCE) -> dict[str, str]:
+    """``{dataset name: text}`` of ``data_source``'s dataset documents in ``docs``, each at the current format."""
+    out: dict[str, str] = {}
+    for key, text in docs.items():
+        if key.startswith(f"semantic_models/{data_source}/") and isinstance(doc := su.parsed(text), dict) and "dataset" in doc:
+            su.assert_current(doc)
+            out[doc["dataset"]["name"]] = text
+    return out
+
+
 def _rows(storage: StorageBackend, query: dict[str, Any]) -> list[Any]:
     resp = asyncio.run(su.run(storage, query))
     return sorted(map(repr, resp.data))
@@ -142,13 +157,12 @@ def test_an_old_store_upgrades(backend: str, tmp_path: Path) -> None:
     saved_before = _rows(storage, SAVED_QUERY_ROWS)
     result = upgrade(store_path(storage))
     assert result.code == 0, result
-    assert set(_versions(raw(backend=backend, base=base)).items()) == {
+    upgraded = raw(backend=backend, base=base)
+    assert set(_versions(_legacy(upgraded)).items()) == {
         (f"datasources/{DATA_SOURCE}", CURRENT_VERSIONS["DatasourceConfig"]),
-        (f"models/{DATA_SOURCE}/orders", CURRENT_VERSIONS["SlayerModel"]),
-        (f"models/{DATA_SOURCE}/customers", CURRENT_VERSIONS["SlayerModel"]),
-        (f"models/{DATA_SOURCE}/revenue_by_status", CURRENT_VERSIONS["SlayerModel"]),
         ("memories/m1", CURRENT_VERSIONS["Memory"]),
     }
+    assert set(_datasets(upgraded)) == {"orders", "customers", "revenue_by_status"}
     reopened = gran.reopen(backend=backend, base=base)
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
@@ -193,7 +207,7 @@ def test_a_legacy_cycle_is_upgraded_not_refused(backend: str, tmp_path: Path) ->
     storage = warehouse_store(backend=backend, base=base, datasets=[orders, raw_documents()["customers"]])
     result = upgrade(store_path(storage))
     assert result.code == 0, result
-    assert _versions(raw(backend=backend, base=base))[f"models/{DATA_SOURCE}/orders"] == CURRENT_VERSIONS["SlayerModel"]
+    assert "orders" in _datasets(raw(backend=backend, base=base))
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -206,8 +220,7 @@ def test_a_legacy_fanning_reference_is_upgraded_not_refused(backend: str, tmp_pa
     storage = warehouse_store(backend=backend, base=base, datasets=[raw_documents()["orders"], customers])
     result = upgrade(store_path(storage))
     assert result.code == 0, result
-    stored = raw(backend=backend, base=base)[f"models/{DATA_SOURCE}/customers"]
-    assert _versions({"c": stored})["c"] == CURRENT_VERSIONS["SlayerModel"]
+    stored = _datasets(raw(backend=backend, base=base))["customers"]
     assert "order_amount" in stored
 
 
@@ -248,7 +261,7 @@ def test_an_invalid_semantic_model_document_is_reported_not_current(tmp_path: Pa
     result = upgrade(store_path(storage))
     assert result.code == 1, result
     assert path.read_bytes() == invalid
-    assert _versions(raw(backend="yaml", base=base))[f"models/{DATA_SOURCE}/orders"] == CURRENT_VERSIONS["SlayerModel"]
+    assert "orders" in _datasets(raw(backend="yaml", base=base))
     sales = [line for line in (result.out + result.err).splitlines() if "shop.sales" in line]
     assert sales, result
     assert all("current" not in line for line in sales), sales
@@ -264,13 +277,14 @@ def test_a_dataset_waiting_for_its_dialect(backend: str, tmp_path: Path) -> None
     assert first.code == 1, first
     after = raw(backend=backend, base=base)
     assert after[orders_key] == before[orders_key]
-    assert _versions(after)[f"models/{DATA_SOURCE}/customers"] == CURRENT_VERSIONS["SlayerModel"]
+    assert "orders" not in _datasets(after)
+    assert "customers" in _datasets(after)
     assert any(f"{DATA_SOURCE}.orders" in line for line in (first.out + first.err).splitlines())
     second = upgrade(store_path(storage), "--datasource-type", f"{DATA_SOURCE}=duckdb")
     assert second.code == 0, second
-    upgraded = raw(backend=backend, base=base)[orders_key]
-    assert _versions({orders_key: upgraded})[orders_key] == CURRENT_VERSIONS["SlayerModel"]
-    assert "DUCKDB" in upgraded
+    completed = raw(backend=backend, base=base)
+    assert orders_key not in completed
+    assert "DUCKDB" in _datasets(completed)["orders"]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -292,12 +306,12 @@ def test_a_corrupt_document_does_not_stop_the_others(backend: str, tmp_path: Pat
     assert result.code == 1, result
     after = raw(backend=backend, base=base)
     assert after[f"models/{DATA_SOURCE}/broken"] == before[f"models/{DATA_SOURCE}/broken"]
-    assert _versions({k: v for k, v in after.items() if "broken" not in k}) == {
+    assert _versions({k: v for k, v in _legacy(after).items() if "broken" not in k}) == {
         k: CURRENT_VERSIONS[kind] for k, kind in (
-            (f"datasources/{DATA_SOURCE}", "DatasourceConfig"), (f"models/{DATA_SOURCE}/orders", "SlayerModel"),
-            (f"models/{DATA_SOURCE}/customers", "SlayerModel"), ("memories/m1", "Memory"),
+            (f"datasources/{DATA_SOURCE}", "DatasourceConfig"), ("memories/m1", "Memory"),
         )
     }
+    assert set(_datasets(after)) == {"orders", "customers"}
     assert any("broken" in line for line in (result.out + result.err).splitlines())
     kept = asyncio.run(gran.reopen(backend=backend, base=base).get_embedding(
         canonical_id=f"{DATA_SOURCE}.orders", embedding_model_name="m"))
@@ -321,8 +335,7 @@ def test_an_unreadable_memory_and_datasource_are_reported(backend: str, tmp_path
     lines = (result.out + result.err).splitlines()
     for document in ("memory broken_memory", "datasource broken_ds"):
         assert any(line.startswith(f"{document}: not upgraded") for line in lines), (document, lines)
-    orders = f"models/{DATA_SOURCE}/orders"
-    assert _versions({orders: raw(backend=backend, base=base)[orders]})[orders] == CURRENT_VERSIONS["SlayerModel"]
+    assert "orders" in _datasets(raw(backend=backend, base=base))
 
 
 def test_a_concurrent_edit_is_not_overwritten(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -405,15 +418,20 @@ def _mentions_granularity(text: str, name: str) -> bool:
     return f"'{name}'" in text or f'"{name}"' in text or f": {name}\n" in text
 
 
-def _copy_document(*, backend: str, source: str, target: str, key: str) -> None:
-    """Copy one stored dataset document from the store at ``source`` into the store at ``target``."""
-    _, data_source, name = key.split("/")
+def _copy_layout(*, backend: str, source: str, target: str, data_source: str) -> None:
+    """Move ``data_source``'s datasets in the store at ``target`` to the stored format the store at ``source`` holds."""
     if backend == "yaml":
-        shutil.copy(Path(source, "models", data_source, f"{name}.yaml"), Path(target, "models", data_source, f"{name}.yaml"))
+        shutil.copytree(Path(source, "semantic_models", data_source), Path(target, "semantic_models", data_source),
+                        ignore=shutil.ignore_patterns("*.lock", ".*"))
+        shutil.rmtree(Path(target, "models", data_source))
         return
-    [(data,)] = _select(os.path.join(source, "store.db"), data_source=data_source, name=name)
+    with transaction(os.path.join(source, "store.db")) as conn:
+        rows = conn.execute("SELECT file_name, text FROM documents WHERE data_source = ?", (data_source,)).fetchall()
     with transaction(os.path.join(target, "store.db")) as conn:
-        conn.execute("UPDATE models SET data = ? WHERE data_source = ? AND name = ?", (data, data_source, name))
+        conn.execute("CREATE TABLE IF NOT EXISTS documents (data_source TEXT, file_name TEXT, text TEXT)")
+        conn.executemany("INSERT INTO documents (data_source, file_name, text) VALUES (?, ?, ?)",
+                         [(data_source, f, t) for f, t in rows])
+        conn.execute("DELETE FROM models WHERE data_source = ?", (data_source,))
 
 
 def _select(db_path: str, *, data_source: str, name: str) -> list[tuple[str]]:
@@ -427,8 +445,8 @@ def test_an_interrupted_settle_converges(backend: str, tmp_path: Path) -> None:
     asyncio.run(_granularity_store(backend=backend, base=done, name="left"))
     asyncio.run(_granularity_store(backend=backend, base=interrupted, name="left"))
     assert upgrade(store_path(gran.reopen(backend=backend, base=done))).code == 0
-    # Interrupted after persisting one dependent and before the datasource.
-    _copy_document(backend=backend, source=done, target=interrupted, key=f"models/{gran.DS}/bucketed")
+    # Interrupted after persisting the datasource's datasets and before the datasource.
+    _copy_layout(backend=backend, source=done, target=interrupted, data_source=gran.DS)
 
     between = gran.reopen(backend=backend, base=interrupted)
     for name in ("bucketed", "bucketed_too"):
@@ -479,9 +497,9 @@ def test_one_upgrade_run_reads_one_rename_table(backend: str, tmp_path: Path, mo
 
     monkeypatch.setattr(StorageBackend, "_upgraded_dataset", edited_after_each_plan)
     report = asyncio.run(upgrade_store(gran.reopen(backend=backend, base=base)))
-    stored = raw(backend=backend, base=base)
+    stored = _datasets(raw(backend=backend, base=base), data_source=gran.DS)
     for name in ("bucketed", "bucketed_too"):
-        assert "left_granularity" in stored[f"models/{gran.DS}/{name}"], name
+        assert "left_granularity" in stored[name], name
     assert [o.status for o in report.outcomes if o.kind == "datasource"] == ["conflict"]
 
 
@@ -570,8 +588,7 @@ def test_a_v10_model_without_its_datasource_entry_upgrades_later(backend: str, t
     assert loaded.fields[0].datatype.value == "Float"
     assert asyncio.run(su.raw_doc(storage, "items"))["version"] == 10
     assert upgrade(store_path(storage)).code == 0
-    assert asyncio.run(su.raw_doc(gran.reopen(backend=backend, base=base), "items"))["version"] == (
-        CURRENT_VERSIONS["SlayerModel"])
+    su.assert_current(asyncio.run(su.raw_ossie(gran.reopen(backend=backend, base=base), "items")))
 
 
 def test_a_pre_v8_model_without_a_reachable_datasource_is_refused(tmp_path: Path) -> None:
@@ -604,8 +621,8 @@ def test_upgrading_one_datasource(backend: str, tmp_path: Path) -> None:
     after = raw(backend=backend, base=base)
     assert after["models/other/orders"] == before["models/other/orders"]
     assert after["datasources/other"] == before["datasources/other"]
-    assert _versions(after)[f"models/{DATA_SOURCE}/orders"] == CURRENT_VERSIONS["SlayerModel"]
-    assert _versions(after)[f"models/{DATA_SOURCE}/customers"] == CURRENT_VERSIONS["SlayerModel"]
+    assert {"orders", "customers"} <= set(_datasets(after))
+    assert not _datasets(after, data_source="other")
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

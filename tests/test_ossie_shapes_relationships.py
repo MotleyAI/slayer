@@ -23,9 +23,9 @@ from slayer.core.relationship_edges import RelationshipEdgeRef, relationship_sig
 from tests._deprecated_input_helpers import deprecated_in, deprecations, errors_in, payload_of, recorded
 from tests._engine_helpers import _engine_generate, owned_query_engine
 from tests._dataset_access_fixtures import mcp_text
-from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store, stored_document
+from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store
 from tests._osi_export_helpers import export_datasets, make_env, relationships
-from tests._stored_upgrade_fixtures import DS
+from tests._stored_upgrade_fixtures import DS, ossie_dataset, stored_relationships
 
 REL: dict[str, Any] = {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}
 
@@ -158,7 +158,7 @@ class TestOrderKept:
         orders["relationships"] = [{"to": "customers", "from_columns": ["customer_id", "status"],
                                     "to_columns": ["id", "name"], "name": "odd"}]
         await storage.save_dataset(SlayerDataset.model_validate(orders))
-        [rel] = stored_document(backend=backend, base=str(tmp_path), name="orders")["relationships"]
+        [rel] = stored_relationships(backend=backend, base=str(tmp_path), name="orders")
         assert (rel["from_columns"], rel["to_columns"]) == (["customer_id", "status"], ["id", "name"])
         loaded = await storage.get_dataset("orders", data_source=DS)
         assert loaded is not None
@@ -228,9 +228,9 @@ class TestSurfaces:
             dataset = SlayerDataset.model_validate(raw)
         async with owned_query_engine(storage=storage) as engine:
             await engine.save_dataset(dataset, warnings_out=notes)
-        doc = stored_document(backend="yaml", base=str(tmp_path), name="orders")
+        doc = ossie_dataset(backend="yaml", base=str(tmp_path), name="orders")
         assert "fields" in doc
-        [rel] = doc["relationships"]
+        [rel] = stored_relationships(backend="yaml", base=str(tmp_path), name="orders")
         assert (rel["to"], rel["from_columns"], rel["to_columns"]) == ("customers", ["customer_id"], ["id"])
         assert not {"target_model", "join_pairs"} & rel.keys()
         reported = [p.old for p in deprecated_in(notes)]

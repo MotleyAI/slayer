@@ -28,11 +28,13 @@ from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._dataset_access_fixtures import mcp_text
 from tests._deprecated_input_helpers import deprecated_in, deprecations, payload_of, recorded
 from tests._engine_helpers import owned_query_engine
-from tests._ossie_vocabulary_fixtures import fresh, shop_store, stored_document
+from tests._ossie_vocabulary_fixtures import fresh, shop_store
 from tests._query_input_fixtures import (
     BASE, RANGE, SAVED, STRAY, TD, assert_lists_keys, conflict, refusal, shop_with_saved,
 )
-from tests._stored_upgrade_fixtures import BACKENDS, DS, customers_v10, orders_v10, query_backed_v10, rev_query, run
+from tests._stored_upgrade_fixtures import (
+    BACKENDS, DS, customers_v10, orders_v10, ossie_dataset, query_backed_v10, rev_query, run, source_queries,
+)
 
 #: Where a stray key goes in a query: (payload, Pydantic location, model refusing it).
 QUERY_LOCATIONS: dict[str, tuple[dict[str, Any], tuple, type[BaseModel]]] = {
@@ -371,15 +373,15 @@ class TestInternalKeys:
         query = {**BASE, "dimensions": ["orders.status"], "order": [{"field": "sum(orders.amount)", "direction": "desc"}]}
         async with owned_query_engine(storage=storage) as engine:
             await engine.create_dataset_from_query(query=fresh(query), name="by_amount")
-        stored = stored_document(backend="yaml", base=str(tmp_path), name="by_amount")
-        [stage] = stored["source_queries"]
+        stored = source_queries(ossie_dataset(backend="yaml", base=str(tmp_path), name="by_amount"))
+        [stage] = stored
         assert stage["order"] == [{"field": "sum(orders.amount)", "direction": "desc",
                                    "raw_expression": "sum(orders.amount)"}]
         loaded = await storage.get_dataset("by_amount", data_source=DS)
         assert loaded is not None
         [loaded_stage] = loaded.source_queries or []
         assert loaded_stage.model_dump(mode="json")["order"] == stage["order"]
-        assert SlayerDataset.model_validate(stored).model_dump(mode="json")["source_queries"] == stored["source_queries"]
+        assert loaded.model_dump(mode="json")["source_queries"] == stored
 
 
 #: Stored saved queries: name -> (stage at the current version, stage at 0.10.2, expected outcome).

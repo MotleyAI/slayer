@@ -13,7 +13,6 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 import pytest
-import yaml
 
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -21,7 +20,7 @@ from slayer.storage.base import StorageBackend
 from tests._dev1737_fixtures import CUSTOMERS, ORDERS, seed_backend
 from tests._engine_helpers import seeded_exec_engine
 from tests._saved_query_refinement_fixtures import seed_duckdb, seed_sqlite
-from tests._stored_upgrade_fixtures import DS, raw_store, seed_shop, stored_bytes
+from tests._stored_upgrade_fixtures import DS, parse_text, raw_store, seed_shop, stored_bytes
 
 Spelling = Literal["old", "new"]
 SPELLINGS: tuple[Spelling, ...] = ("old", "new")
@@ -271,6 +270,6 @@ async def shop_store(
 
 
 def stored_document(*, backend: str, base: str, name: str) -> dict[str, Any]:
-    """The persisted document of dataset ``name`` in datasource ``shop``, parsed."""
-    text = stored_bytes(backend=backend, base=base, name=name)
-    return yaml.safe_load(text) if backend == "yaml" else json.loads(text)
+    """The persisted document of dataset ``name`` in datasource ``shop``, parsed: its dataset document, else its 2.0
+    document."""
+    return parse_text(stored_bytes(backend=backend, base=base, name=name))

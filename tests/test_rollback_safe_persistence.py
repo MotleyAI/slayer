@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -76,12 +77,34 @@ def _yaml_memory(base: Path, memory_id: str) -> dict[str, Any]:
     return yaml.safe_load(head)
 
 
+def _parsed_extensions(value: Any) -> Any:
+    """``value`` with every extension entry's ``data`` parsed when it is a JSON string."""
+    if isinstance(value, dict):
+        out = {k: _parsed_extensions(v) for k, v in value.items()}
+        if "vendor_name" in out and isinstance(out.get("data"), str):
+            with contextlib.suppress(json.JSONDecodeError):
+                out["data"] = _parsed_extensions(json.loads(out["data"]))
+        return out
+    if isinstance(value, list):
+        return [_parsed_extensions(v) for v in value]
+    return value
+
+
+def _dataset_document(texts: list[str], name: str) -> dict[str, Any]:
+    """The stored dataset document declaring dataset ``name``, its extension payloads parsed."""
+    hits = [doc for doc in map(yaml.safe_load, texts) if isinstance(doc, dict) and
+            (doc.get("dataset") or {}).get("name") == name]
+    assert len(hits) == 1, f"dataset document {name!r}: {len(hits)}"
+    return _parsed_extensions(hits[0])
+
+
 def _stored(*, backend: str, base: Path) -> dict[str, dict[str, Any]]:
     """The raw stored document of each kind, keyed by kind; a YAML memory is its frontmatter."""
     if backend == "yaml":
+        documents = [p.read_text(encoding="utf-8") for p in sorted((base / "semantic_models" / DS).glob("*.yaml"))]
         return {
-            "SlayerModel": yaml.safe_load(_yaml_text(str(base / "models" / DS / "orders.yaml"))),
-            "saved query": yaml.safe_load(_yaml_text(str(base / "models" / DS / "rev_by_status.yaml"))),
+            "SlayerModel": _dataset_document(documents, "orders"),
+            "saved query": _dataset_document(documents, "rev_by_status"),
             "DatasourceConfig": yaml.safe_load(_yaml_text(str(base / "datasources" / f"{DS}.yaml"))),
             "Memory": _yaml_memory(base, "m_ordered"),
         }
@@ -89,9 +112,10 @@ def _stored(*, backend: str, base: Path) -> dict[str, dict[str, Any]]:
         def row(sql: str, *args: str) -> dict[str, Any]:
             return json.loads(conn.execute(sql, args).fetchone()[0])
 
+        documents = [t for (t,) in conn.execute("SELECT text FROM documents WHERE data_source = ?", (DS,))]
         return {
-            "SlayerModel": row("SELECT data FROM models WHERE name = ?", "orders"),
-            "saved query": row("SELECT data FROM models WHERE name = ?", "rev_by_status"),
+            "SlayerModel": _dataset_document(documents, "orders"),
+            "saved query": _dataset_document(documents, "rev_by_status"),
             "DatasourceConfig": row("SELECT data FROM datasources WHERE name = ?", DS),
             "Memory": row("SELECT data FROM memories WHERE id = ?", "m_ordered"),
         }
@@ -112,19 +136,21 @@ def _nulls(value: Any, *, path: str) -> list[str]:
 
 
 @pytest.fixture(params=BACKENDS)
-async def stored(request: pytest.FixtureRequest, tmp_path: Path) -> dict[str, dict[str, Any]]:
-    storage = _storage(backend=request.param, base=tmp_path)
-    await _populate(storage)
-    return _stored(backend=request.param, base=tmp_path)
+async def populated(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[str, Path]:
+    """``(backend, base)`` of a populated store."""
+    await _populate(_storage(backend=request.param, base=tmp_path))
+    return request.param, tmp_path
 
 
 class TestNoUnsetField:
     @pytest.mark.parametrize("kind", list(_ROOT))
-    async def test_no_stored_value_is_null(self, stored: dict[str, dict[str, Any]], kind: str) -> None:
-        assert _nulls(stored[kind], path=kind) == []
+    async def test_no_stored_value_is_null(self, populated: tuple[str, Path], kind: str) -> None:
+        backend, base = populated
+        assert _nulls(_stored(backend=backend, base=base)[kind], path=kind) == []
 
-    async def test_memory_order_carries_no_nulls_key(self, stored: dict[str, dict[str, Any]]) -> None:
-        order = stored["Memory"]["query"]["order"]
+    async def test_memory_order_carries_no_nulls_key(self, populated: tuple[str, Path]) -> None:
+        backend, base = populated
+        order = _stored(backend=backend, base=base)["Memory"]["query"]["order"]
         assert all("nulls" not in item for item in order), order
 
 

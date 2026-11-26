@@ -106,13 +106,15 @@ async def test_malformed_document_level_entry_is_reported_and_omitted(env, exten
 # ──────────────────────── dataset stored by SLayer 1.8 ───────────────────────
 
 async def test_model_stored_before_the_shape_change(env) -> None:
-    await save(env, customers(), orders(metrics=BASIC_METRICS))
+    await save(env, customers())
     path = env.store / "models" / env.datasource / "orders.yaml"
-    stored = dataset_in(yaml.safe_load(path.read_text(encoding="utf-8")), LEGACY_KEYS)
+    legacy = orders(metrics=BASIC_METRICS).model_copy(update={"data_source": env.datasource})
+    stored = dataset_in(legacy.model_dump(mode="json", exclude_none=True), LEGACY_KEYS)
     stored["version"] = 21
     [amount] = [c for c in stored["columns"] if c["name"] == "amount"]
     amount["meta"] = {"osi_custom_extensions": [{"vendor_name": "ACME", "data": '{"k": 1}'},
                                                 {"vendor_name": "ACME", "data": "not json"}]}
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(stored, sort_keys=False), encoding="utf-8")
     result = await export(env)
     exported = field(dataset(result.document, "orders"), "amount")

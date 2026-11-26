@@ -20,12 +20,13 @@ from tests._stored_upgrade_fixtures import (
     customers_v10,
     memory_v2,
     orders_v10,
+    ossie_dataset,
     query_backed_v10,
     raw_store,
     rev_query,
     run,
     seed_shop,
-    stored_bytes,
+    source_queries,
 )
 from tests._upgrade_corpus import MEMORY_PREFIX, open_store
 from tests._upgrade_corpus import run as run_recorded
@@ -143,9 +144,8 @@ class TestStoredDocumentsUpgrade:
         model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
         await storage.save_dataset(model)
-        text = stored_bytes(backend=backend, base=base, name="rev_q")
-        doc = yaml.safe_load(text) if backend == "yaml" else json.loads(text)
-        assert doc["source_queries"][0]["time_dimensions"][0]["field"] == SIGNUP_TEXT
+        [stage] = source_queries(ossie_dataset(backend=backend, base=base, name="rev_q"))
+        assert stage["time_dimensions"][0]["field"] == SIGNUP_TEXT
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_memory_bundled_query(self, tmp_path, shop_ds, backend: str) -> None:

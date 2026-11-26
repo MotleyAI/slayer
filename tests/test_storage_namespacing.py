@@ -423,7 +423,7 @@ async def test_yaml_layout_groups_files_by_datasource() -> None:
         await storage.save_dataset(_dataset("users", data_source="db_a"))
         await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        assert os.path.exists(os.path.join(tmpdir, "models", "db_a", "users.yaml"))
-        assert os.path.exists(os.path.join(tmpdir, "models", "db_b", "users.yaml"))
-        # No flat-layout file at the root of models/.
-        assert not os.path.exists(os.path.join(tmpdir, "models", "users.yaml"))
+        assert os.path.exists(os.path.join(tmpdir, "semantic_models", "db_a", "users.dataset.yaml"))
+        assert os.path.exists(os.path.join(tmpdir, "semantic_models", "db_b", "users.dataset.yaml"))
+        # Nothing in the 2.0 layout.
+        assert not os.path.exists(os.path.join(tmpdir, "models"))
