@@ -16,6 +16,7 @@ from typing import (
 from urllib.parse import quote
 
 import yaml
+from pydantic import TypeAdapter
 from typing_extensions import deprecated
 
 from slayer.async_utils import run_sync
@@ -27,7 +28,7 @@ from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import PopulationRecommendation
 from slayer.core.vocabulary import method_twin
 from slayer.core.models import SlayerDataset
-from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
+from slayer.core.warnings import AnySlayerWarning, DeprecatedInputWarning, SlayerWarning
 from slayer.engine.query_engine import (
     REFINE_REQUIRES_NAME,
     ClientFactory,
@@ -88,6 +89,21 @@ def _raise_for_status(resp: Any) -> None:
         if isinstance(detail, dict) and detail.get("code") in set(OssieErrorCode):
             raise OssieQueryError.from_detail(detail)
     resp.raise_for_status()
+
+
+_WARNINGS = TypeAdapter(list[AnySlayerWarning])
+
+
+def _logged_notes(notes: Any) -> None:
+    """Log the search-refresh notes a call has no return channel for."""
+    for note in notes if isinstance(notes, list) else []:
+        logger.warning("%s", note)
+
+
+def _received(warnings_out: list[SlayerWarning] | None, body: Any) -> None:
+    """A REST save response's ``warnings``, typed, into ``warnings_out``."""
+    if warnings_out is not None and isinstance(body, dict):
+        warnings_out.extend(_WARNINGS.validate_python(body.get("warnings") or []))
 
 
 def _semantic_model_path(*, data_source: str, name: str) -> str:
@@ -466,23 +482,27 @@ class SlayerClient:
 
     async def create_semantic_model(
         self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
-        datasets: list[str] | None = None,
+        datasets: list[str] | None = None, warnings_out: list[SlayerWarning] | None = None,
     ) -> None:
-        """Create a semantic model from Ossie ``content``, or from standalone ``datasets`` moved into it."""
+        """Create a semantic model from Ossie ``content``, or from standalone ``datasets`` moved into it; its ontology
+        mismatches go to ``warnings_out``."""
         if self._storage is not None:
             await self._storage.create_semantic_model(data_source=data_source, name=name, content=content,
-                                                      datasets=datasets)
+                                                      datasets=datasets, warnings_out=warnings_out)
             return
-        await self._request(method="POST", path="/semantic-models", json={
-            "data_source": data_source, "name": name, "content": content, "datasets": datasets})
+        _received(warnings_out, await self._request(method="POST", path="/semantic-models", json={
+            "data_source": data_source, "name": name, "content": content, "datasets": datasets}))
 
-    async def replace_semantic_model(self, name: str, *, data_source: str, content: str | dict[str, Any]) -> None:
-        """Replace a semantic model's text."""
+    async def replace_semantic_model(self, name: str, *, data_source: str, content: str | dict[str, Any],
+                                     warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Replace a semantic model's text; its ontology mismatches go to ``warnings_out``."""
         if self._storage is not None:
             text = content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False)
-            await self._storage.save_semantic_model_text(data_source=data_source, name=name, text=text)
+            await self._storage.save_semantic_model_text(data_source=data_source, name=name, text=text,
+                                                         warnings_out=warnings_out)
             return
-        await self._request(method="PUT", path=_semantic_model_path(data_source=data_source, name=name), json={"content": content})
+        _received(warnings_out, await self._request(
+            method="PUT", path=_semantic_model_path(data_source=data_source, name=name), json={"content": content}))
 
     async def delete_semantic_model(self, name: str, *, data_source: str) -> bool:
         """Delete a semantic model and its datasets; ``False`` when absent."""
@@ -498,18 +518,25 @@ class SlayerClient:
 
     def create_semantic_model_sync(
         self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
-        datasets: list[str] | None = None,
+        datasets: list[str] | None = None, warnings_out: list[SlayerWarning] | None = None,
     ) -> None:
         self._run_sync(self.create_semantic_model(data_source=data_source, name=name, content=content,
-                                                  datasets=datasets))
+                                                  datasets=datasets, warnings_out=warnings_out))
 
-    def replace_semantic_model_sync(self, name: str, *, data_source: str, content: str | dict[str, Any]) -> None:
-        self._run_sync(self.replace_semantic_model(name, data_source=data_source, content=content))
+    def replace_semantic_model_sync(self, name: str, *, data_source: str, content: str | dict[str, Any],
+                                    warnings_out: list[SlayerWarning] | None = None) -> None:
+        self._run_sync(self.replace_semantic_model(name, data_source=data_source, content=content,
+                                                   warnings_out=warnings_out))
 
     def delete_semantic_model_sync(self, name: str, *, data_source: str) -> bool:
         return self._run_sync(self.delete_semantic_model(name, data_source=data_source))
 
     # ----- Ontologies and mappings -----
+
+    async def _refresh_concepts(self, data_source: str | None = None) -> list[str]:
+        """The local search refresh after a mapping or ontology change; its warnings."""
+        assert self._storage is not None
+        return await SearchService(storage=self._storage).refresh_after_concept_change(data_source)
 
     async def list_ontologies(self) -> list[dict[str, str]]:
         """Every stored ontology as ``{name}``."""
@@ -524,27 +551,39 @@ class SlayerClient:
         found = await self._request_or_none(method="GET", path=_ontology_path(name))
         return found["text"] if found is not None else None
 
-    async def create_ontology(self, *, content: str | dict[str, Any]) -> str:
-        """Store an ontology under its own ``name``; that name."""
+    async def create_ontology(self, *, content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> str:
+        """Store an ontology under its own ``name``; that name. Its mappings' mismatches go to ``warnings_out``."""
         if self._storage is not None:
             text = content_text(content)
             name = document_name(text)
-            await self._storage.save_ontology_text(name=name, text=text)
+            await self._storage.save_ontology_text(name=name, text=text, warnings_out=warnings_out)
+            _logged_notes(await self._refresh_concepts())
             return name
-        return (await self._request(method="POST", path="/ontologies", json={"content": content}))["name"]
+        found = await self._request(method="POST", path="/ontologies", json={"content": content})
+        _logged_notes(found.get("notes"))
+        _received(warnings_out, found)
+        return found["name"]
 
-    async def replace_ontology(self, name: str, *, content: str | dict[str, Any]) -> None:
-        """Replace ontology ``name``'s text."""
+    async def replace_ontology(self, name: str, *, content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Replace ontology ``name``'s text; its mappings' mismatches go to ``warnings_out``."""
         if self._storage is not None:
-            await self._storage.save_ontology_text(name=name, text=content_text(content))
+            await self._storage.save_ontology_text(name=name, text=content_text(content), warnings_out=warnings_out)
+            _logged_notes(await self._refresh_concepts())
             return
-        await self._request(method="PUT", path=_ontology_path(name), json={"content": content})
+        found = await self._request(method="PUT", path=_ontology_path(name), json={"content": content})
+        _received(warnings_out, found)
+        _logged_notes(found.get("notes"))
 
     async def delete_ontology(self, name: str) -> bool:
         """Delete an ontology; ``False`` when absent."""
         if self._storage is not None:
-            return await self._storage.delete_ontology(name)
-        return await self._request_or_none(method="DELETE", path=_ontology_path(name)) is not None
+            deleted = await self._storage.delete_ontology(name)
+            if deleted:
+                _logged_notes(await self._refresh_concepts())
+            return deleted
+        found = await self._request_or_none(method="DELETE", path=_ontology_path(name))
+        _logged_notes(found.get("notes") if isinstance(found, dict) else None)
+        return found is not None
 
     async def list_ontology_mappings(self, data_source: str | None = None) -> list[dict[str, str]]:
         """Every stored mapping as ``{data_source, name}``."""
@@ -560,31 +599,44 @@ class SlayerClient:
         found = await self._request_or_none(method="GET", path=_mapping_path(data_source=data_source, name=name))
         return found["text"] if found is not None else None
 
-    async def create_ontology_mapping(self, *, data_source: str, content: str | dict[str, Any]) -> list[str]:
-        """Store a mapping of ``data_source`` under its own ``name``; the save's informational notes."""
+    async def create_ontology_mapping(self, *, data_source: str, content: str | dict[str, Any],
+                                      warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        """Store a mapping of ``data_source`` under its own ``name``; the save's informational notes. Its ontology
+        mismatches go to ``warnings_out``."""
         if self._storage is not None:
             text = content_text(content)
-            return await self._storage.save_ontology_mapping_text(data_source=data_source, name=document_name(text),
-                                                                  text=text)
+            notes = await self._storage.save_ontology_mapping_text(data_source=data_source, name=document_name(text),
+                                                                   text=text, warnings_out=warnings_out)
+            return notes + await self._refresh_concepts(data_source)
         found = await self._request(method="POST", path="/ontology-mappings",
                                     json={"data_source": data_source, "content": content})
+        _received(warnings_out, found)
         return found["notes"]
 
-    async def replace_ontology_mapping(self, name: str, *, data_source: str, content: str | dict[str, Any]) -> list[str]:
-        """Replace mapping ``name`` of ``data_source``; the save's informational notes."""
+    async def replace_ontology_mapping(self, name: str, *, data_source: str, content: str | dict[str, Any],
+                                       warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        """Replace mapping ``name`` of ``data_source``; the save's informational notes. Its ontology mismatches go
+        to ``warnings_out``."""
         if self._storage is not None:
-            return await self._storage.save_ontology_mapping_text(data_source=data_source, name=name,
-                                                                  text=content_text(content))
+            notes = await self._storage.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                                   text=content_text(content),
+                                                                   warnings_out=warnings_out)
+            return notes + await self._refresh_concepts(data_source)
         found = await self._request(method="PUT", path=_mapping_path(data_source=data_source, name=name),
                                     json={"content": content})
+        _received(warnings_out, found)
         return found["notes"]
 
     async def delete_ontology_mapping(self, name: str, *, data_source: str) -> bool:
         """Delete a mapping; ``False`` when absent."""
         if self._storage is not None:
-            return await self._storage.delete_ontology_mapping(name, data_source)
-        return await self._request_or_none(method="DELETE",
-                                           path=_mapping_path(data_source=data_source, name=name)) is not None
+            deleted = await self._storage.delete_ontology_mapping(name, data_source)
+            if deleted:
+                _logged_notes(await self._refresh_concepts(data_source))
+            return deleted
+        found = await self._request_or_none(method="DELETE", path=_mapping_path(data_source=data_source, name=name))
+        _logged_notes(found.get("notes") if isinstance(found, dict) else None)
+        return found is not None
 
     def list_ontologies_sync(self) -> list[dict[str, str]]:
         return self._run_sync(self.list_ontologies())
@@ -592,11 +644,11 @@ class SlayerClient:
     def get_ontology_sync(self, name: str) -> str | None:
         return self._run_sync(self.get_ontology(name))
 
-    def create_ontology_sync(self, *, content: str | dict[str, Any]) -> str:
-        return self._run_sync(self.create_ontology(content=content))
+    def create_ontology_sync(self, *, content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> str:
+        return self._run_sync(self.create_ontology(content=content, warnings_out=warnings_out))
 
-    def replace_ontology_sync(self, name: str, *, content: str | dict[str, Any]) -> None:
-        self._run_sync(self.replace_ontology(name, content=content))
+    def replace_ontology_sync(self, name: str, *, content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> None:
+        self._run_sync(self.replace_ontology(name, content=content, warnings_out=warnings_out))
 
     def delete_ontology_sync(self, name: str) -> bool:
         return self._run_sync(self.delete_ontology(name))
@@ -607,12 +659,15 @@ class SlayerClient:
     def get_ontology_mapping_sync(self, name: str, *, data_source: str) -> str | None:
         return self._run_sync(self.get_ontology_mapping(name, data_source=data_source))
 
-    def create_ontology_mapping_sync(self, *, data_source: str, content: str | dict[str, Any]) -> list[str]:
-        return self._run_sync(self.create_ontology_mapping(data_source=data_source, content=content))
+    def create_ontology_mapping_sync(self, *, data_source: str, content: str | dict[str, Any],
+                                     warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        return self._run_sync(self.create_ontology_mapping(data_source=data_source, content=content,
+                                                           warnings_out=warnings_out))
 
     def replace_ontology_mapping_sync(self, name: str, *, data_source: str,
-                                      content: str | dict[str, Any]) -> list[str]:
-        return self._run_sync(self.replace_ontology_mapping(name, data_source=data_source, content=content))
+                                      content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        return self._run_sync(self.replace_ontology_mapping(name, data_source=data_source, content=content,
+                                                            warnings_out=warnings_out))
 
     def delete_ontology_mapping_sync(self, name: str, *, data_source: str) -> bool:
         return self._run_sync(self.delete_ontology_mapping(name, data_source=data_source))

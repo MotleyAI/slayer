@@ -208,5 +208,8 @@ model {
     storage -> ontology
     importers -> ontology
     surfaces -> ontology
+    engine -> ontology
+    live_schema -> ontology
+    search -> ontology
   }
 }

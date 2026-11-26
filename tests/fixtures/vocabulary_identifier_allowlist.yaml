@@ -564,6 +564,7 @@ carve_outs:
   - {name: _list_semantic_model_identities, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: _patch_semantic_model_text, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: _save_semantic_model_text_impl, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _store_semantic_model_text, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: _supports_semantic_models, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: delete_semantic_model, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: get_semantic_model_text, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
@@ -674,6 +675,9 @@ carve_outs:
   - {name: model, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_name, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_of, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
+  - {name: from_columns, file: slayer/ontology/use.py, reason: "Ossie's own wire name"}
+  - {name: model_findings, file: slayer/ontology/use.py, reason: "Ossie's semantic model (the document)"}
+  - {name: to_columns, file: slayer/ontology/use.py, reason: "Ossie's own wire name"}
   - {name: _declare_columns, file: slayer/osi/importer.py, reason: "physical database or result-set column"}
   - {name: column, file: slayer/osi/importer.py, reason: "physical database or result-set column"}
   - {name: model, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}
