@@ -81,7 +81,7 @@ jobs:
         env:
           POETRY_INSTALLER_ONLY_BINARY: ":all:"
         run: |
-          poetry run pip install --upgrade --only-binary :all: "sqlalchemy>=2.0,<2.1" duckdb duckdb-engine
+          poetry run pip install --upgrade --only-binary :all: "sqlalchemy>=2.0,<2.1" "duckdb>=1.1,<2.0" duckdb-engine
           poetry run python -c "import duckdb, duckdb_engine, sqlalchemy; print('sqlalchemy', sqlalchemy.__version__, '| duckdb', duckdb.__version__, '| duckdb-engine', duckdb_engine.__version__)"
 
       - name: Run unit tests (shard ${{ matrix.shard }}/4)
