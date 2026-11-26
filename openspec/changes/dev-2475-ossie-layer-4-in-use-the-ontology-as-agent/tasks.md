@@ -14,30 +14,30 @@
 
 ## 2. Architecture (approved wording in design.md decisions 26–29; apply verbatim)
 
-- [ ] 2.1 Add the three arrows to `architecture/model.c4`, the `ontologies` touches to `architecture/index.yaml`, the §1 sentence and §3 principles 3–4 to `architecture/python.ontology.arc42.md`; run `la-arch-diagrams`; verify `la-arch-check` and `npx -y likec4@1.47.0 validate architecture` pass once the code lands. If measured edges differ from the approved arrows, stop and ask before editing the model.
+- [x] 2.1 Add the three arrows to `architecture/model.c4`, the `ontologies` touches to `architecture/index.yaml`, the §1 sentence and §3 principles 3–4 to `architecture/python.ontology.arc42.md`; run `la-arch-diagrams`; verify `la-arch-check` and `npx -y likec4@1.47.0 validate architecture` pass once the code lands. If measured edges differ from the approved arrows, stop and ask before editing the model.
 
 ## 3. Ontology package (pure)
 
-- [ ] 3.1 Extend the concept graph with effective descriptions, `requires` (accumulated over ancestors), verbalizations and multiplicities with provenance; verify 1.2.
-- [ ] 3.2 `core.syntax`: read a `requires` entry, classify it (plain value-type subset, single-path required link, other) and build a check predicate by respelling the concept variable to a mapping value and conjoining the mapping predicate; verify the 1.7 syntax cases.
-- [ ] 3.3 Annotations per resolved mapping: field roles, dataset own / also-populated concepts, relationship line-up, filled verbalizations, domains; verify 1.2.
-- [ ] 3.4 Model checks (identifier, multiplicity) and the check plans for data checks (value constraints, required-link anti-joins as SLayer queries), plus not-checked entries; the `OntologyFinding` model; verify 1.5 and the pure half of 1.7–1.8.
+- [x] 3.1 Extend the concept graph with effective descriptions, `requires` (accumulated over ancestors), verbalizations and multiplicities with provenance; verify 1.2.
+- [x] 3.2 `core.syntax`: read a `requires` entry, classify it (plain value-type subset, single-path required link, other) and build a check predicate by respelling the concept variable to a mapping value and conjoining the mapping predicate; verify the 1.7 syntax cases.
+- [x] 3.3 Annotations per resolved mapping: field roles, dataset own / also-populated concepts, relationship line-up, filled verbalizations, domains; verify 1.2.
+- [x] 3.4 Model checks (identifier, multiplicity) and the check plans for data checks (value constraints, required-link anti-joins as SLayer queries), plus not-checked entries; the `OntologyFinding` model; verify 1.5 and the pure half of 1.7–1.8.
 
 ## 4. Storage, engine and validation
 
-- [ ] 4.1 `warnings_out` on semantic-model, ontology and mapping saves and edits through storage, the access-filtered view and the engine; mismatches of the change's mappings and datasets added on every save; verify 1.6.
-- [ ] 4.2 `validate_datasets` runs the model and data checks per datasource under the caller's storage and policies; `OntologyFinding` in `DriftReportEntry` and `REPORT_ONLY_FINDINGS`; verify 1.7–1.9.
+- [x] 4.1 `warnings_out` on semantic-model, ontology and mapping saves and edits through storage, the access-filtered view and the engine; mismatches of the change's mappings and datasets added on every save; verify 1.6.
+- [x] 4.2 `validate_datasets` runs the model and data checks per datasource under the caller's storage and policies; `OntologyFinding` in `DriftReportEntry` and `REPORT_ONLY_FINDINGS`; verify 1.7–1.9.
 
 ## 5. Surfaces
 
-- [ ] 5.1 Inspect: dataset, field and relationship annotations; ontology concept graph (compact) plus text (full); verify 1.3.
-- [ ] 5.2 Search: concept text in the rendered entity text, `concept:` entity references, embedding refresh on mapping and ontology save/edit/delete; verify 1.4.
-- [ ] 5.3 MCP, REST, CLI and Python client: save warnings, `validate_datasets` entries, tool descriptions within budget; verify 1.6, 1.9, 1.10.
+- [x] 5.1 Inspect: dataset, field and relationship annotations; ontology concept graph (compact) plus text (full); verify 1.3.
+- [x] 5.2 Search: concept text in the rendered entity text, `concept:` entity references, embedding refresh on mapping and ontology save/edit/delete; verify 1.4.
+- [x] 5.3 MCP, REST, CLI and Python client: save warnings, `validate_datasets` entries, tool descriptions within budget; verify 1.6, 1.9, 1.10.
 
 ## 6. Docs
 
-- [ ] 6.1 `docs/concepts/ontologies.md`: drop "not yet used"; state what is annotated, what is checked (and how), what is not checked; still no Layer 4 support claim. Update the `validate_datasets`, `search` and `inspect` docs (`docs/reference/mcp.md`, `docs/reference/cli.md`, `docs/reference/rest-api.md`, `docs/reference/python-client.md` as they cover them); verify every touched page is in the `zensical.toml` nav.
+- [x] 6.1 `docs/concepts/ontologies.md`: drop "not yet used"; state what is annotated, what is checked (and how), what is not checked; still no Layer 4 support claim. Update the `validate_datasets`, `search` and `inspect` docs (`docs/reference/mcp.md`, `docs/reference/cli.md`, `docs/reference/rest-api.md`, `docs/reference/python-client.md` as they cover them); verify every touched page is in the `zensical.toml` nav.
 
 ## 7. Gates
 
-- [ ] 7.1 Local test scope per the `/la:pr` flow, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), and the enforcement bundle (`la-arch-check`, `npx -y likec4@1.47.0 validate architecture`) all pass.
+- [x] 7.1 Local test scope per the `/la:pr` flow, `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), and the enforcement bundle (`la-arch-check`, `npx -y likec4@1.47.0 validate architecture`) all pass.

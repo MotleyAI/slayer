@@ -93,7 +93,7 @@ claude mcp list
 | `create_dataset` | Create a dataset from a table/SQL definition or from a query. Pass `sql_table`/`sql` with `fields` (and optional named-expression `metrics` and custom `aggregations`) for table-based, or pass `query` (a SLayer query dict) to save it as a query-backed dataset whose `fields` are populated by a save-time dry-run; `access_tags` sets the access groups allowed to see it; `semantic_model` adds a table/SQL dataset to that [semantic model](../concepts/semantic-models.md) instead of storing it standalone. |
 | `edit_dataset` | Edit an existing dataset in one call. Upserts `fields`, `metrics` (named expressions), `aggregations` and `relationships` by name (only the given fields change). Also accepts `description`, `data_source` (required when the name exists in several datasources), `new_data_source`, `default_time_dimension`, `sql_table` / `sql` / `source_queries`, `query_variables`, `hidden`, `access_tags`, `meta`, `add_filters` / `remove_filters`, and `remove: {"fields": [...], "metrics": [...], "aggregations": [...], "relationships": [...], "relationship_edges": [...]}`, applied before the upserts. A semantic-model dataset is edited inside its document. See [Customize a dataset](#customize-a-dataset). |
 | `delete_dataset` | Delete a dataset entirely (from its document, for a semantic-model dataset). |
-| `validate_datasets` | Diff the stored datasets against the live database schemas (read-only) and return, as JSON, the drift findings: the deletes needed to keep them valid plus report-only `retype`, `narrowed_access` and `untyped` entries. Params: `data_source` (omit for all). See [Schema Drift](../concepts/schema-drift.md). |
+| `validate_datasets` | Diff the stored datasets against the live database schemas (read-only) and return, as JSON, the drift findings: the deletes needed to keep them valid plus report-only `retype`, `narrowed_access` and `untyped` entries, and report-only `ontology` findings (`check`: `identifier`, `multiplicity`, `constraint`, `required_link`, `not_checked`; see [Ontologies](../concepts/ontologies.md)). Params: `data_source` (omit for all). See [Schema Drift](../concepts/schema-drift.md). |
 | `recommend_population` | Recommend the population (root dataset) for a set of items, with each item's reference path from it. Params: `items`, `data_source`, `root_hint`, `format` (`"markdown"` / `"json"`). See [Choosing a root dataset](../concepts/queries.md#choosing-a-root-dataset). |
 
 ### Semantic models
@@ -108,7 +108,7 @@ A [semantic model](../concepts/semantic-models.md) is an Ossie document holding 
 
 ### Ontologies and mappings
 
-[Ontologies and mappings](../concepts/ontologies.md) are stored and checked; queries do not use them yet. `inspect(entity_type="ontology")` shows an ontology's description and concepts, `inspect(entity_type="ontology_mapping")` a mapping's concept mappings and whether it resolves; `compact=false` adds the stored text.
+[Ontologies and mappings](../concepts/ontologies.md) are stored and checked, annotate `inspect` and `search` with their concepts, and are checked against the model and data by `validate_datasets`; queries do not read them. `inspect(entity_type="ontology")` shows an ontology's description and concept graph (each concept's type, supertypes, description, identifiers, `requires`, relationships and annotated fields), `inspect(entity_type="ontology_mapping")` a mapping's concept mappings and whether it resolves; `compact=false` adds the stored text. `inspect` of a dataset, field or relationship shows its concepts. Every create and edit here, and `edit_semantic_model`, returns the identifier and multiplicity mismatches it touches as warnings.
 
 | Tool | Description |
 |------|-------------|
@@ -171,7 +171,7 @@ Memories are free-form notes the agent saves against canonical entity strings (`
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `entities` | list[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …) or aggregated forms (`sum(revenue)` — the aggregation is stripped to the field). Drives the BM25 channel. Unresolved tokens emit warnings, not errors. |
+| `entities` | list[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …) or aggregated forms (`sum(revenue)` — the aggregation is stripped to the field). Drives the BM25 channel. Unresolved tokens emit warnings, not errors. `concept:<Concept>` / `concept:<Ontology>.<Concept>` selects every visible field and dataset mapped to that [ontology concept](../concepts/ontologies.md) or a subtype. |
 | `query` | dict \| SlayerQuery | Inline query; its `population`, dimensions, metrics, time dims, and filter are walked for canonical entities. |
 | `question` | str | Free-text question. Drives the Tantivy full-text channel and (when available) the dense-embedding channel. |
 | `datasource` | str | When set, every channel pre-filters to canonical ids rooted at that datasource. Unknown name → error. |

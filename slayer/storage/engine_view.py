@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Hashable
+from collections.abc import Awaitable, Hashable, Iterable
 from typing import Any, TypeVar
 
 from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import OntologyMismatchWarning, SlayerWarning
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
+from slayer.ontology.use import StoredUse
 from slayer.storage.base import CLIENT_SOURCE, ClientSource, StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
 from slayer.storage.ontology_documents import StoredMapping
@@ -118,8 +120,10 @@ class EngineStorage(StorageBackend):
     async def get_semantic_model_text(self, name: str, data_source: str | None = None) -> str | None:
         return await self._inner.get_semantic_model_text(name, data_source=data_source)
 
-    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str) -> None:
-        await self._inner.save_semantic_model_text(data_source=data_source, name=name, text=text)
+    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str,
+                                       warnings_out: list[SlayerWarning] | None = None) -> None:
+        await self._sourced(self._inner.save_semantic_model_text(data_source=data_source, name=name, text=text,
+                                                                 warnings_out=warnings_out))
 
     async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
         return await self._inner.delete_semantic_model(name, data_source=data_source)
@@ -134,11 +138,15 @@ class EngineStorage(StorageBackend):
         await self._sourced(self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing))
 
     async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
-                                    datasets: list[str] | None = None) -> None:
-        await self._sourced(self._inner.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets))
+                                    datasets: list[str] | None = None,
+                                    warnings_out: list[SlayerWarning] | None = None) -> None:
+        await self._sourced(self._inner.create_semantic_model(data_source=data_source, name=name, content=content,
+                                                              datasets=datasets, warnings_out=warnings_out))
 
-    async def edit_semantic_model(self, name: str, *, data_source: str, **edits: Any) -> None:
-        await self._sourced(self._inner.edit_semantic_model(name, data_source=data_source, **edits))
+    async def edit_semantic_model(self, name: str, *, data_source: str,
+                                  warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> None:
+        await self._sourced(self._inner.edit_semantic_model(name, data_source=data_source, warnings_out=warnings_out,
+                                                            **edits))
 
     async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
         return await self._inner.list_model_scoped_metrics(data_source)
@@ -149,14 +157,15 @@ class EngineStorage(StorageBackend):
     async def get_ontology_text(self, name: str) -> str | None:
         return await self._inner.get_ontology_text(name)
 
-    async def save_ontology_text(self, *, name: str, text: str) -> None:
-        await self._sourced(self._inner.save_ontology_text(name=name, text=text))
+    async def save_ontology_text(self, *, name: str, text: str,
+                                 warnings_out: list[SlayerWarning] | None = None) -> None:
+        await self._sourced(self._inner.save_ontology_text(name=name, text=text, warnings_out=warnings_out))
 
     async def delete_ontology(self, name: str) -> bool:
         return await self._sourced(self._inner.delete_ontology(name))
 
-    async def edit_ontology(self, name: str, **edits: Any) -> None:
-        await self._sourced(self._inner.edit_ontology(name, **edits))
+    async def edit_ontology(self, name: str, *, warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> None:
+        await self._sourced(self._inner.edit_ontology(name, warnings_out=warnings_out, **edits))
 
     async def list_ontology_mappings(self, data_source: str | None = None) -> list[tuple[str, str]]:
         return await self._inner.list_ontology_mappings(data_source)
@@ -164,12 +173,15 @@ class EngineStorage(StorageBackend):
     async def get_ontology_mapping_text(self, name: str, data_source: str) -> str | None:
         return await self._inner.get_ontology_mapping_text(name, data_source)
 
-    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str) -> list[str]:
+    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str,
+                                         warnings_out: list[SlayerWarning] | None = None) -> list[str]:
         return await self._sourced(self._inner.save_ontology_mapping_text(data_source=data_source, name=name,
-                                                                          text=text))
+                                                                          text=text, warnings_out=warnings_out))
 
-    async def edit_ontology_mapping(self, name: str, *, data_source: str, **edits: Any) -> list[str]:
-        return await self._sourced(self._inner.edit_ontology_mapping(name, data_source=data_source, **edits))
+    async def edit_ontology_mapping(self, name: str, *, data_source: str,
+                                    warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> list[str]:
+        return await self._sourced(self._inner.edit_ontology_mapping(name, data_source=data_source,
+                                                                     warnings_out=warnings_out, **edits))
 
     async def delete_ontology_mapping(self, name: str, data_source: str) -> bool:
         return await self._inner.delete_ontology_mapping(name, data_source)
@@ -179,6 +191,15 @@ class EngineStorage(StorageBackend):
 
     async def load_ontology_mappings(self, *, data_source: str | None = None) -> Loaded[StoredMapping]:
         return await self._sourced(self._inner.load_ontology_mappings(data_source=data_source))
+
+    async def ontology_use(self, data_source: str) -> StoredUse:
+        return await self._sourced(self._inner.ontology_use(data_source))
+
+    async def ontology_mismatches(self, *, data_source: str | None = None, mapping: str | None = None,
+                                  ontology: str | None = None,
+                                  datasets: Iterable[str] | None = None) -> list[OntologyMismatchWarning]:
+        return await self._sourced(self._inner.ontology_mismatches(data_source=data_source, mapping=mapping,
+                                                                   ontology=ontology, datasets=datasets))
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         return await self._sourced(self._inner.get_dataset(name, data_source=data_source))

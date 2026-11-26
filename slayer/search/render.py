@@ -43,6 +43,8 @@ from slayer.core.models import (
 from slayer.core.semantic_model import AIContext, AIContextObject, ModelScopedMetric
 from slayer.core.vocabulary import name_twins
 from slayer.memories.models import Memory
+from slayer.ontology.use import Annotations
+from slayer.search.concepts import dataset_concept_lines, field_concept_lines
 
 
 class RenderedEntity(BaseModel):
@@ -135,9 +137,9 @@ def render_datasource_pair(
 # ---------------------------------------------------------------------------
 
 
-def render_dataset_text(*, dataset: SlayerDataset) -> str:
+def render_dataset_text(*, dataset: SlayerDataset, concepts: Annotations | None = None) -> str:
     """Dataset doc: own metadata, non-named children in full, named children
-    by name + kind only."""
+    by name + kind only, then its ontology concepts."""
     lines: list[str] = [
         f"Dataset: {dataset.data_source}.{dataset.name}",
     ]
@@ -195,6 +197,7 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
         for j in dataset.relationships:
             pairs = "; ".join(f"{src}={tgt}" for src, tgt in j.column_pairs)
             lines.append(f"Relationship keys to {j.to}: {pairs}")
+    lines.extend(dataset_concept_lines(concepts, dataset=dataset))
     return "\n".join(lines)
 
 
@@ -232,8 +235,8 @@ def _sample_lines(field: DatasetField) -> list[str]:
     return lines
 
 
-def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
-    """Field doc: parent qualifier + per-field metadata + cached sample."""
+def render_field_text(*, dataset: SlayerDataset, field: DatasetField, concepts: Annotations | None = None) -> str:
+    """Field doc: parent qualifier + per-field metadata + cached sample + ontology concepts."""
     lines: list[str] = [
         f"Field: {dataset.data_source}.{dataset.name}.{field.name}",
         f"Type: {field_type_text(field)}",
@@ -258,6 +261,7 @@ def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
         lines.append("Primary key: yes")
     if field.load_warning:
         lines.append(f"Load warning: {field.load_warning}")
+    lines.extend(field_concept_lines(concepts, dataset=dataset, field=field.name))
     return "\n".join(lines)
 
 
@@ -421,7 +425,7 @@ def render_memory_text_for_embedding(*, memory: Memory) -> str:
 
 
 def collect_dataset_entity_pairs(
-    *, dataset: SlayerDataset, include_hidden: bool = False
+    *, dataset: SlayerDataset, include_hidden: bool = False, concepts: Annotations | None = None,
 ) -> list[RenderedEntity]:
     """Walk a dataset's subtree (dataset + fields + named metrics
     + custom aggregations) into the unified ``RenderedEntity`` shape.
@@ -450,7 +454,7 @@ def collect_dataset_entity_pairs(
     out: list[RenderedEntity] = [RenderedEntity(
         canonical_id=qualifier,
         kind="dataset",
-        text=render_dataset_text(dataset=dataset),
+        text=render_dataset_text(dataset=dataset, concepts=concepts),
         description=dataset.description,
     )]
     for field in dataset.fields:
@@ -459,7 +463,7 @@ def collect_dataset_entity_pairs(
         out.append(RenderedEntity(
             canonical_id=f"{qualifier}.{field.name}",
             kind="field",
-            text=render_field_text(dataset=dataset, field=field),
+            text=render_field_text(dataset=dataset, field=field, concepts=concepts),
             description=field.description,
         ))
     for metric in dataset.metrics:

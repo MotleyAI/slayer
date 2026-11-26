@@ -69,6 +69,7 @@ Filter rules for the new entity surfacing:
 - Refs not rooted at `datasource` (when set) drop with a warning `entity '<X>' is not rooted at datasource '<ds>'; dropped from entities bucket.` The memory side fires the symmetric `memory:<id> is not rooted at datasource '<ds>'; dropped.` when the named memory has no entities rooted at the requested datasource.
 - Refs on a hidden dataset or hidden field drop from the entities portion with `entity '<X>' is on a hidden dataset/field; dropped from entities bucket.` BM25 over original memory tags is unaffected — memories tagged with that canonical still surface.
 - An explicitly-named `memory:<id>` whose attached `Memory.query` has stale references emits the standard stale-query warning (the user explicitly asked for that memory; they deserve to know the query is broken).
+- `concept:<Concept>` / `concept:<Ontology>.<Concept>` expands to every visible field and dataset mapped to that [ontology concept](ontologies.md) or a subtype, each once; an unqualified name matches the concept in every ontology the visible mappings use, and no match drops the ref with a warning. Dataset and field texts in every channel include their concepts, `extends` chains, concept descriptions and filled verbalizations.
 
 Activated when `entities` and/or `query` is supplied to `search`.
 
