@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import (
     DataType,
     NUMERIC_DATATYPES,
+    OBSERVED_VALUE_AGGREGATIONS,
     RANK_FAMILY_TRANSFORMS,
     TEMPORAL_DATATYPES,
     TIME_TRANSFORMS,
@@ -1142,7 +1143,7 @@ def _leaf_count_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataTy
 
 def _count_type_operands(key: object) -> Sequence[object]:
     if isinstance(key, AggregateKey):
-        return [key.source] if key.agg.lower() in ("min", "max", "first", "last") else []
+        return [key.source] if key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS else []
     if isinstance(key, ArithmeticKey):
         return key.operands
     if isinstance(key, ScalarCallKey):
@@ -1503,7 +1504,6 @@ def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, Custom
 
 # Positions where TEXT beside a number reads as a number (spec: queries/mixed-type-coercion).
 _COERCED_OPS = frozenset({"==", "!=", "<", "<=", ">", ">=", *NULL_SAFE_COMPARISON_OPS, "+", "-", "*", "/", "%"})
-_TEXT_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 
 
 def _text_valued(key: object, *, field_type: FieldTypeFn) -> bool:
@@ -1515,7 +1515,7 @@ def _text_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     if isinstance(key, CastKey):
         return key.data_type is DataType.STRING
     if isinstance(key, AggregateKey):
-        return key.agg.lower() in _TEXT_PRESERVING_AGGS and _text_valued(key.source, field_type=field_type)
+        return key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS and _text_valued(key.source, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         spec = SCALAR_SPECS.get(key.name)
         if spec is not None and spec.result is not None:
@@ -1633,6 +1633,14 @@ def _coerce_in(key: InKey, *, text: Callable[[object], bool], number: Callable[[
     return key
 
 
+def _raise_numeric_text(key: ScalarCallKey, arg: object) -> NoReturn:
+    display = _operand_display(arg)
+    raise ScalarOperandTypeError(
+        summary=f"{key.name}() reads numbers, but `{display}` is TEXT.",
+        suggestion=f"Convert numbers stored as text: {key.name}(TRY_CAST({display} AS DOUBLE)).",
+    )
+
+
 def _numeric_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool]) -> list:
     """A number function's arguments: TEXT literals converted, any other TEXT refused."""
     args = list(key.args)
@@ -1640,12 +1648,18 @@ def _numeric_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool]) 
         if isinstance(arg, LiteralKey) and isinstance(arg.value, str):
             args[i] = LiteralKey(value=_number_literal(arg.value, beside=key))
         elif text(arg):
-            display = _operand_display(arg)
-            raise ScalarOperandTypeError(
-                summary=f"{key.name}() reads numbers, but `{display}` is TEXT.",
-                suggestion=f"Convert numbers stored as text: {key.name}(TRY_CAST({display} AS DOUBLE)).",
-            )
+            _raise_numeric_text(key, arg)
     return args
+
+
+def check_numeric_arguments(key: ValueKey, *, field_type: FieldTypeFn) -> None:
+    """Refuse a number function over a TEXT value (a TEXT literal aside), as a query's binding does."""
+    for k in walk_value_keys(key):
+        if isinstance(k, ScalarCallKey) and k.name in NUMERIC_ARG_SCALARS:
+            bad = next((a for a in k.args if not isinstance(a, LiteralKey) and _text_valued(a, field_type=field_type)),
+                       None)
+            if bad is not None:
+                _raise_numeric_text(k, bad)
 
 
 def _text_concat_args(

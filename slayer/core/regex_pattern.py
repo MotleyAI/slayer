@@ -126,6 +126,23 @@ RegexGroup.model_rebuild()
 RegexRepeat.model_rebuild()
 
 
+def matches_empty(pattern: RegexPattern) -> bool:
+    """Whether ``pattern`` can match an empty string somewhere (an anchor matches one)."""
+    return _alt_empty(pattern.root)
+
+
+def _alt_empty(alt: RegexAlt) -> bool:
+    return any(all(_item_empty(i) for i in seq) for seq in alt.branches)
+
+
+def _item_empty(item: RegexItem) -> bool:
+    if isinstance(item, RegexRepeat):
+        return item.low == 0 or _item_empty(item.node)
+    if isinstance(item, RegexGroup):
+        return _alt_empty(item.body)
+    return isinstance(item, RegexAnchor)
+
+
 class _Parser:
     def __init__(self, text: str) -> None:
         self.text = text
@@ -337,5 +354,5 @@ def _replacement_escape(nxt: str, *, groups: int) -> str | RegexGroupRef:
 __all__ = [
     "MAX_REPEAT", "RegexAlt", "RegexAnchor", "RegexAny", "RegexAtom", "RegexBracket", "RegexChar", "RegexClass",
     "RegexGroup", "RegexGroupRef", "RegexItem", "RegexPattern", "RegexPatternError", "RegexRange",
-    "RegexRepeat", "RegexReplacement", "parse_regex", "parse_replacement",
+    "RegexRepeat", "RegexReplacement", "matches_empty", "parse_regex", "parse_replacement",
 ]

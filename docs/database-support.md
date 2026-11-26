@@ -93,6 +93,7 @@ Each database runs a [portable library function](concepts/references.md) only wh
 | `concat_ws` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `contains` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `cos` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `degrees` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `div` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `ends_with` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `greatest` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -105,6 +106,8 @@ Each database runs a [portable library function](concepts/references.md) only wh
 | `lpad` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `ltrim` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `radians` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `regexp_count` | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | — | — | — |
 | `regexp_extract` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `regexp_like` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `regexp_replace` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
@@ -122,6 +125,8 @@ Each database runs a [portable library function](concepts/references.md) only wh
 | `trim` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `try_cast` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 
+`regexp_count` of a pattern that can match the empty string (`'x*'`) runs only on Postgres; elsewhere it fails at plan time.
+
 ## Identifier length limits
 
 Some databases cap identifier length (Postgres is the tightest at 63 bytes, and
@@ -137,11 +142,12 @@ shows the trimmed form, so account for it if you introspect the SQL.
 ## Aggregation support
 
 Most aggregations (`sum`, `avg`, `min`, `max`, `count`, `count_distinct`,
-`count_distinct_approx`, `first`, `last`, `weighted_avg`) work on every
+`sum_distinct`, `avg_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`) work on every
 supported database. `count_distinct_approx` is dialect-aware (see
 [below](#count_distinct_approx-by-dialect)) but always available — it falls
 back to an exact `COUNT(DISTINCT)` where there's no native function.
-`median`, `percentile`, the variance/stddev family (`stddev_samp`,
+`median`, `percentile`, `percentile_disc` (see [below](#discrete-and-approximate-percentiles-by-dialect)),
+the variance/stddev family (`stddev_samp`,
 `stddev_pop`, `var_samp`, `var_pop`), and the paired statistics
 (`corr`, `covar_samp`, `covar_pop`) need dialect-specific handling
 because no standard syntax works everywhere:
@@ -151,12 +157,30 @@ because no standard syntax works everywhere:
 | Postgres | yes | yes | yes | yes | yes | Native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`, native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
 | DuckDB | yes | yes | yes | yes | yes | sqlglot rewrites ordered-set percentiles to `QUANTILE_CONT`. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*` (sqlglot may emit `VARIANCE` for `var_samp`). |
 | SQLite | yes | yes | yes | yes | **no** | Python aggregate UDFs registered on every connection — see "SQLite caveats" below. |
-| ClickHouse | yes | yes | yes | yes | yes | Native `median(x)`, parametric `quantile(p)(x)`, native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
+| ClickHouse | yes | yes | yes | yes | yes | The exact `quantileExactInclusive(p)(x)`, NULL over no values; native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
 | Snowflake | yes | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. No native `LOG10` or `LOG2`; both render as `LOG(base, x)`. |
 | MySQL | yes | yes | yes | **no** | **no** | `MEDIAN`/`PERCENTILE_CONT` interpolate over `ROW_NUMBER`/`COUNT` windows in a subquery. No native `CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. |
 | SQL Server (T-SQL) | yes | yes | yes | yes (decomposed) | **no** | T-SQL's `PERCENTILE_CONT` is window-only: SLayer computes it per row in a subquery and regroups. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
 | Trino | yes | yes | yes | yes | yes | `MEDIAN`/`PERCENTILE_CONT` interpolate over `ROW_NUMBER`/`COUNT` windows in a subquery, exactly. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
 | BigQuery | yes | yes | yes | yes | yes | BigQuery's `PERCENTILE_CONT` is analytic-only: SLayer computes it per row in a subquery and regroups. Native `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP`/`CORR`/`COVAR_SAMP`/`COVAR_POP` (sqlglot may emit `VARIANCE` for `var_samp`). |
+
+`median` and `percentile` are exact on every database above, on groups of any size.
+
+### Discrete and approximate percentiles by dialect
+
+`percentile_disc(x, p)` returns an observed value of any ordered type, exactly; `percentile_approx(x, p)` uses the
+database's own approximate percentile where one takes any fraction, else the exact `percentile`, and is a float
+everywhere.
+
+| Engine | `percentile_disc` | `percentile_approx` |
+|---|---|---|
+| Postgres | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)` | `percentile` (exact) |
+| Snowflake | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)` over a number, the ranked subquery otherwise | `APPROX_PERCENTILE(x, p)` |
+| DuckDB | `QUANTILE_DISC` | `APPROX_QUANTILE(x, p)` |
+| SQLite | the `percentile_disc(x, p)` UDF | `percentile` (exact) |
+| MySQL / Trino / ClickHouse | the value ranked ⌈p·n⌉ over `ROW_NUMBER`/`COUNT` windows in a subquery | exact on MySQL; `approx_percentile(x, p)` on Trino; `quantile(p)(x)` on ClickHouse |
+| SQL Server (T-SQL) | windowed `PERCENTILE_DISC` over a number, the ranked subquery otherwise | `APPROX_PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` |
+| BigQuery | analytic `PERCENTILE_DISC(x, p)` per row, regrouped | `percentile` (exact) |
 
 ### `count_distinct_approx` by dialect
 
@@ -210,7 +234,7 @@ connection via SQLAlchemy's `connect` event (see
 - `log(B, X)` — base-first 2-arg logarithm (log_B(X)), registered on **every** SQLite version, in the same argument order as SQLite ≥3.35's built-in and Postgres's `LOG(b, x)`.
 - `pow(x, n)` and `power(x, n)` — both spellings registered (sqlglot may emit
   either).
-- The portable library's own `slayer_*` functions: `slayer_like_glob`, `slayer_regexp_like` / `_extract` / `_replace`, `slayer_try_cast`, `slayer_date_add`, `slayer_lpad` / `_rpad` / `_reverse` / `_repeat` / `_split_part` / `_concat_ws`, `slayer_trunc`, `slayer_fmod`, `slayer_pi`, `slayer_cbrt` and the trigonometric `slayer_sin` … `slayer_atan2`.
+- The portable library's own `slayer_*` functions: `slayer_like_glob`, `slayer_regexp_like` / `_extract` / `_replace` / `_count`, `slayer_try_cast`, `slayer_date_add`, `slayer_lpad` / `_rpad` / `_reverse` / `_repeat` / `_split_part` / `_concat_ws`, `slayer_trunc` (one and two arguments), `slayer_fmod`, `slayer_pi`, `slayer_cbrt`, `slayer_radians`, `slayer_degrees` and the trigonometric `slayer_sin` … `slayer_atan2`.
 
 NULL inputs return NULL on every UDF, and so do math-domain inputs (`ln(0)`,
 `sqrt(-1)`, `pow(0, -1)`), as on every database (overflow still raises).
@@ -228,7 +252,7 @@ register_sqlite_udfs(connection)
 
 ### MySQL caveats
 
-MySQL has no `PERCENTILE_CONT` or `MEDIAN`: SLayer ranks each group's values with `ROW_NUMBER` and `COUNT` windows in
+MySQL has no `PERCENTILE_CONT`, `PERCENTILE_DISC` or `MEDIAN`: SLayer ranks each group's values with `ROW_NUMBER` and `COUNT` windows in
 a subquery and interpolates between the two ranks either side of the requested percentile, exactly. It has no native `CORR` or `COVAR_SAMP` /
 `COVAR_POP` and no Python-UDF mechanism (UDFs are loadable C `.so` files requiring server-side install); SLayer raises
 `NotImplementedError` for those at SQL generation time.
@@ -282,6 +306,8 @@ Other T-SQL specifics surfaced by the dialect:
 
 `TRY_CAST`'s NULL for an unconvertible value, the text-to-number coercion that reads through it, and `json_value`'s NULL for malformed JSON need Postgres 16 (`pg_input_is_valid`); on an older or unknown server they are a plain cast, so one bad row fails the query.
 
+`regexp_count` needs Postgres 15; an older server fails at plan time.
+
 `ANY_VALUE` also needs Postgres 16; on an older or unknown server SLayer reads `mode() WITHIN GROUP`, which needs a sortable type, so a `json`, `xml` or geometric value there fails the query.
 
 ### ClickHouse caveats
@@ -321,8 +347,8 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
 The live suite runs against the `memory` catalog in a `trinodb/trino` container.
 Set `database: <catalog>/<schema>` (e.g. `memory/default`) on the datasource.
 
-- **Exact `median` / `percentile`.** Trino has no exact `PERCENTILE_CONT`: SLayer ranks each group's values with
-  `ROW_NUMBER` and `COUNT` windows in a subquery and interpolates, as on MySQL.
+- **Exact `median` / `percentile` / `percentile_disc`.** Trino has no exact `PERCENTILE_CONT` or `PERCENTILE_DISC`:
+  SLayer ranks each group's values with `ROW_NUMBER` and `COUNT` windows in a subquery, as on MySQL.
 - **No FK introspection.** Trino connectors expose no foreign keys, so
   auto-ingestion discovers no relationships; hand-declare `DatasetRelationship`s. Table and column
   comments are imported.

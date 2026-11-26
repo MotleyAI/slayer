@@ -26,6 +26,7 @@ from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.core.errors import TimeZoneError
 from slayer.sql.dialects._windows_zones import WINDOWS_ZONES
 from slayer.sql.dialects.base import (
+    AngleFn,
     PORTABLE_LIBRARY,
     NativeFn,
     TransactionMode,
@@ -50,7 +51,14 @@ from slayer.sql.dialects.base import (
     _build_covar_decomposition,
     iso_text,
 )
-from slayer.sql.dialects._ordered_set_split import split_percentile_selects
+from slayer.sql.dialects._ordered_set_split import (
+    Columns,
+    PercentileColumns,
+    complement_fraction,
+    marked_ranked,
+    ranked_unless_numeric,
+    split_percentile_selects,
+)
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import ResultColumnType, info_schema_type, result_column_type_of_name
 
@@ -200,13 +208,32 @@ def _bit_value(predicate: Expr) -> Expression:
     return exp.Cast(this=case, to=exp.DataType.build("BIT", dialect="tsql"))
 
 
-def _windowed_percentile(p: Expr, value: Expr, partition: Sequence[Expr]):
-    """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs
-    are skipped, so they sort natively (one ORDER BY key is all it takes)."""
-    key = exp.Ordered(this=value.copy(), nulls_first=True)
-    window = exp.Window(this=exp.WithinGroup(this=exp.PercentileCont(this=p.copy()), expression=exp.Order(expressions=[key])),
-                        partition_by=[k.copy() for k in partition])
-    return [window], lambda reads: exp.Max(this=reads[0])
+def _windowed(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
+    """``F(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs are skipped,
+    so they sort natively (one ORDER BY key is all it takes). A descending ``PERCENTILE_CONT`` reads ``1 − p``
+    ascending; a descending ``PERCENTILE_DISC`` keeps its direction (no ascending fraction picks its value)."""
+
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+        flip = descending and function is exp.PercentileCont
+        reversed_key = descending and not flip
+        key = exp.Ordered(this=value.copy(), nulls_first=not reversed_key)  # T-SQL's own NULL placement either way
+        if reversed_key:
+            key.set("desc", True)
+        fraction = complement_fraction(p) if flip else p.copy()
+        window = exp.Window(this=exp.WithinGroup(this=function(this=fraction), expression=exp.Order(expressions=[key])),
+                            partition_by=[k.copy() for k in partition])
+        return [window], lambda reads: exp.Max(this=reads[0])
+
+    return columns
+
+
+def _percentile_columns(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    """The native windowed percentiles; a ``PERCENTILE_DISC`` over a non-numeric value from ranks."""
+    if isinstance(node.this, exp.PercentileCont):
+        return _windowed(exp.PercentileCont)
+    if isinstance(node.this, exp.PercentileDisc):
+        return marked_ranked(node) or _windowed(exp.PercentileDisc)
+    return None
 
 
 #: Column-free yet per-row: such a GROUP BY key still splits groups.
@@ -457,6 +484,15 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement), lit(1), lit(0), lit("c"))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        self._require_regex("regexp_count")
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern, case_insensitive=case_insensitive), lit(1),
+                    lit("c"))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """``RADIANS`` / ``DEGREES`` keep an integer argument's type: read it as a FLOAT."""
+        return super().angle(fn, exp.Cast(this=value.copy(), to=exp.DataType.build("FLOAT")))
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """On 2022+ (and an unknown version) a scalar the lax read leaves NULL is re-read strictly, so one over
         4,000 characters raises instead of reading NULL; ``ISJSON(…, VALUE)`` takes a scalar document, which
@@ -626,10 +662,25 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             return node
         return tree.transform(_fix)
 
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """Native over a number; ranked otherwise (SQL Server's ``PERCENTILE_DISC`` orders numbers only)."""
+        node = super().build_percentile_disc(p=p, col_expr=col_expr, input_type=input_type)
+        return ranked_unless_numeric(node, input_type=input_type) if isinstance(node, exp.WithinGroup) else node
+
+    def build_percentile_approx(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType] = None,
+    ) -> Expression:
+        """``APPROX_PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` (SQL Server 2022)."""
+        key = exp.Ordered(this=col_expr.copy(), nulls_first=True)
+        return exp.WithinGroup(this=exp.Anonymous(this="APPROX_PERCENTILE_CONT", expressions=[p.copy()]),
+                               expression=exp.Order(expressions=[key]))
+
     def rewrite_statement(self, statement: Expression) -> Expression:
         """T-SQL predicates are conditions only (one in a value position becomes its BIT value); ``PERCENTILE_CONT``
         is a window function only; GROUP BY keys read a column."""
-        statement = split_percentile_selects(statement.copy(), columns=_windowed_percentile)
+        statement = split_percentile_selects(statement.copy(), columns=_percentile_columns)
         for node in reversed(list(statement.dfs())):
             if _in_condition_position(node):
                 continue
@@ -670,6 +721,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                 this=exp.Literal.number(3), expression=exp.Paren(this=_days_since_monday(expr)),
             ), expr.copy())
             return _datepart("YEAR", thursday)
+        if part is DatePart.MILLISECOND:
+            return exp.Floor(this=exp.Div(this=_datepart("MICROSECOND", expr), expression=lit(1000)))
         return _datepart(_DATEPART_UNITS[part], expr)
 
     def build_date_diff(

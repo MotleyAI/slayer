@@ -57,7 +57,7 @@ from slayer.sql.dialects.base import (
     iso_text,
     zone_name,
 )
-from slayer.sql.dialects._ordered_set_split import interpolated_percentile, split_percentile_selects
+from slayer.sql.dialects._ordered_set_split import ranked_percentiles, split_percentile_selects
 from slayer.sql.dialects.patterns import ICU, RegexFlavour
 from slayer.sql.dialects.reflection import (
     ResultColumnType,
@@ -143,7 +143,7 @@ class MysqlDialect(SqlDialect):
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
     regex_flavour: ClassVar[Optional[RegexFlavour]] = ICU
-    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY - {"regexp_count"}
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "GREATEST", "LEAST",
     })
@@ -380,7 +380,7 @@ class MysqlDialect(SqlDialect):
 
         sqlglot's emulation inlines an aliased projection, which ``ONLY_FULL_GROUP_BY`` can fail to match.
         """
-        statement = split_percentile_selects(statement.copy(), columns=interpolated_percentile)
+        statement = split_percentile_selects(statement.copy(), columns=ranked_percentiles)
         for select in statement.find_all(exp.Select):
             order = select.args.get("order")
             if order is not None:
@@ -423,6 +423,8 @@ class MysqlDialect(SqlDialect):
             )
         if part is DatePart.DAY_OF_WEEK:
             return exp.Add(this=exp.Anonymous(this="WEEKDAY", expressions=[expr]), expression=exp.Literal.number(1))
+        if part is DatePart.MILLISECOND:
+            return exp.Floor(this=exp.Div(this=exp.Anonymous(this="MICROSECOND", expressions=[expr]), expression=lit(1000)))
         return exp.Anonymous(this=_MYSQL_PART_FUNCTIONS[part], expressions=[expr])
 
     def _day_gap(self, *, start: Expression, end: Expression) -> Expression:

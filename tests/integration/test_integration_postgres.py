@@ -27,6 +27,7 @@ from tests.integration._consecutive_periods_calendar import (
     seed_statements,
     streak_dataset,
 )
+from tests.integration import _dev2458_matrix as dev2458
 
 pytest.importorskip("pytest_postgresql")
 
@@ -861,6 +862,37 @@ class TestPostgresMedianPercentile:
         assert by_status["completed"] == pytest.approx(150)
         assert by_status["pending"] == pytest.approx(175)
         assert by_status["cancelled"] == pytest.approx(75)
+
+
+@pytest.fixture(scope="module")
+def _pg_dev2458_storage(postgresql_proc, tmp_path_factory):
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        with conn.cursor() as cur:
+            for stmt in dev2458.statements(dialect="postgres"):
+                cur.execute(cast(LiteralString, stmt))
+        conn.commit()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("pg_dev2458")))
+        info = postgresql_proc
+        run_sync(storage.save_datasource(DatasourceConfig(
+            name="testpg", type="postgres", host=info.host, port=info.port, database=db_name, username=info.user,
+            password="")))
+        for model in dev2458.datasets(data_source="testpg"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
+
+
+@pytest.mark.integration
+class TestPostgresDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles."""
+
+    @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_exact],
+                             ids=lambda c: c.__name__)
+    async def test_matrix(self, _pg_dev2458_storage, check) -> None:
+        await dev2458.run_check(check, storage=_pg_dev2458_storage)
 
 
 @pytest.mark.integration

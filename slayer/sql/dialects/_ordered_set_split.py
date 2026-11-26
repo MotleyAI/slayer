@@ -1,4 +1,4 @@
-"""``PERCENTILE_CONT … WITHIN GROUP`` on a database without it as a GROUP BY aggregate.
+"""``PERCENTILE_CONT`` / ``PERCENTILE_DISC … WITHIN GROUP`` on a database without it as a GROUP BY aggregate.
 
 Each SELECT reading one is split in two: a row-level SELECT over the same FROM / WHERE computing, per row, the window
 values the database has, partitioned by the GROUP BY keys; and a regrouping SELECT over it in which each percentile
@@ -8,30 +8,68 @@ becomes an aggregate of those values and every other column reads its row-level 
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Callable, Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
 
+from slayer.core.enums import DataType, TypeKind, kind_of
+
 _ROWS = "__slayer_os"
 _COLUMN = "__slayer_o"
 
-#: ``(p, value, partition)`` → ``(row-level window columns, pick over their outer reads)``.
-PercentileColumns = Callable[
-    [Expr, Expr, Sequence[Expr]],
-    Tuple[Sequence[Expr], Callable[[List[exp.Column]], Expr]],
-]
+#: Row-level window columns, and the pick over their outer reads.
+Columns = Tuple[Sequence[Expr], Callable[[List[exp.Column]], Expr]]
 
 
-def interpolated_percentile(p: Expr, value: Expr, partition: Sequence[Expr]
-                            ) -> Tuple[Sequence[Expr], Callable[[List[exp.Column]], Expr]]:
-    """Exact ``PERCENTILE_CONT`` from ``ROW_NUMBER`` / ``COUNT`` windows: the non-NULL values ranked per group,
-    interpolated between ranks ``⌊h⌋`` and ``⌈h⌉`` at ``h = 1 + p·(n − 1)``."""
+class PercentileColumns(Protocol):
+    """The columns computing a percentile at ``p`` of ``value`` per ``partition``, ordered ``descending`` or not."""
+
+    def __call__(self, p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns: ...
+
+
+#: The columns builder splitting an ordered-set node, ``None`` to leave it in place.
+ColumnsFor = Callable[[exp.WithinGroup], Optional[PercentileColumns]]
+#: Marks a ``PERCENTILE_DISC`` node the split ranks even where the database has a native one.
+RANKED = "__slayer_ranked_percentile"
+
+
+def _ranked(value: Expr, partition: Sequence[Expr]) -> List[Expr]:
+    """Per row: its rank among the group's non-NULL values, the group's non-NULL count, and the value."""
     is_null = exp.Case(ifs=[exp.If(this=exp.Is(this=value.copy(), expression=exp.Null()),
                                    true=exp.Literal.number(1))], default=exp.Literal.number(0))
     rank = exp.Window(this=exp.RowNumber(), partition_by=[*(k.copy() for k in partition), is_null],
                       order=exp.Order(expressions=[exp.Ordered(this=value.copy(), nulls_first=True)]))
     count = exp.Window(this=exp.Count(this=value.copy()), partition_by=[k.copy() for k in partition])
+    return [rank, count, value.copy()]
+
+
+def _value_at(rn: Expr, v: Expr, rank: Expr) -> Expression:
+    """The non-NULL value ranked ``rank`` in its group."""
+    hit = exp.and_(exp.EQ(this=rn.copy(), expression=rank), exp.Not(this=exp.Is(this=v.copy(), expression=exp.Null())))
+    return exp.Max(this=exp.Case(ifs=[exp.If(this=hit, true=v.copy())]))
+
+
+def discrete_percentile(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+    """Exact ``PERCENTILE_DISC`` from ``ROW_NUMBER`` / ``COUNT`` windows: the non-NULL value ranked ``r = ⌈p·n⌉`` per
+    group (rank 1 at ``p = 0``), ascending rank ``n − r + 1`` when ``descending``."""
+
+    def pick(reads: List[exp.Column]) -> Expr:
+        rn, n, v = reads
+        zero = isinstance(p, exp.Literal) and p.is_number and Decimal(p.this) == 0
+        rank: Expression = exp.Literal.number(1) if zero else exp.Ceil(this=exp.Mul(this=p.copy(), expression=n.copy()))
+        if descending:
+            rank = exp.Add(this=exp.Sub(this=n.copy(), expression=rank), expression=exp.Literal.number(1))
+        return _value_at(rn, v, rank)
+
+    return _ranked(value, partition), pick
+
+
+def interpolated_percentile(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+    """Exact ``PERCENTILE_CONT`` from ``ROW_NUMBER`` / ``COUNT`` windows: the non-NULL values ranked per group,
+    interpolated between ranks ``⌊h⌋`` and ``⌈h⌉`` at ``h = 1 + p·(n − 1)`` (``p`` complemented when
+    ``descending``)."""
+    p = complement_fraction(p) if descending else p
 
     def pick(reads: List[exp.Column]) -> Expr:
         rn, n, v = reads
@@ -41,9 +79,7 @@ def interpolated_percentile(p: Expr, value: Expr, partition: Sequence[Expr]
                 this=p.copy(), expression=exp.Paren(this=exp.Sub(this=size, expression=exp.Literal.number(1)))))
 
         def at(rank_of: type[exp.Func]) -> Expression:
-            hit = exp.and_(exp.EQ(this=rn.copy(), expression=rank_of(this=position(n.copy()))),
-                           exp.Not(this=exp.Is(this=v.copy(), expression=exp.Null())))
-            return exp.Max(this=exp.Case(ifs=[exp.If(this=hit, true=v.copy())]))
+            return _value_at(rn, v, rank_of(this=position(n.copy())))
 
         h = position(exp.Max(this=n.copy()))
         fraction = exp.Paren(this=exp.Sub(this=h, expression=exp.Floor(this=h.copy())))
@@ -51,19 +87,38 @@ def interpolated_percentile(p: Expr, value: Expr, partition: Sequence[Expr]
         return exp.Add(this=low, expression=exp.Mul(
             this=fraction, expression=exp.Paren(this=exp.Sub(this=at(exp.Ceil), expression=low.copy()))))
 
-    return [rank, count, value.copy()], pick
+    return _ranked(value, partition), pick
 
 
-def is_percentile_cont(node: Expr) -> bool:
-    return isinstance(node, exp.WithinGroup) and isinstance(node.this, exp.PercentileCont)
+def ranked_unless_numeric(node: exp.WithinGroup, *, input_type: Optional[DataType]) -> exp.WithinGroup:
+    """``node`` marked for ranking unless it orders numbers (a native ``PERCENTILE_DISC`` that orders numbers only)."""
+    if kind_of(input_type) not in (TypeKind.INT, TypeKind.DOUBLE):
+        node.meta[RANKED] = True
+    return node
 
 
-def split_percentile_selects(statement: Expression, *, columns: PercentileColumns) -> Expression:
-    """``statement`` with every SELECT reading ``PERCENTILE_CONT … WITHIN GROUP`` split as above."""
+def marked_ranked(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    """Ranks only the nodes marked for it."""
+    return discrete_percentile if node.meta.get(RANKED) else None
+
+
+def ranked_percentiles(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    """Both percentiles from ranks: for a database with neither as an aggregate."""
+    if isinstance(node.this, exp.PercentileCont):
+        return interpolated_percentile
+    return discrete_percentile if isinstance(node.this, exp.PercentileDisc) else None
+
+
+def split_percentile_selects(statement: Expression, *, columns: ColumnsFor) -> Expression:
+    """``statement`` with every SELECT reading an ordered-set node ``columns`` splits, split as above."""
     for select in list(statement.find_all(exp.Select)):  # NOSONAR(S7504) — each split edits the tree being walked
-        if any(is_percentile_cont(n) for n in _own_nodes(select)):
+        if any(_splits(n, columns) for n in _own_nodes(select)):
             _split(select, columns=columns)
     return statement
+
+
+def _splits(node: Expr, columns: ColumnsFor) -> bool:
+    return isinstance(node, exp.WithinGroup) and columns(node) is not None
 
 
 def _outer_parts(select: exp.Select) -> List[Expr]:
@@ -89,7 +144,7 @@ def _grouping_term(key: Expr, select: exp.Select) -> Expr:
     return (key.this if isinstance(key, exp.Alias) else key).copy()
 
 
-def _complement(p: Expr) -> Expr:
+def complement_fraction(p: Expr) -> Expr:
     """``1 − p``; a literal for a literal ``p`` (SQL Server and BigQuery take only a literal fraction)."""
     if isinstance(p, exp.Literal) and p.is_number:
         return exp.Literal.number(str(Decimal(1) - Decimal(p.this)))
@@ -113,15 +168,15 @@ def _row_reads(select: exp.Select, nodes: List[Expr], percentiles: List[Expr]) -
             and (c.table or c.name not in aliases or id(c) in in_projections)]
 
 
-def _split(select: exp.Select, *, columns: PercentileColumns) -> None:
+def _split(select: exp.Select, *, columns: ColumnsFor) -> None:
     select.set("expressions", [_named(p) for p in select.expressions])
     group = select.args.get("group")
     partition = [_grouping_term(k, select) for k in group.expressions] if group is not None else []
     nodes = list(_own_nodes(select))
     if any(isinstance(n, exp.Star) and not isinstance(n.parent, exp.AggFunc) for n in nodes):
-        raise ValueError("PERCENTILE_CONT beside a * projection cannot be split into a window subquery")
-    percentiles = [n for n in nodes if is_percentile_cont(n)]
-    reads = _row_reads(select, nodes, percentiles)
+        raise ValueError("A percentile beside a * projection cannot be split into a window subquery")
+    builders = [(n, b) for n in nodes if isinstance(n, exp.WithinGroup) and (b := columns(n)) is not None]
+    reads = _row_reads(select, nodes, [n for n, _ in builders])
     names: Dict[Tuple[str, str], str] = {}
     projected: List[Expr] = []
 
@@ -133,11 +188,9 @@ def _split(select: exp.Select, *, columns: PercentileColumns) -> None:
         if ident not in names:
             names[ident] = f"{_COLUMN}{len(projected)}"
             projected.append(column.copy().as_(names[ident]))
-    for node in percentiles:
+    for node, builder in builders:
         p, ordered = node.this.this, node.expression.expressions[0]
-        if ordered.args.get("desc"):  # the p-th value descending is the (1 − p)-th ascending
-            p = _complement(p)
-        windowed, pick = columns(p, ordered.this, partition)
+        windowed, pick = builder(p, ordered.this, partition, descending=bool(ordered.args.get("desc")))
         outer: List[exp.Column] = []
         for window in windowed:
             name = f"{_COLUMN}{len(projected)}"

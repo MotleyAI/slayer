@@ -59,6 +59,7 @@ from tests._dev2137_fixtures import assignments_dataset, assignments_statements,
 from tests._engine_helpers import disposable_engine
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
+from tests.integration import _dev2458_matrix as dev2458
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -576,6 +577,22 @@ class TestTrinoMedianPercentile:
         )
         assert dry.sql is not None
         assert "APPROX_PERCENTILE" not in dry.sql.upper()
+
+
+@pytest.fixture(scope="module")
+def _trino_dev2458(trino_container, tmp_path_factory):
+    with _seeded_schema(trino_container, dev2458.statements(dialect="trino")) as schema:
+        ds = _ds_config(trino_container, schema)
+        yield _storage(str(tmp_path_factory.mktemp("trino_dev2458")), ds, dev2458.datasets(data_source=_DS))
+
+
+@pytest.mark.integration
+class TestTrinoDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles — the ordered-set split's discrete pick and native approx_percentile."""
+
+    @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_types], ids=lambda c: c.__name__)
+    async def test_matrix(self, _trino_dev2458, check) -> None:
+        await dev2458.run_check(check, storage=_trino_dev2458)
 
 
 # ---------------------------------------------------------------------------
@@ -1216,7 +1233,7 @@ class TestTrinoStatementTimeout:
 # ---------------------------------------------------------------------------
 
 _DATE_CASES = matrix_cases()
-assert len(_DATE_CASES) == 116
+assert len(_DATE_CASES) == 118
 
 
 @pytest.fixture(scope="module")
@@ -1274,6 +1291,21 @@ class TestTrinoDateFunctions:
         buckets = {int(r["dt.id"]): r["dt.t1"] for r in resp.data}
         assert str(buckets[1])[:19] == "2024-01-31 23:00:00"
         assert str(buckets[4])[:19] == "2024-06-02 10:00:00"
+
+
+@pytest.mark.integration
+class TestTrinoTruncation:
+    """ROUND and ABS overflow at an integer's limits; ROUND takes INTEGER digits only."""
+
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("trunc(2147483647, -1)", 2147483640), ("trunc(-27, -1)", -20), ("trunc(orders.id * 1000 + 7, -1)", 1000),
+        ("trunc(2.789, CAST(orders.id AS BIGINT))", 2.7), ("round(2.789, CAST(orders.id AS BIGINT))", 2.8),
+        ("trunc(2, CAST(2147483648 AS BIGINT))", 2), ("round(2.5, CAST(-2147483649 AS BIGINT))", 0),
+        ("trunc(2.5, 2147483648)", 2.5), ("trunc(2.5, 50)", 2.5), ("trunc(2.5, -50)", 0),
+        ("trunc(2.5, -38)", 0), ("trunc(2.5, 38)", 2.5),
+    ])
+    async def test_value(self, trino_dates: SlayerQueryEngine, expr: str, expected: float) -> None:
+        assert await _order_value(trino_dates, expr, order_id=1) == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------

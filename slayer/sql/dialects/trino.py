@@ -24,7 +24,7 @@ from slayer.sql.dialects.base import (
     iso_text,
     zone_name,
 )
-from slayer.sql.dialects._ordered_set_split import interpolated_percentile, split_percentile_selects
+from slayer.sql.dialects._ordered_set_split import ranked_percentiles, split_percentile_selects
 from slayer.sql.dialects.patterns import JAVA, RegexFlavour
 
 if TYPE_CHECKING:
@@ -87,6 +87,7 @@ class PrestoFamilyDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
     approx_count_distinct_native: bool = True
+    approx_percentile_native: bool = True
     native_lists: ClassVar[bool] = True
     regex_flavour: ClassVar[Optional[RegexFlavour]] = JAVA
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
@@ -95,8 +96,8 @@ class PrestoFamilyDialect(SqlDialect):
     extremum_propagates_null: ClassVar[bool] = True
 
     def rewrite_statement(self, statement: Expression) -> Expression:
-        """``PERCENTILE_CONT`` exactly: sqlglot would emit the approximate ``APPROX_PERCENTILE``."""
-        return split_percentile_selects(statement.copy(), columns=interpolated_percentile)
+        """Both percentiles exactly: sqlglot would emit the approximate ``APPROX_PERCENTILE``."""
+        return split_percentile_selects(statement.copy(), columns=ranked_percentiles)
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
@@ -133,6 +134,9 @@ class PrestoFamilyDialect(SqlDialect):
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern, case_insensitive=case_insensitive))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_EXTRACT_SCALAR", value, lit(_presto_path(path)))
@@ -187,6 +191,14 @@ class PrestoFamilyDialect(SqlDialect):
         DatePart.ISO_YEAR: "YEAR_OF_WEEK", DatePart.DAY_OF_WEEK: "DAY_OF_WEEK",
         DatePart.DAY_OF_YEAR: "DAY_OF_YEAR",
     }
+
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:
+        """``TRUNCATE(x, d)`` takes only a DECIMAL."""
+        return self.rounded_trunc(value, digits, integer=integer)
+
+    def millisecond_part(self, expr: Expression) -> Expression:
+        """``EXTRACT`` has no sub-second field; ``MILLISECOND`` truncates."""
+        return exp.Cast(this=anon("MILLISECOND", expr), to=exp.DataType.build("INT"))
 
     def _interval(self, amount: int, unit: exp.Var) -> exp.Interval:
         """The count is a quoted string: ``INTERVAL '1' DAY``."""

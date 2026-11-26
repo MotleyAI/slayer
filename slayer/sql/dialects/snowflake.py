@@ -28,6 +28,7 @@ from slayer.sql.dialects.base import (
     iso_text,
     zone_name,
 )
+from slayer.sql.dialects._ordered_set_split import marked_ranked, ranked_unless_numeric, split_percentile_selects
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 from slayer.sql.dialects.reflection import (
@@ -175,6 +176,7 @@ class SnowflakeDialect(SqlDialect):
     log2_native: bool = False
     max_identifier_bytes: int | None = 255
     approx_count_distinct_native: bool = True
+    approx_percentile_native: bool = True
     row_number_needs_order: bool = True
     url_scheme: str | None = "snowflake"
     install_extra: str | None = "snowflake"
@@ -197,6 +199,17 @@ class SnowflakeDialect(SqlDialect):
         """``TIMESTAMP_NTZ``: a bare ``TIMESTAMP`` follows the session's ``TIMESTAMP_TYPE_MAPPING``."""
         return exp.DataType.build("TIMESTAMPNTZ")
 
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """Native over a number; ranked otherwise (Snowflake's ``PERCENTILE_DISC`` orders numbers only)."""
+        node = super().build_percentile_disc(p=p, col_expr=col_expr, input_type=input_type)
+        return ranked_unless_numeric(node, input_type=input_type) if isinstance(node, exp.WithinGroup) else node
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """A ``PERCENTILE_DISC`` over a non-number is ranked in a subquery."""
+        return split_percentile_selects(statement.copy(), columns=marked_ranked)
+
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         return info_schema_comments_query(
             comment_column="comment", default_schema=call("CURRENT_SCHEMA"), location=location,
@@ -207,6 +220,7 @@ class SnowflakeDialect(SqlDialect):
         DatePart.ISO_YEAR: "YEAROFWEEKISO", DatePart.WEEK: "WEEKISO",
         DatePart.DAY_OF_WEEK: "DAYOFWEEKISO", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
     }
+    _SUBSECOND_FIELD: ClassVar[tuple[str, int]] = ("NANOSECOND", 1_000_000)
     regex_flavour: ClassVar[Optional[RegexFlavour]] = POSIX
     json_db_types: ClassVar[frozenset[str]] = frozenset({"VARIANT", "OBJECT", "ARRAY"})
     database_name: ClassVar[str] = "Snowflake"
@@ -328,6 +342,9 @@ class SnowflakeDialect(SqlDialect):
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement), lit(1),
                     lit(0), _parameters(case_insensitive))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern), lit(1), _parameters(case_insensitive))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """``GET_PATH`` on the VARIANT (text parsed with ``TRY_PARSE_JSON``); objects, arrays and null are NULL."""
