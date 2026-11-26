@@ -135,6 +135,13 @@ def parse_document_text(text: str) -> Any:
     """A document's YAML or JSON text as data, read as Ossie's loader reads it; raises ``UnreadableDocumentError``
     listing every repeated key and unbuildable scalar."""
     try:
+        return _parsed(text)
+    except RecursionError as exc:
+        raise UnreadableDocumentError(reasons=["the document is too deeply nested"]) from exc
+
+
+def _parsed(text: str) -> Any:
+    try:
         loader = _Loader(text)
     except yaml.YAMLError as exc:
         raise UnreadableDocumentError(reasons=[f"the document is not valid YAML or JSON: {exc}"]) from exc
@@ -344,13 +351,42 @@ def edit_text(text: str, edit: Callable[[dict[str, Any]], dict[str, Any]]) -> st
         base = json.dumps(data, indent=indent, ensure_ascii=False) + newline
         _apply(data, edit(json.loads(text)))
         return _faithful(ours=text, base=base, theirs=json.dumps(data, indent=indent, ensure_ascii=False) + newline)
-    yaml = _yaml(text)
-    tree = yaml.load(text)
-    base, theirs = io.StringIO(), io.StringIO()
-    yaml.dump(tree, base)
+    loaded = _round_trip(text)
+    if loaded is None:
+        desired = edit(parse_document_text(text))
+        return text if desired == parse_document_text(text) else _re_emitted(desired)
+    rt, tree, base = loaded
     _apply(tree, edit(plain(tree)))
-    yaml.dump(tree, theirs)
-    return _faithful(ours=text, base=base.getvalue(), theirs=theirs.getvalue())
+    theirs = io.StringIO()
+    rt.dump(tree, theirs)
+    return _faithful(ours=text, base=base, theirs=theirs.getvalue())
+
+
+def _round_trip(text: str) -> tuple[YAML, Any, str] | None:
+    """``text``'s round-trip loader, tree and re-emitted text; ``None`` when its nesting exceeds ruamel's recursion."""
+    try:
+        rt = _yaml(text)
+        tree = rt.load(text)
+        base = io.StringIO()
+        rt.dump(tree, base)
+    except RecursionError:
+        return None
+    return rt, tree, base.getvalue()
+
+
+def _re_emitted(data: Any) -> str:
+    """``data`` as block YAML, or as JSON (also YAML) when too deep for the YAML emitter and JSON holds it exactly."""
+    try:
+        return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=1 << 16)
+    except RecursionError:
+        pass
+    try:
+        text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    except (TypeError, ValueError, RecursionError):
+        text = None
+    if text is None or parse_document_text(text) != data:
+        raise UnreadableDocumentError(reasons=["the document is too deeply nested"])
+    return text
 
 
 def _faithful(*, ours: str, base: str, theirs: str) -> str:
@@ -367,9 +403,10 @@ def _faithful(*, ours: str, base: str, theirs: str) -> str:
 def _item_spans(text: str, *, key: str) -> tuple[list[str], list[int], int, int] | None:
     """Block YAML ``text``'s lines, the first line of each item of its top-level block list ``key``, the end of the
     list and the column of its dashes; ``None`` for any other layout."""
-    if _is_json(text):
+    loaded = None if _is_json(text) else _round_trip(text)
+    if loaded is None:
         return None
-    tree = _yaml(text).load(text)
+    tree = loaded[1]
     if not isinstance(tree, CommentedMap):
         return None
     seq = tree.get(key)

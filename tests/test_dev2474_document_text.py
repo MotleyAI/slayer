@@ -3,11 +3,13 @@ Ossie schemas are the vendored ones."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from slayer.core.document_text import edit_list_items, edit_text, parse_document_text
+from slayer.core.errors import UnreadableDocumentError
 from tests._dev2243_fixtures import CORPUS
 from tests._dev2474_fixtures import component, example, load
 
@@ -46,6 +48,58 @@ def test_adding_removing_and_reordering_items(change: str) -> None:
     edited = edit_list_items(text, key="ontology", item_key="concept", desired=desired)
     assert load(edited) == {**load(text), "ontology": desired}
     assert "# Each Airport has at most one average departure Delay" in edited
+
+
+def _deep(depth: int) -> str:
+    """A model whose ``ai_context`` nests ``depth`` mappings: past the round-trip loader's recursion at 300."""
+    nest = [f"{'  ' * (i + 1)}a:" for i in range(depth)]
+    return "\n".join(["# kept", "version: 0.3.0.dev0", "name: deep", "ai_context:", *nest,
+                      f"{'  ' * (depth + 1)}leaf: x", "datasets:", "- name: orders", "  source: db.orders",
+                      "  fields:", "  - name: id", "    expression:", "      sql: id"]) + "\n"
+
+
+@pytest.mark.parametrize("depth", [300, 400])
+def test_a_deeply_nested_document_saved_unchanged_keeps_its_text(depth: int) -> None:
+    text = _deep(depth)
+    assert edit_text(text, lambda doc: doc) == text
+
+
+@pytest.mark.parametrize("depth", [300, 400])
+def test_a_deeply_nested_document_reads_back_as_edited(depth: int) -> None:
+    text = _deep(depth)
+    desired = {**parse_document_text(text), "description": "edited"}
+    assert parse_document_text(edit_text(text, lambda _doc: desired)) == desired
+
+
+def test_a_deeply_nested_documents_list_items_read_back_as_edited() -> None:
+    text = _deep(300)
+    held = parse_document_text(text)
+    desired = [*held["datasets"], {"name": "returns", "source": "db.returns"}]
+    edited = edit_list_items(text, key="datasets", item_key="name", desired=desired)
+    assert parse_document_text(edited) == {**held, "datasets": desired}
+
+
+def test_an_edit_too_deep_for_yaml_that_json_cannot_hold_is_refused() -> None:
+    text = _deep(400).replace("leaf: x", "leaf: 2026-11-26")
+    desired = {**parse_document_text(text), "description": "edited"}
+    with pytest.raises(UnreadableDocumentError, match="too deeply nested"):
+        edit_text(text, lambda _doc: desired)
+
+
+def test_an_edit_too_deep_for_any_emitter_is_refused() -> None:
+    text = _deep(300)
+    nest: dict = {"leaf": "x"}
+    for _ in range(sys.getrecursionlimit() * 2):
+        nest = {"a": nest}
+    desired = {**parse_document_text(text), "ai_context": nest}
+    with pytest.raises(UnreadableDocumentError, match="too deeply nested"):
+        edit_text(text, lambda _doc: desired)
+
+
+def test_a_document_too_deep_to_read_is_refused_as_unreadable() -> None:
+    text = _deep(1000)
+    with pytest.raises(UnreadableDocumentError, match="too deeply nested"):
+        parse_document_text(text)
 
 
 @pytest.mark.parametrize("name", ["ontology.json", "mapping.json"])
