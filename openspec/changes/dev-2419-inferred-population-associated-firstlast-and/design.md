@@ -80,8 +80,26 @@ monotonicity), Law 8 (home-row preservation); `queries/attribution-modes` › "T
     states the frame. rejected (codex)
 14. **Codex finding rejected — Axiom 12.4 approval**: the wording was approved by the user during planning (entry 7).
     rejected (codex)
+15. **A windowed aggregate inside a transform's operand takes its own cells** — those of the same aggregate without
+    `window=` — for every transform (`time_shift`, `change`, `lag`, `lead`, `cumsum`, …), never the cells the hosting
+    dataset or the stage's rows reach (semantics Axiom 11.6; `queries/transforms` › Transforms evaluate over their
+    operand's domain). Found in review round 1: with Decision 1 in place, `time_shift` / `change` over a windowed
+    aggregate raise an internal error in an inferred query (the shifted producer nests the windowed answer yet still
+    carries a trailing-window kernel), and `lag` / `cumsum` read NULL beside a sibling in cells where they read a value
+    alone. Rejected: the shifted producer reading the stage's rows (the query's rows become the domain, which Axiom
+    11.6 forbids; values would follow siblings and a named population); fixing the crash alone and filing the rest
+    (ships a visible wrong value, against Decision 2). Decision 3 is unchanged: it fixes where a windowed *value* is
+    evaluated for the query's rows; this fixes which cells form a transform's series. (user; codex)
+16. **A bucket only a sibling supplies stays a gap for a transform over a windowed aggregate**, as for a plain one
+    (Axiom 11.3): its row shows the windowed value, `time_shift` from the next bucket reads NULL; a spine query fills
+    it. (default)
 
 ## Risks / Trade-offs
+
+- [Re-rooting the transform producer's windowed operand at its home touches the shifted answer, grain keys, join pairs,
+  frame-free filters and `shifted_spine_bounds`] → probe first whether feeding the windowed producer the unwindowed
+  twin's home-rooted cells as its cells relation (the hook Decision 3 added) gives the same result without re-rooting
+  every key; the tests of tasks §3 decide.
 
 - [The stage's row cells are not a relation the producer body can see today] → the inferred stage already builds its
   keys (`_keys` / `_base` in the emitted statement); the producer reads that relation, or the same row-supply query

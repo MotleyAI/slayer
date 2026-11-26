@@ -17,6 +17,9 @@ however the query is rooted). Fixing the first exposes the second in a query wit
 - A windowed aggregate's value in a row depends only on that row's cell: it is evaluated over the stage's rows (after
   field filters, before measure-typed filters, order, limit and offset), never over the cells the hosting dataset
   reaches, and never changes with sibling metrics.
+- A transform over a windowed aggregate evaluates over that aggregate's own cells (those of the same aggregate without
+  `window=`), like a transform over any aggregate: `time_shift` / `change` no longer raise an internal error in an
+  inferred query, and `lag` / `cumsum` no longer change with sibling metrics.
 - The row supply decides association from the `to_many_handling` mode alone, read through its one reader; no
   aggregation kind is exempt by name (`first` / `last` follow in DEV-2436).
 - The rule for aggregates outside the metrics is stated positively (owner ruling): the query's metrics define the row
@@ -32,6 +35,8 @@ however the query is rooted). Fixing the first exposes the second in a query wit
 ### Modified Capabilities
 - `queries/population`: the row-supply requirement states the positive metrics-only rule, the windowed supply and the
   host-independence of windowed values, with scenarios over the issue's seed.
+- `queries/transforms`: the domain requirement names a windowed aggregate constituent's cells, with two scenarios over
+  the association seed.
 
 ## Impact
 
@@ -40,6 +45,8 @@ however the query is rooted). Fixing the first exposes the second in a query wit
 - `slayer/sql/generator.py` — the windowed producer's base cells (`_build_windowed_grain_base` /
   `_window_endpoints_base`, the `_base LEFT JOIN _src` range join) become the stage's rows; SQL goldens pinning the
   host-derived base may be re-blessed.
+- `slayer/engine/compile/stages.py` — transform producers (shifted and domain) root a windowed operand's cells at its
+  home.
 - `architecture/semantics.arc42.md` Axiom 12.4; `docs/concepts/queries.md`; `tests/_law_harness.py` gains windowed
   root-less operands.
 - No API, storage or import-edge change.
