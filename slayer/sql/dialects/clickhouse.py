@@ -50,6 +50,7 @@ from slayer.sql.dialects.base import (
     zone_name,
 )
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
+from slayer.sql.dialects._ordered_set_split import ranked_percentiles, split_percentile_selects
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
     TableLocation,
@@ -73,6 +74,12 @@ _NEVER_NULLABLE = (*exp.DataType.NESTED_TYPES, exp.DataType.Type.LOWCARDINALITY,
 
 _DECIMAL128_DIGITS, _DECIMAL256_DIGITS = 38, 76
 _TIME_OF_DAY_TYPES = frozenset({exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ})
+
+
+def _null_when_empty(quantile: Expression, *, value: Expression) -> Expression:
+    """NULL over no non-NULL values: a quantile there is NaN or the type's default."""
+    empty = exp.EQ(this=exp.Count(this=value.copy()), expression=exp.Literal.number(0))
+    return exp.If(this=empty, true=exp.Null(), false=quantile)
 
 
 def _to_decimal(width: int) -> str:
@@ -659,9 +666,9 @@ class ClickhouseDialect(SqlDialect):
         """ORDER BY a projection's expression, not its alias: a dotted alias such as
         ``orders.created_at`` resolves to the source column of that name.
 
-        A windowed projection keeps its alias.
+        A windowed projection keeps its alias. ``PERCENTILE_DISC`` is ranked: no native quantile picks ``⌈p·n⌉``.
         """
-        statement = statement.copy()
+        statement = split_percentile_selects(statement.copy(), columns=ranked_percentiles)
         for select in statement.find_all(exp.Select):
             order = select.args.get("order")
             if order is None:
@@ -744,12 +751,25 @@ class ClickhouseDialect(SqlDialect):
         )
         return exp.Anonymous(this=_CH_ADD_FUNCTIONS[unit], expressions=[base, count.copy()])
 
-    def build_median(self, inner: Expression) -> Expression:
-        """ClickHouse: ``quantile(0.5)(x)``."""
-        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner)
+    def build_median(self, inner: Expression, *, input_type: Optional[DataType] = None) -> Expression:
+        """ClickHouse: ``quantileExactInclusive(0.5)(x)``."""
+        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner, input_type=input_type)
 
     def build_percentile(
-        self, p: Expression, col_expr: Expression,
+        self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,
     ) -> Expression:
-        """ClickHouse: parametric ``quantile(p)(x)`` syntax."""
-        return exp.Quantile(this=col_expr.copy(), quantile=p.copy())
+        """ClickHouse: the exact ``quantileExactInclusive(p)(x)`` (R-7, as ``PERCENTILE_CONT``); it refuses a
+        ``Decimal`` and a wide integer (``Int128`` …), read as a float (it interpolates in ``Float64`` anyway)."""
+        value = col_expr.copy()
+        if input_type is DataType.DECIMAL or kind_of(input_type) is TypeKind.INT:
+            value = exp.Anonymous(this="toFloat64", expressions=[value])
+        return _null_when_empty(
+            exp.ParameterizedAgg(this="quantileExactInclusive", expressions=[p.copy()], params=[value]),
+            value=col_expr,
+        )
+
+    def build_percentile_approx(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType] = None,
+    ) -> Expression:
+        """ClickHouse: the sampled ``quantile(p)(x)``."""
+        return _null_when_empty(exp.Quantile(this=col_expr.copy(), quantile=p.copy()), value=col_expr)

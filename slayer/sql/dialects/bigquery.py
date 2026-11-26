@@ -54,7 +54,9 @@ from slayer.sql.dialects.base import (
     text_try_cast,
     zone_name,
 )
-from slayer.sql.dialects._ordered_set_split import split_percentile_selects
+from slayer.sql.dialects._ordered_set_split import (
+    Columns, PercentileColumns, complement_fraction, discrete_percentile, split_percentile_selects,
+)
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 from slayer.sql.dialects.reflection import TableLocation, clean_comment, col, eq_literal, relation
@@ -141,11 +143,24 @@ def _durable_oauth_material(raw: str) -> str:
     return json.dumps(durable, sort_keys=True, default=str)
 
 
-def _analytic_percentile(p: Expr, value: Expr, partition: Sequence[Expr]):
-    """``PERCENTILE_CONT(v, p) OVER (PARTITION BY <keys>)`` per row, its MAX per group."""
-    window = exp.Window(this=exp.PercentileCont(this=value.copy(), expression=p.copy()),
-                        partition_by=[k.copy() for k in partition])
-    return [window], lambda reads: exp.Max(this=reads[0])
+def _analytic(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
+    """``F(v, p) OVER (PARTITION BY <keys>)`` per row, its MAX per group; a descending ``PERCENTILE_DISC`` is ranked
+    (no ascending fraction picks its value)."""
+
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+        if descending and function is exp.PercentileDisc:
+            return discrete_percentile(p, value, partition, descending=True)
+        fraction = complement_fraction(p) if descending else p
+        window = exp.Window(this=function(this=value.copy(), expression=fraction.copy()),
+                            partition_by=[k.copy() for k in partition])
+        return [window], lambda reads: exp.Max(this=reads[0])
+
+    return columns
+
+
+def _percentile_columns(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    kind = type(node.this)
+    return _analytic(kind) if kind in (exp.PercentileCont, exp.PercentileDisc) else None
 
 
 class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
@@ -197,8 +212,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         return text_try_cast(value, to)
 
     def rewrite_statement(self, statement: Expression) -> Expression:
-        """``PERCENTILE_CONT`` is analytic only."""
-        return split_percentile_selects(statement.copy(), columns=_analytic_percentile)
+        """``PERCENTILE_CONT`` and ``PERCENTILE_DISC`` are analytic only."""
+        return split_percentile_selects(statement.copy(), columns=_percentile_columns)
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
         """``BIGNUMERIC`` holds 38 integer and 38 fractional digits; a wider ``DECIMAL`` cannot be expressed."""

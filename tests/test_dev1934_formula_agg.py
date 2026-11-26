@@ -391,6 +391,12 @@ class TestPercentileP:
         with pytest.raises(ValueError, match=r"must be a numeric literal in \[0, 1\]"):
             await _sql("percentile(orders.price, p=orders.quantity)")
 
+    @pytest.mark.parametrize("agg", ["percentile", "percentile_disc"])
+    async def test_a_formula_less_override_keeps_the_fraction_check(self, agg: str) -> None:
+        override = Aggregation(name=agg, params=[AggregationParam(name="p", sql="0.25")])
+        with pytest.raises(AggregationArgumentError, match=r"must be a numeric literal in \[0, 1\]; got 'NULL'"):
+            await _sql(f"{agg}(orders.price, p=NULL)", aggs=(override,))
+
 
 class TestValueResolutionIsAst:
     def test_text_helpers_removed(self) -> None:

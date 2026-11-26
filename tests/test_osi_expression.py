@@ -151,10 +151,10 @@ def test_percentile_cont_half_is_median():
     )
 
 
-def test_percentile_disc_clean_fails():
+def test_percentile_disc_converts():
     r = _run("PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY amount)")
-    assert not r.ok
-    assert "PERCENTILE_DISC" in (r.reason or "")
+    assert r.ok
+    assert r.expression == "percentile_disc(amount, p=0.9)"
 
 
 def test_percentile_out_of_range_clean_fails():
@@ -226,10 +226,9 @@ def test_non_passthrough_function_clean_fails():
     assert not r.ok
 
 
-def test_sum_distinct_clean_fails():
-    # Only COUNT(DISTINCT) is supported; SUM/AVG/MIN/MAX DISTINCT clean-fail.
-    assert not _run("SUM(DISTINCT amount)").ok
-    assert not _run("AVG(DISTINCT amount)").ok
+def test_sum_and_avg_distinct_convert():
+    assert _run("SUM(DISTINCT amount)").expression == "sum_distinct(amount)"
+    assert _run("AVG(DISTINCT amount)").expression == "avg_distinct(amount)"
 
 
 # ───────────────────────── cross-dataset refs ────────────────────────────────

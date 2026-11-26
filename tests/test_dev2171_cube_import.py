@@ -327,11 +327,13 @@ class TestCalculatedMeasures:
         assert found is not None
         assert found.text == text
 
-    def test_percentile_disc_is_dropped(self) -> None:
-        result = import_cube([cube(metrics=[
+    def test_percentile_disc_is_imported(self) -> None:
+        # Offline, percentile_disc's operand needs a declared type, as min / max's does.
+        result = import_cube([cube(dimensions=[dim("amount", "{CUBE}.amount", type="number")], metrics=[
             meas("p", "number", "PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY {CUBE}.amount)")])])
-        assert not has_metric(result, "orders", "p")
-        assert [i for i in cube_issues(result, "p") if "PERCENTILE_DISC" in i.message], result.report.issues
+        found = datasets_of(result)["orders"].get_metric("p")
+        assert found is not None, result.report.issues
+        assert found.text == "percentile_disc(amount, p=0.9)"
 
     @pytest.mark.parametrize(("sql", "construct"), [
         ("SUM({CUBE}.amount) OVER ()", ""),

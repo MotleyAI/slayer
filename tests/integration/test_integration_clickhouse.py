@@ -115,6 +115,7 @@ from tests._dev2000_fixtures import (
 from tests._engine_helpers import disposable_engine
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
+from tests.integration import _dev2458_matrix as dev2458
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 pytest.importorskip("testcontainers.clickhouse")
@@ -790,30 +791,26 @@ class TestNullableCastsClickHouse:
 @pytest.mark.integration
 class TestClickHouseMedianPercentile:
     async def test_median(self, clickhouse_env: SlayerQueryEngine) -> None:
-        # amounts = [100, 200, 50, 150, 75, 300]; native ClickHouse median()
-        # is a quantile(0.5) approximation — accept a tolerance, not equality.
+        # amounts = [100, 200, 50, 150, 75, 300] -> exact median 125
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
         result = await clickhouse_env.execute(query=query)
-        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0, abs=50.0)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
     async def test_median_emits_native_aggregate(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """ClickhouseDialect.build_median routes through sqlglot's ClickHouse
-        dialect which emits ``quantile(0.5)(x)`` natively. Pin the SQL shape
-        via dry_run so a regression to ``percentile_cont`` is caught."""
+        """``median`` is the exact ``quantileExactInclusive(0.5)(x)``, never ``percentile_cont``."""
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
         dry = await clickhouse_env.execute(query=query, dry_run=True)
         assert dry.sql is not None
         sql_lower = dry.sql.lower()
-        assert "quantile(0.5)(" in sql_lower or "median(" in sql_lower, (
-            f"ClickHouse median must emit native quantile(0.5)(x) or median(x). Got:\n{dry.sql}"
+        assert "quantileexactinclusive(0.5)(" in sql_lower, (
+            f"ClickHouse median must emit quantileExactInclusive(0.5)(x). Got:\n{dry.sql}"
         )
         assert "percentile_cont" not in sql_lower, (
             f"ClickHouse median must not fall through to PERCENTILE_CONT. Got:\n{dry.sql}"
         )
 
-    async def test_percentile_uses_parametric_quantile(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """ClickhouseDialect.build_percentile emits the parametric
-        ``quantile(p)(x)`` form, not ``PERCENTILE_CONT``. Pin via dry_run."""
+    async def test_percentile_uses_quantile_exact_inclusive(self, clickhouse_env: SlayerQueryEngine) -> None:
+        """``percentile`` is the exact ``quantileExactInclusive(p)(x)``, not ``PERCENTILE_CONT``."""
         query = SlayerQuery(
             population="orders",
             metrics=[
@@ -824,12 +821,11 @@ class TestClickHouseMedianPercentile:
         dry = await clickhouse_env.execute(query=query, dry_run=True)
         assert dry.sql is not None
         sql_lower = dry.sql.lower()
-        # Pattern: quantile(<p>)(<col>)
-        assert "quantile(0.25)(" in sql_lower, (
-            f"ClickHouse must use parametric quantile(p)(x) syntax. Got:\n{dry.sql}"
+        assert "quantileexactinclusive(0.25)(" in sql_lower, (
+            f"ClickHouse must use quantileExactInclusive(p)(x). Got:\n{dry.sql}"
         )
-        assert "quantile(0.75)(" in sql_lower, (
-            f"ClickHouse must use parametric quantile(p)(x) syntax. Got:\n{dry.sql}"
+        assert "quantileexactinclusive(0.75)(" in sql_lower, (
+            f"ClickHouse must use quantileExactInclusive(p)(x). Got:\n{dry.sql}"
         )
         # And NOT the standard PERCENTILE_CONT (which would mean sqlglot's
         # transpilation didn't get overridden).
@@ -876,6 +872,36 @@ class TestClickHouseMedianPercentile:
         assert by_status["completed"] == pytest.approx(150, abs=50.0)
         assert by_status["pending"] == pytest.approx(175, abs=125.0)
         assert by_status["cancelled"] == pytest.approx(75, abs=0.01)
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_dev2458_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in [*dev2458.statements(dialect="clickhouse"), *dev2458.clickhouse_statements()]:
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dev2458")))
+        ds = _ds_config(clickhouse_container, db_name)
+        run_sync(storage.save_datasource(ds))
+        for model in [*dev2458.datasets(data_source=ds.name), *dev2458.clickhouse_datasets(data_source=ds.name)]:
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHouseDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles — exact percentiles past the reservoir, NULL never NaN."""
+
+    @pytest.mark.parametrize("check", [
+        *dev2458.COMMON_CHECKS, dev2458.check_approx_types, dev2458.check_clickhouse_large_group,
+        dev2458.check_clickhouse_null_groups, dev2458.check_clickhouse_wide_integers,
+    ], ids=lambda c: c.__name__)
+    async def test_matrix(self, _clickhouse_dev2458_storage, check) -> None:
+        await dev2458.run_check(check, storage=_clickhouse_dev2458_storage)
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from slayer.cli import main as cli_main
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationArgumentError, SlayerError
 from slayer.core.models import (
-    Aggregation, AggregationParam, DatasetField, DatasourceConfig, SlayerDataset,
+    Aggregation, AggregationParam, DatasetField, DatasetMetric, DatasetRelationship, DatasourceConfig, SlayerDataset,
 )
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -244,6 +244,58 @@ class TestUnreferencedParams:
         model = _with(Aggregation(name=name, expression="MAX({value})"))
         with pytest.raises(AggregationArgumentError, match=rf"aggregation '{name}': a ranked aggregation cannot take an expression"):
             await engine.save_dataset(model)
+
+
+_WEIGHTED = Aggregation(name="percentile", expression="SUM({value} * {weight}) / SUM({weight})",
+                        params=[AggregationParam(name="weight", sql="1")])
+
+
+def _customers(*aggs: Aggregation) -> SlayerDataset:
+    return SlayerDataset(
+        name="customers", sql_table="customers", data_source=_DS, aggregations=list(aggs),
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="weight", expression="weight", datatype=DataType.FLOAT)],
+    )
+
+
+def _with_metric(metric: str, *aggs: Aggregation) -> SlayerDataset:
+    return _with(Aggregation(name="custom_agg", expression="SUM({value})")).model_copy(update={
+        "aggregations": [Aggregation(name="custom_agg", expression="SUM({value})"), *aggs],
+        "fields": [*_dataset("SUM({value})").fields, DatasetField(name="customer_id", expression="id")],
+        "relationships": [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
+        "metrics": [DatasetMetric(name="m", expression=metric)],
+    })
+
+
+class TestPercentileFraction:
+    async def test_a_formula_less_override_keeps_the_fraction_check(self, tmp_path: Path) -> None:
+        store = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await store.save_dataset(_customers())
+        override = Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.25")])
+        model = _with_metric("percentile(amount, p=1.5)", override)
+        with pytest.raises(AggregationArgumentError, match=r"must be in \[0, 1\]; got 1\.5\.$"):
+            await store.save_dataset(model)
+
+    async def test_the_sources_owner_decides_the_check(self, tmp_path: Path) -> None:
+        store = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await store.save_dataset(_customers(_WEIGHTED))
+        await store.save_dataset(_with_metric("percentile(customers.amount, customers.weight)"))
+        assert await store.get_dataset("orders", data_source=_DS) is not None
+
+    async def test_a_quoted_hop_resolves_as_binding_does(self, tmp_path: Path) -> None:
+        """``"Customers"`` names no edge exactly: the save leaves the path to binding, as for any miss."""
+        store = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await store.save_dataset(_customers())
+        await store.save_dataset(_with_metric('percentile("Customers".amount, 1.5)'))
+        assert await store.get_dataset("orders", data_source=_DS) is not None
+
+    async def test_a_built_in_on_the_sources_owner_is_checked(self, tmp_path: Path) -> None:
+        store = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await store.save_dataset(_customers())
+        model = _with_metric("percentile(customers.amount, customers.weight)", _WEIGHTED)
+        with pytest.raises(AggregationArgumentError, match=r"must be a numeric literal in \[0, 1\]"):
+            await store.save_dataset(model)
 
 
 @pytest.fixture

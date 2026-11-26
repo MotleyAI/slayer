@@ -35,7 +35,6 @@ MALFORMED = [
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN 1.5 PRECEDING AND CURRENT ROW) = 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN -1 PRECEDING AND CURRENT ROW) = 1",
     "ABS(orders.amount) OVER () > 1",
-    "SUM(DISTINCT orders.amount) OVER () > 1",
     "ROW_NUMBER() OVER (PARTITION BY ROW_NUMBER() OVER ()) = 1",
     f"ROW_NUMBER() OVER (ORDER BY RANK() {ORDERED}) = 1",
     "ROW_NUMBER() OVER (PARTITION BY orders.status ~ '^c') = 1",
@@ -43,7 +42,6 @@ MALFORMED = [
     "LAG(*) OVER () > 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN 10000000000000000000000000000 PRECEDING "
     "AND 10000000000000000000000000001 PRECEDING) = 1",
-    "APPROX_PERCENTILE(orders.amount, 0.5) OVER () > 1",  # SLayer cannot evaluate it yet (DEV-2282)
 ]
 
 #: Complete windows over known fields.
@@ -53,6 +51,7 @@ COMPLETE = [
     "COUNT(*) OVER () > 1",
     "SUM(orders.amount) FILTER (WHERE orders.amount > 1) OVER () > 1",
     "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY orders.amount) OVER () > 1",
+    "APPROX_PERCENTILE(orders.amount, 0.5) OVER () > 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) = 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) = 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount RANGE UNBOUNDED PRECEDING) = 1",
@@ -92,7 +91,8 @@ AGGREGATE_SHAPES = [
     ("PERCENTILE_DISC(orders.amount)", "E_INVALID_QUERY"),
     ("COUNT(*)", "E_AGGREGATE_IN_WHERE"),
     ("COUNT(orders.amount)", "E_AGGREGATE_IN_WHERE"),
-    ("APPROX_PERCENTILE(orders.amount, 0.5)", "E_INVALID_QUERY"),
+    ("APPROX_PERCENTILE(orders.amount, 0.5)", "E_AGGREGATE_IN_WHERE"),
+    ("SUM(DISTINCT orders.amount)", "E_AGGREGATE_IN_WHERE"),
     ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY orders.amount)", "E_AGGREGATE_IN_WHERE"),
     ("SUM(orders.amount)", "E_AGGREGATE_IN_WHERE"),
 ]
