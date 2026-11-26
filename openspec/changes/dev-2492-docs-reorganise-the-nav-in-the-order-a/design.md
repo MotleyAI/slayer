@@ -112,8 +112,8 @@ In `tests/test_docs_guards.py`:
   (default)
 - Anchor guard as the structural fix: the split's failure mode (dangling anchors) has no check today because the link
   guard drops fragments. (default)
-- A nav-shape test pins the ten top-level sections in order, so the reorganisation has a failing-first test.
-  (default)
+- A nav-shape test pins the set of ten top-level sections, so the reorganisation has a failing-first test; nav order
+  is not asserted. (user)
 - The anchor guard alone cannot catch unmigrated links (the hidden ids keep them resolving): add `MOVED_ANCHORS` with
   a no-Markdown-link-to-moved-anchor test, notebooks exempt. (codex)
 - "Bodies verbatim" conflicts with same-page links that cross files after the split: bodies move verbatim except link
