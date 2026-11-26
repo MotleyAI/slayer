@@ -182,7 +182,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="'…' is not a number, so it cannot meet the number `…`."
          + SUGGEST + "Compare with a number (e.g. 100), or compare text with text.",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
-    _row(module=_EE, function="_numeric_scalar_args", exc="ScalarOperandTypeError",
+    _row(module=_EE, function="_raise_numeric_text", exc="ScalarOperandTypeError",
          message="…() reads numbers, but `…` is TEXT."
          + SUGGEST + "Convert numbers stored as text: …(TRY_CAST(… AS DOUBLE)).",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
