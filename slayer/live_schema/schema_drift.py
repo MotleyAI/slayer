@@ -71,6 +71,7 @@ from slayer.core.syntax import (
     walk_parsed_refs,
 )
 from slayer.database import sqlite_introspect
+from slayer.ontology.findings import OntologyFinding
 from slayer.database.client import SqlClient, render_type_probe
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
@@ -335,10 +336,11 @@ class NarrowedAccessFinding(BaseModel):
 
 
 #: Validation entries that report rather than delete (cleanup writes an untyped finding in).
-REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding, UntypedFinding)
+REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding, UntypedFinding, OntologyFinding)
 
 #: One entry of a ``validate_datasets`` report.
-DriftReportEntry = EditDatasetDelete | WholeDatasetDelete | NarrowedAccessFinding | RetypeFinding | UntypedFinding
+DriftReportEntry = (EditDatasetDelete | WholeDatasetDelete | NarrowedAccessFinding | RetypeFinding | UntypedFinding
+                    | OntologyFinding)
 
 
 def unloadable_dataset_delete(*, error: StoredDocumentLoadError) -> WholeDatasetDelete:

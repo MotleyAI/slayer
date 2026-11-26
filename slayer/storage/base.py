@@ -81,7 +81,10 @@ from slayer.core.vocabulary import bridge_renamed_hooks, method_twin
 from slayer.core.warnings import (
     DeprecatedSpellingWarning,
     LibraryNameShadowWarning,
+    OntologyMismatchWarning,
     SlayerLibraryNameShadowWarning,
+    SlayerOntologyMismatchWarning,
+    SlayerWarning,
     SlayerNameCollisionWarning,
     SlayerSpineRelationshipDroppedWarning,
     SlayerStoredUpgradeNeededWarning,
@@ -150,9 +153,10 @@ from slayer.storage.semantic_models import (
 )
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.ontology.documents import (
-    checked_mapping_shape, edited_mapping, edited_ontology, read_ontology, stored_name_reasons,
+    checked_mapping_shape, edited_mapping, edited_ontology, read_ontology, ref_name, stored_name_reasons,
 )
 from slayer.ontology.scope import MappingScope, check_mapping
+from slayer.ontology.use import MappingDocument, StoredUse, UnresolvedMapping, model_findings
 from slayer.storage.ontology_documents import (
     MAPPING_NAME, ONTOLOGY_NAME, StoredMapping, broken_mappings, report_broken, stored_data,
 )
@@ -164,6 +168,16 @@ from slayer.live_schema.type_refinement import (
 
 #: Supplies the loading query engine's client for a datasource.
 ClientSource = Callable[[DatasourceConfig], SqlClient]
+
+
+def report_save_warnings(warnings_out: list[SlayerWarning] | None, found: Sequence[SlayerWarning]) -> None:
+    """``found`` into ``warnings_out``; without it, each ontology mismatch as a Python warning."""
+    if warnings_out is not None:
+        warnings_out.extend(found)
+        return
+    for warning in found:
+        if isinstance(warning, OntologyMismatchWarning):
+            warnings.warn(SlayerOntologyMismatchWarning(warning), stacklevel=outside_stacklevel())
 
 
 
@@ -1300,9 +1314,15 @@ class StorageBackend(ABC):
         target = await self._resolve_document(name, data_source)
         return await self._get_semantic_model_text_impl(data_source=target[0], name=target[1]) if target else None
 
-    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str) -> None:
+    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str,
+                                       warnings_out: list[SlayerWarning] | None = None) -> None:
         """Store ``text`` verbatim as document ``name`` of ``data_source`` after the Ossie validity and namespace checks;
-        replaces a stored document of that name."""
+        replaces a stored document of that name. Its datasets' ontology mismatches go to ``warnings_out``."""
+        datasets = await self._store_semantic_model_text(data_source=data_source, name=name, text=text)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(data_source=data_source, datasets=datasets))
+
+    async def _store_semantic_model_text(self, *, data_source: str, name: str, text: str) -> list[str]:
+        """``save_semantic_model_text`` without its warnings; the stored document's dataset names."""
         _validate_path_component(data_source, kind=DATASOURCE_NAME)
         _validate_path_component(name, kind=SEMANTIC_MODEL_NAME)
         if not self._supports_semantic_models():
@@ -1317,13 +1337,20 @@ class StorageBackend(ABC):
             await self._guard_mappings(change=f"Saving semantic model {name!r}", data_source=data_source,
                                        changed=lambda scope: scope.with_document(name, datasets))
         await self._save_semantic_model_text_impl(data_source=data_source, name=name, text=text)
+        return [d.name for d in doc.datasets]
 
-    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str],
+                                   warnings_out: list[SlayerWarning] | None = None) -> None:
         """Store document ``name`` in place of the standalone datasets ``replacing`` (same names, so references keep
         resolving); the standalone datasets are restored when the document is refused."""
         replaced = [d for n in replacing if (d := await self.get_dataset(n, data_source=data_source)) is not None]
-        await self._moving_standalone(data_source=data_source, datasets=replaced, write=lambda: self.save_semantic_model_text(
-            data_source=data_source, name=name, text=text))
+        stored: list[str] = []
+
+        async def write() -> None:
+            stored.extend(await self._store_semantic_model_text(data_source=data_source, name=name, text=text))
+
+        await self._moving_standalone(data_source=data_source, datasets=replaced, write=write)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(data_source=data_source, datasets=stored))
 
     async def _moving_standalone(self, *, data_source: str, datasets: list[SlayerDataset],
                                  write: Callable[[], Awaitable[Any]]) -> None:
@@ -1381,7 +1408,8 @@ class StorageBackend(ABC):
                 raise NamespaceCollisionError(name=metric, owner=owner, existing=existing, data_source=data_source)
 
     async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
-                                    datasets: list[str] | None = None) -> None:
+                                    datasets: list[str] | None = None,
+                                    warnings_out: list[SlayerWarning] | None = None) -> None:
         """Create document ``name`` (default: the content's own ``name``) from Ossie ``content`` (text or mapping), or
         from the standalone ``datasets``, which move into it under the same names."""
         if (content is None) == (datasets is None):
@@ -1389,7 +1417,8 @@ class StorageBackend(ABC):
         if content is not None:
             text = content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False, allow_unicode=True)
             name = name or _document_name(text)
-            await self.save_semantic_model_text(data_source=data_source, name=name, text=text)
+            await self.save_semantic_model_text(data_source=data_source, name=name, text=text,
+                                                warnings_out=warnings_out)
             return
         if name is None:
             raise ValueError("A semantic model made from standalone datasets needs a name")
@@ -1400,7 +1429,8 @@ class StorageBackend(ABC):
         if reasons:
             raise OssieDocumentInvalidError(name=name, reasons=reasons)
         await self.adopt_semantic_model(data_source=data_source, name=name, replacing=[d.name for d in moved],
-                                        text=yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))
+                                        text=yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+                                        warnings_out=warnings_out)
 
     async def _standalone_members(self, names: list[str], *, data_source: str) -> list[SlayerDataset]:
         out = []
@@ -1422,7 +1452,8 @@ class StorageBackend(ABC):
                                   remove_metrics: list[str] | None = None,
                                   relationships: list[dict[str, Any]] | None = None,
                                   remove_relationships: list[str] | None = None,
-                                  add_datasets: list[str] | None = None) -> None:
+                                  add_datasets: list[str] | None = None,
+                                  warnings_out: list[SlayerWarning] | None = None) -> None:
         """Edit document ``name`` in place: its description and AI context, upserted or removed model-scoped metrics and
         relationships, and standalone datasets moved into it. Every model-scoped metric written is checked first."""
         text = await self.get_semantic_model_text(name, data_source=data_source)
@@ -1477,6 +1508,8 @@ class StorageBackend(ABC):
 
         await self._moving_standalone(data_source=data_source, datasets=moved, write=lambda: self._patch_semantic_model_text(
             data_source=data_source, name=name, patch=patch))
+        report_save_warnings(warnings_out, await self.ontology_mismatches(
+            data_source=data_source, datasets=[d.name for d in members]))
 
     async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
         """Delete a document, cascading every member's embeddings and memory entities; ``False`` when absent."""
@@ -1558,8 +1591,10 @@ class StorageBackend(ABC):
         _validate_path_component(name, kind=ONTOLOGY_NAME)
         return await self._get_ontology_text_impl(name=name)
 
-    async def save_ontology_text(self, *, name: str, text: str) -> None:
-        """Store ontology ``name`` verbatim after its checks; refused when it would break a stored mapping."""
+    async def save_ontology_text(self, *, name: str, text: str,
+                                 warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Store ontology ``name`` verbatim after its checks; refused when it would break a stored mapping. The
+        ontology mismatches of the mappings using it go to ``warnings_out``."""
         _validate_path_component(name, kind=ONTOLOGY_NAME)
         self._require_ontologies()
         data, reasons = read_ontology(text)
@@ -1570,6 +1605,7 @@ class StorageBackend(ABC):
         if reasons:
             raise OntologyDocumentInvalidError(name=name, reasons=reasons)
         await self._save_ontology_text_impl(name=name, text=text)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(ontology=name))
 
     async def delete_ontology(self, name: str) -> bool:
         """Delete ontology ``name``; refused while a stored mapping resolves against it; ``False`` when absent."""
@@ -1581,12 +1617,12 @@ class StorageBackend(ABC):
                                    changed=lambda scope: scope.with_ontology(name, None))
         return await self._delete_ontology_row(name=name)
 
-    async def edit_ontology(self, name: str, **edits: Any) -> None:
+    async def edit_ontology(self, name: str, *, warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> None:
         """Apply ``edited_ontology``'s edits to ontology ``name`` and save it through every check."""
         text = await self.get_ontology_text(name)
         if text is None:
             raise ValueError(f"Ontology {name!r} not found")
-        await self.save_ontology_text(name=name, text=edited_ontology(text, **edits))
+        await self.save_ontology_text(name=name, text=edited_ontology(text, **edits), warnings_out=warnings_out)
 
     async def list_ontology_mappings(self, data_source: str | None = None) -> list[tuple[str, str]]:
         """Every stored mapping as ``(data_source, name)``, of ``data_source`` when given."""
@@ -1601,8 +1637,10 @@ class StorageBackend(ABC):
         _validate_path_component(name, kind=MAPPING_NAME)
         return await self._get_ontology_mapping_text_impl(data_source=data_source, name=name)
 
-    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str) -> list[str]:
-        """Store mapping ``name`` of ``data_source`` verbatim once it resolves; the informational notes of the save."""
+    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str,
+                                         warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        """Store mapping ``name`` of ``data_source`` verbatim once it resolves; the informational notes of the save.
+        Its ontology mismatches go to ``warnings_out``."""
         _validate_path_component(data_source, kind=DATASOURCE_NAME)
         _validate_path_component(name, kind=MAPPING_NAME)
         self._require_ontologies()
@@ -1614,16 +1652,18 @@ class StorageBackend(ABC):
             raise OntologyMappingInvalidError(name=name, data_source=data_source,
                                               reasons=[str(p) for p in resolution.problems])
         await self._save_ontology_mapping_text_impl(data_source=data_source, name=name, text=text)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(data_source=data_source, mapping=name))
         note = resolution.note(name)
         return [note] if note else []
 
-    async def edit_ontology_mapping(self, name: str, *, data_source: str, **edits: Any) -> list[str]:
+    async def edit_ontology_mapping(self, name: str, *, data_source: str,
+                                    warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> list[str]:
         """Apply ``edited_mapping``'s edits to mapping ``name`` of ``data_source`` and save it through every check."""
         text = await self.get_ontology_mapping_text(name, data_source)
         if text is None:
             raise ValueError(f"Mapping {name!r} not found in datasource {data_source!r}")
         return await self.save_ontology_mapping_text(data_source=data_source, name=name,
-                                                     text=edited_mapping(text, **edits))
+                                                     text=edited_mapping(text, **edits), warnings_out=warnings_out)
 
     async def delete_ontology_mapping(self, name: str, data_source: str) -> bool:
         """Delete a stored mapping; ``False`` when absent."""
@@ -1666,6 +1706,40 @@ class StorageBackend(ABC):
             else:
                 loaded.append(StoredMapping(name=name, data_source=ds, text=text))
         return loaded, errors
+
+    async def ontology_use(self, data_source: str) -> StoredUse:
+        """``data_source``'s mappings, the ontologies and semantic models they read, as this storage's caller sees
+        them."""
+        loaded, errors = await self.load_ontology_mappings(data_source=data_source)
+        ontologies = {n: data for n in await self.list_ontologies()
+                      if isinstance(data := stored_data(await self.get_ontology_text(n)), dict)}
+        datasets, _ = await self.load_datasets(data_source=data_source)
+        documents = {n: [d for d in datasets if d.semantic_model == n]
+                     for _, n in await self.list_semantic_models(data_source)}
+        unresolved = []
+        for error in errors:
+            data = stored_data(await self.get_ontology_mapping_text(error.name, data_source))
+            unresolved.append(UnresolvedMapping(name=error.name, ontology=ref_name(data, "ontology_ref"),
+                                                problems=[error.cause_text]))
+        mappings = [MappingDocument(name=m.name, data=data) for m in loaded
+                    if isinstance(data := stored_data(m.text), dict)]
+        return StoredUse(data_source=data_source, ontologies=ontologies, documents=documents, datasets=datasets,
+                         mappings=mappings, unresolved=unresolved)
+
+    async def ontology_mismatches(self, *, data_source: str | None = None, mapping: str | None = None,
+                                  ontology: str | None = None,
+                                  datasets: Iterable[str] | None = None) -> list[OntologyMismatchWarning]:
+        """The identifier and multiplicity mismatches of the stored mappings (of ``data_source``, named ``mapping``,
+        of ``ontology``, on ``datasets``, when given), as save warnings."""
+        identities = await self.list_ontology_mappings(data_source)
+        wanted = {d.casefold() for d in datasets} if datasets is not None else None
+        out: list[OntologyMismatchWarning] = []
+        for ds in sorted({ds for ds, n in identities if mapping in (None, n)}):
+            for finding in model_findings(await self.ontology_use(ds)):
+                if (mapping is None or finding.mapping == mapping) and ontology in (None, finding.ontology) and (
+                        wanted is None or (finding.dataset_name or "").casefold() in wanted):
+                    out.append(finding.as_warning())
+        return out
 
     async def _mapping_scope(self, data_source: str) -> MappingScope:
         """What a mapping of ``data_source`` resolves against now."""

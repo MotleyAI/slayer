@@ -3509,6 +3509,76 @@ def parse_mapping_expression(text: str) -> MappingExpression:
                              predicate=_row_level(rest[opening + 1:close], part="predicate"))
 
 
+class MappedValue(BaseModel):
+    """A mapping expression in canonical text: its ``value`` and ``predicate`` (``None`` without ``WHERE``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    value: str
+    predicate: Optional[str] = None
+
+    def conditions(self) -> List[str]:
+        """The Mode-B conditions keeping the rows where the value is mapped: a non-NULL value under the predicate."""
+        return [f"({self.value}) IS NOT NULL", *([f"({self.predicate})"] if self.predicate else [])]
+
+
+def mapped_value(text: str) -> MappedValue:
+    """Mapping expression ``text`` in canonical Mode B; raises ``ValueError`` when it does not read."""
+    parsed = parse_mapping_expression(text)
+    predicate = canonical_metric_text(parsed.predicate) if parsed.predicate is not None else None
+    return MappedValue(value=canonical_metric_text(parsed.value), predicate=predicate)
+
+
+#: The comparison operators of Ossie's plain Layer 1 constraint subset.
+_PLAIN_COMPARISONS = frozenset({"==", "!=", "<", "<=", ">", ">=", "in", _NOT_IN})
+
+
+class RequiresReading(BaseModel):
+    """One Ossie ``requires`` entry: ``plain`` (one bare variable, literals, comparisons, AND/OR/NOT, IN; ``tree``
+    and ``variable`` set), ``path`` (one dotted path, ``path`` set) or ``other``."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    kind: str
+    variable: Optional[str] = None
+    path: Tuple[str, ...] = ()
+    tree: Any = None
+
+
+def _plain_node(node: Any) -> bool:
+    if isinstance(node, (Ref, Literal, TupleLit, BoolOp)):
+        return True
+    if isinstance(node, Cmp):
+        return node.op in _PLAIN_COMPARISONS
+    if isinstance(node, UnaryOp):
+        return node.op == "not" or (node.op == "-" and isinstance(node.operand, Literal))
+    return False
+
+
+def read_requires(text: str) -> RequiresReading:
+    """Classify an Ossie ``requires`` entry by the forms SLayer checks."""
+    try:
+        tree = parse_expr(text)
+    except ValueError:
+        return RequiresReading(kind="other")
+    if isinstance(tree, DottedRef) and len(tree.parts) == 2 and not tree.evaluated:
+        return RequiresReading(kind="path", path=tree.parts)
+    nodes = list(walk_parsed(tree))
+    names = {n.name for n in nodes if isinstance(n, Ref)}
+    if len(names) == 1 and all(_plain_node(n) for n in nodes) and not any(
+            isinstance(n, Ref) and (n.quoted or n.evaluated) for n in nodes):
+        return RequiresReading(kind="plain", variable=next(iter(names)), tree=tree)
+    return RequiresReading(kind="other")
+
+
+def requires_violation(constraint: str, *, variable: str, expression: str) -> List[str]:
+    """The Mode-B filter conditions keeping the rows where mapping ``expression`` maps a value violating plain
+    ``constraint`` over ``variable``: a non-NULL value under the mapping's predicate, the constraint false."""
+    mapped = mapped_value(expression)
+    respelled = respell_bare_names(constraint, respell=lambda name: f"({mapped.value})" if name == variable else None)
+    return [*mapped.conditions(), canonical_metric_text(parse_expr(f"NOT ({respelled})"))]
+
+
 def _rewritten(text: str, *, spans: List[_ColonSpan], start: int, end: int, units: frozenset[str]) -> str:
     """``text[start:end]`` with its outermost colon spans replaced by their twins."""
     out: List[str] = []
@@ -3530,7 +3600,7 @@ __all__ = [
     "AggCall", "ArrayLit", "Arith", "BoolOp", "CallSource", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr",
     "BoundVariable", "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
     "CallSpan", "DateTrunc", "MappingExpression", "NamedArg", "DATE_TRUNC_FORM", "call_spans", "legacy_spans",
-    "parse_mapping_expression",
+    "parse_mapping_expression", "MappedValue", "mapped_value", "RequiresReading", "read_requires", "requires_violation",
     "aggregation_reading", "bind_variables", "call_keywords", "call_source", "canonical_metric_text",
     "classify_arguments", "colon_twin", "comparison_hint",
     "bare_literal_text", "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",
