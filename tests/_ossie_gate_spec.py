@@ -27,9 +27,8 @@ KNOWN_PROSE = frozenset({
     "Approximate functions trade exact accuracy for significantly better performance on large datasets. They use "
     "probabilistic algorithms (sketches) that are efficiently mergeable, making them well-suited for distributed "
     "computation.",
-    "**Database Support:**",
-    "**Note**: BigQuery uses `APPROX_QUANTILES(expr, num_buckets)` which returns an array. To get a specific "
-    "percentile: `APPROX_QUANTILES(amount, 100)[OFFSET(50)]` for median.",
+    "Engine support for approximate aggregates varies. For a non-normative mapping, see "
+    "[extensions/function_mappings.md](../extensions/function_mappings.md#approximate-aggregates).",
     "SUM / COUNT aggregation functions support `DISTINCT.`",
     "All aggregations except `AGG` must support filtered aggregation:",
     "Every aggregate function except `AGG` must support a postfix `FILTER (WHERE <predicate>)` modifier:",

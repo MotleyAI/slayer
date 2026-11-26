@@ -14,15 +14,15 @@
 
 ## 3. Implementation
 
-- [ ] 3.1 The `.ost` reader in `tests/_ossie_gate_suite.py` (Pydantic `WideCase`; design decisions 4–7), replacing `cases`, `read_expected`, `case_query`; fixture map by `connect` name in `tests/_dev2217_fixtures.py`; engines keyed by loaded model in `tests/_ossie_gate_fixtures.py`. Verify 2.1–2.3 pass.
-- [ ] 3.2 `_expression_text` in `tests/test_dev2243_corpus.py` per decision 8. Verify 2.6's compile cases pass on every dialect.
-- [ ] 3.3 `KNOWN_PROSE` in `tests/_ossie_gate_spec.py` per decision 9. Verify the completeness check passes.
-- [ ] 3.4 `.github/workflows/ossie-compliance.yml`: add `queue: max` to the `server` job's concurrency; verify 2.5 passes.
-- [ ] 3.5 `docs/interfaces/ossie-compliance.md`: Layer 3 paragraph names upstream's case scripts; vendored revision updated; verify the compliance-page check passes.
+- [x] 3.1 The `.ost` reader in `tests/_ossie_gate_suite.py` (Pydantic `WideCase`; design decisions 4–7), replacing `cases`, `read_expected`, `case_query`; fixture map by `connect` name in `tests/_dev2217_fixtures.py`; engines keyed by loaded model in `tests/_ossie_gate_fixtures.py`. Verify 2.1–2.3 pass.
+- [x] 3.2 `_expression_text` in `tests/test_dev2243_corpus.py` per decision 8. Verify 2.6's compile cases pass on every dialect.
+- [x] 3.3 `KNOWN_PROSE` in `tests/_ossie_gate_spec.py` per decision 9. Verify the completeness check passes.
+- [x] 3.4 `.github/workflows/ossie-compliance.yml`: add `queue: max` to the `server` job's concurrency; verify 2.5 passes.
+- [x] 3.5 `docs/interfaces/ossie-compliance.md`: Layer 3 paragraph names upstream's case scripts; vendored revision updated; verify the compliance-page check passes.
 
 ## 4. Verification
 
-- [ ] 4.1 Local: the tests in scope (`la-affected-tests`) on the vendored corpus, and the in-process gate modules listed in `ossie-compliance.yml`'s `in-process` job with `SLAYER_OSSIE_CORPUS` at a fresh upstream clone (harvested); all pass.
+- [x] 4.1 Local: the tests in scope (`la-affected-tests`) on the vendored corpus, and the in-process gate modules listed in `ossie-compliance.yml`'s `in-process` job with `SLAYER_OSSIE_CORPUS` at a fresh upstream clone (harvested); all pass.
 - [ ] 4.2 `workflow_dispatch` of `ossie-compliance.yml` on this branch with `corpus=vendored`: every engine green.
 - [ ] 4.3 `workflow_dispatch` with `corpus=upstream`: every engine and the in-process job green.
 - [ ] 4.4 Tick DEV-2462's tasks 4.1–4.3 in `openspec/changes/archive/2026-11-25-dev-2462-ossie-layer-1-compliance-gate-every-must/tasks.md`.

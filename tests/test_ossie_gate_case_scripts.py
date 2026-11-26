@@ -283,9 +283,11 @@ def test_every_case_script_reads(script: Path) -> None:
     case = suite.read_case(script)
     assert case.name == script.stem
     if script.stem.startswith("e"):
-        assert case.error is not None and not case.header
+        assert case.error is not None
+        assert not case.header
     else:
-        assert case.error is None and case.header
+        assert case.error is None
+        assert case.header
 
 
 def test_a_case_upstream_skips_reads_its_expected_rows() -> None:

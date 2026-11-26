@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncGenerator
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -40,7 +41,9 @@ async def test_the_model_scoped_metric_components_case(tmp_path: Path) -> None:
     async with case_engine(tmp_path, case) as engine:
         response = await engine.execute(case.query)
     assert [list(r) for r in response.data] == [case.header] == [["revenue_per_customer"]]
-    assert_logical(response.data[0]["revenue_per_customer"], float(case.rows[0][0]), engine="duckdb")
+    expected = case.rows[0][0]
+    assert isinstance(expected, Decimal)
+    assert_logical(response.data[0]["revenue_per_customer"], float(expected), engine="duckdb")
 
 
 async def test_error_cases_raise_their_codes_under_strict(tmp_path: Path) -> None:
