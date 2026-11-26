@@ -715,6 +715,31 @@ def test_a_written_grain_over_a_nested_aggregate_is_pinned_without_the_marker(in
     assert not any(k.grain_defaulted for k in outers)
 
 
+NESTED_TWINS = {"d": "max(rank(max(sum(returns.amount)), direction='desc'))",
+                "w": "max(rank(max(sum(returns.amount), partition_by=orders.status), direction='desc'))"}
+
+
+async def _twins_outcome(backend: str, order: str, mode: str) -> Any:
+    """Both columns' cells, or the refusal's text."""
+    async with seed_engine(backend) as eng:
+        try:
+            resp = await run(eng, metrics=[_mt(NESTED_TWINS[a], a) for a in order], to_many_handling=mode, **BY_STATUS)
+        except SlayerError as exc:
+            return str(exc)
+    return _by(resp, ("orders.status",), "d"), _by(resp, ("orders.status",), "w"), kinds(resp, "broadcast")
+
+
+@pytest.mark.parametrize("mode", ["broadcast", "error"])
+async def test_metric_order_does_not_change_a_nested_twins_outcome(backend: str, mode: str) -> None:
+    defaulted_first = await _twins_outcome(backend, "dw", mode)
+    assert defaulted_first == await _twins_outcome(backend, "wd", mode)
+    if mode == "error":
+        assert "error mode" in defaulted_first
+    else:
+        assert defaulted_first[:2] == (ONE_EACH, ONE_EACH)
+        assert defaulted_first[2]
+
+
 def test_a_written_grain_naming_a_settled_dimension_is_pinned_without_the_marker() -> None:
     # the pick's grain drops its ranking key when it settles, so the dimension's key changes after binding
     pick = f"last({A}, orders.ordered_at, partition_by=[{R}, orders.ordered_at])"
