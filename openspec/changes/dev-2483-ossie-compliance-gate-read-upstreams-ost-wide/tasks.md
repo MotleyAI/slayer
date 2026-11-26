@@ -23,6 +23,6 @@
 ## 4. Verification
 
 - [x] 4.1 Local: the tests in scope (`la-affected-tests`) on the vendored corpus, and the in-process gate modules listed in `ossie-compliance.yml`'s `in-process` job with `SLAYER_OSSIE_CORPUS` at a fresh upstream clone (harvested); all pass.
-- [ ] 4.2 `workflow_dispatch` of `ossie-compliance.yml` on this branch with `corpus=vendored`: every engine green.
-- [ ] 4.3 `workflow_dispatch` with `corpus=upstream`: every engine and the in-process job green.
-- [ ] 4.4 Tick DEV-2462's tasks 4.1–4.3 in `openspec/changes/archive/2026-11-25-dev-2462-ossie-layer-1-compliance-gate-every-must/tasks.md`.
+- [x] 4.2 `workflow_dispatch` of `ossie-compliance.yml` on this branch with `corpus=vendored`: every engine green.
+- [x] 4.3 `workflow_dispatch` with `corpus=upstream`: every engine and the in-process job green.
+- [x] 4.4 Tick DEV-2462's tasks 4.1–4.3 in `openspec/changes/archive/2026-11-25-dev-2462-ossie-layer-1-compliance-gate-every-must/tasks.md`.
