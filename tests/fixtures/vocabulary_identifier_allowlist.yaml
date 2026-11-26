@@ -419,6 +419,8 @@ carve_outs:
   - {name: collect_model_entity_pairs, file: slayer/search/render.py, reason: "deprecated twin until 3.0"}
   - {name: _model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
   - {name: model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
+  - {name: Columns, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: ColumnsFor, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: PercentileColumns, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: _COLUMN, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
@@ -434,7 +436,9 @@ carve_outs:
   - {name: join_kind, file: slayer/sql/dialects/base.py, reason: "SQL JOIN as an operation"}
   - {name: read_column, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
   - {name: reflect_columns, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: _percentile_columns, file: slayer/sql/dialects/bigquery.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/dialects/bigquery.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/dialects/bigquery.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: columns_query, file: slayer/sql/dialects/bigquery.py, reason: "physical database or result-set column"}
   - {name: read_column, file: slayer/sql/dialects/bigquery.py, reason: "physical database or result-set column"}
   - {name: _exists_beside_array_join, file: slayer/sql/dialects/clickhouse.py, reason: "SQL JOIN as an operation"}
@@ -467,7 +471,9 @@ carve_outs:
   - {name: referred_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: reflect_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: _group_by_columns_only, file: slayer/sql/dialects/tsql.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _percentile_columns, file: slayer/sql/dialects/tsql.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: _reads_no_column, file: slayer/sql/dialects/tsql.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: columns, file: slayer/sql/dialects/tsql.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: describe_cursor_column, file: slayer/sql/dialects/tsql.py, reason: "physical database or result-set column"}
   - {name: reads_source_column, file: slayer/sql/field_expansion.py, reason: "physical database or result-set column"}
   - {name: windowed_column_ast, file: slayer/sql/field_expansion.py, reason: "SQL column in a SQL AST, statement or wire surface"}
