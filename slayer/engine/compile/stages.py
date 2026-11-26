@@ -315,15 +315,12 @@ def _regroup_partition_order(pks: Grain) -> List[ValueKey]:
 
 def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound assembly; the grain / aggregate / inherited-filter / order arms share the prebound under construction.
     *,
-    pks: Grain,
+    pks: Sequence[ValueKey],
     aggs: List[ValueKey],
     dataset: Optional[SlayerDataset],
     bundle: ResolvedSourceBundle,
     inherited: List[BoundFilter],
     n_date_range: int,
-    partition_order: Callable[
-        [Grain], List[ValueKey],
-    ] = _regroup_partition_order,
     public_alias_by_agg: Optional[Mapping[ValueKey, str]] = None,
     explicit_types: Optional[Mapping[ValueKey, DataType]] = None,
     grain_name_by_key: Optional[Mapping[ValueKey, str]] = None,
@@ -332,11 +329,12 @@ def _regroup_producer_prebound(  # NOSONAR(S3776) — one producer-prebound asse
     mode_policy: ModePolicy,
     ranking_candidates: Sequence[ValueKey],
 ) -> Tuple[PreboundQuery, List[ValueKey]]:
-    """The producer's bind product: grain from partition keys, one metric per consumed aggregate, inherited base-row filters; returns prebound + ordered grain keys."""
+    """The producer's bind product: grain from partition keys (in column order), one metric per consumed aggregate,
+    inherited base-row filters; returns prebound + ordered grain keys."""
     public_alias_by_agg = public_alias_by_agg or {}
     explicit_types = explicit_types or {}
     grain_name_by_key = grain_name_by_key or {}
-    ordered = partition_order(pks)
+    ordered = list(pks)
     dims = [pk for pk in ordered if not isinstance(pk, TimeTruncKey)]
     tds = [pk for pk in ordered if isinstance(pk, TimeTruncKey)]
     if window_td_key is not None and window_td_key not in pks:
@@ -1116,11 +1114,9 @@ def _synthesize_wrap_attach(
         prebound=prebound, filter_typings=filter_typings,
     )
     producer_prebound, ordered_pks = _regroup_producer_prebound(
-        pks=Grain.of(projected), aggs=[wrap_key], dataset=producer_dataset,
+        pks=sorted(Grain.of(projected), key=lambda k: consumer_order.get(k, len(consumer_order))),
+        aggs=[wrap_key], dataset=producer_dataset,
         bundle=bundle, inherited=inherited, n_date_range=n_inherited_date,
-        partition_order=lambda pks: sorted(
-            pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
-        ),
         grain_name_by_key=grain_name_by_key,
         mode_policy=prebound.mode_policy,
         ranking_candidates=prebound.ranking_candidates,
@@ -1263,14 +1259,12 @@ def _plan_shifted_attaches(
         aliases, alias_hint = _shifted_answer_aliases(answer=answer, public_alias=public_alias)
         periods, shift_unit = shift_offset_of(key)
         producer_prebound, ordered_pks = _regroup_producer_prebound(
-            pks=pks, aggs=[answer], dataset=producer_dataset, bundle=bundle,
+            pks=sorted(pks, key=lambda k: consumer_order.get(k, len(consumer_order))),
+            aggs=[answer], dataset=producer_dataset, bundle=bundle,
             inherited=[*inherited, *shifted_spine_bounds(
                 prebound=prebound, spine=spine_field(producer_dataset, bundle=bundle), periods=periods,
                 unit=shift_unit or key.time_key.granularity,
             )], n_date_range=0,
-            partition_order=lambda pks: sorted(
-                pks, key=lambda k: consumer_order.get(k, len(consumer_order)),
-            ),
             public_alias_by_agg=aliases,
             grain_name_by_key=grain_name_by_key,
             window_td_key=window_td,
@@ -2578,7 +2572,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     grain_keys = Grain.of(rr for _, rr in safe_pairs)
     # The producer metric keeps the CANONICAL alias (root fields could shadow the public name).
     producer_prebound, ordered_pks = _regroup_producer_prebound(
-        pks=grain_keys, aggs=[agg_rooted], dataset=root_dataset, bundle=root_bundle,
+        pks=_regroup_partition_order(grain_keys), aggs=[agg_rooted], dataset=root_dataset, bundle=root_bundle,
         inherited=inherited, n_date_range=0, window_td_key=window_td_key,
         explicit_types=(
             {agg_rooted: declared_type} if declared_type is not None else None
@@ -2737,9 +2731,8 @@ def _window_endpoints(
     if source.population is None:
         return None
     prebound, _ = _regroup_producer_prebound(
-        pks=Grain.of(host_keys), aggs=[], dataset=source.host_dataset, bundle=source.bundle,
+        pks=list(host_keys), aggs=[], dataset=source.host_dataset, bundle=source.bundle,
         inherited=source.population_filters, n_date_range=source.n_population_date,
-        partition_order=lambda _pks: list(host_keys),
         mode_policy=source.mode_policy, ranking_candidates=source.ranking_candidates,
     )
     plan = compile_synthesized(
@@ -3356,7 +3349,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
         for _name, _value in reagg_params
     ]
     outer_prebound, ordered_outer = _regroup_producer_prebound(
-        pks=Grain.of(original_by_pk), aggs=[outer_agg], dataset=host_dataset, bundle=bundle,
+        pks=_regroup_partition_order(Grain.of(original_by_pk)), aggs=[outer_agg], dataset=host_dataset, bundle=bundle,
         # Over the population's rows, row filters define the cells the outer aggregate consumes; over the operand's
         # own cells, they restricted each constituent's supply already, and only the frame bounds stay.
         inherited=list(inherited[:n_date_range]) if grain_placeholders else inherited, n_date_range=n_date_range,
@@ -3491,7 +3484,7 @@ def _build_carrier_attach(
         for c in constituents for k in walk_value_keys(c)
     )
     carrier_prebound, ordered_pks = _regroup_producer_prebound(
-        pks=union_grain, aggs=constituents, dataset=host_dataset, bundle=bundle,
+        pks=_regroup_partition_order(union_grain), aggs=constituents, dataset=host_dataset, bundle=bundle,
         inherited=inherited, n_date_range=n_date_range,
         window_td_key=active_bucket if carrier_windowed else None,
         mode_policy=mode_policy, ranking_candidates=ranking_candidates,
@@ -3613,7 +3606,7 @@ def _operand_cells(
     for k, v in at_home.items():
         name_of.setdefault(v, names[k])
     prebound, _ordered = _regroup_producer_prebound(
-        pks=Grain.of(at_home.values()), aggs=[], dataset=home, bundle=home_bundle,
+        pks=_regroup_partition_order(Grain.of(at_home.values())), aggs=[], dataset=home, bundle=home_bundle,
         inherited=filters, n_date_range=0, grain_name_by_key=name_of, mode_policy=policy, ranking_candidates=(),
     )
     prebound = _with_cell_aliases(prebound, extra=[(v, names[k]) for k, v in at_home.items() if names[k] != name_of[v]])
@@ -4178,9 +4171,9 @@ def _synthesize_local_regroup(
         )
     witness = _anchor_witness(aggs[0], ctx=ctx)
     producer_prebound, ordered_pks = _regroup_producer_prebound(
-        pks=pks, aggs=[*producer_aggs, *([witness] if witness is not None else [])], dataset=producer_dataset,
-        bundle=bundle, inherited=inherited, n_date_range=n_inherited_date,
-        partition_order=order_fn, public_alias_by_agg=producer_alias,
+        pks=order_fn(pks), aggs=[*producer_aggs, *([witness] if witness is not None else [])],
+        dataset=producer_dataset, bundle=bundle, inherited=inherited, n_date_range=n_inherited_date,
+        public_alias_by_agg=producer_alias,
         explicit_types={
             unfiltered.get(dm.bound.value_key, dm.bound.value_key): dm.datatype
             for dm in prebound.declared_metrics
