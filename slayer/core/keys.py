@@ -20,6 +20,7 @@ from typing import (
     AbstractSet,
     Callable,
     ClassVar,
+    Collection,
     Iterable,
     Iterator,
     List,
@@ -35,7 +36,7 @@ from typing import (
     get_args,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from slayer.core.enums import (
     AggregationValueClass,
@@ -552,15 +553,34 @@ class AggregateKey(_FrozenKey, frozen=True):
     filter: Optional["ValueKey"] = None
     # The built-in aggregation's semantics (its owner declares no expression for ``agg``); not part of identity.
     builtin: bool = Field(default=True, repr=False)
+    # ``partition_keys`` is the query grain the aggregate has by default, not one the query wrote; not part of identity.
+    grain_defaulted: bool = Field(default=False, repr=False)
 
     @field_validator("kwargs", mode="before")
     @classmethod
     def _canonicalize_kwargs(cls, v):
         return _sort_kwargs_tuple(v)
 
+    @model_validator(mode="after")
+    def _defaulted_grain_is_a_grain(self) -> "AggregateKey":
+        if self.grain_defaulted and self.partition_keys is None:
+            raise ValueError("grain_defaulted needs partition_keys")
+        return self
+
     @property
     def phase(self) -> Phase:
         return Phase.AGGREGATE
+
+    @property
+    def written_grain(self) -> Optional["Grain"]:
+        """The ``partition_by=`` the query wrote; ``None`` for an unwritten or defaulted grain."""
+        return None if self.grain_defaulted else self.partition_keys
+
+    def ungrained(self) -> "AggregateKey":
+        """This aggregate with no grain of its own."""
+        if self.partition_keys is None:
+            return self
+        return self.model_copy(update={"partition_keys": None, "grain_defaulted": False})
 
     def children(self) -> Tuple["ValueKey", ...]:
         embedded: List["ValueKey"] = [
@@ -1114,7 +1134,7 @@ VALUE_KEY_TYPES: Tuple[type, ...] = get_args(ValueKey)
 # Key fields spelled only when set, so a key without one keeps its historical spelling.
 OPTIONAL_KEY_FIELDS = frozenset({"filter", "anchor"})
 #: Key fields outside identity (never spelled into a name).
-NON_IDENTITY_KEY_FIELDS = frozenset({"builtin"})
+NON_IDENTITY_KEY_FIELDS = frozenset({"builtin", "grain_defaulted"})
 
 
 class KindPolicy(BaseModel):
@@ -1182,21 +1202,8 @@ def walk_value_keys(key: ValueKey):
         yield from walk_value_keys(child)
 
 
-def _inner_partition_grain(k: ValueKey) -> Grain:
-    """Union of the outermost aggregates' partition grains; an aggregate is opaque."""
-    if isinstance(k, AggregateKey):
-        return Grain.of(k.partition_keys or frozenset())
-    grain = Grain.EMPTY
-    for c in k.children():
-        grain = grain | _inner_partition_grain(c)
-    return grain
-
-
 def regroup_root_grain(root: ValueKey) -> Grain:
-    """Producer grain of a row-attach root: a transform evaluates at the set-union
-    of its inner aggregates' partition grains; a bare aggregate at its own grain."""
-    if isinstance(root, TransformKey):
-        return _inner_partition_grain(root.input)
+    """Producer grain of a row-attach aggregate root: its own partition grain."""
     return Grain.of(getattr(root, "partition_keys", None) or frozenset())
 
 
@@ -1209,23 +1216,19 @@ def effective_root_grain(
 ) -> Tuple[Grain, bool]:
     """A combined-root's producer grain and windowedness.
 
-    An explicitly-partitioned aggregate keeps ``regroup_root_grain``. A bare
-    windowed / first-last root takes the FULL projected grain (a windowed root's
-    bucket enters via ``window_td_key``, so it is excluded here)."""
+    A transform evaluates at its operand grain. An explicitly-partitioned aggregate
+    keeps ``regroup_root_grain``. A bare windowed / first-last root takes the FULL
+    projected grain (a windowed root's bucket enters via ``window_td_key``, so it is
+    excluded here)."""
+    if isinstance(agg, TransformKey):
+        grain = transform_operand_grain(
+            agg.input, query_grain=Grain.of([*projected_dim_keys, *projected_td_keys]), active_bucket=active_bucket,
+        )
+        over_window = active_bucket is not None and any(window_kwarg_of(k) is not None for k in walk_value_keys(agg))
+        return grain, over_window
     windowed = window_kwarg_of(agg) is not None
     if getattr(agg, "partition_keys", None) is not None:
-        grain = regroup_root_grain(agg)
-        # A transform with no grained inner (e.g. rank(region, direction='desc')) is the degenerate
-        # query-grain identity (Axiom 11.1); its operand cells are the query grain.
-        if isinstance(agg, TransformKey) and grain.is_empty:
-            return Grain.of([*projected_dim_keys, *projected_td_keys]), False
-        # A transform over a window= inner gains the active bucket in its union grain.
-        if (
-            not windowed and isinstance(agg, TransformKey) and active_bucket is not None
-            and any(window_kwarg_of(k) is not None for k in walk_value_keys(agg))
-        ):
-            return grain | {active_bucket}, True
-        return grain, windowed
+        return regroup_root_grain(agg), windowed
     if windowed:
         grain = Grain.of(projected_dim_keys) | (
             Grain.of(projected_td_keys)
@@ -2489,75 +2492,47 @@ def source_anchor_path(source: ValueKey) -> Tuple[str, ...]:
     return prefix
 
 
-def _grain_transform_inner_aggregates(
-    t: TransformKey, *, query_grain: Grain,
-) -> TransformKey:
-    """Grain every ungrained, non-windowed, LOCAL aggregate under ``t.input`` at
-    ``query_grain`` — a cross-dataset or windowed or already-explicit inner is left
-    untouched. Post-order over ``map_children``."""
-    def _grain(node: ValueKey) -> ValueKey:
-        rebuilt = node.map_children(_grain)
-        if (
-            isinstance(rebuilt, AggregateKey)
-            and rebuilt.partition_keys is None
-            and window_kwarg_of(rebuilt) is None
-            and not source_anchor_path(rebuilt.source)
-        ):
-            return rebuilt.model_copy(update={"partition_keys": query_grain})
-        return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
-
-    new_input = _grain(t.input)
-    return t if new_input is t.input else t.model_copy(update={"input": new_input})
-
-
-def map_attached_inputs(
-    key: AggregateKey, fn: Callable[[ValueKey], ValueKey],
-) -> AggregateKey:
-    """Apply ``fn`` to each top-level attached constituent of ``key`` across
-    source, positional args and keyword-arg values — the same enumeration as
-    :func:`attached_inputs` — substituting per position by identity (D2). Partition
-    keys are never rewritten. The one law both transform-constituent rewrites run
-    through, so the source, positional and keyword parameter positions share it."""
-    subs: Dict[ValueKey, ValueKey] = {}
-    for inp in (key.source, *key.args, *(v for _, v in key.kwargs)):
-        if isinstance(inp, _FrozenKey):
-            for c in operand_constituents(inp):
-                if c not in subs and (new_c := fn(c)) is not c:
-                    subs[c] = new_c
-    if not subs:
-        return key
-
-    def _sub(v):
-        return substitute_value_keys(key=v, mapping=subs) if isinstance(v, _FrozenKey) else v
-
-    return key.model_copy(update={
-        "source": _sub(key.source),
-        "args": tuple(_sub(a) for a in key.args),
-        "kwargs": tuple((k, _sub(v)) for k, v in key.kwargs),
-    })
-
-
-def normalize_transform_constituents(
-    key: ValueKey, *, query_grain: Grain,
+def default_nested_grains(
+    key: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey], written: Collection[ValueKey],
 ) -> ValueKey:
-    """Explicitly grain the ungrained inner aggregates of a transform constituent
-    at ``query_grain`` (D4b, Axiom 11.1): a time-ordered constituent then has an
-    axis and a mixed operand shares one canonical grain. Post-order over source,
-    args and kwargs (D2); runs before partition-key validation, so the synthesized
-    keys face the same attributability / resolution checks as a user-written
-    ``partition_by=``."""
-    rebuilt = key.map_children(
-        lambda c: normalize_transform_constituents(key=c, query_grain=query_grain),
+    """Give every nested aggregate with no ``partition_by=`` the query grain, marked as defaulted, where its
+    enclosing layer's grain may differ (semantics Axioms 5, 11.1): under a transform inside an aggregation's
+    source or parameters, under a transform whose operand grain differs from the query grain, and in the operand
+    of a ``first`` / ``last`` over an aggregate. An aggregate ``written`` at that grain is pinned unmarked."""
+
+    def _visit(node: ValueKey, *, pinned: bool, in_aggregate: bool) -> ValueKey:
+        if isinstance(node, TransformKey):
+            below = pinned or in_aggregate or transform_operand_grain(
+                node.input, query_grain=query_grain, active_bucket=active_bucket,
+            ) != query_grain
+            return node.map_children(lambda c: _visit(c, pinned=below, in_aggregate=in_aggregate))
+        if not isinstance(node, AggregateKey):
+            return cast("ValueKey", node.map_children(lambda c: _visit(c, pinned=pinned, in_aggregate=in_aggregate)))
+        over_cells = is_ranked_over_cells(node)
+        below = pinned or over_cells
+
+        def _input(v):
+            return _visit(cast("ValueKey", v), pinned=below, in_aggregate=True) if isinstance(v, _FrozenKey) else v
+
+        rebuilt = node.model_copy(update={
+            "source": _input(node.source),
+            "args": tuple(_input(a) for a in node.args),
+            "kwargs": tuple((k, _input(v)) for k, v in node.kwargs),
+            "filter": None if node.filter is None else _visit(node.filter, pinned=pinned, in_aggregate=in_aggregate),
+        })
+        if not pinned or over_cells or rebuilt.partition_keys is not None:
+            return rebuilt
+        grained = rebuilt.model_copy(update={"partition_keys": query_grain})
+        return grained.model_copy(update={"grain_defaulted": grained not in written})
+
+    return _visit(key, pinned=False, in_aggregate=False)
+
+
+def written_grained_aggregates(roots: Iterable[ValueKey]) -> FrozenSet[ValueKey]:
+    """Every aggregate under ``roots`` whose grain the query wrote."""
+    return frozenset(
+        k for r in roots for k in walk_value_keys(r) if isinstance(k, AggregateKey) and k.written_grain is not None
     )
-    if not isinstance(rebuilt, AggregateKey):
-        return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
-
-    def _grain(c: ValueKey) -> ValueKey:
-        if isinstance(c, TransformKey):
-            return _grain_transform_inner_aggregates(t=c, query_grain=query_grain)
-        return c
-
-    return map_attached_inputs(key=rebuilt, fn=_grain)
 
 
 def is_ranked_over_cells(key: ValueKey) -> TypeGuard[AggregateKey]:
@@ -2579,9 +2554,6 @@ def settle_ranked_grains(
     if not isinstance(rebuilt, AggregateKey) or not is_ranked(rebuilt) or window_kwarg_of(rebuilt) is not None:
         return rebuilt
     over_cells = is_attached_source(rebuilt.source)
-    if over_cells:
-        # The operand keeps the query's grain wherever the pick is consumed (Axiom 5; as a transform's, D4b).
-        rebuilt = map_attached_inputs(rebuilt, lambda c: _grained_at(c, query_grain=query_grain))
     base = rebuilt.partition_keys
     if base is None:
         base = transform_operand_grain(
@@ -2591,16 +2563,6 @@ def settle_ranked_grains(
     if rk is None or rk not in base:
         return rebuilt.model_copy(update={"partition_keys": base}) if over_cells else rebuilt
     return rebuilt.model_copy(update={"args": (rk,), "partition_keys": base - {rk}})
-
-
-def _grained_at(c: ValueKey, *, query_grain: Grain) -> ValueKey:
-    """An ungrained, unwindowed local aggregate grained at ``query_grain``; any other constituent as is."""
-    if (
-        isinstance(c, AggregateKey) and c.partition_keys is None and window_kwarg_of(c) is None
-        and not source_anchor_path(c.source)
-    ):
-        return c.model_copy(update={"partition_keys": query_grain})
-    return c
 
 
 def attached_inputs(k: ValueKey) -> List[ValueKey]:

@@ -435,7 +435,7 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     if key.locus == "host":
         canonical = f"{canonical}_host"
 
-    canonical = f"{canonical}{partition_by_suffix(getattr(key, 'partition_keys', None))}"
+    canonical = f"{canonical}{partition_by_suffix(key.written_grain)}"
 
     if profile in ("cte_schema", "declared_name"):
         return canonical

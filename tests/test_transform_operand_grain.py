@@ -433,9 +433,10 @@ async def test_a_defaulted_grain_broadcasts_under_the_deprecated_mode(backend: s
 @pytest.mark.parametrize(("query", "metric", "_values", "inner"), MODE_TABLE)
 async def test_a_defaulted_grain_is_refused_in_error_mode(backend: str, query: dict, metric: str, _values: dict,
                                                           inner: str) -> None:
+    metrics = [_mt(metric)]
     async with seed_engine(backend) as eng:
         with pytest.raises(SlayerError) as ei:
-            await run(eng, metrics=[_mt(metric)], to_many_handling="error", **query)
+            await run(eng, metrics=metrics, to_many_handling="error", **query)
     assert not isinstance(ei.value, PartitionKeyError), str(ei.value)
     assert f"error mode: metric '{inner}'" in str(ei.value)
     _no_unwritten_grain_is_named(str(ei.value))
@@ -472,9 +473,10 @@ async def test_a_finer_operand_does_not_make_a_siblings_grain_written(backend: s
 
 @pytest.mark.parametrize("mode", ["broadcast", "error"])
 async def test_a_written_unattributable_grain_is_still_refused(backend: str, mode: str) -> None:
+    metrics = [_mt(FINER_SIBLING)]
     async with seed_engine(backend) as eng:
         with pytest.raises(PartitionKeyError) as ei:
-            await run(eng, metrics=[_mt(FINER_SIBLING)], to_many_handling=mode, **BY_STATUS)
+            await run(eng, metrics=metrics, to_many_handling=mode, **BY_STATUS)
     assert "customers_region" in str(ei.value)
 
 
@@ -542,11 +544,12 @@ async def test_a_mixed_operand_measure_beside_a_computed_dimension(backend: str)
 
 
 async def test_an_ungrained_aggregate_in_a_dimension_is_still_refused(backend: str) -> None:
+    metrics = [_mt(BARE)]
     async with city_engine(backend) as eng:
         with pytest.raises(ComputedDimensionError):
             await run(eng, population="orders",
                       dimensions=[R, {"field": f"rank({BARE}, direction='desc')", "alias": "r"}],
-                      metrics=[_mt(BARE)])
+                      metrics=metrics)
 
 
 # --------------------------------------------------------------------------- #
@@ -604,7 +607,8 @@ def test_a_defaulted_grain_needs_a_grain() -> None:
 def test_a_defaulted_and_a_written_grain_are_one_value() -> None:
     defaulted = _defaulted()
     written = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of([REGION, CITY]))
-    assert defaulted.grain_defaulted and not written.grain_defaulted
+    assert defaulted.grain_defaulted
+    assert not written.grain_defaulted
     assert defaulted == written
     assert hash(defaulted) == hash(written)
     assert "grain_defaulted" in NON_IDENTITY_KEY_FIELDS
@@ -680,14 +684,17 @@ def test_stripping_a_grain_clears_the_marker() -> None:
     # a row-grain root with an attached input, partitioned by exactly the query grain, is what the pass strips
     elab = _elaborated(f"sum({A} * {BY_REGION}, partition_by=[{R}, {C}])")
     written = elab.prebound.declared_metrics[-1].bound.value_key
-    assert isinstance(written, AggregateKey) and written.partition_keys is not None
+    assert isinstance(written, AggregateKey)
+    assert written.partition_keys is not None
     marked = _substitute_prebound(
         elab.prebound, {written: _defaulted(grain=written.partition_keys, source=written.source)})
     root = marked.declared_metrics[-1].bound.value_key
-    assert isinstance(root, AggregateKey) and root.grain_defaulted
+    assert isinstance(root, AggregateKey)
+    assert root.grain_defaulted
     stripped, _ = _strip_redundant_partitions(elab.model_copy(update={"prebound": marked}))
     root = stripped.declared_metrics[-1].bound.value_key
-    assert isinstance(root, AggregateKey) and root.partition_keys is None
+    assert isinstance(root, AggregateKey)
+    assert root.partition_keys is None
     assert not root.grain_defaulted
 
 

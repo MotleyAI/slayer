@@ -37,8 +37,8 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    default_nested_grains,
     lower_sugar_transforms,
-    normalize_transform_constituents,
     attached_operand_keys,
     explicit_ranking_key,
     is_ranked_over_cells,
@@ -46,6 +46,7 @@ from slayer.core.keys import (
     rewrite_rank_partition_keys,
     operand_constituents,
     settle_ranked_grains,
+    written_grained_aggregates,
     source_anchor_path,
     substitute_value_keys,
     transform_operand_grain,
@@ -796,20 +797,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         _td_key_set.add(vk)
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
-    # Normalise transform constituents (D4b, Axiom 11.1): an ungrained, non-windowed,
-    # local inner aggregate inside a transform constituent (metric/filter/order, not
-    # dimensions) is explicitly grained at the query grain — BEFORE partition-key
-    # validation, so the synthesized keys face the same attributability / resolution
-    # checks as a user-written partition_by=. Every dependent set below (dim-agg,
-    # combined-consumer, reagg-operand) is computed AFTER, over the normalised keys.
     _query_grain = Grain.of([*_dim_key_set, *_td_key_set])
-    declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lambda vk: normalize_transform_constituents(vk, query_grain=_query_grain),
-        declared_metrics=declared_metrics,
-        bound_filters=bound_filters,
-        order_specs=order_specs,
-        skip_dimensions=True,
-    )
 
     # An aggregate's "must be a query dimension" rule is positional — judged by the
     # checker after typing. A transform nested in an attached operand declares an
@@ -865,8 +853,19 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     settled_dims = [_settle(dm.bound.value_key) for dm in declared_metrics[:n_grain]]
     renamed = {dm.bound.value_key: s for dm, s in zip(declared_metrics, settled_dims) if s != dm.bound.value_key}
     _query_grain = Grain.of(settled_dims)
+    _written = written_grained_aggregates([
+        *settled_dims, *(dm.bound.value_key for dm in declared_metrics[n_grain:]),
+        *(bf.value_key for bf in bound_filters), *(sp.bound.value_key for sp in order_specs),
+    ])
+
+    def _default_then_settle(vk: ValueKey) -> ValueKey:
+        vk = substitute_value_keys(key=vk, mapping=renamed) if renamed else vk
+        return _settle(default_nested_grains(
+            vk, query_grain=_query_grain, active_bucket=active_td_key, written=_written,
+        ))
+
     declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lambda vk: _settle(substitute_value_keys(key=vk, mapping=renamed) if renamed else vk),
+        _default_then_settle,
         declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,

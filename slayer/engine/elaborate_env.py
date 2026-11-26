@@ -198,7 +198,7 @@ def _key_display(k: ValueKey) -> str:
         leaf = getattr(k.source, "leaf", None) or getattr(k.source, "field_name", None) or "*"
         path = source_anchor_path(k.source)
         name = f"{k.agg}({'.'.join((*map(display_token, path), leaf))})"
-        return f"{name} (partition_by)" if k.partition_keys is not None else name
+        return f"{name} (partition_by)" if k.written_grain is not None else name
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
     if isinstance(k, TimeTruncKey):
