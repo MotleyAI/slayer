@@ -1,4 +1,4 @@
-version: 28
+version: 30
 name: tweets
 sql_table: tweets
 source_kind: table
@@ -51,6 +51,9 @@ relationships:
   - id
   join_type: left
   cardinality: many_to_one
+  trusted: true
+enforced_keys:
+- - id
 filters: []
 default_time_dimension: tweeted_at
 description: Synthetic customer tweets mentioning the Jaffle Shop.

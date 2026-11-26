@@ -90,5 +90,5 @@ def test_duckdb_floor_has_every_catalog_column_reflection_reads() -> None:
     """``duckdb_constraints().referenced_table`` (foreign keys) first ships in DuckDB 1.1."""
     pyproject = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
     spec = SpecifierSet(pyproject["tool"]["poetry"]["dependencies"]["duckdb"])
-    floor = next(Version(s.version) for s in spec if s.operator == ">=")
-    assert floor >= Version("1.1")
+    [floor] = [s.version for s in spec if s.operator == ">="]
+    assert Version(floor) >= Version("1.1")

@@ -1,4 +1,4 @@
-version: 28
+version: 30
 name: regions
 sql_table: regions
 source_kind: table
@@ -23,6 +23,8 @@ fields:
 metrics: []
 aggregations: []
 relationships: []
+enforced_keys:
+- - id
 filters: []
 description: "Sales regions grouping the stores \u2014 one row per region."
 hidden: false
