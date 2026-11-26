@@ -561,7 +561,7 @@ UNEVALUABLE = document_text(
 
 
 async def test_a_windowed_field_loads_and_fails_only_when_read() -> None:
-    """Spec scenario: A windowed field loads and fails only when read."""
+    """Spec scenario: A windowed field and metric load and evaluate."""
     async with document_engine(documents=(WINDOWED,), tables=[SALES_TABLE]) as engine:
         datasets, errs = await engine.storage.load_datasets(data_source=DS)
         assert errs == []
@@ -583,7 +583,7 @@ async def test_a_windowed_field_loads_and_fails_only_when_read() -> None:
 
 
 async def test_import_osi_reports_no_windowed_entity_as_not_evaluable(tmp_path: Path) -> None:
-    """Spec scenario: A windowed field loads and fails only when read (import report)."""
+    """Spec scenario: A windowed field and metric load and evaluate (import report)."""
     storage = await yaml_storage_with_datasource(tmp_path)
     path = tmp_path / "ledger.yaml"
     path.write_text(WINDOWED, encoding="utf-8")

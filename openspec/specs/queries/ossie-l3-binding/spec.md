@@ -147,7 +147,7 @@ Under `ossie-l3` the filter SHALL be an OSSIE_SQL_2026 expression (Ossie Layer 3
 - **WHEN** a strict query with the dimension `orders.order_id` has the filter `SUM(orders.amount, orders.amount) > 1` or `SUM(orders.amount, orders.amount) OVER () > 1`
 - **THEN** each fails with `E_INVALID_QUERY`; `COUNT(*) > 1` fails with `E_AGGREGATE_IN_WHERE`
 
-#### Scenario: The native binding still refuses a window in the filter
+#### Scenario: The native binding evaluates a window in the filter
 - **WHEN** a query with the dimension `orders.order_id` and the filter `ROW_NUMBER() OVER (ORDER BY orders.amount) = 1` runs under `slayer`, before or after the same filter is judged under `ossie-l3`
 - **THEN** under `slayer` it returns the one order with the smallest amount both times, and under `ossie-l3` it fails with `E_WINDOW_IN_WHERE`
 

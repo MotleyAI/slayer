@@ -53,7 +53,7 @@ async def retail_ranked(tmp_path: Path) -> AsyncGenerator[SlayerQueryEngine]:
 
 
 async def test_native_evaluates_a_window_in_the_filter_before_and_after_strict(filter_engine: SlayerQueryEngine) -> None:
-    """Scenario "The native binding still refuses a window in the filter"."""
+    """Scenario "The native binding evaluates a window in the filter"."""
     query = {"dimensions": ["orders.order_id"], "filter": WINDOW_FILTER}
     before = await filter_engine.execute(query)
     await strict_error(filter_engine, query, "E_WINDOW_IN_WHERE")

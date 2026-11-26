@@ -113,7 +113,7 @@ class TestUnrelatedEdit:
 
 class TestAuthoringRefused:
     async def test_authoring_a_windowed_metric_is_refused(self) -> None:
-        """Spec: models/save-validation › Authoring a windowed metric is refused."""
+        """Spec: models/save-validation › Authoring a windowed metric saves; an unwindowable function is refused."""
         async with document_engine() as engine:
             reply = await _mcp(engine.storage, "edit_semantic_model", name="sales", data_source=DS,
                                metrics=[metric("running_rev", "SUM(SUM(orders.amount)) OVER ()")])
@@ -129,7 +129,7 @@ class TestAuthoringRefused:
             "completed": 650.0, "open": 650.0}
 
     async def test_authoring_a_metric_windowing_a_function_ossie_does_not_window_is_refused(self) -> None:
-        """Spec: models/save-validation › Authoring a windowed metric is refused (an unwindowed function)."""
+        """Spec: models/save-validation › Authoring a windowed metric saves; an unwindowable function is refused (an unwindowed function)."""
         async with document_engine(documents=(DATED,)) as engine:
             before = await _text(engine)
             ok = await _mcp(engine.storage, "edit_semantic_model", name="sales", data_source=DS,
