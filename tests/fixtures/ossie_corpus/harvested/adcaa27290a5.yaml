@@ -1,0 +1,95 @@
+version: 0.3.0.dev0
+name: sales
+nonportable_extensions:
+- vendor_name: ZETA
+  data:
+    owner: finance
+- vendor_name: ACME
+  data:
+    tier: 1
+datasets:
+- name: orders
+  source: db.orders
+  nonportable_extensions:
+  - vendor_name: MIDL
+    data:
+      refresh: daily
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: customer_id
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: customer_id
+      - dialect: OSSIE_SQL_2026
+        expression: customer_id
+  - name: amount
+    expression:
+      sql: amount
+      dialects:
+      - dialect: ANSI_SQL
+        expression: amount
+      - dialect: SNOWFLAKE
+        expression: amount::NUMBER
+    nonportable_extensions:
+    - vendor_name: MIDL
+      data:
+        format: usd
+  - name: status
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: status
+  - name: placed_on
+    expression:
+      dialects:
+      - dialect: SNOWFLAKE
+        expression: placed_at::DATE
+      - dialect: ANSI_SQL
+        expression: CAST(placed_at AS DATE)
+  - name: region
+    expression:
+      dialects:
+      - dialect: SNOWFLAKE
+        expression: IFF(region IS NULL, 'n/a', region)
+  metrics:
+  - name: order_total
+    expression:
+      sql: SUM(amount)
+  - name: order_count
+    expression:
+      dialects:
+      - dialect: DAX
+        expression: COUNTROWS(orders)
+      - dialect: MDX
+        expression: '[Measures].[Orders]'
+    nonportable_extensions:
+    - vendor_name: MIDL
+      data:
+        folder: kpi
+- name: customers
+  source: db.customers
+  fields:
+  - name: id
+    expression:
+      sql: id
+relationships:
+- name: orders_to_customers
+  from: orders
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - id
+  nonportable_extensions:
+  - vendor_name: ACME
+    data:
+      join: left
+metrics:
+- name: revenue
+  expression:
+    dialects:
+    - dialect: ANSI_SQL
+      expression: SUM(orders.amount)

@@ -24,11 +24,13 @@ from tests._ossie_gate import corpus_root
 
 WIDE_TABLE = corpus_root() / "compliance" / "wide_table"
 DS = "wide_table"
+#: A case script's ``connect`` name → upstream's SQL for that built-in ``ost`` fixture.
+DATA = {"retail": "retail/retail.sql", "stores": "stores/stores.sql"}
 #: Fixture name → (SQL, model), per upstream's wide_table README.
 FIXTURES = {
-    "retail": ("retail/retail.sql", "retail/retail_model.ossie.yaml"),
-    "stores": ("stores/stores.sql", "stores/stores_model.ossie.yaml"),
-    "stores_ambiguous": ("stores/stores.sql", "stores/stores_ambiguous_model.ossie.yaml"),
+    "retail": (DATA["retail"], "retail/retail_model.ossie.yaml"),
+    "stores": (DATA["stores"], "stores/stores_model.ossie.yaml"),
+    "stores_ambiguous": (DATA["stores"], "stores/stores_ambiguous_model.ossie.yaml"),
 }
 STRICT = "ossie-l3"
 NATIVE = "slayer"

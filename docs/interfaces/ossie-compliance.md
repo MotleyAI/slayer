@@ -1,8 +1,8 @@
 # Ossie compliance
 
 This page states how far SLayer 2.0 complies with [Ossie](https://github.com/apache/ossie), layer by layer. Every
-claim is measured against the Ossie specification vendored in SLayer's test suite, apache/ossie revision `d4dca4e9`
-(22 November 2026), and names the tests that back it. The Tier-1 databases are SQLite, DuckDB, PostgreSQL, MySQL,
+claim is measured against the Ossie specification vendored in SLayer's test suite, apache/ossie revision `c2980498`
+(26 November 2026), and names the tests that back it. The Tier-1 databases are SQLite, DuckDB, PostgreSQL, MySQL,
 ClickHouse, SQL Server, Trino, Snowflake and BigQuery. The compliance gate runs on SQLite and DuckDB on every pull
 request (`tests/test_ossie_gate.py`), on the others nightly (`tests/integration/test_integration_ossie_gate.py`), and on
 all nine weekly against upstream's `main`.
@@ -39,7 +39,7 @@ cases are:
 | SQL Server | 154 | 7 | 43 |
 | Trino | 157 | 4 | 43 |
 | Snowflake | 157 | 4 | 43 |
-| BigQuery | 155 | 4 | 45 |
+| BigQuery | 157 | 4 | 43 |
 
 | Construct | Example | Status |
 |---|---|---|
@@ -59,8 +59,8 @@ cases are:
 | `DATE_PART(MILLISECOND)` | `DATE_PART('millisecond', orders.created_at)` | planned |
 | `TIMESTAMP_NTZ '2024-01-15 10:30:00'` | a `TIMESTAMP_NTZ` literal | planned |
 | `TIME '10:30:00'` | a time-of-day literal | planned |
-| `CAST('10:30:00' AS TIME)` | a cast to a time of day (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino and Snowflake) | planned |
-| `CAST AS TIME` | `CAST('10:30:00' AS TIME)` (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino and Snowflake) | planned |
+| `CAST('10:30:00' AS TIME)` | a cast to a time of day (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
+| `CAST AS TIME` | `CAST('10:30:00' AS TIME)` (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
 | `TO_DATE` | `TO_DATE('2024-01-15')` | planned |
 | `TO_TIMESTAMP` | `TO_TIMESTAMP('2024-01-15 10:30:00')` | planned |
 | `CHARINDEX` | `CHARINDEX('d', orders.status)` | planned |
@@ -109,9 +109,9 @@ SLayer's own.
 ## Layer 3: wide-table queries
 
 Under `conformance="ossie-l3"`, SLayer answers Ossie's wide-table queries with Ossie's rows, output names and error
-codes on every Tier-1 database: see [Ossie Layer 3](ossie-layer-3.md). Every case of upstream's
-`compliance/wide_table/cases` runs verbatim under the strict binding on its fixture, seeded into each database, each
-answer and each error code compared with upstream's expected result. SLayer knows of no deviation.
+codes on every Tier-1 database: see [Ossie Layer 3](ossie-layer-3.md). Every case script of upstream's
+`compliance/wide_table` runs verbatim under the strict binding on its data and model, seeded into each database, each
+answer and each error code compared with the script's expected result. SLayer knows of no deviation.
 Expressions inside a query are subject to the listed Layer 1 gaps.
 
 Under the default binding (`conformance="slayer"`), SLayer's own query language is a superset: every Ossie query
