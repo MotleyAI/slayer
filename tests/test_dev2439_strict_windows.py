@@ -42,6 +42,10 @@ MALFORMED = [
     "LAG(*) OVER () > 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN 10000000000000000000000000000 PRECEDING "
     "AND 10000000000000000000000000001 PRECEDING) = 1",
+    # Ossie aggregates SLayer does not window: wide-table §8 row 1 precedes row 7.
+    "SUM(DISTINCT orders.amount) OVER () > 1",
+    "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY orders.amount) OVER () > 1",
+    "APPROX_PERCENTILE(orders.amount, 0.5) OVER () > 1",
 ]
 
 #: Complete windows over known fields.
@@ -51,7 +55,7 @@ COMPLETE = [
     "COUNT(*) OVER () > 1",
     "SUM(orders.amount) FILTER (WHERE orders.amount > 1) OVER () > 1",
     "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY orders.amount) OVER () > 1",
-    "APPROX_PERCENTILE(orders.amount, 0.5) OVER () > 1",
+    "COUNT(DISTINCT orders.amount) OVER () > 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) = 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) = 1",
     "ROW_NUMBER() OVER (ORDER BY orders.amount RANGE UNBOUNDED PRECEDING) = 1",
@@ -96,6 +100,8 @@ AGGREGATE_SHAPES = [
     ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY orders.amount)", "E_AGGREGATE_IN_WHERE"),
     ("SUM(orders.amount)", "E_AGGREGATE_IN_WHERE"),
 ]
+#: Ossie aggregates SLayer does not window: unsupported (§8 row 1) before a window in the filter (row 7).
+NOT_WINDOWED = frozenset({"APPROX_PERCENTILE(orders.amount, 0.5)", "SUM(DISTINCT orders.amount)"})
 
 
 @pytest.fixture
@@ -168,17 +174,17 @@ async def test_a_window_function_takes_ossies_arguments(engine: SlayerQueryEngin
 @pytest.mark.parametrize(("aggregate", "code"), AGGREGATE_SHAPES)
 async def test_an_aggregate_takes_ossies_arguments(engine: SlayerQueryEngine, aggregate: str, code: str) -> None:
     await strict_error(engine, _query(f"{aggregate} > 1"), code)
-    windowed = "E_WINDOW_IN_WHERE" if code == "E_AGGREGATE_IN_WHERE" else code
+    if aggregate in NOT_WINDOWED:
+        windowed = "E_INVALID_QUERY"
+    else:
+        windowed = "E_WINDOW_IN_WHERE" if code == "E_AGGREGATE_IN_WHERE" else code
     await strict_error(engine, _query(f"{aggregate} OVER () > 1"), windowed)
 
 
-async def test_native_still_refuses_a_window_in_the_filter(engine: SlayerQueryEngine) -> None:
+async def test_native_evaluates_a_window_in_the_filter_before_and_after_strict(engine: SlayerQueryEngine) -> None:
     query = _query(f"ROW_NUMBER() {ORDERED} = 1")
-    with pytest.raises(Exception) as before:  # noqa: PT011 — whatever native raises today
-        await engine.execute(query)
+    before = await engine.execute(query)
     await strict_error(engine, query, "E_WINDOW_IN_WHERE")
-    with pytest.raises(Exception) as after:  # noqa: PT011 — the same, after the strict reading
-        await engine.execute(query)
-    assert type(after.value) is type(before.value)
-    assert str(after.value) == str(before.value)
-    assert "window function" in str(before.value)
+    after = await engine.execute(query)
+    assert [r["orders.order_id"] for r in before.data] == ["O3"]
+    assert [r["orders.order_id"] for r in after.data] == ["O3"]

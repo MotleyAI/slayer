@@ -325,9 +325,10 @@ class TestSiblingRewriterUnicode:
         assert node.agg == "℘OVER"
         assert node.source == Ref(name="x")
 
-    def test_real_over_still_rejected(self) -> None:
-        with pytest.raises(IllegalWindowInFilterError):
+    def test_real_over_still_rejected_as_a_malformed_window(self) -> None:
+        with pytest.raises(ValueError, match="OVER") as exc:
             parse_expr("amount OVER (partition_by)")
+        assert not isinstance(exc.value, IllegalWindowInFilterError)
 
     def test_like_lhs_fused_never_corrupts(self) -> None:
         # A fused LHS is one whole LIKE operand, never the old ``℘like(name, …)`` corruption.

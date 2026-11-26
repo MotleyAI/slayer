@@ -22,7 +22,8 @@ from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.ossie_validity import agg_calls, columns, is_agg_call, parse_ossie_sql
 from slayer.core.models import SlayerDataset
 from slayer.core.semantic_model import ModelScopedMetric
-from slayer.storage.semantic_models import WINDOW_WARNING, chain_warning, unevaluable_chain
+from slayer.core.syntax import WindowCall, parse_expr, unwindowable_function, walk_parsed
+from slayer.storage.semantic_models import aggregate_window_key, chain_warning, unevaluable_chain
 
 __all__ = ["DocumentScope", "check_model_metric", "metric_cycle", "metric_references", "visible_model_metrics",
            "warn_broken_model_metrics"]
@@ -105,15 +106,9 @@ def _check_column(column: exp.Column, *, name: str, scope: DocumentScope) -> Non
         raise ModelMetricReferenceError(metric=name, reference=reference,
                                         reason="it is neither a model-scoped metric nor a qualified field")
     if table not in scope.fields:
-        if table == "source":
-            reason = "a model-scoped metric reads fields, never source columns"
-        elif table in scope.datasource_datasets:
-            reason = f"{column.table!r} is not a dataset of this semantic model"
-        else:
-            reason = f"{column.table!r} is not a dataset"
-        raise ModelMetricReferenceError(metric=name, reference=reference, reason=reason)
+        raise ModelMetricReferenceError(metric=name, reference=reference, reason=_foreign_table_reason(column, scope=scope))
     if leaf in scope.fields[table]:
-        if not _aggregated(column):
+        if not _aggregated(column) and not aggregate_window_key(column):
             raise ModelMetricReferenceError(metric=name, reference=reference,
                                             reason="a field is read only inside an aggregate")
         return
@@ -124,6 +119,30 @@ def _check_column(column: exp.Column, *, name: str, scope: DocumentScope) -> Non
                                     reason=f"{column.table!r} declares no field {column.name!r}")
 
 
+def _foreign_table_reason(column: exp.Column, *, scope: DocumentScope) -> str:
+    table = column.table.casefold()
+    if table == "source":
+        return "a model-scoped metric reads fields, never source columns"
+    if table in scope.datasource_datasets:
+        return f"{column.table!r} is not a dataset of this semantic model"
+    return f"{column.table!r} is not a dataset"
+
+
+def _check_windows(name: str, *, text: str) -> None:
+    """Refuse a window applying a function Ossie does not window; text the expression reader rejects passes."""
+    try:
+        parsed = parse_expr(text)
+    except ValueError:
+        return
+    for node in walk_parsed(parsed):
+        refused = unwindowable_function(node) if isinstance(node, WindowCall) else None
+        if refused is not None:
+            raise ModelMetricReferenceError(
+                metric=name, reference=text,
+                reason=f"`{refused}` cannot run under OVER: a window applies a ranking or offset function or an "
+                f"Ossie aggregation")
+
+
 def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
     """Refuse a model-scoped metric SLayer authors that breaks a naming or reference rule; ``True`` when Ossie does not
     define it (it reads another model-scoped metric by name, or an aggregate reads several datasets or filters on
@@ -132,8 +151,7 @@ def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
     tree, problem = parse_ossie_sql(text, _OSSIE_SQL)
     if tree is None:
         raise ModelMetricReferenceError(metric=name, reference=text, reason=f"it does not parse ({problem})")
-    if tree.find(exp.Window) is not None:
-        raise UnevaluableEntityError(entity=f"Metric {name!r}", reason=WINDOW_WARNING)
+    _check_windows(name, text=text)
     for call, args in agg_calls(tree):
         _check_agg(call, args, text=text, scope=scope)
     reads = {(f"{c.table}.{c.name}" if c.table else c.name).casefold() for c in tree.find_all(exp.Column)}

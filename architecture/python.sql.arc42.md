@@ -18,7 +18,6 @@ The `sql_focus` view ([views.c4](views.c4)):
 flowchart TD
   %% sql_focus: SQL generation in context
   subgraph core["Core domain models"]
-    core__query["Query"]
     core__models["Models"]
   end
   subgraph sql["SQL generation"]
@@ -38,10 +37,7 @@ flowchart TD
   end
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
-  core__models -.-> sql__window_detect
-  core__query -.-> sql__window_detect
   sql__render --> sql__dialects
-  sql__sql_predicate --> sql__window_detect
   database --> sql
   engine --> sql
   importers --> sql
@@ -51,7 +47,7 @@ flowchart TD
   storage --> sql
   usage_reporting__features --> sql
   classDef leaf fill:none;
-  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,database,live_schema,ir,storage,importers,usage_reporting__features leaf;
+  class core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,database,live_schema,ir,storage,importers,usage_reporting__features leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:sql_focus -->

@@ -20,6 +20,7 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
+from sqlglot.generator import Generator as _SqlglotGenerator
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.errors import (
@@ -29,10 +30,11 @@ from slayer.core.errors import (
     ServerVersionError,
     TimeZoneError,
     UnsupportedServerFunctionError,
+    WindowFunctionError,
 )
 from slayer.core.granularity import CustomGranularity, Granularity, bucket_type, granularity_parts, nests_into
 from slayer.core.json_path import JsonPath
-from slayer.core.keys import CastTypeParts, cast_type_parts
+from slayer.core.keys import CastTypeParts, ValueKey, WindowKey, cast_type_parts
 from slayer.core.like_pattern import LikePattern
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.patterns import RegexFlavour, emit_regex, emit_replacement, like_expression, like_text
@@ -870,6 +872,63 @@ class DriverFacts(BaseModel):
         return parsed.set(drivername=f"{backend}+{self.default_driver}").render_as_string(hide_password=False)
 
 
+#: Meta flag on an ``exp.Ordered`` whose ``NULLS FIRST`` / ``NULLS LAST`` is always written, whatever the dialect's
+#: assumed default: a session can change that default.
+EXPLICIT_NULLS = "slayer_explicit_nulls"
+_ordered_sql = _SqlglotGenerator.ordered_sql
+
+
+def _explicit_ordered_sql(self: _SqlglotGenerator, expression: exp.Ordered) -> str:
+    if not expression.meta.get(EXPLICIT_NULLS) or self.NULL_ORDERING_SUPPORTED is None:
+        return _ordered_sql(self, expression)
+    desc = " DESC" if expression.args.get("desc") else " ASC"
+    return f"{self.sql(expression, 'this')}{desc} NULLS {'FIRST' if expression.args.get('nulls_first') else 'LAST'}"
+
+
+# sqlglot writes a placement only where it differs from its assumed default; a flagged item always states it.
+_SqlglotGenerator.ordered_sql = _explicit_ordered_sql  # type: ignore[method-assign]
+
+
+def stating_nulls(tree: Expression) -> Expression:
+    """``tree`` with every window order item flagged to write its NULL placement."""
+    for window in tree.find_all(exp.Window):
+        order = window.args.get("order")
+        for item in order.expressions if order is not None else ():
+            if isinstance(item, exp.Ordered):
+                item.meta[EXPLICIT_NULLS] = True
+    return tree
+
+
+#: The call a window applies, by its function (statistics through ``build_stat_agg_1arg``).
+_WINDOW_CALLS: dict[str, Callable[[list[Expression]], Expression]] = {
+    "row_number": lambda a: exp.RowNumber(),
+    "rank": lambda a: exp.Rank(),
+    "dense_rank": lambda a: exp.DenseRank(),
+    "percent_rank": lambda a: exp.PercentRank(),
+    "cume_dist": lambda a: exp.CumeDist(),
+    "ntile": lambda a: exp.Ntile(this=a[0]),
+    "lag": lambda a: exp.Lag(this=a[0], offset=a[1] if len(a) > 1 else None, default=a[2] if len(a) > 2 else None),
+    "lead": lambda a: exp.Lead(this=a[0], offset=a[1] if len(a) > 1 else None, default=a[2] if len(a) > 2 else None),
+    "first_value": lambda a: exp.FirstValue(this=a[0]),
+    "last_value": lambda a: exp.LastValue(this=a[0]),
+    "nth_value": lambda a: exp.NthValue(this=a[0], offset=a[1]),
+    "sum": lambda a: exp.Sum(this=a[0]),
+    "count": lambda a: exp.Count(this=a[0]),
+    "count_distinct": lambda a: exp.Count(this=exp.Distinct(expressions=[a[0]])),
+    "avg": lambda a: exp.Avg(this=a[0]),
+    "min": lambda a: exp.Min(this=a[0]),
+    "max": lambda a: exp.Max(this=a[0]),
+    "median": lambda a: exp.Median(this=a[0]),
+    "percentile_cont": lambda a: exp.WithinGroup(
+        this=exp.PercentileCont(this=a[1]), expression=exp.Order(expressions=[exp.Ordered(this=a[0])])),
+}
+#: Statistical aggregates, by the name the dialect's stat builder spells.
+_WINDOW_STATS: dict[str, StatAgg1Name] = {"stddev": "stddev_samp", "stddev_samp": "stddev_samp", "stddev_pop": "stddev_pop", "variance": "var_samp",
+          "var_samp": "var_samp", "var_pop": "var_pop"}
+#: Holistic aggregates a database may not window, by how a refusal names them.
+_HOLISTIC_WINDOWS = {"count_distinct": "COUNT(DISTINCT …)", "median": "MEDIAN", "percentile_cont": "PERCENTILE_CONT"}
+
+
 class SqlDialect(BaseModel):
     """One database's quirks: neutral AST defaults, a typed refusal where a database's own SQL is needed."""
 
@@ -881,13 +940,20 @@ class SqlDialect(BaseModel):
     log10_native: bool = False
     log2_native: bool = False
 
+    #: An ORDER BY item can state ``NULLS FIRST`` / ``NULLS LAST`` (else NULL sorts lowest).
+    nulls_clause: bool = True
+    #: The holistic aggregates the database evaluates under ``OVER`` (``count_distinct``, ``median``,
+    #: ``percentile_cont``).
+    windowed_holistic: ClassVar[frozenset[str]] = frozenset()
+
     # Whether NUMERIC/DECIMAL is stored exactly (False: SQLite's numeric affinity).
     exact_decimal_native: bool = True
     #: The database enforces primary-key and unique constraints (every dialect states it).
     enforces_unique_keys: ClassVar[bool]
 
-    # ``AVG`` over integers returns a truncated integer, so a non-DOUBLE input is read as a float.
+    # ``AVG`` over integers is not a full-precision fraction, so a non-DOUBLE input is read as ``avg_input_type``.
     integer_avg: bool = False
+    avg_input_type: str = "FLOAT"
 
     # Identifier budget in bytes (``None`` = unbounded); defaults to Postgres, the tightest.
     max_identifier_bytes: int | None = 63
@@ -1652,6 +1718,71 @@ class SqlDialect(BaseModel):
 
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
         self.refuse("contains_all")
+
+    def window_order_item(
+        self, value: Expression, *, descending: bool, nulls_first: bool, range_offset: bool, label: str,
+    ) -> list[Expression]:
+        """One window order item with its NULL placement stated: the ``NULLS`` clause, or, with no clause (NULL sorting
+        lowest), a ``CASE`` key on the item's NULL-ness before it where the placement differs; a ``RANGE`` offset
+        frame cannot take that key."""
+        if self.nulls_clause:
+            stated = exp.Ordered(this=value, desc=descending, nulls_first=nulls_first)
+            stated.meta[EXPLICIT_NULLS] = True
+            return [stated]
+        item = exp.Ordered(this=value, desc=descending, nulls_first=not descending)
+        if nulls_first is not descending:
+            return [item]
+        if range_offset:
+            raise WindowFunctionError(
+                summary=f"The window order item `{label}` needs NULL sorted "
+                f"{'first' if nulls_first else 'last'}, which {self.database_name} gives only through a second order "
+                f"key, and a RANGE frame with an offset orders by exactly one.",
+                suggestion=f"State NULLS {'LAST' if nulls_first else 'FIRST'} on the item, or use a ROWS frame.",
+            )
+        null_key = exp.Case(ifs=[exp.If(this=exp.Is(this=value.copy(), expression=exp.Null()),
+                                        true=exp.Literal.number(1))], default=exp.Literal.number(0))
+        return [exp.Ordered(this=null_key, desc=nulls_first, nulls_first=not nulls_first), item]
+
+    def rewrite_window_key(self, key: WindowKey) -> ValueKey:
+        """A row-level window the database lacks, as an exact composite of windows it has (nested windows each become
+        a column of their own); ``key`` itself where it has the window."""
+        return key
+
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:  # NOSONAR(S1172) — hook; overrides read key
+        """``window`` as the database computes ``key`` exactly (a rewrite where it lacks the native form)."""
+        return window
+
+    def true_division(self, quotient: Expression) -> Expression:
+        """A Mode B ``/`` (true division), as the database divides exactly."""
+        return quotient
+
+    def window_call(self, key: WindowKey, args: list[Expression], *, input_type: Optional[DataType] = None) -> Expression:
+        """The call under ``OVER`` over ``args`` (the first typed ``input_type``); a holistic aggregate the database does
+        not window is refused."""
+        function = key.function
+        if function in _HOLISTIC_WINDOWS and function not in self.windowed_holistic:
+            raise WindowFunctionError(
+                summary=f"{_HOLISTIC_WINDOWS[function]} cannot run under OVER on {self.database_name}, which does not "
+                f"evaluate it as a window function.",
+                suggestion="Compute it in an earlier stage and read the result, or run the query on a database that "
+                "windows it.",
+            )
+        if function in _WINDOW_STATS:
+            return self.build_stat_agg_1arg(_WINDOW_STATS[function], args[0])
+        if function == "avg":
+            args = [self.avg_input(args[0], input_type=input_type), *args[1:]]
+        return _WINDOW_CALLS[function](args)
+
+    def fractional_avg(self, input_type: Optional[DataType]) -> bool:
+        """Whether ``AVG`` over ``input_type`` needs its input cast to be a full-precision fraction; a DOUBLE input
+        already is one (an exact decimal keeps its precision)."""
+        return self.integer_avg and kind_of(input_type) is not TypeKind.DOUBLE
+
+    def avg_input(self, value: Expression, *, input_type: Optional[DataType]) -> Expression:
+        """``value`` as ``AVG``'s input."""
+        if not self.fractional_avg(input_type):
+            return value
+        return exp.Cast(this=value, to=exp.DataType.build(self.avg_input_type))
 
     def row_number(self) -> Expression:
         """An arbitrary distinct number per row of the enclosing relation."""

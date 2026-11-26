@@ -34,7 +34,7 @@ from slayer.core.errors import (
     AmbiguousRelationshipPathError, PopulationErrorReason, PopulationInferenceError,
     UnresolvableDimensionRelationshipError,
 )
-from slayer.core.keys import SLOT_COMPOSITE_KINDS, display_token, is_framed_path, is_ranked_over_cells, is_reaggregation_key, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.keys import TRANSFORM_KINDS, WINDOW_OP, WindowKey, is_transform, transform_operands, SLOT_COMPOSITE_KINDS, display_token, is_framed_path, is_ranked_over_cells, is_reaggregation_key, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.names import spelled_name
 from slayer.core.relationship_search import routes
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
@@ -210,7 +210,7 @@ def _order_wrap_source(key: ValueKey, *, dim_keys: frozenset) -> Optional[Tuple[
     if isinstance(key, (FieldKey, FieldSqlKey)):
         return key, key.path
     if not isinstance(key, EXPRESSION_SOURCE_KINDS) or any(
-        isinstance(k, (AggregateKey, TransformKey))
+        isinstance(k, (AggregateKey, TransformKey)) or is_transform(k)
         or (isinstance(k, FieldKey) and k.leaf.startswith(REGROUP_LEAF_PREFIX))
         for k in walk_value_keys(key)
     ):
@@ -514,6 +514,9 @@ def _scalar_free_fields(node: ValueKey, out: set) -> None:
             _scalar_free_fields(node=child, out=out)
     elif isinstance(node, TransformKey):
         _scalar_free_fields(node=node.input, out=out)
+    elif is_transform(node):
+        for child in transform_operands(node):
+            _scalar_free_fields(node=child, out=out)
 
 
 def _prune_functionally_determined_grain(pks: Grain) -> Grain:
@@ -2012,7 +2015,7 @@ class ProducerContext(BaseModel):
     #: Placeholders it reads from an attach riding alongside it, each to its original key.
     placeholder_originals: Mapping[ValueKey, ValueKey] = Field(default_factory=dict)
     #: The transform whose domain this producer's rows are (semantics Axiom 11.6).
-    domain_of: Optional[TransformKey] = None
+    domain_of: Optional[ValueKey] = None
 
 
 def _materialised(
@@ -2290,7 +2293,10 @@ class _HomeRooting(NamedTuple):
                 "input": self.interior(k.input), "partition_keys": Grain.of(self.grain(p) for p in k.partition_keys),
                 "time_key": None if k.time_key is None else self.grain(k.time_key),
             })
-        if any(isinstance(c, (AggregateKey, TransformKey)) for c in walk_value_keys(k)):
+        if is_transform(k):
+            # Its row-level keys are grain members.
+            return k.map_children(lambda c: self.grain(c) if c.phase is Phase.ROW else self.interior(c))
+        if any(isinstance(c, (AggregateKey, TransformKey)) or is_transform(c) for c in walk_value_keys(k)):
             return k.map_children(self.interior)
         return self.rerooted(k)
 
@@ -2843,7 +2849,7 @@ def _param_is_determined(
     if isinstance(value, AggregateKey) and value.written_grain is None:
         return True
     members = [value]
-    if isinstance(value, TransformKey):
+    if is_transform(value):
         members = list(attached_parameter_grain(
             key=value, projected_dim_keys=list(projected_dim_keys),
             projected_td_keys=list(projected_td_keys), active_bucket=active_bucket,
@@ -3094,7 +3100,7 @@ def _association_arm(
     for name, value in _param_values(agg):
         # Attached kinds (aggregate- and transform-valued) are judged by the shared
         # home-determination tail (D5); only row-valued params are typed here.
-        if not isinstance(value, (AggregateKey, TransformKey)):
+        if not (isinstance(value, (AggregateKey, TransformKey)) or is_transform(value)):
             check_parameter_determined(
                 alias=alias, param_name=name,
                 grain_display=_grain_display(entity_grain),
@@ -3203,6 +3209,8 @@ def _constituent_alias(c: ValueKey) -> str:
     canonical aggregate alias of its own)."""
     if isinstance(c, TransformKey):
         return c.op
+    if isinstance(c, WindowKey):
+        return c.function
     if isinstance(c, AggregateKey):
         return canonical_aggregate_alias(c, profile="stage_expression") or c.agg
     return "reagg"
@@ -3295,7 +3303,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
                 constituents.append(ck)
             if ck != _value:
                 param_constituent_of[_value] = ck
-        elif isinstance(_value, TransformKey) and _value not in constituents:
+        elif is_transform(_value) and _value not in constituents:
             # A transform parameter rides the carrier as a constituent at its own
             # (explicit, post-D2) result grain — no ungrained normalisation (D4).
             constituents.append(_value)
@@ -3347,7 +3355,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
 
     # The operand (Axiom 2.4): one row per cell of its constituents' row supply at the union grain, carrying the
     # outer grain and every cell-determined parameter as its own columns.
-    field_params = [k for _n, v in reagg_params if not isinstance(v, (AggregateKey, TransformKey))
+    field_params = [k for _n, v in reagg_params if not (isinstance(v, (AggregateKey, TransformKey)) or is_transform(v))
                     for k in outside_aggregates(v) if isinstance(k, (FieldKey, FieldSqlKey))]
     # An outer grain key carrying an attached value reads it as a constituent column; row-level ones are grain columns.
     row_outer = [g for g in outer_grain if not operand_constituents(g)]
@@ -3760,8 +3768,9 @@ def _cells_are_the_carrier(
 
 def _reads_host_rows(c: ValueKey, *, context: _ProducerSynthesisContext) -> bool:
     """``c`` derives from the host's own rows alone, none dropped by an aggregate filter."""
-    if isinstance(c, TransformKey) or (isinstance(c, AggregateKey) and is_reaggregation_key(c)):
-        inner = operand_constituents(c.input if isinstance(c, TransformKey) else c.source)
+    if is_transform(c) or (isinstance(c, AggregateKey) and is_reaggregation_key(c)):
+        operands = (c.source,) if isinstance(c, AggregateKey) else transform_operands(c)
+        inner = [i for o in operands for i in operand_constituents(o)]
         return bool(inner) and all(_reads_host_rows(i, context=context) for i in inner)
     if not isinstance(c, AggregateKey) or c.filter is not None or _constituent_home_path(c, context=context):
         return False
@@ -4038,7 +4047,7 @@ def _local_regroup_groups(
         if ident is None and isinstance(agg, AggregateKey) and crossing(agg):
             ident = ("crossing", _partition_free_identity(agg))
         # A transform's rows are its own domain (Axiom 11.6).
-        if isinstance(agg, TransformKey):
+        if is_transform(agg):
             ident = ("transform", agg)
         gkey = (grain, ident, agg.filter if restricts_own_rows(agg) else None)
         groups.setdefault(gkey, []).append(agg)
@@ -4190,7 +4199,7 @@ def _anchor_witness(root: ValueKey, *, ctx: "_LocalRegroupContext") -> Optional[
     when the anchor is not the host."""
     supply, host = ctx.bundle.row_supply, ctx.producer_dataset
     if (
-        not isinstance(root, TransformKey) or any(isinstance(k, AggregateKey) for k in walk_value_keys(root))
+        not is_transform(root) or any(isinstance(k, AggregateKey) for k in walk_value_keys(root))
         or supply is None or supply.anchor is None or host is None or supply.anchor == host.name
     ):
         return None
@@ -4206,7 +4215,7 @@ def _producer_window_td(
 ) -> Optional[TimeTruncKey]:
     """A windowed producer's active bucket; a transform producer keeps it too when its grain holds it."""
     td = prebound.main_time_key
-    return td if windowed or (isinstance(root, TransformKey) and td in pks) else None
+    return td if windowed or (is_transform(root) and td in pks) else None
 
 
 def _synthesize_local_regroup(
@@ -4220,7 +4229,7 @@ def _synthesize_local_regroup(
     inherited, n_inherited_date = ctx.masks.filters, ctx.masks.n_date_range
     pks = _prune_functionally_determined_grain(pks)
     # A transform producer evaluates its operand whole, re-aggregations included.
-    own = {a: substitute_value_keys(a, ctx.reagg_originals) if isinstance(a, TransformKey) else a for a in aggs}
+    own = {a: substitute_value_keys(a, ctx.reagg_originals) if is_transform(a) else a for a in aggs}
     # A row-restricted group shares one condition: the producer aggregates the unfiltered keys over its rows.
     condition, unfiltered = _group_row_restriction(aggs)
     if condition is not None:
@@ -4267,7 +4276,7 @@ def _synthesize_local_regroup(
         producer_registry=ctx.producer_registry,
         population=ctx.population,
         kernel_answer=_kernel_answer(decision),
-        domain_of=answer if isinstance(answer, TransformKey) else None,
+        domain_of=answer if is_transform(answer) else None,
     )
     # A union-grain producer MAY carry nested attaches at any depth; the
     # complete-grain assert is the admission rule.
@@ -4629,7 +4638,7 @@ def compile_synthesized(
     reserved_placeholders: AbstractSet[ValueKey] = frozenset(),
     kernel_answer: Optional[AggregateKey] = None,
     placeholder_originals: Optional[Mapping[ValueKey, ValueKey]] = None,
-    domain_of: Optional[TransformKey] = None,
+    domain_of: Optional[ValueKey] = None,
 ) -> PlannedQuery:
     """Elaborate a compiler-synthesized producer — its aggregates' homes relative to
     its OWN root (D3) — and compile it. ``carried_attaches`` are outer attaches whose
@@ -4687,7 +4696,7 @@ class _Routed(BaseModel):
     #: Placeholders read from an attach outside ``attaches``, each to its original key.
     placeholder_originals: Mapping[ValueKey, ValueKey] = Field(default_factory=dict)
     #: The transform whose domain this producer's rows are.
-    domain_of: Optional[TransformKey] = None
+    domain_of: Optional[ValueKey] = None
 
 
 def _shift_candidates(dispositions: Sequence[RootDisposition]) -> FrozenSet[ValueKey]:
@@ -4863,7 +4872,7 @@ def _producer_nesting_rule(
     }
 
     def nests(root: ValueKey, phase: str) -> bool:
-        if phase == "row" or (isinstance(root, TransformKey) and root not in answers):
+        if phase == "row" or (is_transform(root) and root not in answers):
             return True
         grain = constituent_grain(
             c=root, projected_dim_keys=projected_dim_keys,
@@ -5322,9 +5331,11 @@ def _isolated_composites(*, slots: list, isolated: AbstractSet[SlotId], registry
             return True
         if isinstance(key, TransformKey):
             return composed(key.input)
+        if isinstance(key, WindowKey):
+            return all(composed(c) for c in key.children())
         return isinstance(key, SLOT_COMPOSITE_KINDS) and all(composed(c) for c in key.children())
 
-    return {s.id for s in slots if isinstance(s.key, (*SLOT_COMPOSITE_KINDS, TransformKey)) and composed(s.key)}
+    return {s.id for s in slots if isinstance(s.key, (*SLOT_COMPOSITE_KINDS, *TRANSFORM_KINDS)) and composed(s.key)}
 
 
 def _restricted_dataset(dataset: Optional[SlayerDataset], *, bundle: ResolvedSourceBundle) -> bool:
@@ -5695,7 +5706,7 @@ def _transform_dep_graph(
     deps_of: Dict[str, List[str]] = {s.id: [] for s in transform_slots}
     for s in transform_slots:
         for dep in _iter_slot_deps(s.key):
-            if dep is s.key or not isinstance(dep, TransformKey):
+            if dep is s.key or not isinstance(dep, TRANSFORM_KINDS):
                 continue
             dep_slot = slot_by_key.get(dep)
             if dep_slot is None:
@@ -5726,7 +5737,7 @@ def _toposort_slot_ids(
 def _emit_transform_layers(*, slots: List[ValueSlot]) -> List[TransformLayer]:
     """One TransformLayer per TransformKey slot, in dependency order (innermost first) so an inner window/self-join renders before the outer one consumes it."""
     transform_slots = [
-        s for s in slots if isinstance(s.key, TransformKey)
+        s for s in slots if isinstance(s.key, TRANSFORM_KINDS)
     ]
     # Topological order: a slot whose TransformKey.input references another slot's key must come after it.
     in_degree, deps_of = _transform_dep_graph(transform_slots=transform_slots)
@@ -5734,7 +5745,8 @@ def _emit_transform_layers(*, slots: List[ValueSlot]) -> List[TransformLayer]:
         transform_slots=transform_slots, in_degree=in_degree, deps_of=deps_of,
     )
     op_by_id = {
-        s.id: s.key.op for s in slots if isinstance(s.key, TransformKey)
+        s.id: s.key.op if isinstance(s.key, TransformKey) else WINDOW_OP
+        for s in slots if isinstance(s.key, TRANSFORM_KINDS)
     }
     return [
         TransformLayer(op=op_by_id[sid], slot_ids=[sid])

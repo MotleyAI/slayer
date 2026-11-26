@@ -158,7 +158,7 @@ because no standard syntax works everywhere:
 | DuckDB | yes | yes | yes | yes | yes | sqlglot rewrites ordered-set percentiles to `QUANTILE_CONT`. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*` (sqlglot may emit `VARIANCE` for `var_samp`). |
 | SQLite | yes | yes | yes | yes | **no** | Python aggregate UDFs registered on every connection — see "SQLite caveats" below. |
 | ClickHouse | yes | yes | yes | yes | yes | The exact `quantileExactInclusive(p)(x)`, NULL over no values; native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
-| Snowflake | yes | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. No native `LOG10` or `LOG2`; both render as `LOG(base, x)`. |
+| Snowflake | yes | `PARTITION BY` only | `PARTITION BY` only | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. No native `LOG10` or `LOG2`; both render as `LOG(base, x)`. |
 | MySQL | yes | yes | yes | **no** | **no** | `MEDIAN`/`PERCENTILE_CONT` interpolate over `ROW_NUMBER`/`COUNT` windows in a subquery. No native `CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. |
 | SQL Server (T-SQL) | yes | yes | yes | yes (decomposed) | **no** | T-SQL's `PERCENTILE_CONT` is window-only: SLayer computes it per row in a subquery and regroups. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
 | Trino | yes | yes | yes | yes | yes | `MEDIAN`/`PERCENTILE_CONT` interpolate over `ROW_NUMBER`/`COUNT` windows in a subquery, exactly. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
@@ -398,6 +398,33 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
 - **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0, `IS NULL` is false and `count(list)` counts it where other databases see `NULL`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`, so `engine.execute(..., explain=True)` raises
   `ExplainUnsupportedError` (a `ValueError`); use `dry_run=True` to see the SQL.
+
+## Window functions
+
+Every Tier 1 database runs Ossie's [window functions](concepts/expressions.md#sql-window-functions-over) — the
+ranking and offset functions and the windowed `SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, `STDDEV` / `VARIANCE` family —
+with no frame or Ossie's frame forms; where a database lacks one, SLayer writes an exact equivalent:
+
+- **NULL placement** is stated on every order item: `NULLS FIRST` / `NULLS LAST` where the database has the clause,
+  a `CASE WHEN x IS NULL THEN 1 ELSE 0 END` key before the item on MySQL and SQL Server where Ossie's placement differs
+  from theirs. A `RANGE` frame with an offset takes only one order key, so there such an item is refused unless its
+  stated placement is the database's own.
+- **SQL Server** has no `NTH_VALUE`: SLayer rewrites it over the default frame, `ROWS` / `RANGE BETWEEN UNBOUNDED
+  PRECEDING AND CURRENT ROW` and `ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING`, and refuses it over any other frame.
+- **ClickHouse** has no `CUME_DIST` (written as two counts); its `LAG` / `LEAD` read the whole partition, a sample
+  statistic over one row is NULL rather than NaN, and `COUNT(x)` sums non-NULL flags.
+- **SQLite** runs the statistics through its window-capable SLayer functions.
+- **Snowflake** frames an ordered `LAST_VALUE` / `NTH_VALUE` over the whole partition by default, so SLayer states
+  the standard running frame.
+
+`COUNT(DISTINCT …)`, `MEDIAN` and `PERCENTILE_CONT` under `OVER` run where the database windows them and are refused
+with a `WindowFunctionError` elsewhere:
+
+| Engine | `COUNT(DISTINCT …) OVER` | `MEDIAN(…) OVER` | `PERCENTILE_CONT(…) OVER` |
+|---|---|---|---|
+| DuckDB | yes | yes | yes (as `quantile_cont`) |
+| Snowflake | yes | yes | yes |
+| SQLite, Postgres, MySQL, ClickHouse, SQL Server, Trino, BigQuery | refused | refused | refused |
 
 ## Adding a new dialect
 

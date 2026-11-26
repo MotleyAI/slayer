@@ -38,6 +38,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    WindowKey,
     reroot_value_key,
     SqlFragmentKey,
 )
@@ -85,6 +86,10 @@ def _samples() -> dict:
         CastKey: CastKey(source=FieldKey(path=(), leaf="spend"), type_text="INT", data_type=DataType.INTEGER),
         ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
         ListSetKey: ListSetKey(source=FieldKey(path=(), leaf="tags")),
+        WindowKey: WindowKey(
+            function="row_number", order=(FieldKey(path=(), leaf="spend"),),
+            descending=(False,), nulls_first=(False,),
+        ),
     }
 
 

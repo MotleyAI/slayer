@@ -38,6 +38,8 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     SqlFragmentKey,
+    WindowKey,
+    prepend_value_key,
 )
 from slayer.core.keys import Grain
 
@@ -355,6 +357,10 @@ class TestTotalityAndFailClosed:
             ),
             ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
             ListSetKey: ListSetKey(source=FieldKey(path=("customers",), leaf="tags")),
+            WindowKey: WindowKey(
+                function="row_number", order=(FieldKey(path=("customers",), leaf="spend"),),
+                descending=(False,), nulls_first=(False,), anchor=("customers",),
+            ),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)
@@ -364,6 +370,14 @@ class TestTotalityAndFailClosed:
         )
         for member in members:
             reroot_value_key(samples[member], target_path=TARGET)
+
+    def test_a_row_level_window_anchor_moves_with_its_references(self) -> None:
+        spend = FieldKey(path=("customers",), leaf="spend")
+        window = WindowKey(function="row_number", order=(spend,), descending=(False,), nulls_first=(False,),
+                           anchor=("customers",))
+        local = reroot_value_key(window, target_path=TARGET)
+        assert local.anchor == ()
+        assert prepend_value_key(local, host_path=TARGET) == window
 
     def test_unknown_kind_raises(self) -> None:
         """Fail closed. Returning an unhandled kind unchanged is what lets a

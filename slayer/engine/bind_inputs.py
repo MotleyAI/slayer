@@ -112,6 +112,7 @@ from slayer.engine.elaborate_env import (
     time_dimension_type,
     check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
+    check_window_keys_in_operand_grain,
     check_time_transforms_resolved,
     check_ranking_key_determined,
     grain_display,
@@ -892,6 +893,15 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             *(spec.bound.value_key for spec in order_specs),
         ],
         query_grain=_query_grain, active_bucket=active_td_key,
+    )
+    check_window_keys_in_operand_grain(
+        roots=[
+            *(dm.bound.value_key for dm in declared_metrics),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        query_grain=_query_grain, active_bucket=active_td_key,
+        root=scope.population.name if scope.population is not None else None,
     )
 
     check_temporal_axis(

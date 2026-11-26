@@ -42,6 +42,7 @@ from slayer.core.errors import (
     UnknownReferenceError,
     UnresolvableDimensionRelationshipError,
     UnresolvedPlaceholderError,
+    WindowFunctionError,
 )
 from slayer.core.enums import (
     ALL_TRANSFORMS,
@@ -64,7 +65,7 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
-from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, DIGITS_SCALARS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, integer_valued, list_valued, numeric_valued
+from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, DIGITS_SCALARS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, integer_valued, list_valued, numeric_valued, WindowFrameSpec, WindowKey, SPINE_TOKEN
 from slayer.core.relationship_walker import (
     canonical_token,
     observe_read,
@@ -133,6 +134,9 @@ from slayer.core.syntax import (
     TransformCall,
     TupleLit,
     UnaryOp,
+    WINDOW_FUNCTION_ARITIES,
+    WindowCall,
+    unwindowable_function,
     aggregation_reading,
     canonical_metric_text,
     classify_arguments,
@@ -519,15 +523,8 @@ def _bind(
         metric_ctx=metric_ctx, dim_alias_map=dim_alias_map,
     )
     if isinstance(parsed, Cast):
-        reading = aggregation_reading(parsed)
-        if reading is not None and _owner_definition(
-            reading, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-        ) is not None:
-            return _bind_agg_call(
-                reading, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
-                dim_alias_map=dim_alias_map,
-            )
-        return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
+        return _bind_cast_node(parsed, sub=sub, scope=scope, bundle=bundle, alias_map=alias_map,
+                               metric_ctx=metric_ctx, dim_alias_map=dim_alias_map)
     if isinstance(parsed, DateTrunc):
         return _bind_date_trunc(parsed, source=sub(parsed.value), scope=scope, bundle=bundle)
     if isinstance(parsed, NamedArg):
@@ -561,9 +558,127 @@ def _bind(
         return ArithmeticKey(op=parsed.op, operands=tuple(sub(v) for v in parsed.operands))
     if isinstance(parsed, ArrayLit):
         return _bind_array_literal(parsed, sub=sub)
+    if isinstance(parsed, WindowCall):
+        return _bind_window(parsed, sub=sub, scope=scope, bundle=bundle)
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
+
+
+def _bind_cast_node(
+    parsed: Cast, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]], metric_ctx: Optional[MetricResolutionCtx],
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+) -> ValueKey:
+    """A cast, or the aggregation a cast spells when its owner defines one."""
+    reading = aggregation_reading(parsed)
+    if reading is not None and _owner_definition(
+        reading, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is not None:
+        return _bind_agg_call(
+            reading, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+            dim_alias_map=dim_alias_map,
+        )
+    return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
+
+
+def _bind_window(
+    parsed: WindowCall, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> WindowKey:
+    """``function(args) OVER (…)``: an Ossie ranking, offset or aggregation call, its keys and frame bound."""
+    refused = unwindowable_function(parsed)
+    if refused is not None:
+        raise WindowFunctionError(
+            summary=f"`{refused}` cannot run under OVER: a window applies a ranking or offset function "
+            f"(ROW_NUMBER, RANK, LAG, …) or an Ossie aggregation (SUM, COUNT, AVG, MIN, MAX, …).",
+            location=f"`{canonical_metric_text(parsed.function)}`",
+            suggestion="Use one of those functions, or a SLayer transform over a metric.",
+        )
+    function, args, condition = _window_function(parsed.function, sub=sub, scope=scope, bundle=bundle)
+    frame = parsed.frame
+    key = WindowKey(
+        function=function, args=args, filter=condition,
+        partition=tuple(sub(p) for p in parsed.partition),
+        order=tuple(sub(item.value) for item in parsed.order),
+        descending=tuple(item.descending for item in parsed.order),
+        nulls_first=tuple(item.nulls == "first" for item in parsed.order),
+        frame=None if frame is None else WindowFrameSpec(unit=frame.unit, start=frame.start, end=frame.end),
+    )
+    if not key.row_level:
+        return key
+    return key.model_copy(update={"anchor": _window_anchor(key, parsed=parsed, scope=scope, bundle=bundle)})
+
+
+def _window_function(
+    node: ParsedExpr, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Tuple[str, Tuple[ValueKey, ...], Optional[ValueKey]]:
+    """``(function, args, filter)`` of an Ossie call under ``OVER``."""
+    if isinstance(node, ScalarCall) and node.name in WINDOW_FUNCTION_ARITIES:
+        return node.name, tuple(sub(a) for a in node.args), None
+    assert isinstance(node, AggCall)
+    agg = node.agg.lower()
+    source = node.source
+    if isinstance(source, StarSource):
+        value: ValueKey = _bare_star(scope=scope)
+    elif isinstance(source, DottedRef) and source.parts[-1] == "*":
+        value = _resolve_dotted_star(source.parts, scope=scope, bundle=bundle, quoted=dotted_quoting(source))
+    else:
+        value = sub(source)
+    args = (value, *(sub(a.value if isinstance(a, NamedArg) else a) for a in node.args))
+    if agg == "percentile":
+        agg = "percentile_cont"
+    return agg, args, None if node.filter is None else sub(node.filter)
+
+
+def _window_anchor(
+    key: WindowKey, *, parsed: WindowCall, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[str, ...]]:
+    """The route from the reading dataset to the one a row-level window's references meet at: the common prefix of
+    each bound reference's route to its anchor (an alias's is its definition's; a dotted star's is its spelling's,
+    which its key does not keep); ``None`` when it names no dataset (a time-spine reference names none)."""
+    reader = scope.population
+    if reader is None:
+        return None
+    routes = [route for leaf in walk_value_keys(key)
+              if isinstance(leaf, (FieldKey, FieldSqlKey)) or (isinstance(leaf, StarKey) and not leaf.path)
+              for route in (_anchor_route(leaf),) if route is not None]
+    routes += [route for node in walk_parsed(parsed) if isinstance(node, DottedRef) and node.parts[-1] == "*"
+               for route in (_star_anchor_route(node, reader=reader, scope=scope, bundle=bundle),) if route is not None]
+    if not routes:
+        return None
+    prefix = routes[0]
+    for route in routes[1:]:
+        n = 0
+        while n < min(len(prefix), len(route)) and prefix[n] == route[n]:
+            n += 1
+        prefix = prefix[:n]
+    return prefix
+
+
+def _anchor_route(leaf: FieldKey | FieldSqlKey | StarKey) -> Optional[Tuple[str, ...]]:
+    """The route from the reader to the dataset ``leaf`` is anchored at; ``None`` for a time-spine reference."""
+    path = tuple(leaf.path or ())
+    if path and path[0] in (TIME_SPINE_DATASET, SPINE_TOKEN):  # NOSONAR(S6466) — guarded by `path and`
+        return None
+    anchor = getattr(leaf, "anchor", None)
+    if anchor is None:
+        return ()
+    return path[:max(0, len(path) - (len(anchor) - 1))]
+
+
+def _star_anchor_route(
+    node: DottedRef, *, reader: SlayerDataset, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[str, ...]]:
+    """The route from ``reader`` to the dataset a dotted star is anchored at; ``None`` for the time spine."""
+    quoted = dotted_quoting(node)
+    anchor = find_anchor(node.parts[0], quoted=bool(quoted) and quoted[0], reader=reader,
+                         datasets_by_name=bundle.datasets_by_name)
+    if anchor is None or anchor.name == reader.name:
+        return ()
+    if is_spine(anchor):
+        return None
+    path = _resolve_dotted_star(node.parts, scope=scope, bundle=bundle, quoted=quoted).path
+    return tuple(path[:max(0, len(path) - (len(node.parts) - 2))])
 
 
 def _bind_array_literal(parsed: ArrayLit, *, sub: Callable[[ParsedExpr], ValueKey]) -> ArrayLiteralKey:
@@ -1648,7 +1763,7 @@ def _bind_expression_agg_source(
     agg: str,
     scope: DatasetScope,
     bundle: ResolvedSourceBundle,
-) -> ArithmeticKey | ScalarCallKey | LiteralKey | TimeTruncKey | InKey | TimePointCmpKey | CastKey | ListSetKey:
+) -> ArithmeticKey | ScalarCallKey | LiteralKey | TimeTruncKey | InKey | TimePointCmpKey | CastKey | ListSetKey | WindowKey:
     """Bind a scalar-expression aggregate source.
 
     Dotted joined-dataset leaves and operands carrying ``DatasetField.filter`` are both
@@ -1656,9 +1771,17 @@ def _bind_expression_agg_source(
     desugars to ``CASE WHEN``. The source must still resolve to a row-level
     expression (a field, star, or arithmetic/scalar/predicate composite of them)."""
     bound = _bind(parsed_source, scope=scope, bundle=bundle, in_filter=False)
-    if not isinstance(bound, EXPRESSION_SOURCE_KINDS):
+    if not isinstance(bound, EXPRESSION_SOURCE_KINDS) and not (isinstance(bound, WindowKey) and bound.row_level):
         raise _not_an_aggregation_source(bound, agg=agg)
     return bound
+
+
+def _window_aggregate_valued(node: WindowCall) -> bool:
+    """Whether a parsed window has an aggregation or transform among its operands (its own call excluded)."""
+    call = node.function
+    operands = [call.source, *call.args, call.filter] if isinstance(call, AggCall) else list(getattr(call, "args", ()))
+    operands += [*node.partition, *(item.value for item in node.order)]
+    return any(isinstance(n, (AggCall, TransformCall)) for o in operands for n in walk_parsed(o))
 
 
 def _not_an_aggregation_source(bound: ValueKey, *, agg: str) -> AggregationNotAllowedError:
@@ -1736,6 +1859,8 @@ def _source_is_reaggregation(node) -> bool:
     it is a pure re-aggregation or a row-grain mix."""
     if isinstance(node, (AggCall, TransformCall)):
         return True
+    if isinstance(node, WindowCall):
+        return _window_aggregate_valued(node)
     if isinstance(node, (Arith, Cmp)):
         return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
     if isinstance(node, ScalarCall):
@@ -2394,7 +2519,10 @@ def _bind_quoted_arg(
         parsed = parse_expr(text)
     except ValueError as exc:
         raise QuotedArgumentRefused(f"it is not a SLayer expression: {exc}") from exc
-    if any(isinstance(node, (AggCall, TransformCall)) for node in walk_parsed(parsed)):
+    nodes = list(walk_parsed(parsed))
+    if any(isinstance(node, WindowCall) for node in nodes):
+        raise QuotedArgumentRefused("it contains a window function")
+    if any(isinstance(node, (AggCall, TransformCall)) for node in nodes):
         raise QuotedArgumentRefused("it contains an aggregate")
     return _bind_agg_arg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 

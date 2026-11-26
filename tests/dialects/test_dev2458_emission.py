@@ -75,12 +75,12 @@ def _without_output_alias(sql: str, *, dialect: str) -> str:
 async def test_distinct_aggregate_is_the_sql_distinct_form(dialect: str, agg: str, sql_agg: str) -> None:
     """DISTINCT sum and average: ``SUM/AVG(DISTINCT x)`` on every dialect."""
     sql = await _sql(f"{agg}(orders.qty)", dialect=dialect)
-    # SQL Server's AVG of an integer is an integer: the value is read as an exact decimal (FLOAT would merge distinct
-    # integers past 2^53), the average as a float.
-    tsql_avg = (dialect, agg) == ("tsql", "avg_distinct")
-    operand = "CAST(ORDERS.QTY AS NUMERIC(38, 10))" if tsql_avg else "ORDERS.QTY"
+    # SQL Server's AVG of an integer is an integer and MySQL's keeps 4 decimals: the value is read as an exact decimal
+    # (a float would merge distinct integers past 2^53), the average as a float.
+    exact = {"tsql": ("NUMERIC", "FLOAT"), "mysql": ("DECIMAL", "DOUBLE")}.get(dialect) if agg == "avg_distinct" else None
+    operand = f"CAST(ORDERS.QTY AS {exact[0]}(38, 10))" if exact else "ORDERS.QTY"
     expected = f"{sql_agg}(DISTINCT {operand})"
-    assert (f"CAST({expected} AS FLOAT)" if tsql_avg else expected) in sql.upper().replace("`", "").replace('"', "")
+    assert (f"CAST({expected} AS {exact[1]})" if exact else expected) in sql.upper().replace("`", "").replace('"', "")
 
 
 @pytest.mark.parametrize("dialect", TIER1)

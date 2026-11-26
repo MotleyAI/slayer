@@ -264,9 +264,9 @@ A save through SLayer SHALL apply its save-time checks to every definition the s
 - **WHEN** a stored document holds a model-scoped metric using `OVER`, and `edit_dataset` changes the description of one of its datasets
 - **THEN** the save succeeds and the windowed metric is unchanged
 
-#### Scenario: Authoring a windowed metric is refused
+#### Scenario: Authoring a windowed metric saves; an unwindowable function is refused
 - **WHEN** `edit_semantic_model` adds a model-scoped metric whose expression uses `OVER`
-- **THEN** the save fails with a typed error naming the metric and the window function
+- **THEN** the save succeeds and a query naming the metric returns its value; a metric windowing a function Ossie does not window (`last(orders.amount, orders.order_date) OVER ()`) fails the save with a typed error naming the metric and the function
 
 #### Scenario: Renaming a referenced field warns about dependents
 - **WHEN** a save renames the document field `orders.amount` that a model-scoped metric reads

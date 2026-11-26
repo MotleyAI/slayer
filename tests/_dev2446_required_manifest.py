@@ -1,7 +1,8 @@
 """Every REQUIRED and RECOMMENDED construct of Ossie's expression spec, with Ossie's value and its state per engine.
 
 Scalars evaluate at ``orders.id = 3`` of ``tests._dev2215_fixtures`` (pending, amount 30, qty 1, created_at
-2024-12-30 10:15:42, order_date 2024-12-30, shipped_at NULL, note 'c'); aggregates over all six orders.
+2024-12-30 10:15:42, order_date 2024-12-30, shipped_at NULL, note 'c'); aggregates over all six orders; a window
+runs over all six orders and is read at order 3.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
-    CastTypeError, IllegalWindowInFilterError, ServerVersionError, UnknownFunctionError, UnknownMetricError,
+    CastTypeError, ServerVersionError, UnknownFunctionError, UnknownMetricError,
     UnsupportedServerFunctionError,
 )
 from tests._ossie_gate import PASS, TIER1, Approx, Declared, Now, expand
@@ -23,9 +24,8 @@ from tests._ossie_gate import passes
 from tests._ossie_gate import refused as refused_state
 
 #: The issues that will add each family of missing constructs.
-WINDOWS = "DEV-2457"
 TIME_OF_DAY = "DEV-2460"
-FAMILIES = frozenset({WINDOWS, TIME_OF_DAY})
+FAMILIES = frozenset({TIME_OF_DAY})
 
 Kind = Literal["scalar", "aggregate", "window", "reserved"]
 
@@ -130,11 +130,13 @@ TIME_CASTS = frozenset({"duckdb", "postgres", "mysql", "tsql", "trino", "snowfla
 DAYOFWEEK = 1
 #: The millisecond component of a whole-second timestamp.
 MILLISECOND = 0
-#: Each window runs over the one row the filter keeps.
-WINDOW_VALUES = {"ROW_NUMBER": 1, "RANK": 1, "DENSE_RANK": 1, "NTILE": 1, "PERCENT_RANK": 0, "CUME_DIST": 1,
-                 "LAG": 0, "LEAD": 0, "FIRST_VALUE": 30, "LAST_VALUE": 30, "NTH_VALUE": None}
+#: Order 3's value under ``OVER``: amounts ascending are 10, 20, 30, 40, 60, NULL.
+WINDOW_VALUES = {"ROW_NUMBER": 3, "RANK": 3, "DENSE_RANK": 3, "NTILE": 1, "PERCENT_RANK": 0.4, "CUME_DIST": 0.5,
+                 "LAG": 20, "LEAD": 40, "FIRST_VALUE": 10, "LAST_VALUE": 30, "NTH_VALUE": 20}
 FRAMES = ("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW", "ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING",
           "RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW")
+#: Order 3's ``SUM(orders.amount) OVER (ORDER BY orders.id <frame>)``.
+FRAME_VALUES = dict(zip(FRAMES, (60, 90, 60)))
 #: Spec form of each frame clause.
 FRAME_FORMS = dict(zip(FRAMES, ("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
                                 "ROWS BETWEEN N PRECEDING AND N FOLLOWING",
@@ -162,7 +164,7 @@ def _regexp_count(section: str, form: str, expression: str, value: Any) -> Row:
 
 
 def _window(section: str, form: str, expression: str, value: Any) -> Row:
-    return gap(section, form, expression, value, issue=WINDOWS, kind="window", fails_with=IllegalWindowInFilterError)
+    return ok(section, form, expression, value, kind="window")
 
 
 ROWS: tuple[Row, ...] = (
@@ -304,21 +306,22 @@ ROWS: tuple[Row, ...] = (
     ok(BOOLEAN, "NOT", "NOT (orders.qty > 1)", True),
     ok(BOOLEAN, "AND", "orders.qty = 1 AND orders.amount > 20", True),
     ok(BOOLEAN, "OR", "orders.qty = 2 OR orders.amount > 20", True),
-    *(_window(SYNTAX, FRAME_FORMS[f], f"SUM(orders.amount) OVER (ORDER BY orders.id {f})", 30) for f in FRAMES),
-    *(_window(SYNTAX, f"NULLS {p}", f"RANK() OVER (ORDER BY orders.amount DESC NULLS {p})", 1)
-      for p in ("FIRST", "LAST")),
+    *(_window(SYNTAX, FRAME_FORMS[f], f"SUM(orders.amount) OVER (ORDER BY orders.id {f})", FRAME_VALUES[f])
+      for f in FRAMES),
+    *(_window(SYNTAX, f"NULLS {p}", f"RANK() OVER (ORDER BY orders.amount DESC NULLS {p})", v)
+      for p, v in (("FIRST", 4), ("LAST", 3))),
     *(_window(RANKING, f, f"{f}({arg}) {OVER}", WINDOW_VALUES[f]) for f, arg in (
         ("ROW_NUMBER", ""), ("RANK", ""), ("DENSE_RANK", ""), ("NTILE", "2"), ("PERCENT_RANK", ""),
         ("CUME_DIST", ""))),
     *(_window(OFFSET, f, f"{f}({args}) {OVER}", WINDOW_VALUES[f]) for f, args in (
         ("LAG", "orders.amount, 1, 0"), ("LEAD", "orders.amount, 1, 0"), ("FIRST_VALUE", "orders.amount"),
         ("LAST_VALUE", "orders.amount"), ("NTH_VALUE", "orders.amount, 2"))),
-    _window(WINDOW_AGG, "RUNNING TOTAL", "SUM(orders.amount) OVER (ORDER BY orders.order_date)", 30),
+    _window(WINDOW_AGG, "RUNNING TOTAL", "SUM(orders.amount) OVER (ORDER BY orders.order_date)", 60),
     _window(WINDOW_AGG, "RUNNING AVERAGE",
-            "AVG(orders.amount) OVER (ORDER BY orders.order_date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)", 30),
-    _window(WINDOW_AGG, "PARTITION TOTALS", "SUM(orders.amount) OVER (PARTITION BY orders.region)", 30),
-    _window(WINDOW_AGG, "PERCENT OF TOTAL", "orders.amount / SUM(orders.amount) OVER () * 100", 100),
-    _window(NULL_ORDER, "DEFAULT NULL PLACEMENT", "RANK() OVER (ORDER BY orders.amount DESC)", 1),
+            "AVG(orders.amount) OVER (ORDER BY orders.order_date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)", 20),
+    _window(WINDOW_AGG, "PARTITION TOTALS", "SUM(orders.amount) OVER (PARTITION BY orders.region)", 70),
+    _window(WINDOW_AGG, "PERCENT OF TOTAL", "orders.amount / SUM(orders.amount) OVER () * 100", 18.75),
+    _window(NULL_ORDER, "DEFAULT NULL PLACEMENT", "RANK() OVER (ORDER BY orders.amount DESC)", 4),
     ok(CAST, "CAST AS VARCHAR", "CAST(orders.qty AS VARCHAR)", "1"),
     ok(CAST, "CAST AS STRING", "CAST(orders.qty AS STRING)", "1"),
     ok(CAST, "CAST AS INTEGER", "CAST(2.5 AS INTEGER)", 3),

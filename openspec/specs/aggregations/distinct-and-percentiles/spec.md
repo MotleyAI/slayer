@@ -120,7 +120,8 @@ In Mode B, `WITHIN GROUP (ORDER BY x)` (with an optional `ASC`) SHALL follow onl
 rejected with an error naming the two accepted forms. A leading `DISTINCT` SHALL be accepted only in `count`, `sum`,
 `avg`, `min`, `max` and `array_agg` over one operand other than `*`; any other `DISTINCT` SHALL be rejected with an
 error listing the accepted forms. A DISTINCT or ordered-set aggregate written with `OVER (…)` SHALL be rejected with a
-typed error.
+typed error, except `COUNT(DISTINCT …)`, `MIN` / `MAX(DISTINCT …)` (which are `MIN` / `MAX`) and
+`PERCENTILE_CONT`, which run under `OVER` where the database windows them (`queries/window-functions`).
 
 #### Scenario: Unsupported ordered-set function
 - **WHEN** a measure is `MODE() WITHIN GROUP (ORDER BY status)` or `PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY amount DESC)`

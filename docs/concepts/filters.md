@@ -172,16 +172,12 @@ The [list functions](references.md#lists) test a whole list, and [Database suppo
 
 ## Window functions in filters
 
-Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
-
-* **Raw `OVER (...)` in filter strings is rejected at SlayerQuery construction.** Inline window-function SQL inside a query filter or `DatasetMetric.expression` is not parseable by SLayer's expression grammar.
-* **Filtering on a `DatasetField` whose `sql` contains a window function is rejected at enrichment.** A query filter `"orders.rn <= 3"` against a field whose `sql` is `row_number() over (...)` raises with a suggestion to use a rank-family transform.
-
-Use one of:
-
-* `rank(<metric>, direction='desc') <= N` (or `dense_rank` / `percent_rank` / `ntile(<metric>, n=N)`) for ranking — simpler and dialect-portable. Pass `partition_by=` to rank within groups.
-* `lag(x, n)` / `lead(x, n)` for time-based window transforms, and the `first(x)` / `last(x)` aggregations for the earliest or latest value.
-* A multi-stage `source_queries` dataset where the window computation lives in an earlier stage.
+A filter may hold a window function. A row-level one (no aggregate among its operands) is a column of its dataset,
+computed before the query's filters, so `ROW_NUMBER() OVER (PARTITION BY orders.region ORDER BY orders.ordered_at) = 1`
+keeps each region's first order whatever else the query filters. A measure-level one (`RANK() OVER (ORDER BY
+SUM(orders.amount) DESC) = 1`) filters cells, like a transform. See
+[SQL window functions](expressions.md#sql-window-functions-over). Under `conformance="ossie-l3"` a window in the
+filter is Ossie's `E_WINDOW_IN_WHERE`.
 
 ## Variables
 

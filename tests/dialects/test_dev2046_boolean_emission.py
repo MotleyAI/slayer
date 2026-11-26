@@ -25,6 +25,8 @@ BOOLEAN_TYPES = frozenset({exp.DataType.Type.BOOLEAN, exp.DataType.Type.BIT})
 FLOAT_TYPES = frozenset({exp.DataType.Type.FLOAT, exp.DataType.Type.DOUBLE})
 LOWERED = (exp.Sum, exp.Avg, exp.Min, exp.Max)
 BOOLEAN_SOURCES = ["orders.flag", "orders.big_order", "coalesce(orders.flag, false)", "orders.amount > 15"]
+#: The dialects whose integer AVG is not a full-precision fraction (T-SQL truncates, MySQL keeps 4 decimals).
+FRACTIONAL_AVG_INPUT = frozenset({"tsql", "mysql"})
 
 
 def _bool_type(dialect: str):
@@ -58,7 +60,7 @@ class TestLoweringOnEveryDialect:
     async def test_sum_avg_take_integer_input(self, dialect: str, source: str) -> None:
         tree = await _statement(dialect, f"sum({source})", f"avg({source})")
         for agg in (*_nodes(tree, exp.Sum), *_nodes(tree, exp.Avg)):
-            read = agg.this.this if dialect == "tsql" and isinstance(agg, exp.Avg) else agg.this
+            read = agg.this.this if dialect in FRACTIONAL_AVG_INPUT and isinstance(agg, exp.Avg) else agg.this
             assert _int_cast(read), f"{agg.sql(dialect=dialect)} takes a raw boolean"
             parent = agg.parent
             assert not (isinstance(parent, exp.Cast) and parent.to.this in BOOLEAN_TYPES), (
@@ -88,14 +90,14 @@ class TestLoweringOnEveryDialect:
 
 
 class TestAvgIsFractional:
-    """T-SQL's AVG over integers truncates: there, and only there, its input is read as a float."""
+    """Where AVG over integers is not a full-precision fraction, and only there, its input is read as a float."""
 
     @pytest.mark.parametrize("source", ["orders.flag", "orders.amount", "orders.amount > 15", "orders.amount - orders.customer_id", "sum(orders.amount)"])
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_float_input_only_where_avg_truncates(self, dialect: str, source: str) -> None:
         tree = await _statement(dialect, f"avg({source})", dimensions=["orders.region"])
         for agg in _nodes(tree, exp.Avg):
-            assert _float_cast(agg.this) is (dialect == "tsql"), agg.sql(dialect=dialect)
+            assert _float_cast(agg.this) is (dialect in FRACTIONAL_AVG_INPUT), agg.sql(dialect=dialect)
 
     @pytest.mark.parametrize("db_type", ["DECIMAL(10, 2)", "FLOAT"])
     async def test_double_input_unchanged(self, db_type: str) -> None:

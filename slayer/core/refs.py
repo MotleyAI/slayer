@@ -30,6 +30,8 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     VALUE_KEY_TYPES,
+    WindowFrameSpec,
+    WindowKey,
     ValueKey,
 )
 
@@ -127,6 +129,12 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
         ("try_", attrgetter("try_")),
     )),
     ListSetKey: ("ListSetKey", (("source", attrgetter("source")),)),
+    WindowKey: ("WindowKey", (
+        ("function", attrgetter("function")), ("args", attrgetter("args")), ("filter", attrgetter("filter")),
+        ("partition", attrgetter("partition")), ("order", attrgetter("order")),
+        ("descending", attrgetter("descending")), ("nulls_first", attrgetter("nulls_first")),
+        ("frame", attrgetter("frame")), ("anchor", attrgetter("anchor")),
+    )),
 }
 
 
@@ -259,6 +267,35 @@ def _transform_display(key: TransformKey) -> str:
     return _call_display(key.op, args)
 
 
+def _frame_display(frame: WindowFrameSpec) -> str:
+    def bound(b: tuple) -> str:
+        kind, offset = b
+        return kind.upper() if offset is None else f"{_scalar_display(offset)} {kind.upper()}"
+
+    if frame.end is None:
+        return f"{frame.unit.upper()} {bound(frame.start)}"
+    return f"{frame.unit.upper()} BETWEEN {bound(frame.start)} AND {bound(frame.end)}"
+
+
+def window_display(key: WindowKey) -> str:
+    """``key`` as Mode B writes it, each order item's NULL placement stated."""
+    args = ", ".join("*" if isinstance(a, StarKey) else key_display(a) for a in key.args)
+    name = "COUNT" if key.function == "count_distinct" else key.function.upper()
+    head = f"{name}({'DISTINCT ' if key.function == 'count_distinct' else ''}{args})"
+    if key.filter is not None:
+        head += f" FILTER (WHERE {key_display(key.filter)})"
+    spec: list[str] = []
+    if key.partition:
+        spec.append("PARTITION BY " + ", ".join(key_display(p) for p in key.partition))
+    if key.order:
+        items = [f"{key_display(o)}{' DESC' if d else ''} NULLS {'FIRST' if n else 'LAST'}"
+                 for o, d, n in zip(key.order, key.descending, key.nulls_first, strict=True)]
+        spec.append("ORDER BY " + ", ".join(items))
+    if key.frame is not None:
+        spec.append(_frame_display(key.frame))
+    return f"{head} OVER ({' '.join(spec)})"
+
+
 def _arithmetic_display(key: ArithmeticKey) -> str:
     rendered = [
         f"({key_display(o)})" if isinstance(o, ArithmeticKey) else key_display(o)
@@ -282,11 +319,26 @@ def _fragment_display(key: SqlFragmentKey) -> str:
     return text
 
 
+#: A query's windowed column by its minted field name: the window as written (``window_columns``).
+_WINDOW_DISPLAYS: dict[str, str] = {}
+
+
+def register_window_display(name: str, text: str) -> None:
+    """Show the windowed column ``name`` as the window ``text`` it computes."""
+    _WINDOW_DISPLAYS[name] = text
+
+
+def field_display(path: tuple[str, ...], leaf: str) -> str:
+    """A field reference as written: its path then its leaf, a query's windowed column as its window."""
+    window = _WINDOW_DISPLAYS.get(leaf)
+    return window if window is not None else ".".join((*map(display_token, path), leaf))
+
+
 def _leaf_display(key: ValueKey) -> str | None:
     if isinstance(key, FieldKey):
-        return ".".join((*map(display_token, key.path), key.leaf))
+        return field_display(key.path, key.leaf)
     if isinstance(key, FieldSqlKey):
-        return ".".join((*map(display_token, key.path), key.field_name))
+        return field_display(key.path, key.field_name)
     if isinstance(key, StarKey):
         return ".".join((*map(display_token, key.path), "*"))
     if isinstance(key, LiteralKey):
@@ -331,6 +383,8 @@ def key_display(key: ValueKey) -> str:
         return _aggregate_display(key)
     if isinstance(key, TransformKey):
         return _transform_display(key)
+    if isinstance(key, WindowKey):
+        return window_display(key)
     if isinstance(key, ArithmeticKey):
         return _arithmetic_display(key)
     if isinstance(key, ScalarCallKey):
@@ -388,7 +442,8 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return _transform_key_canonical_str(value)
     if isinstance(value, SqlFragmentKey):
         return sql_fragment_digest(value)
-    if isinstance(value, (ScalarCallKey, ArithmeticKey, CastKey, InKey, TimeTruncKey, LiteralKey, ListSetKey)):
+    if isinstance(value, (ScalarCallKey, ArithmeticKey, CastKey, InKey, TimeTruncKey, LiteralKey, ListSetKey,
+                          WindowKey)):
         # A row-level expression parameter (a FILTER-masked one included).
         return auto_name_from_expression(key_display(value))
     raise TypeError(
