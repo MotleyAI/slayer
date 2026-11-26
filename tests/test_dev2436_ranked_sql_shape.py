@@ -41,3 +41,38 @@ async def test_second_order_pick_is_the_ranked_kernel(dialect: str, op: str) -> 
         assert bool(key.args.get("desc")) == (op == "last"), w.sql(dialect=dialect)
         # the month bucket is the consumed ranking key: the pick partitions by the customer only
         assert len(w.args.get("partition_by") or []) == 1, w.sql(dialect=dialect)
+
+
+def _picked_values(tree: exp.Expr) -> list[exp.Expr]:
+    rn_names = {w.parent.alias for w in _row_numbers(tree) if isinstance(w.parent, exp.Alias)}
+    return [
+        if_.args["true"] for case in tree.find_all(exp.Case) for if_ in case.args.get("ifs") or []
+        if any(c.name in rn_names for c in if_.this.find_all(exp.Column))
+    ]
+
+
+@pytest.mark.parametrize("dialect", TIER1)
+@pytest.mark.parametrize("op", ["first", "last"])
+async def test_a_picked_null_value_is_returned_as_is(dialect: str, op: str) -> None:
+    tree = await _sql(f"{op}(sum(account_snapshots.balance))", dialect=dialect)
+    picked = _picked_values(tree)
+    assert picked, tree.sql(dialect=dialect)
+    names = {c.name for v in picked for c in v.find_all(exp.Column)}
+    assert names, tree.sql(dialect=dialect)
+    null_tested = {c.name for i in tree.find_all(exp.Is) if isinstance(i.expression, exp.Null)
+                   for c in i.this.find_all(exp.Column)}
+    assert not names & null_tested, tree.sql(dialect=dialect)
+    assert not list(tree.find_all(exp.IgnoreNulls)), tree.sql(dialect=dialect)
+
+
+@pytest.mark.parametrize("dialect", TIER1)
+@pytest.mark.parametrize("op", ["first", "last"])
+async def test_the_pick_attaches_without_its_consumed_key(dialect: str, op: str) -> None:
+    tree = await _sql(f"{op}(sum(account_snapshots.balance))", dialect=dialect)
+    picks = {cte.alias for cte in tree.find_all(exp.CTE) if _row_numbers(cte.this)}
+    assert picks, tree.sql(dialect=dialect)
+    joins = [j for j in tree.find_all(exp.Join) if j.this.name in picks]
+    assert joins, tree.sql(dialect=dialect)
+    for j in joins:
+        on_cols = {c.name for c in (j.args.get("on") or exp.true()).find_all(exp.Column) if c.table in picks}
+        assert on_cols == {"customer_id"}, j.sql(dialect=dialect)
