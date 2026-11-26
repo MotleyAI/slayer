@@ -46,7 +46,8 @@ PRESTO = ("presto", "athena")
 #: The golden support sets; Presto's is checked structurally (``TestDeclaredSets``).
 EXPECTED: dict[str, frozenset[str]] = {
     **{d: LIBRARY for d in TIER1},
-    "mariadb": LIBRARY - REGEX - {"json_value"},
+    "mysql": LIBRARY - {"regexp_count"},
+    "mariadb": LIBRARY - REGEX - {"regexp_count", "json_value"},
     **{d: TIER2_SET for d in TIER2},
 }
 DS_TYPES = (*TIER1, "mariadb", *TIER2, *PRESTO)
@@ -177,7 +178,8 @@ FUNCTION_CASES = [
     _dim("replace", "replace", "replace(lib.code, '_', '-')"),
     _dim("div", "div", "div(lib.i, lib.m)"),
     _dim("pi", "pi", "pi()"),
-    *(_dim(fn, fn, f"{fn}(lib.x)") for fn in ("sin", "cos", "tan", "asin", "acos", "atan", "cbrt")),
+    *(_dim(fn, fn, f"{fn}(lib.x)") for fn in ("sin", "cos", "tan", "asin", "acos", "atan", "cbrt", "radians",
+                                               "degrees")),
     _dim("atan2", "atan2", "atan2(lib.y, lib.x)"),
     _dim("greatest", "greatest", "greatest(lib.a, lib.b)"),
     _dim("least", "least", "least(lib.a, lib.b)"),
@@ -188,6 +190,7 @@ FUNCTION_CASES = [
     _flt("regexp_like", "regexp_like", "regexp_like(lib.code, '^a')"),
     _dim("regexp_extract", "regexp_extract", "regexp_extract(lib.tag, '@(.+)$', 1)"),
     _dim("regexp_replace", "regexp_replace", "regexp_replace(lib.tag, '[^0-9]', '')"),
+    _dim("regexp_count", "regexp_count", "regexp_count(lib.tag, '[0-9]')"),
     _dim("try_cast", "try_cast", "TRY_CAST(lib.num_txt AS DOUBLE)", mentions="TRY_CAST"),
 ]
 SPELLING_CASES = [
@@ -332,6 +335,7 @@ def _args(name: str) -> list[Expression]:
         "regexp_like": [_COL, exp.Literal.string("a")],
         "regexp_extract": [_COL, exp.Literal.string("a(b)"), exp.Literal.number(1)],
         "regexp_replace": [_COL, exp.Literal.string("a"), exp.Literal.string("b")],
+        "regexp_count": [_COL, exp.Literal.string("a")],
         "json_value": [_COL, exp.Literal.string("$.a")],
         "like": [_COL, exp.Literal.string("a%")],
         "ilike": [_COL, exp.Literal.string("a%")],

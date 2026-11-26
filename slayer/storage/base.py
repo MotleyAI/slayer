@@ -52,6 +52,7 @@ from slayer.core.errors import (
     TimeSpineError,
     UnknownGranularityError,
 )
+from slayer.engine.definitions import check_portable_fields
 from slayer.engine.field_dependency import (
     check_dataset_filters, check_evaluated_metrics, check_field_agg, validate_derived_fields, warn_broken_dependents,
 )
@@ -1039,6 +1040,8 @@ class StorageBackend(ABC):
         loaded, unloaded = await self.load_datasets(data_source=dataset.data_source, exclude=dataset.name)
         peers = {m.name: m for m in failures.skip((loaded, unloaded))}
         check_relationship_target_spellings(dataset, names=[n for ds, n in identities if ds == dataset.data_source], peers=peers)
+        if datasource is not None and not dataset.source_queries:
+            check_portable_fields(dataset, datasets=list(peers.values()), ds_type=datasource.type)
         await self._validate_mode_a_placeholders(dataset)
         check_field_agg(dataset)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
