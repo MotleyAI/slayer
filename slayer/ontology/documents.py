@@ -110,6 +110,13 @@ def content_text(content: str | dict[str, Any]) -> str:
     return content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False, allow_unicode=True)
 
 
+def ref_name(data: Any, key: str) -> str | None:
+    """The ``name`` of reference ``key`` of stored mapping ``data``, whatever its shape; ``None`` when absent."""
+    ref = data.get(key) if isinstance(data, dict) else None
+    name = ref.get("name") if isinstance(ref, dict) else None
+    return None if name is None else str(name)
+
+
 def document_name(text: str) -> str:
     """The root ``name`` a document's text declares."""
     data, reasons = _read(text)

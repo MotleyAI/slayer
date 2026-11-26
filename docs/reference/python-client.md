@@ -135,7 +135,7 @@ await client.delete_ontology_mapping("flights_mapping", data_source="flights")
 await client.delete_ontology("Flights")                         # refused while a mapping resolves against it
 ```
 
-A refused document raises a `ValueError` listing every problem.
+A refused document raises a `ValueError` listing every problem. `create_ontology`, `replace_ontology`, `create_ontology_mapping`, `replace_ontology_mapping`, `create_semantic_model` and `replace_semantic_model` take `warnings_out`, a list receiving the identifier and multiplicity mismatches the save touches (without it they are Python warnings).
 
 ### Inspect
 

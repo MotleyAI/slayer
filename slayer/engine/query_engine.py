@@ -237,7 +237,9 @@ from slayer.sql.generator import (
 from slayer.sql.physical_tables import physical_tables
 from slayer.sql.session_policy import HasColumn, ScopedTable, apply_session_policy, policy_column_checks
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-from slayer.storage.base import StorageBackend, one_upgrade_pass, with_canonical_spellings
+from slayer.ontology.findings import OntologyFinding
+from slayer.ontology.use import ontology_checks
+from slayer.storage.base import StorageBackend, one_upgrade_pass, report_save_warnings, with_canonical_spellings
 from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.ontology_documents import database_driven
@@ -3429,7 +3431,27 @@ class SlayerQueryEngine:
             for (ds_name, name), by in sorted(narrowed.items())
             if ds_name == data_source
         ]
-        return [*entries, *(schema_drift.unloadable_dataset_delete(error=e) for e in unloadable), *retypes, *findings]
+        return [*entries, *(schema_drift.unloadable_dataset_delete(error=e) for e in unloadable), *retypes, *findings,
+                *await self._ontology_findings(data_source)]
+
+    async def _ontology_findings(self, data_source: str) -> List[OntologyFinding]:
+        """``data_source``'s ontology findings: the model checks, what is not checked, and the data checks run as
+        queries under this engine's policies."""
+        if not await self.storage.list_ontology_mappings(data_source):
+            return []
+        findings, plans = ontology_checks(await self.storage.ontology_use(data_source))
+        for plan in plans:
+            try:
+                count = await self.execute(query=plan.count, data_source=data_source)
+                sample = await self.execute(query=plan.sample, data_source=data_source)
+            except Exception as exc:  # noqa: BLE001  # a check the engine or the database refuses is listed, not fatal
+                findings.append(plan.finding.model_copy(update={"check": "not_checked", "reason": str(exc)}))
+                continue
+            rows = [[row.get(f"s{i}") for i in range(plan.width)] for row in sample.data]
+            findings.append(plan.finding.model_copy(update={
+                "violations": int(count.data[0]["n"]) if count.data else 0,
+                "samples": [r[0] if plan.width == 1 else r for r in rows]}))
+        return findings
 
     def create_dataset_from_query_sync(
         self,
@@ -3707,9 +3729,12 @@ class SlayerQueryEngine:
             )
         payloads = await self._narrowed_access(dataset=dataset, prior=prior)
         unique = list({n.message: n for n in notices}.values())
+        mismatches = await self.storage.ontology_mismatches(data_source=dataset.data_source, datasets=[dataset.name]) \
+            if dataset.data_source else []
         if warnings_out is not None:
-            warnings_out.extend([*unique, *payloads])
+            warnings_out.extend([*unique, *payloads, *mismatches])
             return dataset
+        report_save_warnings(None, mismatches)
         # Last, as in query(): under ``-W error`` this raises after the save.
         for notice in unique:
             _warnings_module.warn(SlayerDateOnlyMidnightWarning(notice), stacklevel=2)
