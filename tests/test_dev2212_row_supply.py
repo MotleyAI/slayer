@@ -97,9 +97,16 @@ async def test_unrelated_metrics_without_dimensions_return_one_row(backend: str)
                  id="computed-dimension"),
 ])
 async def test_only_metrics_supply_rows(backend: str, extra: dict) -> None:
+    """Scenario: Only metrics supply rows."""
     async with seed_engine(backend) as eng:
         resp = await run(eng, **{"dimensions": [R], "metrics": [REV], **extra})
     assert {r[R] for r in resp.data} == {"EAST", "WEST"}
+
+
+async def test_a_filter_aggregate_with_no_metrics_reads_the_anchors_cells(backend: str) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=[R], filter=["sum(orders.amount) > 0"])
+    assert table(resp, R) == rows(("EAST",), ("WEST",))
 
 
 async def test_a_metrics_only_query_no_row_passes_returns_one_null_row(backend: str) -> None:

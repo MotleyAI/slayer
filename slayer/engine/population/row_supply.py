@@ -35,6 +35,7 @@ from slayer.engine.population.inference import (
     probe_item,
     spine_factor_out,
 )
+from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import RowSupply, RowSupplyBranch
 
 #: ``row_sources`` of a query with no dimensions.
@@ -196,7 +197,7 @@ def _reaches(*, home: str, item: str, datasets_by_name: dict[str, SlayerDataset]
 
 
 def _operand(agg: AggCall, *, owner: Optional[str], dims: list[str],
-             datasets_by_name: dict[str, SlayerDataset], broadcast: bool = False) -> Optional[_Operand]:
+             datasets_by_name: dict[str, SlayerDataset], mode: ModePolicy) -> Optional[_Operand]:
     home = _home(agg, owner=owner, datasets_by_name=datasets_by_name)
     if home is None:
         return None
@@ -207,8 +208,7 @@ def _operand(agg: AggCall, *, owner: Optional[str], dims: list[str],
     if len(determined) == len(dims):
         return _Operand(home=home, full=True)
     reached = [d for d in dims if d in determined or _reaches(home=home, item=d, datasets_by_name=datasets_by_name)]
-    # A windowed aggregation associates only through its window: it broadcasts instead (semantics Axiom 8).
-    associates = not broadcast and not any(n == "window" for n, _ in call_keywords(agg))
+    associates = mode.associates
     if len(reached) == len(dims) and associates:
         return _Operand(home=home, full=True)
     return _Operand(home=home, full=False, grain=tuple(reached if associates else determined))
@@ -220,6 +220,7 @@ def classify_row_sources(query: SlayerQuery, *, datasets_by_name: dict[str, Slay
     homes: list[str] = []
     coarse: list[CoarseCells] = []
     whole_anchor = False
+    mode = ModePolicy.resolve(query.to_many_handling)
     for metric in query.metrics or []:
         try:
             tree = parse_template(metric.metric)
@@ -228,7 +229,7 @@ def classify_row_sources(query: SlayerQuery, *, datasets_by_name: dict[str, Slay
         aggregates = list(_top_aggregates(tree, owner=None, datasets_by_name=datasets_by_name))
         operands = [op for agg, owner in aggregates
                     if (op := _operand(agg, owner=owner, dims=dims, datasets_by_name=datasets_by_name,
-                                       broadcast=query.to_many_handling == "broadcast")) is not None]
+                                       mode=mode)) is not None]
         full = [op.home for op in operands if op.full]
         homes.extend(full)
         if not full:
@@ -580,7 +581,7 @@ class _SpineWitnesses(BaseModel):
 def _spine_witnesses(query: SlayerQuery, *, dims: list[str],
                      datasets_by_name: dict[str, SlayerDataset]) -> _SpineWitnesses:
     out = _SpineWitnesses(whole_anchor=not query.metrics)
-    broadcast = query.to_many_handling == "broadcast"
+    mode = ModePolicy.resolve(query.to_many_handling)
     for metric in query.metrics or []:
         try:
             # Placeholders stay text: each stage's supply binds its own layered variables.
@@ -590,7 +591,7 @@ def _spine_witnesses(query: SlayerQuery, *, dims: list[str],
         found = list(_witnessed(tree, owner=None, shifts=(), datasets_by_name=datasets_by_name))
         operands = [(op, agg, shifts) for agg, owner, shifts in found
                     if (op := _operand(agg, owner=owner, dims=dims, datasets_by_name=datasets_by_name,
-                                       broadcast=broadcast)) is not None]
+                                       mode=mode)) is not None]
         full = [(op, agg, shifts) for op, agg, shifts in operands if op.full]
         for op, agg, shifts in full:
             out.by_home.setdefault(op.home, []).append(_witness(op.home, agg=agg, shifts=shifts))
