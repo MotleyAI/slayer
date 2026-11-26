@@ -452,6 +452,110 @@ class TestHardBound:
         assert not _reports(reports, r"hard-timeout-.*")
 
 
+class TestWorksteal:
+    def test_stall_report(self, project: pytest.Pytester) -> None:
+        project.makepyfile(test_slow="""
+            import time
+
+
+            def test_sleeps():
+                time.sleep(3)
+
+
+            def test_quick():
+                pass
+        """)
+        result = _run(project, "-n", "2", "--dist", "worksteal", "--stall-report-after", "1")
+        assert result.ret == pytest.ExitCode.OK, result.outlines
+        elapsed = _elapsed(_watchdog_lines(result), "test_slow.py::test_sleeps")
+        assert elapsed, result.outlines
+        assert min(elapsed) >= 1
+
+    def test_deadline_dump(self, project: pytest.Pytester) -> None:
+        project.makepyfile(test_block="""
+            import time
+
+
+            def test_blocks_a():
+                time.sleep(12)
+
+
+            def test_blocks_b():
+                time.sleep(12)
+        """)
+        reports = project.path / "reports"
+        result = _run(
+            project, "-n", "2", "--dist", "worksteal", "--stack-dump-after", "6", "--hang-report-dir", str(reports),
+        )
+        assert result.ret == pytest.ExitCode.OK, result.outlines
+        for worker_id in ("gw0", "gw1"):
+            assert len(_reports(reports, rf"{worker_id}-\d+\.txt")) == 1, sorted(p.name for p in reports.iterdir())
+        controller = _reports(reports, r"controller-\d+\.txt")
+        assert len(controller) == 1
+        dump = next(iter(controller.values()))
+        assert "test_block.py::test_blocks_a" in dump
+        assert "test_block.py::test_blocks_b" in dump
+
+    def test_hard_bound(self, project: pytest.Pytester) -> None:
+        project.makepyfile(test_a_hang=_SIGNAL_PROOF_SLEEP, test_b_ok="""
+            def test_one():
+                pass
+
+
+            def test_two():
+                pass
+        """)
+        reports = project.path / "reports"
+        result = _run(
+            project, "-n", "1", "--dist", "worksteal", "-rA", "--timeout=1", "--hard-timeout-grace", "1",
+            "--hang-report-dir", str(reports),
+        )
+        assert _crashed(result, "test_a_hang.py::test_signal_proof"), result.outlines
+        assert len(_reports(reports, r"hard-timeout-gw0-\d+\.txt")) == 1, result.outlines
+        assert sorted(_passed(result)) == ["test_b_ok.py::test_one", "test_b_ok.py::test_two"]
+
+    def test_killed_worker_queue_is_redistributed_and_the_replacement_keeps_the_deadline(
+        self, project: pytest.Pytester,
+    ) -> None:
+        project.makeconftest("""
+            import time
+            from pathlib import Path
+
+
+            def pytest_configure(config):
+                workerinput = getattr(config, "workerinput", None)
+                name = "controller" if workerinput is None else workerinput["workerid"]
+                Path(str(config.rootpath)).joinpath(f"start-{name}.txt").write_text(repr(time.time()))
+        """)
+        queued = 80
+        project.makepyfile(test_a_hang=_SIGNAL_PROOF_SLEEP, test_b_queue=f"""
+            import time
+
+            import pytest
+
+
+            @pytest.mark.parametrize("i", range({queued}))
+            def test_queued(i):
+                time.sleep(0.25)
+        """)
+        reports = project.path / "reports"
+        dump_after = 8
+        result = _run(
+            project, "-n", "2", "--dist", "worksteal", "-rA", "--timeout=1", "--hard-timeout-grace", "1",
+            "--stack-dump-after", str(dump_after), "--hang-report-dir", str(reports),
+        )
+        assert _crashed(result, "test_a_hang.py::test_signal_proof"), result.outlines
+        assert len(_reports(reports, r"hard-timeout-gw[01]-\d+\.txt")) == 1, result.outlines
+        assert sorted(_passed(result)) == sorted(f"test_b_queue.py::test_queued[{i}]" for i in range(queued))
+        replacement = sorted(reports.glob("gw2-*.txt"))
+        assert len(replacement) == 1, sorted(p.name for p in reports.iterdir())
+        dumped = replacement[0].stat().st_mtime
+        session_start = float((project.path / "start-controller.txt").read_text())
+        replacement_start = float((project.path / "start-gw2.txt").read_text())
+        assert session_start + dump_after - 1 <= dumped  # not at the replacement's start
+        assert dumped < replacement_start + dump_after - 1  # not a fresh delay from it
+
+
 @pytest.mark.parametrize("option", ["--stall-report-after", "--stack-dump-after", "--hard-timeout-grace"])
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
 def test_invalid_duration_is_a_usage_error(project: pytest.Pytester, option: str, value: str) -> None:
