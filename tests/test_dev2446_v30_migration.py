@@ -69,7 +69,7 @@ def rows(resp: Any, *, column: str) -> dict[int, float]:
 
 
 def test_the_dataset_version_is_bumped() -> None:
-    assert CURRENT_VERSIONS["SlayerModel"] == 30
+    assert CURRENT_VERSIONS["SlayerModel"] == 31
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

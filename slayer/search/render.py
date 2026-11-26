@@ -246,6 +246,8 @@ def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
         lines.append(f"Label: {field.label}")
     if field.format:
         lines.append(f"Format: {field.format}")
+    if field.time_zone:
+        lines.append(f"Time zone: {field.time_zone}")
     if field.allowed_aggregations:
         lines.append("Allowed aggregations: " + ", ".join(field.allowed_aggregations))
     lines.extend(_definition_lines(field))

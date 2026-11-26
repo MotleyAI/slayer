@@ -14,6 +14,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, SourceSpec, extension_dataset_names
 from slayer.core.scope import StageDisplay
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine, is_spine_spelling, query_host, spine_dataset
+from slayer.core.time_zones import wall_clock
 from slayer.engine.field_dependency import definition_heads
 from slayer.engine.cardinality.unrelated import first_hop_names
 from slayer.engine.extensions import respelled_stages
@@ -80,6 +81,7 @@ async def build_resolved_source_bundle(
     each read dataset's unknown field types.
     """
     failures = failures or DocumentLoadFailures()
+    reading = datetime.now() if now is None else now
     named_queries = named_queries or {}
     stage_displays = stage_displays or {}
     storage = cast("StorageBackend", _DatasetReadCache(storage, resolve=resolve_types))
@@ -135,7 +137,9 @@ async def build_resolved_source_bundle(
         query_backed=query_backed,
         splice_chain=tuple(splice_chain),
         runtime_variables=dict(runtime_variables or {}),
-        now=datetime.now() if now is None else now,
+        now=wall_clock(reading, None),
+        clock_reading=reading,
+        datasource_time_zone=ds.time_zone if ds else None,
         granularities=ds.granularity_definitions if ds else {},
         spine_clash=spine_clash,
         datasource_dataset_names=peer_names,

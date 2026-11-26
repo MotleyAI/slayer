@@ -153,10 +153,10 @@ because no standard syntax works everywhere:
 | SQLite | yes | yes | yes | yes | **no** | Python aggregate UDFs registered on every connection — see "SQLite caveats" below. |
 | ClickHouse | yes | yes | yes | yes | yes | Native `median(x)`, parametric `quantile(p)(x)`, native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
 | Snowflake | yes | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. No native `LOG10` or `LOG2`; both render as `LOG(base, x)`. |
-| MySQL | **no** | **no** | yes | **no** | **no** | No native `MEDIAN`/`PERCENTILE_CONT`/`CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. Use MariaDB or compute the unsupported aggregations client-side. |
-| SQL Server (T-SQL) | **no** | **no** | yes | yes (decomposed) | **no** | `MEDIAN` doesn't exist and T-SQL's `PERCENTILE_CONT` is window-only (no `WITHIN GROUP` aggregate form) — SLayer raises `NotImplementedError`. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
-| Trino | yes (approximate) | yes (approximate) | yes | yes | yes | sqlglot emits `APPROX_PERCENTILE(x, p)` — see "Trino caveats" below. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
-| BigQuery | **no** | **no** | yes | yes | yes | BigQuery has no `MEDIAN` aggregate, and its `PERCENTILE_CONT` is analytic-only (no `WITHIN GROUP` syntax) — the base class emit `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` fails at runtime. If you need percentile on BigQuery, define a custom `Aggregation` using `APPROX_QUANTILES(x, 100)[OFFSET(N)]`. Native `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP`/`CORR`/`COVAR_SAMP`/`COVAR_POP` (sqlglot may emit `VARIANCE` for `var_samp`). |
+| MySQL | yes | yes | yes | **no** | **no** | `MEDIAN`/`PERCENTILE_CONT` interpolate over `ROW_NUMBER`/`COUNT` windows in a subquery. No native `CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. |
+| SQL Server (T-SQL) | yes | yes | yes | yes (decomposed) | **no** | T-SQL's `PERCENTILE_CONT` is window-only: SLayer computes it per row in a subquery and regroups. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
+| Trino | yes | yes | yes | yes | yes | `MEDIAN`/`PERCENTILE_CONT` interpolate over `ROW_NUMBER`/`COUNT` windows in a subquery, exactly. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
+| BigQuery | yes | yes | yes | yes | yes | BigQuery's `PERCENTILE_CONT` is analytic-only: SLayer computes it per row in a subquery and regroups. Native `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP`/`CORR`/`COVAR_SAMP`/`COVAR_POP` (sqlglot may emit `VARIANCE` for `var_samp`). |
 
 ### `count_distinct_approx` by dialect
 
@@ -228,21 +228,10 @@ register_sqlite_udfs(connection)
 
 ### MySQL caveats
 
-MySQL has no native `PERCENTILE_CONT`, no `MEDIAN`, no `CORR`, no
-`COVAR_SAMP` / `COVAR_POP`, and no Python-UDF mechanism (UDFs are loadable C
-`.so` files requiring server-side install).
-Workarounds (`GROUP_CONCAT` + `SUBSTRING_INDEX`, or windowed CTE rewrites)
-have material downsides — silent truncation past `group_concat_max_len`,
-or major restructuring of the generated query that interacts poorly with
-multi-metric `GROUP BY`. SLayer raises `NotImplementedError` at SQL
-generation time so the failure is loud and the message is actionable.
-
-If you need percentiles on MySQL, the recommended options are:
-
-- Switch to MariaDB, which has `MEDIAN()`.
-- Pull the raw values and compute the percentile in your application.
-- Define a custom `Aggregation` on the dataset with whatever `GROUP_CONCAT`-
-  based or windowed expression suits your data shape and group sizes.
+MySQL has no `PERCENTILE_CONT` or `MEDIAN`: SLayer ranks each group's values with `ROW_NUMBER` and `COUNT` windows in
+a subquery and interpolates between the two ranks either side of the requested percentile, exactly. It has no native `CORR` or `COVAR_SAMP` /
+`COVAR_POP` and no Python-UDF mechanism (UDFs are loadable C `.so` files requiring server-side install); SLayer raises
+`NotImplementedError` for those at SQL generation time.
 
 **String-literal escaping** (`{variable}` substitution and generated SQL
 generally) assumes MySQL's **default** `sql_mode` where a backslash escapes
@@ -257,6 +246,8 @@ backslash-bearing string values are not supported on such servers.
 
 ### SQL Server (T-SQL) caveats
 
+Under a query `time_zone`, zones map to Windows zone names by CLDR 49; `America/Vancouver`, `America/Edmonton` and `America/Winnipeg` map to the 2026 Windows zones British Columbia, Alberta and Manitoba Standard Time, which a host needs the Windows time zone update to resolve.
+
 T-SQL has `STDEV`/`STDEVP`/`VAR`/`VARP` (not `STDDEV_SAMP`/`STDDEV_POP`/
 `VAR_SAMP`/`VAR_POP`); sqlglot's tsql transpiler emits incorrect names like
 `VAR_SAMP` and `VARIANCE_POP`, so the T-SQL dialect overrides the canonical
@@ -267,10 +258,9 @@ spellings via `Anonymous` rewrites in `slayer/sql/dialects/tsql.py`.
 `corr = cov / (stddev(x) · stddev(y))`. The decomposition is shared with
 MySQL via `_build_covar_decomposition` in `slayer/sql/dialects/base.py`.
 
-`MEDIAN` doesn't exist, and `PERCENTILE_CONT` in T-SQL is a window function
-only — there is no `WITHIN GROUP` aggregate form. SLayer raises
-`NotImplementedError` for both at SQL generation time. Use the windowed form
-as a custom `Aggregation` if you need it, or compute client-side.
+`MEDIAN` doesn't exist, and `PERCENTILE_CONT` in T-SQL is a window function only — there is no `WITHIN GROUP`
+aggregate form. SLayer computes both per row as `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x) OVER (PARTITION BY
+<grouping keys>)` in a subquery and regroups it.
 
 Other T-SQL specifics surfaced by the dialect:
 
@@ -297,6 +287,8 @@ Other T-SQL specifics surfaced by the dialect:
 ### ClickHouse caveats
 
 `JSON` and `Object` columns are read natively by `json_value` through their ingested `db_type` (from `system.columns`), so datasets ingested before that need a re-ingest.
+
+Under a query `time_zone`, a converted timestamp is a `DateTime64(6, zone)` instant, so adding hours or minutes across a DST transition adds elapsed time (01:30 + 1 hour on a spring-forward day gives 03:30, where Postgres or DuckDB give 02:30), and in a repeated hour a `civil` wall clock equals only one of the two instants that read as it.
 
 ### Snowflake caveats
 
@@ -329,8 +321,8 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
 The live suite runs against the `memory` catalog in a `trinodb/trino` container.
 Set `database: <catalog>/<schema>` (e.g. `memory/default`) on the datasource.
 
-- **Approximate `median` / `percentile`.** Both emit `APPROX_PERCENTILE(x, p)`,
-  so results are approximate; define a custom `Aggregation` if you need an exact value.
+- **Exact `median` / `percentile`.** Trino has no exact `PERCENTILE_CONT`: SLayer ranks each group's values with
+  `ROW_NUMBER` and `COUNT` windows in a subquery and interpolates, as on MySQL.
 - **No FK introspection.** Trino connectors expose no foreign keys, so
   auto-ingestion discovers no relationships; hand-declare `DatasetRelationship`s. Table and column
   comments are imported.
@@ -374,12 +366,9 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   (`` `project`.`dataset`.`table` ``) — a single backticked dotted path of
   word-only segments (`` `my_dataset.my_table` ``) would false-positive
   mangle.
-- **No `MEDIAN` aggregate; `PERCENTILE_CONT` is analytic-only.** Both
-  raise at SQL generation time (sqlglot doesn't transpile the base class's
-  `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` to BigQuery's analytic
-  form). Use a custom `Aggregation` with `APPROX_QUANTILES(x, 100)[OFFSET(N)]`
-  when you need it.
-- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older datasets), reads as its UTC wall clock everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
+- **No `MEDIAN` aggregate; `PERCENTILE_CONT` is analytic-only.** SLayer computes both per row as
+  `PERCENTILE_CONT(x, p) OVER (PARTITION BY <grouping keys>)` in a subquery and regroups it.
+- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a `TIMESTAMP` column, which ingestion types `DateTimeTz` (a stored `DateTime` field with `db_type: TIMESTAMP` loads as one), reads as its UTC wall clock without a query `time_zone` everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
 - **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0, `IS NULL` is false and `count(list)` counts it where other databases see `NULL`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`, so `engine.execute(..., explain=True)` raises
   `ExplainUnsupportedError` (a `ValueError`); use `dry_run=True` to see the SQL.

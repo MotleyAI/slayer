@@ -10,6 +10,8 @@ import datetime as dt
 import re
 from collections.abc import Iterable, Sequence
 from decimal import Decimal
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, ClassVar, Literal, Optional
 
 from sqlglot import exp
@@ -21,6 +23,8 @@ from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.errors import TimeZoneError
+from slayer.sql.dialects._windows_zones import WINDOWS_ZONES
 from slayer.sql.dialects.base import (
     PORTABLE_LIBRARY,
     NativeFn,
@@ -44,7 +48,9 @@ from slayer.sql.dialects.base import (
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
+    iso_text,
 )
+from slayer.sql.dialects._ordered_set_split import split_percentile_selects
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import ResultColumnType, info_schema_type, result_column_type_of_name
 
@@ -194,6 +200,56 @@ def _bit_value(predicate: Expr) -> Expression:
     return exp.Cast(this=case, to=exp.DataType.build("BIT", dialect="tsql"))
 
 
+def _windowed_percentile(p: Expr, value: Expr, partition: Sequence[Expr]):
+    """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs
+    are skipped, so they sort natively (one ORDER BY key is all it takes)."""
+    key = exp.Ordered(this=value.copy(), nulls_first=True)
+    window = exp.Window(this=exp.WithinGroup(this=exp.PercentileCont(this=p.copy()), expression=exp.Order(expressions=[key])),
+                        partition_by=[k.copy() for k in partition])
+    return [window], lambda reads: exp.Max(this=reads[0])
+
+
+#: Column-free yet per-row: such a GROUP BY key still splits groups.
+_VOLATILE = frozenset({"NEWID", "NEWSEQUENTIALID", "RAND", "CRYPT_GEN_RANDOM"})
+
+
+def _reads_no_column(node: Expr) -> bool:
+    """Constant per statement: reads no column, aggregate, window, subquery or volatile function."""
+    if any(node.find_all(exp.Column, exp.Subquery, exp.Select, exp.AggFunc, exp.Window, exp.Rand, exp.Uuid)):
+        return False
+    return not any(f.name.upper() in _VOLATILE for f in node.find_all(exp.Anonymous))
+
+
+def _group_by_columns_only(select: exp.Select) -> None:
+    """SQL Server rejects a GROUP BY key reading no column (error 164): such a key is constant, so it is dropped; with
+    none left, ``HAVING COUNT(*) > 0`` keeps the one group a non-empty input has and none on an empty one."""
+    group = select.args.get("group")
+    if group is None or group.args.get("rollup") or group.args.get("cube") or group.args.get("grouping_sets"):
+        return
+    keys = [k for k in group.expressions if not _reads_no_column(k)]
+    if len(keys) == len(group.expressions):
+        return
+    if keys:
+        group.set("expressions", keys)
+        return
+    select.set("group", None)
+    nonempty = exp.GT(this=exp.Count(this=exp.Star()), expression=exp.Literal.number(0))
+    having = select.args.get("having")
+    select.set("having", exp.Having(this=exp.and_(having.this, nonempty) if having is not None else nonempty))
+
+
+_DATETIME2 = exp.DataType.build("datetime2", dialect="tsql")
+
+
+def _windows_zone(zone: ZoneInfo) -> exp.Literal:
+    """``zone``'s Windows zone id, the one ``AT TIME ZONE`` reads; an IANA zone without one is refused."""
+    windows = WINDOWS_ZONES.get(zone.key)
+    if windows is None:
+        raise TimeZoneError(f"Time zone {zone.key!r} has no SQL Server (Windows) equivalent; choose another IANA "
+                            f"zone.", zone=zone.key)
+    return exp.Literal.string(windows)
+
+
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "tsql"
@@ -224,6 +280,16 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     like_brackets: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"CONCAT_WS", "PI", "GREATEST", "LEAST"})
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``CAST((v AT TIME ZONE S) AT TIME ZONE Q AS datetime2)`` in Windows zone ids; an instant (a
+        ``datetimeoffset``): ``CAST(v AT TIME ZONE Q AS datetime2)``."""
+        instant = value if source is None else exp.AtTimeZone(this=value, zone=_windows_zone(source))
+        return exp.Cast(this=exp.AtTimeZone(this=instant, zone=_windows_zone(target)), to=_DATETIME2.copy())
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"),
+                        to=exp.DataType.build("DATETIMEOFFSET", dialect="tsql"))
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
         """Regex needs SQL Server 2025, ``greatest`` / ``least`` and the strict ``json_value`` read 2022: the
@@ -307,6 +373,10 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
         """``TRY_CAST`` reads integer text in range, except a blank or a lone sign (as 0)."""
         return case((self.integer_text(text), self.build_try_cast(exp.Trim(this=text.copy()), to)))
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """T-SQL's own ``TIMESTAMP`` is a row version, never a cast's time type."""
+        return data_type.this != exp.DataType.Type.ROWVERSION and super().cast_type_supported(data_type)
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
         """T-SQL's own ``TIMESTAMP`` is ``ROWVERSION``; the portable one is ``DATETIME2``."""
@@ -557,11 +627,18 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return tree.transform(_fix)
 
     def rewrite_statement(self, statement: Expression) -> Expression:
-        """T-SQL predicates are conditions only: one in a value position becomes its BIT value."""
-        statement = statement.copy()
+        """T-SQL predicates are conditions only (one in a value position becomes its BIT value); ``PERCENTILE_CONT``
+        is a window function only; GROUP BY keys read a column."""
+        statement = split_percentile_selects(statement.copy(), columns=_windowed_percentile)
         for node in reversed(list(statement.dfs())):
-            if _is_predicate(node) and not _in_condition_position(node):
+            if _in_condition_position(node):
+                continue
+            if _is_predicate(node):
                 node.replace(_bit_value(node.copy()))
+            elif isinstance(node, exp.Boolean):  # sqlglot spells it ``(1 = 1)`` under a CAST
+                node.replace(exp.Literal.number(1 if node.this else 0))
+        for select in list(statement.find_all(exp.Select)):  # NOSONAR(S7504) — each call edits the tree being walked
+            _group_by_columns_only(select)
         return statement
 
     def row_number(self) -> Expression:
@@ -618,24 +695,6 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if unit in SUB_DAY_GRANULARITIES and operand is DataType.DATE else expr.copy()
         )
         return _dateadd(_DATEADD_UNITS[unit], count.copy(), base)
-
-    def build_median(self, inner: Expression) -> Expression:
-        raise NotImplementedError(
-            "Aggregation 'median' is not supported on T-SQL (SQL Server): "
-            "PERCENTILE_CONT in T-SQL is a window function (requires OVER clause) "
-            "and cannot be used as a GROUP BY aggregate. "
-            "Use a window subquery or compute the value client-side."
-        )
-
-    def build_percentile(
-        self, p: Expression, col_expr: Expression,
-    ) -> Expression:
-        raise NotImplementedError(
-            "Aggregation 'percentile' is not supported on T-SQL (SQL Server): "
-            "PERCENTILE_CONT requires a window function OVER clause in T-SQL "
-            "and is not valid as a GROUP BY aggregate. "
-            "Compute the value client-side or restructure as a window query."
-        )
 
     def build_stat_agg_1arg(
         self, agg_name: StatAgg1Name, col_expr: Expression,

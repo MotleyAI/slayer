@@ -10,7 +10,9 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Sequence
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
+from zoneinfo import ZoneInfo
 from typing import Any, ClassVar, Optional
 
 from sqlglot import exp
@@ -41,8 +43,10 @@ from slayer.sql.dialects.base import (
     is_null,
     iso_text,
     lit,
+    literal_int,
     number_literal_text,
     pad_fill,
+    zone_name,
 )
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
@@ -53,8 +57,11 @@ from slayer.sql.dialects.reflection import (
     col,
     eq_literal,
     relation,
+    unwrap_clickhouse_wrapper_str,
 )
 
+#: A ``DateTime`` / ``DateTime64`` type naming its zone: an instant.
+_ZONED_DATETIME = re.compile(r"^DateTime(64)?\s*\(.*'[^']+'\s*\)$", re.I)
 #: Byte-based string functions and their character (UTF-8) counterparts.
 _INDEX = "__slayer_i"
 _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.Upper: "upperUTF8"}
@@ -64,6 +71,7 @@ _NEVER_NULLABLE = (*exp.DataType.NESTED_TYPES, exp.DataType.Type.LOWCARDINALITY,
 
 
 _DECIMAL128_DIGITS, _DECIMAL256_DIGITS = 38, 76
+_TIME_OF_DAY_TYPES = frozenset({exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ})
 
 
 def _to_decimal(width: int) -> str:
@@ -257,6 +265,32 @@ class ClickhouseDialect(SqlDialect):
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"PI"})
 
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``toTimeZone(v, Q)``; a naive value is first read as ``S`` wall clock."""
+        if source is not None:
+            value = exp.Anonymous(this="toDateTime64", expressions=[
+                exp.Anonymous(this="toString", expressions=[value]), exp.Literal.number(6), zone_name(source)])
+        return exp.Anonymous(this="toTimeZone", expressions=[value, zone_name(target)])
+
+    def zoned_timestamp_cast(self, value: Expression) -> Optional[Expression]:
+        """``toDateTime64(v, 6, Q)``: a plain cast drops the zone and with it the wall clock."""
+        return self.promote_to_timestamp(value) if self.time_zone is not None else None
+
+    def civil_read(self, value: Expression) -> Expression:
+        """Under a zone, ``DateTime64(6, Q)`` of the same wall clock: ClickHouse compares timestamps as instants."""
+        if self.time_zone is None:
+            return value
+        return exp.Anonymous(this="toDateTime64", expressions=[
+            exp.Anonymous(this="toString", expressions=[value]), exp.Literal.number(6), exp.Literal.string(self.time_zone)])
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Anonymous(this="toDateTime64", expressions=[
+            exp.Literal.string(iso_text(value)), exp.Literal.number(6), exp.Literal.string("UTC")])
+
+    def is_instant_db_type(self, type_name: str) -> bool:
+        """A ``DateTime`` / ``DateTime64`` naming a zone."""
+        return _ZONED_DATETIME.match(unwrap_clickhouse_wrapper_str(type_name)) is not None
+
     def list_length(self, values: Expression) -> Expression:
         return anon("length", values)
 
@@ -394,6 +428,20 @@ class ClickhouseDialect(SqlDialect):
         """``isNotDistinctFrom`` is only allowed in ``JOIN ON``."""
         return self._expanded_null_safe_eq(left, right)
 
+    def number_to_boolean(self, value: Expression) -> Expression:
+        """A comparison yields UInt8; its own boolean results (``TRUE``, a predicate) are Bool."""
+        return exp.Cast(this=super().number_to_boolean(value), to=exp.DataType(this=exp.DataType.Type.BOOLEAN))
+
+    def build_round(self, value: Expression, digits: Expression) -> Optional[Expression]:
+        """A number literal is exact, though ClickHouse reads it as a Float64 whose ties ``round`` breaks to even."""
+        known = literal_int(digits)
+        text = number_literal_text(value)
+        if known is None or known < 0 or text is None:
+            return None
+        if max(Decimal(text).adjusted() + 1, 0) + known + 1 > _DECIMAL128_DIGITS:  # no room for the guard digit
+            return None
+        return self.round_half_away(value, known)
+
     def round_half_away(self, value: Expression, digits: int) -> Expression:
         """``round`` breaks a Float64 tie to even: the value is read as a Decimal truncated one digit past ``digits`` (a
         literal from its exact text: it would read as a Float64), then rounded as one."""
@@ -408,8 +456,10 @@ class ClickhouseDialect(SqlDialect):
         return exp.Round(this=exact, decimals=lit(digits))
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
-        """A ``DECIMAL`` rounds through a guard digit past its precision, which Decimal256's 76 digits leave no room
-        for at precision 76."""
+        """No time-of-day type (a ``TIME`` cast reads NULL); a ``DECIMAL`` rounds through a guard digit past its
+        precision, which Decimal256's 76 digits leave no room for at precision 76."""
+        if data_type.this in _TIME_OF_DAY_TYPES:
+            return False
         parts = decimal_parts(data_type)
         if parts is not None and (parts[0] or 0) >= _DECIMAL256_DIGITS:
             return False
@@ -627,7 +677,9 @@ class ClickhouseDialect(SqlDialect):
         ))
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
-        return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6)])
+        """``toDateTime64(x, 6)``; under a zone ``DateTime64(6, zone)``, the type a converted value has."""
+        zone = [exp.Literal.string(self.time_zone)] if self.time_zone is not None else []
+        return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6), *zone])
 
     def demote_to_date(self, expr: Expression) -> Expression:
         return exp.Anonymous(this="toDate", expressions=[expr])
@@ -644,6 +696,10 @@ class ClickhouseDialect(SqlDialect):
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:
             return exp.Anonymous(this="toDate", expressions=[exp.Literal.string(value.isoformat())])
+        if self.time_zone is not None:
+            # A converted value's type: the zone's wall clock.
+            zoned = exp.DataType.build(f"DateTime64(6, '{self.time_zone}')", dialect="clickhouse")
+            return exp.Cast(this=exp.Literal.string(iso_text(value)), to=zoned)
         return self.promote_to_timestamp(exp.Literal.string(iso_text(value)))
 
     def build_current_date(self) -> Expression:

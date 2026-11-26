@@ -6,6 +6,7 @@ import hashlib
 import re
 from datetime import date, datetime
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Optional, Self, TypeGuard, get_args
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
@@ -25,6 +26,7 @@ from slayer.core.errors import (
     IdentifierCollisionError,
     IdentifierLengthError,
     ServerVersionError,
+    TimeZoneError,
     UnsupportedServerFunctionError,
 )
 from slayer.core.granularity import CustomGranularity, Granularity, bucket_type, granularity_parts, nests_into
@@ -53,6 +55,7 @@ from slayer.sql.dialects.reflection import (
     column_from_sa_type,
     column_from_type_string,
     eq_literal,
+    unwrap_clickhouse_wrapper_str,
     fetch,
     inspector_column_names,
     inspector_foreign_keys,
@@ -197,6 +200,66 @@ def case(*branches: tuple[Expression, Expression], default: Optional[Expression]
     return exp.Case(ifs=[exp.If(this=c, true=v) for c, v in branches], default=default)
 
 
+#: Zeros a shift pads with at most: past it the value overflows, or rounds to zero, at any DECIMAL precision.
+_SHIFT_PAD_LIMIT = 40
+
+
+def _exponent_shifted(text: Expression, *, convert: Callable[[Expression, exp.DataType], Expression],
+                      repeat: Callable[[Expression, Expression], Expression]) -> Expression:
+    """Upper-case exponent-form numeric text (``-1.2345E1``) as plain decimal text (``-12.345``), digit for digit."""
+    def sub(of: Expression, start: Expression, length: Expression) -> Expression:
+        return exp.Substring(this=of.copy(), start=start, length=length)
+
+    def at(of: Expression, char: str) -> Expression:
+        return exp.StrPosition(this=of.copy(), substr=lit(char))
+
+    def length(of: Expression) -> Expression:
+        return exp.Length(this=of.copy())
+
+    def plus(a: Expression, b: Expression) -> Expression:
+        return exp.Add(this=a, expression=b)
+
+    def minus(a: Expression, b: Expression) -> Expression:
+        return exp.Sub(this=a, expression=b)
+
+    def zeros(count: Expression) -> Expression:
+        # Clamped both ways: a branch not taken may still be folded.
+        capped = case((exp.LT(this=count.copy(), expression=lit(0)), lit(0)),
+                      (exp.GT(this=count.copy(), expression=lit(_SHIFT_PAD_LIMIT)), lit(_SHIFT_PAD_LIMIT)),
+                      default=count.copy())
+        return repeat(lit("0"), capped)
+
+    def concat(*parts: Expression) -> Expression:
+        return exp.Concat(expressions=[p.copy() for p in parts])
+
+    mark = at(text, "E")
+    mantissa = sub(text, lit(1), minus(mark.copy(), lit(1)))
+    exponent = sub(text, plus(mark.copy(), lit(1)), length(text))
+    power = convert(exponent, exp.DataType.build("INT"))
+    head = sub(mantissa, lit(1), lit(1))
+    signed = exp.In(this=head.copy(), expressions=[lit("-"), lit("+")])
+    sign = case((exp.EQ(this=head.copy(), expression=lit("-")), lit("-")), default=lit(""))
+    body = case((signed, sub(mantissa, lit(2), length(mantissa))), default=mantissa.copy())
+    dot = at(body, ".")
+    no_dot = exp.EQ(this=dot.copy(), expression=lit(0))
+    whole = case((no_dot, body.copy()), default=sub(body, lit(1), minus(dot.copy(), lit(1))))
+    fraction = case((no_dot.copy(), lit("")), default=sub(body, plus(dot.copy(), lit(1)), length(body)))
+    digits = concat(whole, fraction)
+    point = plus(length(whole), power)
+    shifted = case(
+        (exp.LTE(this=point.copy(), expression=lit(0)), concat(lit("0."), zeros(exp.Neg(this=exp.Paren(this=point.copy()))), digits)),
+        (exp.GTE(this=point.copy(), expression=length(digits)), concat(digits, zeros(minus(point.copy(), length(digits))))),
+        default=concat(sub(digits, lit(1), point.copy()), lit("."), sub(digits, plus(point.copy(), lit(1)), length(digits))),
+    )
+    # No digits (``E1``, ``.E1``), a second point or sign, or no exponent digits (``1E``, ``1E-``: SQL Server reads
+    # them as 0): the text as is, which the cast refuses.
+    malformed = either(exp.EQ(this=length(digits), expression=lit(0)),
+                       *(exp.GT(this=at(digits, c), expression=lit(0)) for c in ".+-"),
+                       exp.In(this=exponent.copy(), expressions=[lit(""), lit("+"), lit("-")]),
+                       exp.GT(this=at(exponent, " "), expression=lit(0)))
+    return case((malformed, text.copy()), default=concat(sign, shifted))
+
+
 def lit(value: int | str) -> Expression:
     return exp.Literal.number(value) if isinstance(value, int) else exp.Literal.string(value)
 
@@ -281,6 +344,17 @@ def iso_text(value: date) -> str:
     return str(value)
 
 
+def zone_name(zone: ZoneInfo) -> exp.Literal:
+    return exp.Literal.string(zone.key)
+
+
+def at_time_zone(value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+    """``(v AT TIME ZONE S) AT TIME ZONE Q`` (naive ``S`` wall clock → instant → ``Q`` wall clock); an instant:
+    ``v AT TIME ZONE Q``."""
+    instant = value if source is None else exp.AtTimeZone(this=value, zone=zone_name(source))
+    return exp.AtTimeZone(this=instant, zone=zone_name(target))
+
+
 TemporalComparisonOp = Literal["=", "!=", "<", "<=", ">", ">="]
 COMPARISON_NODES: dict[str, Any] = {
     "=": exp.EQ, "!=": exp.NEQ, "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
@@ -353,7 +427,8 @@ def cast_target(type_text: str, *, dialect: "SqlDialect") -> exp.DataType:
     if parts.array_rank > 1:
         raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}: there is no array of arrays.")
     readings = [r for r in (_read_type(type_text, readers=(reader,)) for reader in (sqlglot_name, "postgres")) if r]
-    built = next((r for r in readings if _keeps_author_parts(parts, r)), readings[0] if readings else None)
+    built = next((r for r in readings if _keeps_author_parts(parts, r) and dialect.cast_type_supported(r)),
+                 readings[0] if readings else None)
     if (built is None or built.this == exp.DataType.Type.USERDEFINED or not dialect.cast_type_supported(built)
             or not _keeps_author_parts(parts, built) or not _renders_losslessly(built, dialect=dialect)):
         raise ValueError(f"CAST to {type_text} cannot be expressed on {sqlglot_name}.")
@@ -937,16 +1012,73 @@ class SqlDialect(BaseModel):
             return t in self.unsigned_cast_types
         return t not in VENDOR_ONLY_CAST_TYPES or t in self.vendor_cast_types
 
-    #: Column ``db_type``s holding a zoned instant where SLayer's TIMESTAMP is naive (BigQuery ``TIMESTAMP``).
+    #: Type names holding an instant, kept as ``db_type`` and ingested as ``DateTimeTz`` (BigQuery ``TIMESTAMP``).
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset()
 
     def is_zoned_db_type(self, db_type: Optional[str]) -> bool:
         """Whether a column of ``db_type`` holds a zoned instant on this dialect."""
         return bool(db_type) and db_type.split("(")[0].strip().upper() in self.zoned_timestamp_db_types
 
+    #: The instant type reads as its UTC wall clock where SLayer's timestamp is naive (BigQuery).
+    naive_instant_reads: ClassVar[bool] = False
+
+    def holds_instant(self, *, datatype: Optional[DataType], db_type: Optional[str]) -> bool:
+        """Whether a field of ``datatype`` over a column of ``db_type`` holds instants."""
+        return datatype is DataType.DATETIME_TZ or self.is_zoned_db_type(db_type)
+
+    def is_instant_db_type(self, type_name: str) -> bool:
+        """Whether a column of database type ``type_name`` holds an instant (ingested ``DateTimeTz``)."""
+        return self.is_zoned_db_type(unwrap_clickhouse_wrapper_str(type_name))
+
     def read_column(self, column: Expression, *, zoned: bool) -> Expression:  # NOSONAR(S1172) — hook parameter read by dialect overrides
         """A column as SLayer reads it; default: as stored."""
         return column
+
+    # Time zones (queries/time-zones): a stage renders through a copy carrying its zone and its "now".
+    time_zone: Optional[str] = None
+    zone_now: Optional[datetime] = None
+
+    def zoned(self, *, zone: Optional[str], now: Optional[datetime]) -> Self:
+        """This dialect rendering a stage in ``zone`` (``None``: no conversion) whose wall-clock "now" is ``now``."""
+        if zone == self.time_zone and now == self.zone_now:
+            return self
+        return self.model_copy(update={"time_zone": zone, "zone_now": now if zone is not None else None})
+
+    def zoned_timestamp_cast(self, value: Expression) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
+        """A declared timestamp cast under this stage's zone when a plain ``CAST`` would lose it; ``None``: plain."""
+        return None
+
+    def civil_read(self, value: Expression) -> Expression:
+        """A ``DateTime`` read as stored under this stage's zone (``civil`` or undeclared), its wall clock kept in the
+        type converted values have; default: as stored."""
+        return value
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:  # NOSONAR(S1172) — hook signature
+        """``value`` as naive ``target`` wall clock: from naive ``source`` wall clock, or from an instant (``source``
+        ``None``). Default: refused, a Tier-2 database cannot convert."""
+        raise TimeZoneError(
+            f"{self.database_name} cannot convert timestamps to time zone {target.key!r}; run the query without "
+            f"time_zone, or read only Date, civil or undeclared fields.", zone=target.key,
+        )
+
+    def zoned_cast(self, value: Expression) -> Expression:
+        """A cast to a zoned timestamp, under this stage's zone: that instant's wall clock there."""
+        return value if self.time_zone is None else self.convert_zone(value, source=None, target=ZoneInfo(self.time_zone))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
+        """The UTC instant ``value`` (naive) in the database's instant type; ``None`` when it cannot be written."""
+        return None
+
+    def converted_zones(self, statement: Expr, *, zones: Iterable[str]) -> list[str]:  # NOSONAR(S1172) — hook signature
+        """Of ``zones``, those ``statement`` converts between; default: all of them."""
+        return sorted(zones)
+
+    def zone_probe(self, zone: ZoneInfo) -> Optional[exp.Select]:  # NOSONAR(S1172) — hook signature
+        """A statement whose one value is NULL when the server cannot resolve ``zone``; ``None``: no check needed."""
+        return None
+
+    def unresolved_zone_error(self, zone: ZoneInfo) -> TimeZoneError:
+        return TimeZoneError(f"{self.database_name} cannot resolve time zone {zone.key!r}.", zone=zone.key)
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:  # NOSONAR(S1172) — hook parameter read by dialect overrides
         """The portable ``TRY_CAST`` target of a cast to ``data_type``; default: the database's own type."""
@@ -1045,8 +1177,8 @@ class SqlDialect(BaseModel):
         if source is None and not self.decimal_text_exponent:
             text = exp.Trim(this=value.copy())
             exponent = self.build_ilike(text, lit("%e%"))
-            through_double = convert(convert(text.copy(), exp.DataType.build("DOUBLE")), to)
-            return case((exponent, through_double), default=convert(text.copy(), to))
+            shifted = convert(_exponent_shifted(exp.Upper(this=text.copy()), convert=convert, repeat=self.text_repeat), to)
+            return case((exponent, shifted), default=convert(text.copy(), to))
         if source is DataType.FLOAT and not self.number_cast_rounds:
             value = self.round_half_away(value, scale)
         return convert(value, to)
@@ -2301,7 +2433,7 @@ class SqlDialect(BaseModel):
         return [
             column_from_type_string(
                 name=name, data_type=dtype, comment=comments.get(name), zoned_types=self.zoned_timestamp_db_types,
-                json_types=self.json_db_types,
+                json_types=self.json_db_types, instant=self.is_instant_db_type,
             )
             for name, dtype in rows
         ]
@@ -2317,6 +2449,7 @@ class SqlDialect(BaseModel):
             column_from_sa_type(
                 name=c["name"], sa_type=c["type"], comment=c.get("comment"),
                 zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types, sa_dialect=sa_dialect,
+                instant=self.is_instant_db_type,
             )
             for c in raw
         ]
@@ -2329,6 +2462,7 @@ class SqlDialect(BaseModel):
             column_from_type_string(
                 name=c.name, data_type=declared.get(c.name), comment=c.comment,
                 zoned_types=self.zoned_timestamp_db_types, json_types=self.json_db_types,
+                instant=self.is_instant_db_type,
             ) if c.name in untyped else c
             for c in columns
         ]

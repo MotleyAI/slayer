@@ -13,8 +13,8 @@ test_integration_postgres.py focused on T-SQL specifics:
   via the ``exp.Anonymous`` overrides in ``TsqlDialect``).
 * ``CORR`` / ``COVAR_SAMP`` / ``COVAR_POP`` via the variance-decomposition
   formula (no native function in T-SQL).
-* ``MEDIAN`` / ``PERCENTILE_CONT`` as GROUP BY aggregates raise
-  ``NotImplementedError`` — ``PERCENTILE_CONT`` in T-SQL is window-only.
+* ``MEDIAN`` / ``PERCENTILE_CONT`` read a window per row (``PERCENTILE_CONT`` in
+  T-SQL is window-only), regrouped.
 * Native ``LOG10`` (``TsqlDialect.log10_native = True``).
 
 The pytest job's CI step (.github/workflows/integration-sqlserver.yml)
@@ -87,6 +87,7 @@ from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
+from sqlglot import exp
 from tests.integration._dev2015_server import (
     check_all,
     server_datasets,
@@ -948,34 +949,70 @@ class TestRollupIngestionSQLServer:
 
 
 # ---------------------------------------------------------------------------
-# Median / percentile — T-SQL raises NotImplementedError
+# Exponent-form numeric text cast to DECIMAL
+# ---------------------------------------------------------------------------
+
+
+def _decimal_cast_sql(text: str, *, try_: bool) -> str:
+    cast = TsqlDialect().build_decimal_cast(exp.Literal.string(text), exp.DataType.build("DECIMAL(10, 2)"),
+                                            precision=10, scale=2, source=None, try_=try_)
+    return f"SELECT {cast.sql(dialect='tsql')}"
+
+
+@pytest.mark.integration
+class TestSQLServerExponentText:
+    """SQL Server reads ``''``, ``'+'`` and ``'-'`` as INT 0, so an exponent without digits must not reach that read."""
+
+    @pytest.mark.parametrize("text", ["1e", "1e-", "1e+", "1e 1", "e1", "+-1e1"])
+    def test_try_cast_of_malformed_exponent_text_is_null(self, sqlserver_container, text: str) -> None:
+        with disposable_engine(_admin_url(sqlserver_container)) as engine, engine.connect() as conn:
+            assert conn.exec_driver_sql(_decimal_cast_sql(text, try_=True)).scalar() is None
+
+    @pytest.mark.parametrize("text", ["1e", "1e-"])
+    def test_cast_of_malformed_exponent_text_fails(self, sqlserver_container, text: str) -> None:
+        sql = _decimal_cast_sql(text, try_=False)
+        with disposable_engine(_admin_url(sqlserver_container)) as engine, engine.connect() as conn:
+            with pytest.raises(sqlalchemy.exc.DBAPIError):
+                conn.exec_driver_sql(sql)
+
+    @pytest.mark.parametrize(("text", "value"), [("1.2345e1", "12.35"), ("-1.5E-1", "-0.15"), ("12e+0", "12.00")])
+    def test_exponent_text_casts_exactly(self, sqlserver_container, text: str, value: str) -> None:
+        with disposable_engine(_admin_url(sqlserver_container)) as engine, engine.connect() as conn:
+            assert conn.exec_driver_sql(_decimal_cast_sql(text, try_=False)).scalar() == Decimal(value)
+
+
+# ---------------------------------------------------------------------------
+# Median / percentile — a window per row
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-class TestSQLServerMedianPercentileRaises:
-    async def test_median_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
+class TestSQLServerMedianPercentile:
+    async def test_median(self, sqlserver_env: SlayerQueryEngine) -> None:
+        # amounts = [100, 200, 50, 150, 75, 300] -> median 125
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
-        with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
-            await sqlserver_env.execute(query=query)
+        result = await sqlserver_env.execute(query=query)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
-    async def test_median_grouped_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
-        """Grouped median goes through the same TsqlDialect.build_median hook."""
+    async def test_percentile_quartiles(self, sqlserver_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"metric": "percentile(orders.total, p=0.25)"}, {"metric": "percentile(orders.total, p=0.75)"}],
+        })
+        row = (await sqlserver_env.execute(query=query)).data[0]
+        assert float(row["orders.total_percentile_p_0_25"]) == pytest.approx(81.25)
+        assert float(row["orders.total_percentile_p_0_75"]) == pytest.approx(187.5)
+
+    async def test_median_grouped(self, sqlserver_env: SlayerQueryEngine) -> None:
+        # completed: [100, 150, 200] -> 150; pending: [50, 300] -> 175; cancelled: [75] -> 75
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "median(orders.total)"}],
             "dimensions": ["orders.status"],
         })
-        with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
-            await sqlserver_env.execute(query=query)
-
-    async def test_percentile_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({
-            "population": "orders",
-            "metrics": [{"metric": "percentile(orders.total, p=0.5)"}],
-        })
-        with pytest.raises(NotImplementedError, match="(?i)percentile.*t-sql"):
-            await sqlserver_env.execute(query=query)
+        result = await sqlserver_env.execute(query=query)
+        by_status = {r["orders.status"]: float(r["orders.total_median"]) for r in result.data}
+        assert by_status == pytest.approx({"completed": 150, "pending": 175, "cancelled": 75})
 
 
 # ---------------------------------------------------------------------------

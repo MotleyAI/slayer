@@ -1,0 +1,102 @@
+name: Ossie compliance (scheduled)
+
+# The Ossie compliance gate on the server Tier-1 databases. PRs run only its in-process suites (SQLite, DuckDB, every
+# dialect's compile) in ci.yml's unit job.
+# - Nightly: every server engine on the vendored corpus; red means SLayer regressed.
+# - Weekly: every engine, in-process suites included, against apache/ossie main; red alone means upstream moved:
+#   re-vendor tests/fixtures/ossie_corpus and adjust the gate's declarations. The compliance-page check pins the
+#   vendored revision and is left out.
+# Each run fails unless every engine passed; a skipped engine (e.g. missing secrets) fails it.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      corpus:
+        description: vendored (as nightly) or upstream (as weekly)
+        type: choice
+        options: [vendored, upstream]
+        default: vendored
+
+permissions:
+  contents: read
+
+jobs:
+  in-process:
+    if: github.event.schedule == '41 5 * * 1' || inputs.corpus == 'upstream'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
+
+      - uses: ./.github/actions/ossie-upstream
+
+      - name: Run the corpus, oracle, grader and in-process gate suites against upstream main
+        run: >-
+          poetry run pytest tests/test_dev2243_corpus.py tests/test_dev2243_wide_table_oracle.py
+          tests/test_dev2217_appendix_b.py tests/test_dev2217_shape.py tests/test_dev2217_errors.py
+          tests/test_dev2217_filter.py tests/test_dev2217_output_names.py tests/test_dev2217_model_view.py
+          tests/test_dev2217_run_by_name.py tests/test_dev2217_surfaces.py
+          tests/test_dev2243_portability_grader.py tests/test_dev2446_required_constructs.py
+          tests/test_ossie_gate.py tests/test_ossie_gate_compile.py
+          -m "not integration" -n logical --timeout=600
+
+  server:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [postgres, mysql, clickhouse, tsql, trino, snowflake, bigquery]
+    # BigQuery shares one GCP project with ci.yml: queue behind its runs, never cancel.
+    concurrency:
+      group: ${{ matrix.engine == 'bigquery' && 'bigquery-shared-gcp-project' || format('ossie-gate-{0}-{1}', matrix.engine, github.run_id) }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Missing Snowflake or BigQuery secrets fail here.
+      - uses: ./.github/actions/engine-setup
+        with:
+          engine: ${{ matrix.engine }}
+          snowflake-connections-toml: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+          snowflake-private-key: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          gcp-project-id: ${{ secrets.GCP_PROJECT_ID }}
+          gcp-sa-key-b64: ${{ secrets.GCP_SA_KEY_B64 }}
+
+      - if: github.event.schedule == '41 5 * * 1' || inputs.corpus == 'upstream'
+        uses: ./.github/actions/ossie-upstream
+
+      - name: Run the compliance gate on ${{ matrix.engine }}
+        timeout-minutes: 30
+        env:
+          # A named engine that cannot start fails rather than skips.
+          SLAYER_GATE_ENGINES: ${{ matrix.engine }}
+          SLAYER_SNOWFLAKE_CONNECTION: slayer_test
+        run: poetry run pytest tests/integration/test_integration_ossie_gate.py -v -rs -m integration --timeout=600
+
+      - name: Wipe credentials
+        if: always()
+        run: rm -f ~/.snowflake/connections.toml ~/.snowflake/slayer_ci_key.p8 "$RUNNER_TEMP/sa-key.json"
+
+  all-engines:
+    needs: [in-process, server]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every suite passed on every engine
+        env:
+          UPSTREAM: ${{ github.event.schedule == '41 5 * * 1' || inputs.corpus == 'upstream' }}
+          IN_PROCESS: ${{ needs.in-process.result }}
+          SERVER: ${{ needs.server.result }}
+        run: |
+          echo "upstream: $UPSTREAM; in-process: $IN_PROCESS; server engines: $SERVER"
+          [[ "$SERVER" == "success" ]]
+          [[ "$UPSTREAM" != "true" || "$IN_PROCESS" == "success" ]]

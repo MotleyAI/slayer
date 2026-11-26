@@ -781,8 +781,9 @@ async def test_a_field_across_a_long_joined_path_reads_the_fitted_alias(tmp_path
         engine.close()
     assert resp.sql is not None
     tree = sqlglot.parse_one(resp.sql, dialect="postgres")
-    terminal = next(j.this.alias_or_name for j in tree.find_all(exp.Join)
-                    if any(t.name == "c" for t in j.this.find_all(exp.Table)))
+    # The innermost join reading ``c``: an outer joined subquery may nest it.
+    terminal = [j.this.alias_or_name for j in tree.find_all(exp.Join)
+                if any(t.name == "c" for t in j.this.find_all(exp.Table))][-1]
     projected = {c.table for s in tree.find_all(exp.Select) for p in s.expressions for c in p.find_all(exp.Column)
                  if c.name == read}
     assert projected == {terminal}, resp.sql
