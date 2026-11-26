@@ -42,6 +42,7 @@ from slayer.core.keys import (
     LiteralKey,
     ScalarCallKey,
     TimeTruncKey,
+    WindowKey,
     _FrozenKey,
     boolean_valued,
     check_scalar_arity,
@@ -78,6 +79,7 @@ from slayer.sql.dialects.base import (
 )
 from slayer.sql.render.library import json_operands, render_library_call
 from slayer.sql.render.parse import rewrite_log_aliases as rewrite_log_alias
+from slayer.sql.render.window import render_window
 
 _BINARY_OPS: Dict[str, Any] = {
     "+": exp.Add, "-": exp.Sub, "*": exp.Mul, "/": exp.Div,
@@ -752,6 +754,8 @@ def render_row_expression(
     if isinstance(key, ListSetKey):
         return render_list_set(key=key, part=_part, dialect=dialect, field_type=field_type,
                                field_element=field_element)
+    if isinstance(key, WindowKey):
+        return render_window(key, part=_part, dialect=dialect, field_type=field_type)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )
@@ -771,7 +775,8 @@ def _row_arithmetic(
         return render_null_safe(op=key.op, operands=operands, dialect=dialect)
     if key.op == "%":
         return render_modulo(key=key, operands=operands, dialect=dialect, field_type=field_type)
-    return render_arithmetic(op=key.op.lower(), operands=operands)
+    rendered = render_arithmetic(op=key.op.lower(), operands=operands)
+    return dialect.true_division(rendered) if key.op == "/" else rendered
 
 
 def render_modulo(

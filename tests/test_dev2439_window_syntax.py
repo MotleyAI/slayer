@@ -1,6 +1,7 @@
-"""``core.syntax``'s window-reading mode: the window tree, its traversal, and the native refusal it leaves unchanged.
+"""``core.syntax`` reads ``OVER`` in every parse: the window tree, its traversal, and the resolved NULL placement.
 
-Spec: queries/ossie-l3-binding › The filter is an Ossie expression.
+Spec: queries/ossie-l3-binding › The filter is an Ossie expression; queries/window-functions › A window function is
+read in every Mode B position.
 """
 
 from __future__ import annotations
@@ -18,17 +19,15 @@ from slayer.core.syntax import (
     legacy_spans, nonossie_spellings, parse_bound_expr, parse_expr, walk_parsed,
 )
 
-_NATIVE_MESSAGE = (
-    "IllegalWindowInFilterError: Window expressions are not allowed in filters.\n"
-    "  expr: {expr!r}\n"
-    "  source: raw OVER(...) is not allowed in Mode-B DSL\n"
-    "  suggestion: use a transform instead (rank, percent_rank, dense_rank, ntile, cumsum, lag, lead, time_shift, …)."
-)
-NATIVE_REFUSED = ["x OVER (", "sum(x) FILTER (WHERE c) OVER (PARTITION BY r)", "ROW_NUMBER() OVER (ORDER BY x)"]
+WELL_FORMED = ["sum(x) FILTER (WHERE c) OVER (PARTITION BY r)", "ROW_NUMBER() OVER (ORDER BY x)"]
 
 
 def _window(text: str) -> Any:
-    return parse_expr(text, windows=True)
+    return parse_expr(text)
+
+
+def _has_window(node: Any) -> bool:
+    return any(isinstance(n, syntax.WindowCall) for n in walk_parsed(node))
 
 
 # --------------------------------------------------------------------------- #
@@ -45,7 +44,7 @@ def test_the_window_tree_shape() -> None:
     assert window.partition == (DottedRef(parts=("a", "p")), DottedRef(parts=("a", "q")))
     assert window.order == (
         syntax.OrderItem(value=DottedRef(parts=("a", "o")), descending=True, nulls="last"),
-        syntax.OrderItem(value=DottedRef(parts=("a", "r")), descending=False, nulls=None),
+        syntax.OrderItem(value=DottedRef(parts=("a", "r")), descending=False, nulls="last"),
     )
     assert window.frame is None
 
@@ -60,6 +59,22 @@ def test_ascending_and_nulls_first() -> None:
     window = _window("RANK() OVER (ORDER BY x ASC NULLS FIRST)")
     assert isinstance(window, syntax.WindowCall)
     assert window.order == (syntax.OrderItem(value=Ref(name="x"), descending=False, nulls="first"),)
+
+
+def test_an_omitted_placement_is_resolved_to_null_as_the_largest_value() -> None:
+    window = _window("RANK() OVER (ORDER BY x, y ASC, z DESC)")
+    assert isinstance(window, syntax.WindowCall)
+    assert [(item.descending, item.nulls) for item in window.order] == [(False, "last"), (False, "last"), (True, "first")]
+
+
+@pytest.mark.parametrize(("omitted", "written"), [
+    ("RANK() OVER (ORDER BY x)", "RANK() OVER (ORDER BY x ASC NULLS LAST)"),
+    ("RANK() OVER (ORDER BY x DESC)", "RANK() OVER (ORDER BY x DESC NULLS FIRST)"),
+])
+def test_windows_differing_only_in_how_the_placement_is_written_parse_equal(omitted: str, written: str) -> None:
+    assert _window(omitted) == _window(written)
+    opposite = written.replace("LAST", "FIRST") if "LAST" in written else written.replace("FIRST", "LAST")
+    assert _window(omitted) != _window(opposite)
 
 
 @pytest.mark.parametrize(("frame_text", "unit", "start", "end"), [
@@ -149,9 +164,9 @@ def test_an_unknown_window_function_is_unknown() -> None:
 def test_variables_bind_inside_and_beside_a_window() -> None:
     text = "x IN {vals} AND LAG(y, {k}) OVER (ORDER BY z) = {n}"
     variables = {"vals": ["a", "b"], "k": 1, "n": 2}
-    bound = bind_variables(text, variables, windows=True)
+    bound = bind_variables(text, variables)
     assert bound == "x IN {vals} AND LAG(y, 1) OVER (ORDER BY z) = 2"
-    tree = parse_bound_expr(bound, variables, windows=True)
+    tree = parse_bound_expr(bound, variables)
     nodes = list(walk_parsed(tree))
     assert any(isinstance(n, BoundVariable) and n.values == ("a", "b") for n in nodes)
     assert any(isinstance(n, syntax.WindowCall) for n in nodes)
@@ -164,41 +179,34 @@ def test_variables_bind_inside_and_beside_a_window() -> None:
 ])
 def test_the_text_readers_see_beside_a_window(reader: Callable[..., Any], text: str,
                                               found: Callable[[Any], bool]) -> None:
-    assert reader(text) == ()
-    assert found(reader(text, windows=True))
+    assert found(reader(text))
 
 
 # --------------------------------------------------------------------------- #
-# The native reading is unchanged
+# The plain parse reads windows
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("text", NATIVE_REFUSED)
-def test_native_parse_refuses_a_window_as_before(text: str) -> None:
-    with pytest.raises(IllegalWindowInFilterError) as raised:
-        parse_expr(text)
-    assert str(raised.value) == _NATIVE_MESSAGE.format(expr=text)
+@pytest.mark.parametrize("text", WELL_FORMED)
+def test_the_plain_parse_reads_a_window(text: str) -> None:
+    node = parse_expr(text)
+    assert isinstance(node, syntax.WindowCall)
+    assert _has_window(node)
 
 
-@pytest.mark.parametrize("text", NATIVE_REFUSED)
-def test_native_binding_refuses_a_window_as_before(text: str) -> None:
+@pytest.mark.parametrize("text", WELL_FORMED)
+def test_the_plain_binding_reads_a_window(text: str) -> None:
     template = f"{text} = {{n}}"
-    with pytest.raises(IllegalWindowInFilterError) as raised:
-        bind_variables(template, {"n": 1})
-    assert str(raised.value) == _NATIVE_MESSAGE.format(expr=template)
+    bound = bind_variables(template, {"n": 1})
+    assert bound == f"{text} = 1"
+    assert _has_window(parse_bound_expr(bound, {"n": 1}))
 
 
-def _native_refuses(text: str) -> None:
-    with pytest.raises(IllegalWindowInFilterError):
-        parse_expr(text)
+def test_an_unclosed_over_is_a_malformed_window() -> None:
+    with pytest.raises(ValueError) as raised:
+        parse_expr("x OVER (")
+    assert not isinstance(raised.value, IllegalWindowInFilterError)
 
 
-def _strict_reads(text: str) -> None:
-    assert any(isinstance(n, syntax.WindowCall) for n in walk_parsed(_window(text)))
-
-
-@pytest.mark.parametrize("order", [(_native_refuses, _strict_reads), (_strict_reads, _native_refuses)],
-                         ids=["native-first", "strict-first"])
-def test_the_readings_alternate_independently(order: tuple[Callable[[str], None], ...]) -> None:
-    text = f"DENSE_RANK() OVER (ORDER BY alternating_{order[0].__name__}) = 1"
-    for _ in range(2):
-        for read in order:
-            read(text)
+def test_repeated_parses_read_the_window_each_time() -> None:
+    text = "DENSE_RANK() OVER (ORDER BY repeated) = 1"
+    for _ in range(3):
+        assert _has_window(parse_expr(text))

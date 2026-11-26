@@ -20,10 +20,9 @@ CASE WHEN inside aggregates — `sum(orders.active_revenue)` counts only matchin
 without affecting sibling metrics. `allowed_aggregations` whitelists what may
 aggregate the field; a sole `primary_key: true` field is restricted to count / count_distinct / count_distinct_approx / min / max / collect.
 
-Advanced escape hatch: a field's dialect entry MAY be a raw window expression
-(`row_number() over (...)`); filtering on such a field auto-promotes to a
-post-aggregation WHERE. Prefer the built-in rank-family transforms when they cover
-the need.
+A field's expression may be a window function
+(`ROW_NUMBER() OVER (PARTITION BY region ORDER BY ordered_at)`): it is computed over the
+dataset's filtered rows before any join or query filter, then read as a column.
 
 ## Saved metrics and custom aggregations
 

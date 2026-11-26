@@ -36,6 +36,7 @@ from typing import (
     get_args,
 )
 
+from typing_extensions import TypeIs
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from slayer.core.enums import (
@@ -535,7 +536,7 @@ class LiteralKey(_LeafKey, frozen=True):
 AggregateSource = Union[
     FieldKey, FieldSqlKey, StarKey, TimeTruncKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
-    "InKey", "TimePointCmpKey", "CastKey", "ListSetKey",
+    "InKey", "TimePointCmpKey", "CastKey", "ListSetKey", "WindowKey",
 ]
 # Positional and kwarg arg values share one union: `last(amount, created_at)` binds a
 # ranking field, `weighted_avg(weight=qty * 2)` a row-level expression,
@@ -544,7 +545,7 @@ AggregateSource = Union[
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
     FieldKey, FieldSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
-    "ScalarCallKey", "ArithmeticKey", "CastKey", "InKey", TimeTruncKey, "LiteralKey",
+    "ScalarCallKey", "ArithmeticKey", "CastKey", "InKey", TimeTruncKey, "LiteralKey", "WindowKey",
     Decimal, str, bool, None,
 ]
 _AggregateKwargValue = _AggregateArgValue
@@ -840,6 +841,72 @@ class ScalarCallKey(_FrozenKey, frozen=True):
         )
 
 
+class WindowFrameSpec(BaseModel, frozen=True):
+    """A window's ``ROWS`` / ``RANGE`` frame: each bound a kind (``unbounded preceding``, ``preceding``, ``current row``,
+    ``following``, ``unbounded following``) and its whole-number offset; no ``end`` for a single start bound."""
+
+    unit: str
+    start: Tuple[str, Optional[Decimal]]
+    end: Optional[Tuple[str, Optional[Decimal]]] = None
+
+
+class WindowKey(_FrozenKey, frozen=True):
+    """``function(args) [FILTER (WHERE filter)] OVER (PARTITION BY … ORDER BY … frame)``.
+
+    Row-level (phase ROW) when no operand is aggregate-valued: a windowed column of the dataset at ``anchor``, the route
+    from the reading dataset. Measure-level (phase POST) otherwise: a transform over its operand's cells. Each order
+    item carries its resolved NULL placement."""
+
+    function: str
+    args: Tuple["ValueKey", ...] = ()
+    filter: Optional["ValueKey"] = None
+    partition: Tuple["ValueKey", ...] = ()
+    order: Tuple["ValueKey", ...] = ()
+    descending: Tuple[bool, ...] = ()
+    nulls_first: Tuple[bool, ...] = ()
+    frame: Optional[WindowFrameSpec] = None
+    anchor: Tuple[str, ...] = ()
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW if all(c.phase is Phase.ROW for c in self.children()) else Phase.POST
+
+    @property
+    def row_level(self) -> bool:
+        return self.phase is Phase.ROW
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (*self.args, *(() if self.filter is None else (self.filter,)), *self.partition, *self.order)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "WindowKey":
+        m = _ChildMapper(fn)
+        update = {
+            "args": tuple(m(a) for a in self.args),
+            "filter": None if self.filter is None else m(self.filter),
+            "partition": tuple(m(p) for p in self.partition),
+            "order": tuple(m(o) for o in self.order),
+        }
+        return self.model_copy(update=update) if m.changed else self
+
+
+#: The ``TransformLayer`` op of a measure-level window.
+WINDOW_OP = "window"
+#: The transform kinds: SLayer's transforms and a measure-level window, each a value over its operand's cells.
+TRANSFORM_KINDS = (TransformKey, WindowKey)
+
+
+def is_transform(key: object) -> TypeIs["TransformKey | WindowKey"]:
+    """Whether ``key`` is a transform: a ``TransformKey``, or a window over aggregate-valued operands."""
+    return isinstance(key, TransformKey) or (isinstance(key, WindowKey) and not key.row_level)
+
+
+def transform_operands(key: "TransformKey | WindowKey") -> Tuple["ValueKey", ...]:
+    """The values a transform reads in its cells: a transform's input, a window's arguments, filter and keys."""
+    return (key.input,) if isinstance(key, TransformKey) else key.children()
+
+
 _CAST_TYPE_TOKEN_RE = re.compile(r"\[\]|\(([^()]*)\)|[A-Z_][A-Z0-9_]*")
 
 
@@ -1048,6 +1115,7 @@ ValueKey = Union[
     SqlFragmentKey,
     CastKey,
     ListSetKey,
+    WindowKey,
 ]
 
 
@@ -1156,6 +1224,7 @@ TimePointCmpKey.model_rebuild()
 InKey.model_rebuild()
 CastKey.model_rebuild()
 ListSetKey.model_rebuild()
+WindowKey.model_rebuild()
 TimeTruncKey.model_rebuild()
 # AggregateKey.source forward-references the expression composites.
 AggregateKey.model_rebuild()
@@ -1200,6 +1269,7 @@ KIND_POLICY: dict[type, KindPolicy] = {
     SqlFragmentKey: KindPolicy(),
     CastKey: KindPolicy(slot_composite=True, materialised_order=True),
     ListSetKey: KindPolicy(slot_composite=True, materialised_order=True),
+    WindowKey: KindPolicy(slottable=True, materialised_order=True),
 }
 SLOT_COMPOSITE_KINDS: Tuple[type, ...] = tuple(k for k, p in KIND_POLICY.items() if p.slot_composite)
 
@@ -1221,10 +1291,10 @@ def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
             f"the value-key path visitor has no case for {type(key).__name__!r}: "
             f"only value keys and scalars are mappable."
         )
-    return cast(
-        _RerootableT,
-        key.map_children(lambda c: _map_value_key(c, map_path=map_path)),
-    )
+    mapped = key.map_children(lambda c: _map_value_key(c, map_path=map_path))
+    if isinstance(mapped, WindowKey) and mapped.row_level and mapped.anchor is not None:
+        mapped = mapped.model_copy(update={"anchor": tuple(map_path(mapped.anchor))})
+    return cast(_RerootableT, mapped)
 
 
 def walk_value_keys(key: ValueKey):
@@ -1254,9 +1324,9 @@ def effective_root_grain(
     keeps ``regroup_root_grain``. A bare windowed / first-last root takes the FULL
     projected grain (a windowed root's bucket enters via ``window_td_key``, so it is
     excluded here)."""
-    if isinstance(agg, TransformKey):
-        grain = transform_operand_grain(
-            agg.input, query_grain=Grain.of([*projected_dim_keys, *projected_td_keys]), active_bucket=active_bucket,
+    if is_transform(agg):
+        grain = _transform_grain(
+            agg, query_grain=Grain.of([*projected_dim_keys, *projected_td_keys]), active_bucket=active_bucket,
         )
         return grain, False
     windowed = window_kwarg_of(agg) is not None
@@ -1299,8 +1369,26 @@ def transform_operand_grain(
         return _operand_grain(input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=None)
     grain = _operand_grain(input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=query_grain)
     # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1).
-    grained = any(isinstance(k, (TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)) for k in walk_value_keys(input))
+    grained = any(isinstance(k, (TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)) or is_transform(k)
+                  for k in walk_value_keys(input))
     return query_grain if grain.is_empty and not grained else grain
+
+
+def window_operand_grain(key: "WindowKey", *, query_grain: Grain, active_bucket: Optional[ValueKey]) -> Grain:
+    """A measure-level window's operand grain: that of its aggregate-valued operands (the query grain else)."""
+    grains = [transform_operand_grain(c, query_grain=query_grain, active_bucket=active_bucket)
+              for c in key.children() if c.phase is not Phase.ROW]
+    out = grains[0] if grains else query_grain
+    for g in grains[1:]:
+        out = out | g
+    return out
+
+
+def _transform_grain(key: "TransformKey | WindowKey", *, query_grain: Grain, active_bucket: Optional[ValueKey]) -> Grain:
+    """A transform's operand grain: its input's, or a measure-level window's operands'."""
+    if isinstance(key, TransformKey):
+        return transform_operand_grain(key.input, query_grain=query_grain, active_bucket=active_bucket)
+    return window_operand_grain(key, query_grain=query_grain, active_bucket=active_bucket)
 
 
 def value_grain(k: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey]) -> Grain:
@@ -1319,6 +1407,8 @@ def _operand_grain(
         return grain
     if isinstance(k, TransformKey):
         return transform_operand_grain(k.input, query_grain=query_grain, active_bucket=active_bucket)
+    if isinstance(k, WindowKey) and is_transform(k):
+        return window_operand_grain(k, query_grain=query_grain, active_bucket=active_bucket)
     if isinstance(k, (FieldKey, FieldSqlKey, TimeTruncKey)):
         return Grain.of([k]) if leaf_grain is None else leaf_grain
     grain = Grain.EMPTY
@@ -1336,12 +1426,12 @@ def attached_parameter_grain(
     """The grain at which an attached aggregation parameter is typed (Axiom 11.4 /
     2.3) — ``None`` when it is determined by construction. An ``AggregateKey`` types
     at its written grain (``None`` = unwritten or defaulted, at the enclosing grain
-    and determined). A ``TransformKey`` types at its result grain. Both home- and
+    and determined). A transform types at its result grain. Both home- and
     operand-determination checks resolve the parameter to this grain first, so
     neither predicate needs a transform arm (D5)."""
     if isinstance(key, AggregateKey):
         return key.written_grain
-    if isinstance(key, TransformKey):
+    if is_transform(key):
         return constituent_grain(
             c=key, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
@@ -1398,17 +1488,20 @@ def is_framed_path(path: Tuple[str, ...]) -> bool:
 
 def _framed_leaves(key: _RerootableT, *, token: str) -> _RerootableT:
     """``key``'s row leaves prefixed with ``token`` (an already-framed one kept); attached values are opaque."""
-    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)):
+    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)) or is_transform(key):
         return key
     if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
         return key if is_framed_path(key.path) else cast(_RerootableT, key.model_copy(update={"path": (token, *key.path)}))
-    return cast(_RerootableT, key.map_children(lambda c: _framed_leaves(c, token=token)))
+    mapped = key.map_children(lambda c: _framed_leaves(c, token=token))
+    if isinstance(mapped, WindowKey) and mapped.anchor is not None and not is_framed_path(mapped.anchor):
+        mapped = mapped.model_copy(update={"anchor": (token, *mapped.anchor)})
+    return cast(_RerootableT, mapped)
 
 
 def _unanchored_leaves(key: _RerootableT) -> _RerootableT:
     """``key``'s row leaves without their anchored spelling (read from one frame, their path is their identity);
     attached values are opaque."""
-    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)):
+    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)) or is_transform(key):
         return key
     if isinstance(key, (FieldKey, FieldSqlKey)):
         return key if key.anchor is None else cast(_RerootableT, key.model_copy(update={"anchor": None}))
@@ -1466,14 +1559,17 @@ def compose_frame(
         }))
     if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
         return _composed_grain(key, frame=frame, host_path=host_path)
-    return cast(_RerootableT, key.map_children(lambda c: compose_frame(c, frame=frame, host_path=host_path)))
+    mapped = key.map_children(lambda c: compose_frame(c, frame=frame, host_path=host_path))
+    if isinstance(mapped, WindowKey) and mapped.row_level and mapped.anchor is not None:
+        mapped = mapped.model_copy(update={"anchor": (*host_path(), *mapped.anchor)})
+    return cast(_RerootableT, mapped)
 
 
 def _compose_nested(key: _RerootableT, *, frame: str, host_path: Callable[[], Tuple[str, ...]]) -> _RerootableT:
     """Inside a framed interior: a nested attached value is composed in turn; row leaves are already framed."""
     if not isinstance(key, _FrozenKey) or isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
         return key
-    if isinstance(key, (AggregateKey, TransformKey)):
+    if isinstance(key, (AggregateKey, TransformKey)) or is_transform(key):
         return compose_frame(key, frame=frame, host_path=host_path)
     return cast(_RerootableT, key.map_children(lambda c: _compose_nested(c, frame=frame, host_path=host_path)))
 
@@ -1486,7 +1582,7 @@ def _composed_grain(key: _RerootableT, *, frame: str, host_path: Callable[[], Tu
             return k.model_copy(update={"path": (*host_path(), *k.path), "anchor": anchor})
         if isinstance(k, StarKey):
             return k.model_copy(update={"path": (*host_path(), *k.path)})
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             return compose_frame(k, frame=frame, host_path=host_path)
         return k.map_children(leaf)
 
@@ -1597,6 +1693,22 @@ def _is_null_arg(arg: object) -> bool:
 FieldTypeFn = Callable[[Any], Optional[DataType]]
 
 
+#: Window functions whose value is an integer, a fraction, or one of their first argument's values.
+_WINDOW_INTEGER = frozenset({"row_number", "rank", "dense_rank", "ntile", "count", "count_distinct"})
+_WINDOW_FRACTION = frozenset({
+    "percent_rank", "cume_dist", "avg", "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp",
+    "median", "percentile_cont",
+})
+_WINDOW_ARGUMENT = frozenset({"lag", "lead", "first_value", "last_value", "nth_value", "min", "max", "sum"})
+
+
+def _window_argument(key: object) -> Optional["ValueKey"]:
+    """A window's first argument when its value is one of that argument's (or their sum), else ``None``."""
+    if isinstance(key, WindowKey) and key.function in _WINDOW_ARGUMENT and key.args:
+        return key.args[0]
+    return None
+
+
 def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     """DATE / TIMESTAMP when ``key`` is provably temporal, else ``None``; field leaves type via ``field_type``."""
     if isinstance(key, (FieldKey, FieldSqlKey)):
@@ -1607,7 +1719,7 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
         return None if source is None else bucket_type(source, key.granularity)
     if isinstance(key, (LiteralKey, date)):
         return _literal_temporal_type(key.value if isinstance(key, LiteralKey) else key)
-    if isinstance(key, (AggregateKey, TransformKey)):
+    if isinstance(key, (AggregateKey, TransformKey, WindowKey)):
         return _derived_temporal_type(key, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         return _scalar_temporal_type(key, field_type=field_type)
@@ -1616,8 +1728,13 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
     return None
 
 
-def _derived_temporal_type(key: AggregateKey | TransformKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
-    """An aggregate's or transform's type when it keeps its input's (``max``, ``lag``, …), else ``None``."""
+def _derived_temporal_type(
+    key: AggregateKey | TransformKey | WindowKey, *, field_type: FieldTypeFn,
+) -> Optional[DataType]:
+    """An aggregate's, transform's or window's type when it keeps its input's (``max``, ``lag``, …), else ``None``."""
+    if isinstance(key, WindowKey):
+        argument = _window_argument(key)
+        return None if argument is None or key.function == "sum" else temporal_type(argument, field_type=field_type)
     if isinstance(key, AggregateKey):
         keeps = key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS
         return temporal_type(key.source, field_type=field_type) if keeps else None
@@ -1670,6 +1787,9 @@ def boolean_valued(key: object, *, field_type: FieldTypeFn) -> bool:
         return True
     if isinstance(key, AggregateKey):
         return key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS and boolean_valued(key.source, field_type=field_type)
+    if isinstance(key, WindowKey):
+        argument = _window_argument(key)
+        return argument is not None and key.function != "sum" and boolean_valued(argument, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type is DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
@@ -1735,6 +1855,9 @@ def numeric_valued(key: object, *, field_type: FieldTypeFn) -> bool:
         return agg in OBSERVED_VALUE_AGGREGATIONS and numeric_valued(key.source, field_type=field_type)
     if isinstance(key, TransformKey):
         return key.op in _NUMBER_RESULT_TRANSFORMS or numeric_valued(key.input, field_type=field_type)
+    if isinstance(key, WindowKey):
+        argument = _window_argument(key)
+        return argument is None or numeric_valued(argument, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type in _NUMERIC_TYPES
     if isinstance(key, ScalarCallKey):
@@ -1764,13 +1887,18 @@ def integer_valued(key: object, *, field_type: FieldTypeFn) -> bool:
         return _aggregate_integer_valued(key, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         return _scalar_integer_valued(key, field_type=field_type)
+    if isinstance(key, WindowKey):
+        argument = _window_argument(key)
+        if argument is None:
+            return key.function in _WINDOW_INTEGER
+        return integer_valued(argument, field_type=field_type)
     return False
 
 
 def reads_no_rows(key: ValueKey) -> bool:
     """A constant: every leaf a literal or a call on literals only (``pi()``), no aggregate or transform."""
     return all(
-        not isinstance(k, (AggregateKey, TransformKey))
+        not isinstance(k, (AggregateKey, TransformKey)) and not is_transform(k)
         and (bool(k.children()) or isinstance(k, (LiteralKey, ScalarCallKey)))
         for k in walk_value_keys(key)
     )
@@ -2116,7 +2244,24 @@ def value_type(
         return _aggregate_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
     if isinstance(key, TransformKey):
         return _transform_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    if isinstance(key, WindowKey):
+        return _window_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
     return _row_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+
+
+def _window_value_type(
+    key: WindowKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    """An integer rank or count, a fraction, or the type of the argument it returns (or sums)."""
+    if key.function in _WINDOW_INTEGER:
+        return DataType.INTEGER
+    if key.function in _WINDOW_FRACTION:
+        return DataType.FLOAT
+    argument = _window_argument(key)
+    if argument is None:
+        return None
+    argument_type = value_type(argument, field_type=field_type, aggregate_type=aggregate_type)
+    return DataType.INTEGER if key.function == "sum" and argument_type is DataType.BOOLEAN else argument_type
 
 
 def _row_value_type(
@@ -2443,7 +2588,7 @@ def operand_constituents(source: ValueKey) -> List[ValueKey]:
     out: List[ValueKey] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             if k not in out:
                 out.append(k)
             return
@@ -2461,7 +2606,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
     out: List[ValueKey] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             return
         if isinstance(k, (FieldKey, FieldSqlKey, StarKey)):
             out.append(k)
@@ -2476,7 +2621,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
 def parameter_row_leaves(value) -> List[ValueKey]:
     """The row-level field leaves of an aggregation parameter value; a scalar, a
     marker string or an attached value (aggregate / transform) has none."""
-    if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey)):
+    if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey)) or is_transform(value):
         return []
     return source_row_leaves(cast(ValueKey, value))
 
@@ -2490,7 +2635,7 @@ def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
     out: List[Tuple[str, ...]] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             return
         if isinstance(k, (FieldKey, FieldSqlKey, StarKey)):
             out.append(k.path)
@@ -2527,9 +2672,9 @@ def default_nested_grains(key: ValueKey, *, query_grain: Grain, active_bucket: O
     of a ``first`` / ``last`` over an aggregate."""
 
     def _visit(node: ValueKey, *, pinned: bool, in_aggregate: bool) -> ValueKey:
-        if isinstance(node, TransformKey):
-            below = pinned or in_aggregate or transform_operand_grain(
-                node.input, query_grain=query_grain, active_bucket=active_bucket,
+        if is_transform(node):
+            below = pinned or in_aggregate or _transform_grain(
+                node, query_grain=query_grain, active_bucket=active_bucket,
             ) != query_grain
             return node.map_children(lambda c: _visit(c, pinned=below, in_aggregate=in_aggregate))
         if not isinstance(node, AggregateKey):
@@ -2647,7 +2792,7 @@ def attached_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[ValueKey]:
             for r in (k.source, *k.args, *(v for _, v in k.kwargs)):
                 if isinstance(r, _FrozenKey):
                     out.update(c for c in walk_value_keys(r)
-                               if isinstance(c, (AggregateKey, TransformKey)))
+                               if isinstance(c, (AggregateKey, TransformKey)) or is_transform(c))
             return
         for c in k.children():
             _scan(c)

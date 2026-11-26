@@ -5,6 +5,7 @@ Spec: models/save-validation › Saves judge what they add or change.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -34,6 +35,14 @@ WINDOWED = SALES + """\
     expression:
       sql: SUM(orders.amount) OVER ()
 """
+
+#: ``sales`` whose ``orders`` also declares the field ``order_date``.
+DATED = SALES.replace("    metrics:\n      - name: total_revenue", """\
+      - name: order_date
+        expression: {sql: order_id}
+        datatype: String
+    metrics:
+      - name: total_revenue""")
 
 #: A model-scoped metric reading the field ``orders.amount`` directly.
 READS_AMOUNT = document_text(
@@ -104,16 +113,39 @@ class TestUnrelatedEdit:
 
 class TestAuthoringRefused:
     async def test_authoring_a_windowed_metric_is_refused(self) -> None:
-        """Spec: models/save-validation › Authoring a windowed metric is refused."""
+        """Spec: models/save-validation › Authoring a windowed metric saves; an unwindowable function is refused."""
         async with document_engine() as engine:
-            before = await _text(engine)
             reply = await _mcp(engine.storage, "edit_semantic_model", name="sales", data_source=DS,
-                               metrics=[metric("running_rev", "SUM(orders.amount) OVER ()")])
+                               metrics=[metric("running_rev", "SUM(SUM(orders.amount)) OVER ()")])
             after = await _text(engine)
-        assert "UnevaluableEntityError" in reply, reply
-        assert "running_rev" in reply, reply
-        assert "window" in reply.lower(), reply
-        assert after == before
+            assert "Error" not in reply, reply
+            assert after is not None
+            assert _metric(after, "running_rev")["expression"] == {"sql": "SUM(SUM(orders.amount)) OVER ()"}
+            total = await engine.execute({"population": "orders", "metrics": ["running_rev"]})
+            by_status = await engine.execute({"population": "orders", "dimensions": ["orders.status"],
+                                              "metrics": ["running_rev"]})
+        assert [float(r["running_rev"]) for r in total.data] == [650.0]
+        assert {r["orders.status"]: float(r["running_rev"]) for r in by_status.data} == {
+            "completed": 650.0, "open": 650.0}
+
+    async def test_authoring_a_metric_windowing_a_function_ossie_does_not_window_is_refused(self) -> None:
+        """Spec: models/save-validation › Authoring a windowed metric saves; an unwindowable function is refused (an unwindowed function)."""
+        async with document_engine(documents=(DATED,)) as engine:
+            before = await _text(engine)
+            ok = await _mcp(engine.storage, "edit_semantic_model", name="sales", data_source=DS,
+                            metrics=[metric("plain", "last(orders.amount, orders.order_date)")])
+            assert "Error" not in ok, ok
+            stored = await _text(engine)
+            reply = await _mcp(engine.storage, "edit_semantic_model", name="sales", data_source=DS,
+                               metrics=[metric("newest", "last(orders.amount, orders.order_date) OVER ()")])
+            after = await _text(engine)
+        assert stored != before
+        assert reply.startswith("Error"), reply
+        assert "IllegalWindowInFilterError" not in reply, reply
+        assert "uses a window function (OVER)" not in reply, reply
+        assert "newest" in reply, reply
+        assert re.search(r"\blast\b", reply, flags=re.IGNORECASE), reply
+        assert after == stored
 
 
 class TestBrokenDependents:

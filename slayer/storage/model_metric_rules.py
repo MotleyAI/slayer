@@ -22,12 +22,12 @@ from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.ossie_validity import agg_calls, columns, is_agg_call, parse_ossie_sql
 from slayer.core.models import SlayerDataset
 from slayer.core.semantic_model import ModelScopedMetric
+from slayer.core.syntax import WindowCall, parse_expr, unwindowable_function, walk_parsed
 
-__all__ = ["WINDOW_WARNING", "DocumentScope", "chain_warning", "check_model_metric", "metric_cycle",
-           "metric_references", "unevaluable_chain", "unresolved_metrics", "unresolved_references",
+__all__ = ["DocumentScope", "aggregate_call", "aggregate_window_key", "chain_warning", "check_model_metric",
+           "metric_cycle", "metric_references", "unevaluable_chain", "unresolved_metrics", "unresolved_references",
            "visible_model_metrics"]
 
-WINDOW_WARNING = "uses a window function (OVER), which SLayer cannot evaluate yet"
 _OSSIE_SQL = "OSSIE_SQL_2026"
 RESERVED_WORDS = frozenset({"true", "false", "null", "and", "or", "not", "is", "in", "between", "like", "case", "when",
                             "then", "else", "end", "distinct", "filter", "where", "over", "as", "select", "from"})
@@ -97,6 +97,29 @@ def _inside_agg(node: exp.Expr) -> bool:
     return False
 
 
+def aggregate_call(node: exp.Expr) -> bool:
+    """An aggregate call or ``AGG(d.m)``; the function a window applies is none."""
+    if isinstance(_unfiltered(node).parent, exp.Window):
+        return False
+    return isinstance(node, exp.AggFunc) or is_agg_call(node)
+
+
+def _unfiltered(node: exp.Expr) -> exp.Expr:
+    return node.parent if isinstance(node.parent, exp.Filter) and node.parent.this is node else node
+
+
+def aggregate_window_key(column: exp.Column) -> bool:
+    """Whether ``column`` is a partition or order key of a window over an aggregate."""
+    node: exp.Expr = column
+    while node.parent is not None:
+        parent = node.parent
+        if isinstance(parent, exp.Window) and node is not parent.this:
+            head = _unfiltered(parent.this) if parent.this is not None else None
+            return any(aggregate_call(n) for n in parent.walk() if n is not parent.this and n is not head)
+        node = parent
+    return False
+
+
 def _check_name(name: str, *, scope: DocumentScope) -> None:
     folded = name.casefold()
     if folded in RESERVED_WORDS:
@@ -136,20 +159,38 @@ def _check_column(column: exp.Column, *, name: str, scope: DocumentScope, unreso
         raise ModelMetricReferenceError(metric=name, reference=reference,
                                         reason="it is neither a model-scoped metric nor a qualified field")
     if table not in scope.fields:
-        if table == "source":
-            reason = "a model-scoped metric reads fields, never source columns"
-        elif table in scope.datasource_datasets:
-            reason = f"{column.table!r} is not a dataset of this semantic model"
-        else:
-            reason = f"{column.table!r} is not a dataset"
-        raise ModelMetricReferenceError(metric=name, reference=reference, reason=reason)
+        raise ModelMetricReferenceError(metric=name, reference=reference, reason=_foreign_table_reason(column, scope=scope))
     if f"{table}.{leaf}" in unresolved:
         reason = (f"a dataset metric is evaluated as AGG({reference})" if leaf in scope.dataset_metrics.get(table, set())
                   else f"{column.table!r} declares no field {column.name!r}")
         raise ModelMetricReferenceError(metric=name, reference=reference, reason=reason)
-    if not _aggregated(column):
+    if not _aggregated(column) and not aggregate_window_key(column):
         raise ModelMetricReferenceError(metric=name, reference=reference,
                                         reason="a field is read only inside an aggregate")
+
+
+def _foreign_table_reason(column: exp.Column, *, scope: DocumentScope) -> str:
+    table = column.table.casefold()
+    if table == "source":
+        return "a model-scoped metric reads fields, never source columns"
+    if table in scope.datasource_datasets:
+        return f"{column.table!r} is not a dataset of this semantic model"
+    return f"{column.table!r} is not a dataset"
+
+
+def _check_windows(name: str, *, text: str) -> None:
+    """Refuse a window applying a function Ossie does not window; text the expression reader rejects passes."""
+    try:
+        parsed = parse_expr(text)
+    except ValueError:
+        return
+    for node in walk_parsed(parsed):
+        refused = unwindowable_function(node) if isinstance(node, WindowCall) else None
+        if refused is not None:
+            raise ModelMetricReferenceError(
+                metric=name, reference=text,
+                reason=f"`{refused}` cannot run under OVER: a window applies a ranking or offset function or an "
+                f"Ossie aggregation")
 
 
 def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
@@ -160,8 +201,7 @@ def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
     tree, problem = parse_ossie_sql(text, _OSSIE_SQL)
     if tree is None:
         raise ModelMetricReferenceError(metric=name, reference=text, reason=f"it does not parse ({problem})")
-    if tree.find(exp.Window) is not None:
-        raise UnevaluableEntityError(entity=f"Metric {name!r}", reason=WINDOW_WARNING)
+    _check_windows(name, text=text)
     for call, args in agg_calls(tree):
         _check_agg(call, args, text=text, scope=scope)
     reads = {(f"{c.table}.{c.name}" if c.table else c.name).casefold() for c in tree.find_all(exp.Column)}

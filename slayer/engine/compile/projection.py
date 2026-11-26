@@ -30,6 +30,7 @@ from slayer.core.keys import (
     TransformKey,
     VALUE_KEY_TYPES,
     ValueKey,
+    WindowKey,
 )
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.planned import SlotId, ValueSlot
@@ -319,8 +320,8 @@ def _iter_slot_deps(key: ValueKey):
     if isinstance(key, AggregateKey):
         yield key
         return
-    if isinstance(key, TransformKey):
-        # input / partition_keys / time_key get their own slots so the generator
+    if isinstance(key, (TransformKey, WindowKey)):
+        # input / partition_keys / time_key (a window's operands and keys) get their own slots so the generator
         # renders PARTITION BY / ORDER BY against named projections.
         yield key
         for child in key.children():
@@ -468,6 +469,8 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         return alias
     if isinstance(key, TransformKey):
         return f"_{key.op}_inner"
+    if isinstance(key, WindowKey):
+        return f"_{key.function}_window"
     if isinstance(key, ArithmeticKey):
         return f"_arith_{key.op}"
     if isinstance(key, ScalarCallKey):

@@ -80,7 +80,7 @@ Its expression reads like a query:
 - a bare name is another model-scoped metric;
 - `AGG(d.m)` is the dataset metric `m` of `d`.
 
-Saving a model-scoped metric through SLayer refuses an unqualified field, a source column, a dataset of another document, a dataset metric without `AGG`, a window function, a circular definition, and a name equal to a reserved word, a library function or a dataset of the datasource.
+Saving a model-scoped metric through SLayer refuses an unqualified field, a source column, a dataset of another document, a dataset metric without `AGG`, a circular definition, and a name equal to a reserved word, a library function or a dataset of the datasource.
 
 Ossie does not define a metric that reads another model-scoped metric, or an aggregate that reads several datasets. SLayer evaluates both, and stores them in the document's `SLAYER` entry rather than in its core `metrics`.
 
@@ -121,7 +121,6 @@ Settings Ossie has no place for travel in a `nonportable_extensions` entry with 
 
 A valid document can hold entities SLayer cannot evaluate yet:
 
-- a window function (`OVER`);
 - an expression SLayer's expression reader cannot parse, such as the subquery `(SELECT 1)`;
 - a model-scoped metric reading a field unqualified or outside an aggregate;
 - a model-scoped aggregate naming no dataset, such as `COUNT(*)`;

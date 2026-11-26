@@ -75,7 +75,7 @@ def upstream_reports(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]
 
 
 # --------------------------------------------------------------------------- #
-# Which metrics SLayer cannot evaluate yet (windows; model-scoped metrics Ossie rejects at query time)
+# Which metrics SLayer cannot evaluate yet (model-scoped metrics Ossie rejects at query time)
 # --------------------------------------------------------------------------- #
 def _expression_text(expression: dict[str, Any]) -> str | None:
     """The first readable candidate: top-level ``sql``, then OSSIE_SQL_2026, ANSI_SQL, any SQL entry; else None."""
@@ -124,21 +124,54 @@ def _evaluates_source_measure(tree: exp.Expr) -> bool:
     return any(c.table.casefold() == "source" for c in _agg_columns(tree))
 
 
+#: Ranking and offset functions: legal only under ``OVER``, never an aggregate (sqlglot types them ``AggFunc``).
+WINDOW_ONLY = (exp.RowNumber, exp.Rank, exp.DenseRank, exp.PercentRank, exp.CumeDist, exp.Ntile, exp.Lag, exp.Lead,
+               exp.FirstValue, exp.LastValue, exp.NthValue)
+
+
+def _windowed_call(node: exp.Expr) -> bool:
+    """The function an ``OVER`` applies, its ``FILTER`` included."""
+    parent = node.parent
+    if isinstance(parent, exp.Filter) and parent.this is node:
+        parent = parent.parent
+    return isinstance(parent, exp.Window)
+
+
+def _is_aggregate(node: exp.Expr) -> bool:
+    return _is_agg_call(node) or (isinstance(node, exp.AggFunc) and not isinstance(node, WINDOW_ONLY)
+                                  and not _windowed_call(node))
+
+
 def _aggregated(node: exp.Expr) -> bool:
     """Inside an aggregate call, its FILTER clause or an ``AGG(d.m)`` call."""
     parent = node.parent
     while parent is not None:
-        if isinstance(parent, exp.AggFunc | exp.Filter) or _is_agg_call(parent):
+        if _is_aggregate(parent) or (isinstance(parent, exp.Filter) and _is_aggregate(parent.this)):
             return True
         parent = parent.parent
     return False
 
 
+def _measure_level(window: exp.Window) -> bool:
+    """An aggregate in the window's arguments or keys."""
+    return any(_is_aggregate(n) for n in window.walk() if n is not window)
+
+
+def _window_grain(tree: exp.Expr) -> list[exp.Column]:
+    """The row-level columns measure-level windows read outside an aggregate: query dimensions, not field reads."""
+    return [c for w in tree.find_all(exp.Window) if _measure_level(w) for c in w.find_all(exp.Column)
+            if not _aggregated(c)]
+
+
 def _model_scoped_rejection(tree: exp.Expr, *, metric_names: set[str]) -> str | None:
-    """Why a model-scoped metric loads unevaluable (decision 35: an unqualified or unaggregated field read, an
-    aggregate naming no dataset), else None; an aggregate reading several datasets evaluates as in a query."""
+    """Why a model-scoped metric loads unevaluable (decision 35: an unqualified or unaggregated field read, a row-level
+    window, an aggregate naming no dataset), else None; an aggregate reading several datasets evaluates as in a
+    query."""
+    if any(not _measure_level(w) and not _aggregated(w) for w in tree.find_all(exp.Window)):
+        return "unaggregated field"
+    grain = {id(c) for c in _window_grain(tree)}
     for column in tree.find_all(exp.Column):
-        if not column.table and column.name.casefold() in DATE_PARTS:
+        if (not column.table and column.name.casefold() in DATE_PARTS) or id(column) in grain:
             continue
         if _aggregated(column):
             if not column.table:
@@ -148,7 +181,7 @@ def _model_scoped_rejection(tree: exp.Expr, *, metric_names: set[str]) -> str | 
         elif column.name.casefold() not in metric_names:
             return "unqualified field"
     for aggregate in tree.find_all(exp.AggFunc):
-        if not _is_agg_call(aggregate) and not _aggregated(aggregate) and not any(
+        if _is_aggregate(aggregate) and not _is_agg_call(aggregate) and not _aggregated(aggregate) and not any(
                 c.table for c in aggregate.find_all(exp.Column)):
             return "aggregate over no dataset"
     return None
@@ -181,22 +214,18 @@ def expected_outcomes(data: dict[str, Any]) -> dict[str, str]:
     """Metric reference → ``compiled`` or ``unevaluable``."""
     outcomes: dict[str, str] = {}
     for dataset in data["datasets"]:
-        windowed = {f["name"] for f in dataset.get("fields") or []
-                    if (t := _parse(_expression_text(f.get("expression") or {}))) is not None and t.find(exp.Window)}
         for metric in dataset.get("metrics") or []:
             text = _expression_text(metric["expression"])
             tree = _parse(text)
-            unevaluable = text is None or tree is not None and (
-                tree.find(exp.Window) is not None or _evaluates_source_measure(tree)
-                or any(not c.table and c.name in windowed for c in tree.find_all(exp.Column)))
+            unevaluable = text is None or tree is not None and _evaluates_source_measure(tree)
             outcomes[f"{dataset['name']}.{metric['name']}"] = "unevaluable" if unevaluable else "compiled"
     metric_names = {m["name"].casefold() for m in data.get("metrics") or []}
     trees: dict[str, exp.Expr | None] = {}
     for metric in data.get("metrics") or []:
         text = _expression_text(metric["expression"])
         tree = trees[metric["name"]] = _parse(text)
-        unevaluable = text is None or tree is not None and (
-            tree.find(exp.Window) is not None or _model_scoped_rejection(tree, metric_names=metric_names) is not None)
+        unevaluable = text is None or tree is not None and _model_scoped_rejection(
+            tree, metric_names=metric_names) is not None
         outcomes[metric["name"]] = "unevaluable" if unevaluable else "compiled"
     return _propagated(outcomes, trees)
 
@@ -219,11 +248,15 @@ def _propagated(outcomes: dict[str, str], trees: dict[str, exp.Expr | None]) -> 
     return outcomes
 
 
-def _query(reference: str) -> dict[str, Any]:
-    """A dataset metric is read from its own dataset; a model-scoped metric root-less, by its bare name."""
-    if "." in reference:
-        return {"population": reference.split(".", 1)[0], "metrics": [reference]}
-    return {"metrics": [reference]}
+def _query(reference: str, *, data: dict[str, Any]) -> dict[str, Any]:
+    """A dataset metric is read from its own dataset; a model-scoped metric root-less, by its bare name; either grouped
+    by the row-level columns its measure-level windows read."""
+    home, _, name = reference.rpartition(".")
+    metrics = next(d for d in data["datasets"] if d["name"] == home).get("metrics") if home else data.get("metrics")
+    tree = _parse(next((_expression_text(m["expression"]) for m in metrics or [] if m["name"] == name), None))
+    dimensions = list(dict.fromkeys(f"{c.table or home}.{c.name}" for c in _window_grain(tree))) if tree else []
+    query: dict[str, Any] = {"population": home, "metrics": [reference]} if home else {"metrics": [reference]}
+    return query | ({"dimensions": dimensions} if dimensions else {})
 
 
 # --------------------------------------------------------------------------- #
@@ -304,7 +337,7 @@ async def test_every_metric_binds_and_compiles(path: Path, dialect: str, tmp_pat
         actual: dict[str, str] = {}
         for reference in expected:
             try:
-                response = await engine.execute(_query(reference), dry_run=True)
+                response = await engine.execute(_query(reference, data=data), dry_run=True)
             except (error("UnevaluableEntityError"), error("ModelMetricReferenceError")) as exc:
                 name = reference.rsplit(".", 1)[-1]
                 actual[reference] = "unevaluable" if re.search(re.escape(name), str(exc)) else f"unnamed: {exc}"

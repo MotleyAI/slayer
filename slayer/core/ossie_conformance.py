@@ -24,8 +24,8 @@ from slayer.core.keys import SCALAR_SPECS, SCALAR_SPELLING_REGISTRY, SCALAR_SPEL
 from slayer.core.syntax import (
     WINDOW_FUNCTION_ARITIES, AggCall, ArrayLit, Arith, BoolOp, BoundVariable, CallSpan, Cast, Cmp, DateTrunc, DottedRef, Literal,
     NamedArg, Placeholder, Ref, ScalarCall, StarSource, TemporalLiteral, TransformCall, TupleLit, UnaryOp, WindowCall,
-    WindowFrame, call_spans, legacy_spans, nonossie_spellings, parse_bound_expr, parse_template, variable_names,
-    walk_parsed,
+    WindowFrame, call_spans, legacy_spans, nonossie_spellings, parse_bound_expr, parse_template, unwindowable_function,
+    variable_names, walk_parsed,
 )
 
 __all__ = ["FilterReading", "is_iso_temporal", "parse_conformance", "read_filter"]
@@ -139,7 +139,7 @@ def read_filter(text: str, *, variables: Mapping[str, Any] | None = None) -> Fil
         out.problem = f"the variables {unbound} are not bound; pass them as the run's variables"
         return out
     try:
-        tree = parse_bound_expr(text, variables, windows=True) if variables else parse_template(text, windows=True)
+        tree = parse_bound_expr(text, variables) if variables else parse_template(text)
     except ValueError as exc:
         out.problem = f"the filter does not parse: {exc}"
         return out
@@ -150,13 +150,13 @@ def read_filter(text: str, *, variables: Mapping[str, Any] | None = None) -> Fil
 
 
 def _text_problem(text: str) -> Optional[str]:
-    legacy = legacy_spans(text, windows=True)
+    legacy = legacy_spans(text)
     if legacy:
         return f"{legacy[0].written!r} is a deprecated SLayer spelling; write {legacy[0].twin!r}"
-    spellings = nonossie_spellings(text, windows=True)
+    spellings = nonossie_spellings(text)
     if spellings:
         return f"{spellings[0]} is SLayer syntax, not an Ossie expression"
-    return next(filter(None, map(_call_problem, call_spans(text, windows=True))), None)
+    return next(filter(None, map(_call_problem, call_spans(text))), None)
 
 
 def _call_problem(call: CallSpan) -> Optional[str]:
@@ -269,6 +269,9 @@ def _window(node: WindowCall, out: FilterReading) -> None:
         _refuse(out, "a window function cannot sit inside a window")
     if isinstance(function, AggCall):
         _aggregate_call(function, out)
+        # Wide-table §8: a part the engine does not support (row 1) precedes a window in the filter (row 7).
+        if unwindowable_function(node) is not None:
+            _refuse(out, f"{function.agg}() cannot run under OVER")
     elif isinstance(function, ScalarCall) and function.name in WINDOW_FUNCTION_ARITIES:
         low, high = WINDOW_FUNCTION_ARITIES[function.name]
         if not low <= len(function.args) <= high:

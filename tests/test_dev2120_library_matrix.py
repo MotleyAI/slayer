@@ -26,6 +26,21 @@ from tests._dev2120_fixtures import (
     required_names,
     run_case,
 )
+from tests._dev2457_fixtures import BACKENDS as WINDOW_BACKENDS
+from tests._dev2457_fixtures import window_engine
+from tests._dev2457_matrix import CASE_IDS as WINDOW_CASE_IDS
+from tests._dev2457_matrix import CASES as WINDOW_CASES
+from tests._dev2457_matrix import (
+    DUCKDB_HOLISTIC,
+    HOLISTIC,
+    HOLISTIC_IDS,
+    WindowCase,
+    assert_typed_refusal,
+    check_case,
+    emit_window,
+    holds_window,
+    window_values,
+)
 from tests._ossie_gate import DISPLAY
 
 CASES = library_cases()
@@ -141,3 +156,56 @@ async def test_list_case_emits(case: Case, dialect: str) -> None:
     with pytest.raises(SlayerError) as info:
         await emit_contractors(q, dialect=dialect)
     assert NO_LIST_DATABASES[dialect] in str(info.value), str(info.value)
+
+
+# --------------------------------------------------------------------------- #
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error)
+# --------------------------------------------------------------------------- #
+def test_window_case_ids_are_unique() -> None:
+    assert len(set(WINDOW_CASE_IDS)) == len(WINDOW_CASE_IDS)
+
+
+def test_tier1_holds_the_emission_only_databases() -> None:
+    assert {"snowflake", "bigquery"} <= set(TIER1)
+
+
+@pytest.fixture(scope="module", params=WINDOW_BACKENDS)
+async def windows(request):
+    async with window_engine(request.param) as e:
+        yield e
+
+
+@pytest.fixture(scope="module")
+async def duckdb_windows():
+    async with window_engine("duckdb") as e:
+        yield e
+
+
+@pytest.fixture(scope="module")
+async def sqlite_windows():
+    async with window_engine("sqlite") as e:
+        yield e
+
+
+@pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+async def test_the_matrix_executes(windows, case: WindowCase) -> None:
+    await check_case(windows, case)
+
+
+@pytest.mark.parametrize("dialect", TIER1)
+@pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+async def test_the_matrix_emits_a_window(case: WindowCase, dialect: str) -> None:
+    sql = await emit_window(case, dialect=dialect)
+    assert holds_window(sql, dialect=dialect), sql
+
+
+@pytest.mark.parametrize("expression", DUCKDB_HOLISTIC, ids=["median", "percentile_cont"])
+async def test_a_holistic_aggregate_where_the_database_windows_it(duckdb_windows, expression: str) -> None:
+    got = await window_values(duckdb_windows, "orders", expression)
+    assert {k: float(v) for k, v in got.items()} == dict.fromkeys(range(1, 8), 40.0)
+
+
+@pytest.mark.parametrize(("expression", "function"), HOLISTIC, ids=HOLISTIC_IDS)
+async def test_a_holistic_aggregate_where_the_database_does_not(sqlite_windows, expression: str, function: str) -> None:
+    await assert_typed_refusal(sqlite_windows, "orders", expression, function, "SQLite")

@@ -531,6 +531,11 @@ class PositionTypingError(QueryTypeError):
     """A filter conjunct / order target is valid as neither field nor metric."""
 
 
+class WindowFunctionError(QueryTypeError):
+    """A window function SLayer cannot evaluate: a function Ossie does not window, a row-level window naming no
+    dataset, a key off a measure-level window's operand grain, or a construct the database cannot run."""
+
+
 class DateOperandTypeError(QueryTypeError):
     """A date function operand that is not DATE/TIMESTAMP, or a ``date_add`` count that is not numeric."""
 
@@ -939,7 +944,7 @@ class IllegalScopeReferenceError(SlayerError, ValueError):
 
 
 class IllegalWindowInFilterError(SlayerError, ValueError):
-    """A filter, metric or portable field definition contains a raw ``OVER(...)`` window."""
+    """A window refused in a filter; kept public, no longer raised now that Mode B reads windows everywhere."""
 
     def __init__(
         self,

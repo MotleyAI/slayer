@@ -654,7 +654,7 @@ async def test_inspect_shows_a_model_scoped_metric_load_warning(tmp_path: Path) 
         place_document(tmp_path, sales_with(_add_windowed_metric), name="sales")
         out = await mcp_ok(engine.storage, "inspect", reference="running_rev", entity_type="metric", compact=False)
     assert "running_rev" in out
-    assert "window" in out.lower()
+    assert "outside an aggregate" in out
 
 
 async def test_datasets_summary_lists_model_scoped_metrics(shop: SlayerQueryEngine) -> None:

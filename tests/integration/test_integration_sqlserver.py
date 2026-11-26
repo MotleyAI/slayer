@@ -128,6 +128,8 @@ from tests._dev2120_fixtures import (
     lib_dataset,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2457_fixtures import server_statements as window_statements, window_datasets
+from tests._dev2457_matrix import CASE_IDS as WINDOW_CASE_IDS, CASES as WINDOW_CASES, WindowCase, check_case
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1806,6 +1808,40 @@ class TestSQLServerPortableLibrary:
 
     async def test_library_on_2025(self, _sqlserver_2025_dev2120_storage) -> None:
         await check_library(SlayerQueryEngine(storage=_sqlserver_2025_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _sqlserver_windows_storage(sqlserver_container, tmp_path_factory):
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in window_statements("tsql"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_windows")))
+        run_sync(storage.save_datasource(_ds_config(sqlserver_container, db_name)))
+        for model in window_datasets(data_source="testmssql"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.fixture
+def sqlserver_windows(_sqlserver_windows_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_sqlserver_windows_storage)
+
+
+@pytest.mark.integration
+class TestSQLServerWindows:
+    @pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+    async def test_the_matrix(self, sqlserver_windows: SlayerQueryEngine, case: WindowCase) -> None:
+        await check_case(sqlserver_windows, case)
 
 
 # ---------------------------------------------------------------------------

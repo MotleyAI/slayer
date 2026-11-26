@@ -188,12 +188,12 @@ class TestDatasourceChangedInPlace:
         assert stored.granularities == []
 
 
-#: ``sales`` whose ``orders`` carries a dataset metric SLayer cannot evaluate yet (a window function).
-WINDOWED_ORDERS = document_text(
+#: ``sales`` whose ``orders`` carries a dataset metric SLayer cannot evaluate yet (a measure of its source).
+WARNED_ORDERS = document_text(
     datasets=[
         dataset("orders", primary_key=["order_id"],
                 fields=[field("order_id"), field("customer_id"), field("amount", datatype="Float")],
-                metrics=[metric("running", "SUM(amount) OVER ()")]),
+                metrics=[metric("revenue_total", "AGG(source.revenue)")]),
     ],
 )
 
@@ -201,13 +201,13 @@ WINDOWED_ORDERS = document_text(
 class TestRuntimeOnlyState:
     @pytest.mark.parametrize("kind", STORAGES)
     async def test_a_metric_with_a_load_warning_saves_unchanged(self, kind: str) -> None:
-        async with document_engine(kind=kind, documents=(WINDOWED_ORDERS,)) as engine:
+        async with document_engine(kind=kind, documents=(WARNED_ORDERS,)) as engine:
             storage = engine.storage
             orders = await storage.get_dataset("orders", data_source=DS)
             assert orders is not None
-            running = orders.get_metric("running")
-            assert running is not None
-            assert running.load_warning is not None
+            warned = orders.get_metric("revenue_total")
+            assert warned is not None
+            assert warned.load_warning is not None
             before = state(orders)
             await storage.save_dataset(orders)
             reloaded = await storage.get_dataset("orders", data_source=DS)

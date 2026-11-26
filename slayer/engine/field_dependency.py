@@ -844,6 +844,9 @@ def check_dataset_filters(
     running on ``dialect``."""
     if not dataset.filters:
         return
+    if any(holds_window(f) for f in dataset.filters):
+        # A window reads every row of the dataset the filters define.
+        raise DatasetFilterCycleError([dataset.name, dataset.name])
     datasets = {**reachable, dataset.name: dataset}
     for fragment in dataset.filters:
         validate_dataset_filter(mf=fragment, references=(

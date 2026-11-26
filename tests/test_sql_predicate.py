@@ -1,7 +1,7 @@
 """Unit tests for slayer.sql.sql_predicate.parse_sql_predicate.
 
 Mode A SQL-mode filter validator. Pre-rejects DSL
-constructs (aggregation references, transform calls, raw OVER) and
+constructs (aggregation references, transform calls) and
 extracts field-shaped identifier tokens. Does not invoke sqlglot —
 dialect-aware parsing happens at SQL generation time.
 """
@@ -102,9 +102,9 @@ class TestSqlPredicateRejects:
         with pytest.raises(ValueError, match="transform call"):
             parse_sql_predicate("rank(revenue, direction='desc') <= 10")
 
-    def test_raw_over_window_rejected(self) -> None:
-        with pytest.raises(ValueError, match="window function"):
-            parse_sql_predicate("row_number() OVER (PARTITION BY x ORDER BY y) = 1")
+    def test_raw_over_window_parses(self) -> None:
+        pf = parse_sql_predicate("row_number() OVER (PARTITION BY x ORDER BY y) = 1")
+        assert pf.sql == "row_number() OVER (PARTITION BY x ORDER BY y) = 1"
 
 
 class TestSqlPredicateColons:
