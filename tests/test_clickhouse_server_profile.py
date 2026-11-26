@@ -17,6 +17,7 @@ from tests._ch_fake_http import (
     CH_TIMEOUT_KEY,
     CORRELATED_SQL,
     PROFILE_SQL,
+    TIME_SQL,
     FakeClickHouse,
     ch_datasource,
     fake_ch_engine,
@@ -56,8 +57,8 @@ class TestProfileContents:
         with fake_ch_engine(fake) as engine:
             route_engine(monkeypatch, engine)
             profile = _profile(_client())
-        assert profile == ServerProfile(version=(25, 8, 3), readonly=1, correlated_subqueries=True)
-        assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL]
+        assert (profile.version, profile.readonly, profile.correlated_subqueries) == ((25, 8, 3), 1, True)
+        assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL, TIME_SQL]
 
     @pytest.mark.parametrize("version", ["24.8.14.10459", "25.3.1.1"])
     def test_no_correlated_statement_below_25_4(self, monkeypatch: pytest.MonkeyPatch, version: str) -> None:
@@ -182,7 +183,7 @@ class TestNoReentry:
             route_engine(monkeypatch, engine)
             client = _client()
             _within(10, lambda: client.execute_sync("SELECT 1", timeout_seconds=30))
-        assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL, "SELECT 1"]
+        assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL, TIME_SQL, "SELECT 1"]
 
     def test_async_execution_fill_does_not_deadlock(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=0, correlated=False)
@@ -190,7 +191,7 @@ class TestNoReentry:
             route_engine(monkeypatch, engine)
             client = _client()
             _within(10, lambda: asyncio.run(client.execute("SELECT 1", timeout_seconds=30)))
-        assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL, "SELECT 1"]
+        assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL, TIME_SQL, "SELECT 1"]
 
     def test_server_profile_fill_does_not_deadlock(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(version="25.8.3.1", readonly=0, correlated=False)
@@ -198,4 +199,4 @@ class TestNoReentry:
             route_engine(monkeypatch, engine)
             client = _client()
             _within(10, lambda: _profile(client))
-        assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL]
+        assert fake.statements() == [PROFILE_SQL, CORRELATED_SQL, TIME_SQL]

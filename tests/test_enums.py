@@ -63,7 +63,7 @@ class TestDataTypeIsOpaque:
 
     @pytest.mark.parametrize(
         "dt",
-        [m for m in DataType if m not in (DataType.OPAQUE, DataType.TIME)],
+        [m for m in DataType if m is not DataType.OPAQUE],
         ids=lambda m: m.name,
     )
     def test_every_other_member_is_not_opaque(self, dt: DataType) -> None:

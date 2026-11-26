@@ -380,9 +380,6 @@ class TestRejectionsWithHints:
     def test_trim_keyword_forms(self, text: str) -> None:
         rejected(text, "TRIM")
 
-    def test_time_literal(self) -> None:
-        rejected("created_at > TIME '10:00'", "TIME")
-
     def test_similar_to(self) -> None:
         rejected("status SIMILAR TO 'p%'", "SIMILAR TO")
 

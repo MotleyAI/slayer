@@ -130,7 +130,7 @@ def clickhouse_provider() -> Generator[ServerProvider]:
     _require_docker("clickhouse")
     token = run_token()
     database = f"gate_{token}"
-    container = ClickHouseContainer("clickhouse/clickhouse-server:24-alpine").with_env(
+    container = ClickHouseContainer("clickhouse/clickhouse-server:25.12").with_env(
         "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1")
     with container as running:
         host, port = running.get_container_host_ip(), int(running.get_exposed_port(8123))

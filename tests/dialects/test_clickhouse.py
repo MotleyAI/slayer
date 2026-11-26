@@ -148,12 +148,11 @@ def test_clickhouse_windowed_projection_keeps_its_alias() -> None:
 # Layer 1 meanings on ClickHouse
 
 
-@pytest.mark.parametrize("author", ["TIME", "TIME WITH TIME ZONE"])
-def test_clickhouse_refuses_a_time_of_day_cast(author: str) -> None:
-    """No time-of-day type: the cast would read NULL."""
+def test_clickhouse_refuses_a_time_of_day_cast() -> None:
+    """No zoned time-of-day type: the cast would read NULL."""
     dialect = ClickhouseDialect()
     with pytest.raises(ValueError, match="cannot be expressed on clickhouse"):
-        cast_target(author, dialect=dialect)
+        cast_target("TIME WITH TIME ZONE", dialect=dialect)
 
 
 def _parsed(sql: str) -> Expression:

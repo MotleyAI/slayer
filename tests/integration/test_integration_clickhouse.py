@@ -28,7 +28,7 @@ import uuid
 from typing import Any
 import warnings
 from collections.abc import Generator
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -2463,3 +2463,142 @@ class TestClickHouseTimeZones:
         for zoned, naive in zip(instant_typing_queries("orders"), instant_typing_queries("orders_naive")):
             got, want = await clickhouse_tz_env.execute(zoned), await clickhouse_tz_env.execute(naive)
             assert row_values(got) == row_values(want), got.sql
+
+
+# ---------------------------------------------------------------------------
+# Time of day (spec: queries/time-of-day › ClickHouse answers from server 25.6)
+# ---------------------------------------------------------------------------
+
+_TIME_SETTING = "enable_time_time64_type"
+_TIME_CONSTRUCTS = ["CAST('10:30:00' AS TIME)", "'10:30:00'::TIME", "TRY_CAST('10:30:00' AS TIME)", "TIME '10:30:00'"]
+
+
+def _shifts_engine(datasource: DatasourceConfig) -> SlayerQueryEngine:
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp(prefix="tod_ch_"))
+    run_sync(storage.save_datasource(datasource))
+    for name in ("shifts", "long_shifts"):
+        run_sync(storage.save_dataset(SlayerDataset(name=name, sql_table=name, data_source=datasource.name, fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="starts_at", datatype=DataType.TIME),
+            DatasetField(name="label", datatype=DataType.STRING)]), _validate=False))
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.fixture(scope="module")
+def clickhouse_shifts(versioned_clickhouse):
+    """``shifts`` and ``long_shifts`` (holding ``25:00:00``): ``Time`` columns from 25.6, text on 25.4."""
+    version, container, db_name = versioned_clickhouse
+    settings = {} if version == "25.4" else {_TIME_SETTING: "1"}
+    column = "String" if version == "25.4" else "Time"
+    for table, rows in (("shifts", "(1, '09:30:00', 'a'), (2, '17:00:00', 'b')"), ("long_shifts", "(1, '25:00:00', 'x')")):
+        _http(container, db_name,
+              f"CREATE TABLE {table} (id Int32, starts_at {column}, label String) ENGINE = MergeTree ORDER BY id", **settings)
+        _http(container, db_name, f"INSERT INTO {table} VALUES {rows}", **settings)
+    return version, container, db_name
+
+
+def _shift_query(**fields: Any) -> SlayerQuery:
+    return SlayerQuery.model_validate({"population": "shifts", **fields})
+
+
+def _from_25_6(version: str) -> None:
+    if version == "25.4":
+        pytest.skip("no time-of-day type before server 25.6")
+
+
+@pytest.mark.integration
+class TestVersionedTimeOfDay:
+    @pytest.mark.parametrize("expression", _TIME_CONSTRUCTS)
+    async def test_a_construct_runs_from_25_6_and_is_refused_below(self, clickhouse_shifts, expression: str) -> None:
+        version, container, db_name = clickhouse_shifts
+        query = _shift_query(dimensions=[{"field": expression, "alias": "v"}], filter=["shifts.id = 1"])
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            engine = _shifts_engine(ds)
+            if version == "25.4":
+                with pytest.raises(SlayerError) as ei:
+                    await engine.execute(query)
+                assert "25.6" in str(ei.value)
+                assert _user_queries_touching(container, user=ds.username or "", table="shifts") == 0
+                return
+            resp = await engine.execute(query)
+        assert resp.data == [{"v": time(10, 30)}], resp.sql
+        assert _TIME_SETTING in (resp.sql or ""), resp.sql
+
+    async def test_the_clock(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            resp = await _shifts_engine(ds).execute(_shift_query(
+                dimensions=[{"field": "CURRENT_TIME", "alias": "ct"}, {"field": "current_time()", "alias": "fn"}]))
+        [row] = resp.data
+        assert type(row["ct"]) is time, row
+        assert row["ct"] == row["fn"], row
+
+    async def test_a_time_column(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            engine = _shifts_engine(ds)
+            rows = await engine.execute(_shift_query(dimensions=["shifts.id", "shifts.starts_at", {
+                "field": "date_part('hour', shifts.starts_at)", "alias": "h"}]))
+            ends = await engine.execute(_shift_query(metrics=[{"metric": "min(shifts.starts_at)", "alias": "lo"},
+                                                               {"metric": "max(shifts.starts_at)", "alias": "hi"}]))
+            late = await engine.execute(_shift_query(dimensions=["shifts.id"], filter=["shifts.starts_at >= '12:00'"]))
+        assert {int(r["shifts.id"]): (r["shifts.starts_at"], int(r["h"])) for r in rows.data} == {
+            1: (time(9, 30), 9), 2: (time(17, 0), 17)}
+        assert ends.data == [{"lo": time(9, 30), "hi": time(17, 0)}], ends.sql
+        assert [int(r["shifts.id"]) for r in late.data] == [2]
+
+    @pytest.mark.parametrize("text", ["bogus", "25:00:00", "-01:00:00"])
+    async def test_try_cast_of_text_naming_no_time_is_null(self, clickhouse_shifts, text: str) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            resp = await _shifts_engine(ds).execute(_shift_query(
+                dimensions=[{"field": f"TRY_CAST('{text}' AS TIME)", "alias": "v"}], filter=["shifts.id = 1"]))
+        assert resp.data == [{"v": None}], resp.sql
+
+    async def test_a_stored_duration_fails_the_query(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            with pytest.raises(SlayerError) as ei:
+                await _shifts_engine(ds).execute(SlayerQuery.model_validate({
+                    "population": "long_shifts", "dimensions": ["long_shifts.starts_at"]}))
+        assert "long_shifts.starts_at" in str(ei.value)
+        assert "25:00:00" in str(ei.value)
+
+    async def test_a_readonly_user_is_refused_naming_the_setting(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            with pytest.raises(SlayerError) as ei:
+                await _shifts_engine(ds).execute(_shift_query(dimensions=["shifts.starts_at"]))
+            assert _TIME_SETTING in str(ei.value)
+            assert _user_queries_touching(container, user=ds.username or "", table="shifts") == 0
+
+    @pytest.mark.parametrize("settings", ["readonly = 2", f"readonly = 1, {_TIME_SETTING} = 1"])
+    async def test_a_user_who_may_run_it_runs_it(self, clickhouse_shifts, settings: str) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings=settings) as ds:
+            resp = await _shifts_engine(ds).execute(_shift_query(dimensions=["shifts.starts_at"],
+                                                                 order=[{"field": "shifts.starts_at"}]))
+        assert [r["shifts.starts_at"] for r in resp.data] == [time(9, 30), time(17, 0)]
+
+    async def test_a_query_without_a_time_of_day_is_unaffected(self, clickhouse_shifts) -> None:
+        _, container, db_name = clickhouse_shifts
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            resp = await _shifts_engine(ds).execute(_shift_query(dimensions=["shifts.label"],
+                                                                 order=[{"field": "shifts.label"}]))
+        assert [r["shifts.label"] for r in resp.data] == ["a", "b"]
+        assert _TIME_SETTING not in (resp.sql or "")
+
+    async def test_time_columns_ingest_as_time(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        _http(container, db_name, "CREATE TABLE IF NOT EXISTS clocks (id Int32, t Time, t6 Time64(6), n Nullable(Time)) "
+                                  "ENGINE = MergeTree ORDER BY id", **{_TIME_SETTING: "1"})
+        datasets = await _ingest(_ds_config(container, db_name), include_tables=["clocks"])
+        assert {f.name: f.datatype for f in datasets[0].fields} == {
+            "id": DataType.INTEGER, "t": DataType.TIME, "t6": DataType.TIME, "n": DataType.TIME}

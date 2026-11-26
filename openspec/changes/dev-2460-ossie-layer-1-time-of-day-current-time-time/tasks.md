@@ -12,6 +12,7 @@
 - [ ] 1.10 Ingestion and drift: `TIME`, `TIME(p)`, `TIME WITHOUT TIME ZONE`, ClickHouse `Time` / `Time64(p)` as `Time`, a zoned time type as `Opaque`; a stored `DateTime` field over a `TIME` column reported by validation, untouched by a load, re-typed by a re-ingest with its other attributes kept; verify the file fails
 - [ ] 1.11 Strict Ossie mode accepts the three constructs; sample profiling shows a `min .. max` range for a `Time` field; verify both fail
 - [ ] 1.12 Apply the eight approved alignments listed in design.md ("Existing tests aligned with the plan"), and nothing else in existing tests without the user's approval by name; verify the aligned tests fail only for the missing implementation
+- [ ] 1.13 Time-spine axis: a dataset stored without validation whose `default_time_dimension` is a `Time` field, and one whose is a `String` field, each fail a spine query with `DefaultTimeDimensionTypeError` and no SQL; verify the test fails with the untyped render error
 
 ## 2. Type and grammar
 
@@ -19,6 +20,8 @@
 - [ ] 2.2 Parse `TIME '…'` as the temporal-literal kind and bind it with the typed time-literal error; verify the literal tests of 1.1 pass
 - [ ] 2.3 Add `current_time` to the scalar library and the clock functions, with the bare keyword and the call spelling; mark its queries uncacheable as `now()`; verify the clock tests of 1.1 pass
 - [ ] 2.4 Type checking: comparisons, conditionals, aggregations, the three parts, the refusals, the string-as-time-literal rule in every slot; verify 1.3 and 1.4 pass
+- [ ] 2.5 Step the dataset, query and memory versions to 32 / 20 / 15 with no document change, and add the `current_time` rename gate at those versions; verify `tests/test_library_growth.py` passes
+- [ ] 2.6 Refuse a non-temporal stored `default_time_dimension` used as the time-spine axis with `DefaultTimeDimensionTypeError` before rendering; verify 1.13 passes
 
 ## 3. Casts and rendering
 

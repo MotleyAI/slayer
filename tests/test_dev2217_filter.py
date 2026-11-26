@@ -75,6 +75,7 @@ ADMITTED = {
 
 #: Every scalar of the library → (a filter calling it, the total revenue native keeps).
 SCALARS: dict[str, tuple[str, int]] = {
+    "current_time": ("current_time() >= TIME '00:00:00'", 650),
     "nullif": ("nullif(orders.status, 'cancelled') IS NULL", 500),
     "coalesce": ("coalesce(orders.status, 'none') = 'none'", 300),
     "ifnull": ("ifnull(orders.status, 'none') = 'none'", 300),

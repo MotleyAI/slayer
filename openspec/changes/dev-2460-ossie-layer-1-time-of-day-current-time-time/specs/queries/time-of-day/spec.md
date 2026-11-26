@@ -16,6 +16,10 @@ A time of day SHALL be a value from `00:00:00` to `23:59:59.999999` at microseco
 - **WHEN** a query names a `Time` field as a time dimension with granularity `hour`, or gives it a `date_range`
 - **THEN** each fails with a typed error naming the field and its type
 
+#### Scenario: Not a time-spine axis
+- **WHEN** a dataset stored without validation names a `Time` field as its `default_time_dimension`, and a query takes a time dimension on `time_spine.timestamp`
+- **THEN** it fails with the typed error naming the dataset, the field and `Time`, and no SQL is executed
+
 #### Scenario: No zone conversion
 - **WHEN** a query with `time_zone: America/New_York` selects a `Time` field holding `09:30:00`
 - **THEN** the value is `09:30:00`
