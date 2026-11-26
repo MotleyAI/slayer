@@ -20,6 +20,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 from sqlalchemy.engine.url import URL
 
+from slayer.core.keys import WindowKey
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.core.enums import DataType
@@ -115,6 +116,7 @@ def _plain_index_columns(sql: str | None) -> list[str] | None:
 
 class DuckdbDialect(SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
+    windowed_holistic: ClassVar[frozenset[str]] = frozenset({"count_distinct", "median", "percentile_cont"})
     sqlglot_name: str = "duckdb"
     number_cast_rounds: ClassVar[bool] = True
     #: An unsigned HUGEINT stays below 10^39.
@@ -142,6 +144,12 @@ class DuckdbDialect(SqlDialect):
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
     })
+
+    def window_call(self, key: WindowKey, args: list[Expression], *, input_type: Optional[DataType] = None) -> Expression:
+        """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` windows only as ``quantile_cont(x, p)``."""
+        if key.function == "percentile_cont":
+            return exp.Anonymous(this="quantile_cont", expressions=args)
+        return super().window_call(key, args, input_type=input_type)
 
     def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``(v AT TIME ZONE S) AT TIME ZONE Q``; an instant: ``v AT TIME ZONE Q``."""

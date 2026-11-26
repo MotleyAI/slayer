@@ -71,7 +71,7 @@ Each report entry names its document and entity:
 | `standalone` | a dataset of a merged export stored as a standalone dataset |
 | `not_checked` | a mapping's expressions whose type is unknown, so not checked against their concepts |
 
-Whether SLayer can evaluate an entity is never checked at import: upstream's TPC-DS example, for instance, is stored whole, with its window-function metrics reported as `not_evaluable`.
+Whether SLayer can evaluate an entity is never checked at import: upstream's TPC-DS example, for instance, is stored whole, and its window-function metrics evaluate. A `FIRST_VALUE` / `LAST_VALUE` window keeps its form: it is never rewritten into SLayer's `first` / `last`, which skip NULL ranking keys.
 
 ## Re-importing a 1.x Import
 

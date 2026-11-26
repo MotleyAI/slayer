@@ -64,9 +64,10 @@ async def test_other_spellings_are_refused(engine: SlayerQueryEngine, aggregate:
     assert await _native_count(engine, text) == [[6]]
 
 
+# SLayer does not window these: wide-table §8 row 1 (unsupported) precedes row 7.
 @pytest.mark.parametrize(("aggregate", "code"), [
-    ("SUM(DISTINCT orders.qty)", "E_WINDOW_IN_WHERE"),
-    ("PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY orders.amount)", "E_WINDOW_IN_WHERE"),
+    ("SUM(DISTINCT orders.qty)", "E_INVALID_QUERY"),
+    ("PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY orders.amount)", "E_INVALID_QUERY"),
     ("AVG(DISTINCT orders.amount)", "E_INVALID_QUERY"),
     ("percentile_disc(orders.amount, 0.5)", "E_INVALID_QUERY"),
 ])

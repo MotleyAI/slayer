@@ -56,10 +56,16 @@ from slayer.core.errors import (
     UnknownGranularityError,
     UnrelatedDatasetError,
     UnsafeRelationshipInputError,
+    WindowFunctionError,
 )
 from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
+    Phase,
+    WindowKey,
+    window_operand_grain,
+    is_transform,
+    transform_operands,
     display_token,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
@@ -120,7 +126,7 @@ from slayer.core.deprecation import scheduled_notice
 from slayer.core.models import SlayerDataset
 from slayer.core.relationship_walker import walk_terminal
 from slayer.core.names import folded_collisions, match_name, match_path
-from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
+from slayer.core.refs import bucket_remedy, dotted_key_display, field_display, key_display
 from slayer.core.scope import peek_dataset_field
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.core.time_zones import check_bucketed_zones
@@ -159,7 +165,7 @@ def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey
 
     def _walk(k: ValueKey) -> None:
         nonlocal attached
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             # A row-attach root (partitioned aggregate or transform root of a
             # computed dimension) resolves row-side; its subtree is its own scope.
             if k in row_agg_set:
@@ -189,6 +195,8 @@ def row_refs_off_grain(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
         if isinstance(k, TransformKey):
             _walk(k.input)  # partition/time keys are transform machinery, not refs
             return
+        if is_transform(k):
+            return  # its keys and operands are judged against its operand grain
         for c in k.children():
             _walk(c)
 
@@ -201,13 +209,15 @@ def _key_display(k: ValueKey) -> str:
         leaf = getattr(k.source, "leaf", None) or getattr(k.source, "field_name", None) or "*"
         path = source_anchor_path(k.source)
         name = f"{k.agg}({'.'.join((*map(display_token, path), leaf))})"
-        return f"{name} (partition_by)" if k.partition_keys is not None else name
+        return f"{name} (partition_by)" if k.written_grain is not None else name
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
+    if isinstance(k, WindowKey):
+        return key_display(k)
     if isinstance(k, TimeTruncKey):
         return _key_display(k.source) if isinstance(k.source, (FieldKey, FieldSqlKey)) else key_display(k.source)
     if isinstance(k, (FieldKey, FieldSqlKey)):
-        return ".".join((*map(display_token, k.path), field_leaf(k)))
+        return field_display(k.path, field_leaf(k))
     return type(k).__name__
 
 
@@ -247,6 +257,16 @@ def type_position_conjunct(
         f"field, and metric typing is unavailable because the query has no "
         f"metric position (distinct_dimension_values=False).",
     )
+
+
+def check_row_window(key: WindowKey) -> None:
+    """A row-level window names a dataset: a reference other than the time spine's (semantics Axiom 1)."""
+    if key.anchor is None:
+        raise WindowFunctionError(
+            summary=f"The window `{key_display(key)}` names no dataset, so no rows to run over: it reads no field, "
+            f"or only the time spine's.",
+            suggestion="Read a field of the dataset whose rows it numbers or aggregates, e.g. ORDER BY orders.id.",
+        )
 
 
 def check_metrics_at_query_grain(prebound: PreboundQuery) -> None:
@@ -323,8 +343,8 @@ def is_partitioned_consumer(k: ValueKey) -> TypeGuard[AggregateKey]:
 
 def is_dimension_transform_root(k: ValueKey) -> bool:
     """A transform over a grained aggregate — in a dimension, it owns its input."""
-    return isinstance(k, TransformKey) and any(
-        is_grained_aggregate(g) for g in opaque_keys(k.input)
+    return is_transform(k) and any(
+        is_grained_aggregate(g) for o in transform_operands(k) for g in opaque_keys(o)
     )
 
 
@@ -1051,7 +1071,7 @@ def check_time_dimension_field(
 
 def check_time_dimension_row_level(*, name: str, source: ValueKey) -> None:
     """A time dimension's expression is row-level: no aggregate, transform or attached value."""
-    if any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)):
+    if any(isinstance(k, (AggregateKey, TransformKey)) or is_transform(k) for k in walk_value_keys(source)):
         raise TimeDimensionFieldError(
             summary="A time dimension is row-level; its expression reads an aggregate or transform.",
             location=f"time dimension {name!r}",
@@ -1114,7 +1134,7 @@ def _operand_display(k: object) -> str:
         if len(k.operands) == 1:
             return f"{k.op}{_operand_display(k.operands[0])}"
         return f" {k.op} ".join(_operand_display(o) for o in k.operands)
-    if isinstance(k, (AggregateKey, TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)):
+    if isinstance(k, (AggregateKey, TransformKey, WindowKey, FieldKey, FieldSqlKey, TimeTruncKey)):
         return _key_display(k)
     if isinstance(k, ArrayLiteralKey):
         return f"[{', '.join(_operand_display(v) for v in k.values)}]"
@@ -2159,19 +2179,21 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             key.source,
             *[a for a in key.args if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
+                a, (AggregateKey, TransformKey, WindowKey, ArithmeticKey, ScalarCallKey, CastKey))],
             *[v for _, v in key.kwargs if isinstance(
-                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
+                v, (AggregateKey, TransformKey, WindowKey, ArithmeticKey, ScalarCallKey, CastKey))],
         ]
     if isinstance(key, TransformKey):
         return [key.input]
+    if isinstance(key, WindowKey):
+        return list(key.children())
     if isinstance(key, ArithmeticKey):
         return list(key.operands)
     if isinstance(key, ScalarCallKey):
         return [
             a for a in key.args
             if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
+                a, (AggregateKey, TransformKey, WindowKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
             )
         ]
     if isinstance(key, (CastKey, ListSetKey)):
@@ -2345,6 +2367,38 @@ def check_transform_partition_keys_in_operand_grain(
                     suggestion=f"Add it to the inner aggregate's partition_by=, or "
                     f"partition by one of: {members or '(none)'}.",
                 )
+
+
+def check_window_keys_in_operand_grain(
+    *, roots, query_grain: Grain, active_bucket: Optional[ValueKey], root: Optional[str],
+) -> None:
+    """Each row-level operand of a measure-level window is a member of its operand grain (semantics Axiom 11.7)."""
+    for top in roots:
+        for k in walk_value_keys(top):
+            if isinstance(k, WindowKey) and not k.row_level:
+                _check_window_operands(k, grain=window_operand_grain(
+                    k, query_grain=query_grain, active_bucket=active_bucket), root=root)
+
+
+def _check_window_operands(k: WindowKey, *, grain: Grain, root: Optional[str]) -> None:
+    for c in k.children():
+        if c.phase is not Phase.ROW or c in grain or isinstance(c, (LiteralKey, StarKey)):
+            continue
+        shown = _window_operand_display(c, root=root)
+        raise WindowFunctionError(
+            summary=f"The window `{key_display(k)}` reads `{shown}` per cell, but it is neither "
+            f"aggregate-valued nor a member of the window's operand grain.",
+            suggestion=f"Add `{shown}` as a dimension, or aggregate it.",
+        )
+
+
+def _window_operand_display(c: ValueKey, *, root: Optional[str]) -> str:
+    """``c`` spelled from its anchor, else qualified by the query root."""
+    if isinstance(c, (FieldKey, FieldSqlKey)) and c.anchor is not None:
+        return ".".join((*c.anchor, field_leaf(c)))
+    if root is not None and isinstance(c, (FieldKey, FieldSqlKey)) and not c.path:
+        return f"{root}.{dotted_key_display(c)}"
+    return dotted_key_display(c)
 
 
 def check_partition_key_analysable(*, label: str, pk: ValueKey, analysable: bool) -> None:

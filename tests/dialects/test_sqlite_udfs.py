@@ -428,6 +428,9 @@ def test_log_udf_registered_unconditionally():
         def create_aggregate(self, name, narg, cls):  # noqa: ARG002
             pass
 
+        def create_window_function(self, name, narg, cls):  # noqa: ARG002
+            pass
+
     register_sqlite_udfs(_SpyConn())
     names = {n for n, _ in registered}
     assert "log" in names, (

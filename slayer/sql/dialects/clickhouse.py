@@ -19,6 +19,7 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
+from slayer.core.keys import WindowKey
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity, TypeKind, kind_of
 from slayer.core.granularity import Granularity, bucket_type
 from slayer.core.json_path import JsonPath
@@ -280,6 +281,32 @@ class ClickhouseDialect(SqlDialect):
     native_lists: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"PI"})
+
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:
+        """ClickHouse's in-frame offsets read the whole partition; ``CUME_DIST`` as two counts; a sample statistic over
+        one row is NULL, not NaN; ``COUNT(x)`` as a sum of non-NULL flags (its own form misreads a Nullable column)."""
+        function = key.function
+        if function in ("lag", "lead"):
+            window.set("spec", exp.WindowSpec(kind="ROWS", start="UNBOUNDED", start_side="PRECEDING",
+                                              end="UNBOUNDED", end_side="FOLLOWING"))
+            return window
+        if function == "cume_dist":
+            peers = window.copy()
+            peers.set("this", exp.Count(this=exp.Star()))
+            peers.set("spec", exp.WindowSpec(kind="RANGE", start="UNBOUNDED", start_side="PRECEDING",
+                                             end="CURRENT ROW"))
+            total = exp.Window(this=exp.Count(this=exp.Star()),
+                               partition_by=[p.copy() for p in window.args.get("partition_by") or []] or None)
+            return exp.Div(this=peers, expression=total)
+        if function == "count" and not isinstance(window.this.this, exp.Star):
+            value = window.this.this
+            present = exp.If(this=exp.Not(this=exp.Is(this=value.copy(), expression=exp.Null())),
+                             true=exp.Literal.number(1), false=exp.Literal.number(0))
+            window.set("this", exp.Sum(this=present))
+            return window
+        if function in ("stddev", "stddev_samp", "variance", "var_samp"):
+            return exp.Case(ifs=[exp.If(this=anon("isNaN", window.copy()), true=exp.Null())], default=window)
+        return window
 
     def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``toTimeZone(v, Q)``; a naive value is first read as ``S`` wall clock."""

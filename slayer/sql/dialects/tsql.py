@@ -21,9 +21,12 @@ from sqlglot.expressions.core import Expr, Expression
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind
 from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
-from slayer.core.keys import ScalarCallKey
+from slayer.core.keys import (
+    ArithmeticKey, LiteralKey, ScalarCallKey, StarKey, ValueKey, WindowFrameSpec, WindowKey,
+)
+from slayer.core.refs import key_display
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.core.errors import TimeZoneError
+from slayer.core.errors import TimeZoneError, WindowFunctionError
 from slayer.sql.dialects._windows_zones import WINDOWS_ZONES
 from slayer.sql.dialects.base import (
     AngleFn,
@@ -277,12 +280,71 @@ def _windows_zone(zone: ZoneInfo) -> exp.Literal:
     return exp.Literal.string(windows)
 
 
+_RUNNING = ("unbounded preceding", None), ("current row", None)
+
+
+class _NthValueParts:
+    """The window calls ``_nth_value`` composes over ``key``'s partition: those reading row positions all order by one
+    ``ROW_NUMBER()`` of ``key``'s order, so tied rows sit in the same order in each (SQL Server orders ties freely)."""
+
+    def __init__(self, key: WindowKey) -> None:
+        self.x = key.args[0]
+        self.bare = key.model_copy(update={"frame": None, "args": ()})
+        self.rn = self.bare.model_copy(update={"function": "row_number"})
+        # ASC with NULLS FIRST is SQL Server's own placement, so no NULL key is added; ``rn`` is never NULL.
+        self.by_rn = self.bare.model_copy(update={"order": (self.rn,), "descending": (False,), "nulls_first": (True,)})
+
+    def window(self, function: str, *args: ValueKey, frame: WindowFrameSpec | None = None,
+               by_position: bool = True) -> WindowKey:
+        base = self.by_rn if by_position else self.bare
+        return base.model_copy(update={"function": function, "args": args, "frame": frame})
+
+    def lead(self, offset: int) -> ValueKey:
+        return self.x if offset == 0 else self.window("lead", self.x, LiteralKey(value=Decimal(offset)))
+
+    def later(self, position: int) -> ValueKey:
+        """The ``position``-th row of a one-row-each-side frame, past the partition's first row."""
+        if position == 1:
+            return self.window("lag", self.x, LiteralKey(value=Decimal(1)))
+        return self.lead(position - 2) if position <= 3 else LiteralKey(value=None)
+
+
+def _nth_value(key: WindowKey) -> ValueKey:
+    """``NTH_VALUE(x, n)``: the partition's ``n``-th row, read once the frame holds ``n`` rows (running frames); within a
+    one-row-each-side frame, the ``n``-th row of the rows around the current one."""
+    n = key.args[1]
+    position = int(n.value) if isinstance(n, LiteralKey) and isinstance(n.value, Decimal) else 0
+    parts = _NthValueParts(key)
+    frame = key.frame
+    if frame is None or (frame.start, frame.end) == _RUNNING:
+        unit = "range" if frame is None else frame.unit
+        # A RANGE count holds whole peer groups, whatever their inner order.
+        held = parts.window("count", StarKey(), frame=WindowFrameSpec(unit=unit, start=_RUNNING[0], end=_RUNNING[1]),
+                            by_position=unit == "rows")
+        nth = parts.window("first_value", parts.lead(position - 1),
+                           frame=WindowFrameSpec(unit="rows", start=_RUNNING[0], end=_RUNNING[1]))
+        return ScalarCallKey(name="iif", args=(
+            ArithmeticKey(op=">=", operands=(held, LiteralKey(value=Decimal(position)))), nth, LiteralKey(value=None)))
+    if frame.unit == "rows" and frame.start == ("preceding", Decimal(1)) and frame.end == ("following", Decimal(1)):
+        at_start = parts.lead(position - 1) if position <= 2 else LiteralKey(value=None)
+        return ScalarCallKey(name="iif", args=(
+            ArithmeticKey(op="=", operands=(parts.rn, LiteralKey(value=Decimal(1)))),
+            at_start, parts.later(position)))
+    raise WindowFunctionError(
+        summary=f"`{key_display(key)}` cannot run on SQL Server: it lacks NTH_VALUE, which SLayer rewrites only over "
+        f"the default frame, ROWS or RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, and ROWS BETWEEN 1 PRECEDING "
+        f"AND 1 FOLLOWING.",
+        suggestion="Use one of those frames, or run the query on another database.",
+    )
+
+
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "tsql"
     decimal_text_exponent: ClassVar[bool] = False
     native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "SQL Server"
+    nulls_clause: bool = False
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({
@@ -318,6 +380,19 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         whole = anon("LEFT", kept, exp.Sub(this=anon("LEN", kept), expression=lit(1)))
         return case((exp.EQ(this=anon("RIGHT", kept, lit(1)), expression=lit(".")), whole), default=kept.copy())
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"CONCAT_WS", "PI", "GREATEST", "LEAST"})
+
+    def rewrite_window_key(self, key: WindowKey) -> ValueKey:
+        """``NTH_VALUE``, which SQL Server lacks, over Ossie's frame forms."""
+        if key.function != "nth_value":
+            return key
+        return _nth_value(key)
+
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:
+        """NTH_VALUE over aggregates, which SQL Server lacks, is refused."""
+        if key.function == "nth_value":
+            raise WindowFunctionError(summary="NTH_VALUE over aggregates cannot run on SQL Server, which lacks it.",
+                                      suggestion="Read it from a row-level window, or run on another database.")
+        return window
 
     def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``CAST((v AT TIME ZONE S) AT TIME ZONE Q AS datetime2)`` in Windows zone ids; an instant (a
@@ -646,7 +721,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if isinstance(node, exp.Substring) and node.args.get("length") is None:
                 node.set("length", exp.Anonymous(this="DATALENGTH", expressions=[node.this.copy()]))
             if isinstance(node, exp.Length):
-                text = exp.Cast(this=node.this.copy(), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
+                # ``transform`` skips a replaced node's children, so they are rewritten here.
+                text = exp.Cast(this=node.this.transform(_fix), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
                 padded = exp.Add(this=text, expression=exp.Literal.string("x"))
                 return exp.Paren(this=exp.Sub(
                     this=exp.Anonymous(this="LEN", expressions=[padded]), expression=exp.Literal.number(1),
@@ -668,8 +744,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if isinstance(node, exp.Round) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
             if isinstance(node, exp.Pow):
-                return anon("POWER", exp.Cast(this=node.this.copy(), to=exp.DataType.build("FLOAT")),
-                            node.expression.copy())
+                return anon("POWER", exp.Cast(this=node.this.transform(_fix), to=exp.DataType.build("FLOAT")),
+                            node.expression.transform(_fix))
             return node
         return tree.transform(_fix)
 

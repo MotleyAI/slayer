@@ -107,6 +107,15 @@ from tests._dev2120_fixtures import (
     lib_query,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2457_fixtures import server_statements as window_statements, window_datasets
+from tests._dev2457_matrix import (
+    CASE_IDS as WINDOW_CASE_IDS,
+    CASES as WINDOW_CASES,
+    WindowCase,
+    assert_typed_refusal,
+    check_case,
+    window_values,
+)
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -1774,6 +1783,53 @@ class TestMySQLPortableLibrary:
         for filt, expected in (("lib.word = 'ada'", {3, 4}), ("lib.word IN ('paid')", {1, 2}), ("lib.word LIKE 'ada%'", {3, 4})):
             resp = await engine.execute(lib_query(filter=[filt]))
             assert {int(r["lib.id"]) for r in resp.data} == expected, (filt, resp.sql)
+
+
+# ---------------------------------------------------------------------------
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error; NULL sorts as the largest value in a window's ordering)
+# ---------------------------------------------------------------------------
+
+_RANGE_OFFSET = "SUM(scores.score) OVER (ORDER BY scores.score{nulls} RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)"
+
+
+@pytest.fixture(scope="module")
+def _mysql_windows_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in window_statements("mysql"):
+                    cur.execute(stmt)
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_windows")))
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        for model in window_datasets(data_source="testmysql"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.fixture
+def mysql_windows(_mysql_windows_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_mysql_windows_storage)
+
+
+@pytest.mark.integration
+class TestMySQLWindows:
+    @pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+    async def test_the_matrix(self, mysql_windows: SlayerQueryEngine, case: WindowCase) -> None:
+        await check_case(mysql_windows, case)
+
+    async def test_a_placement_the_database_cannot_give_is_refused(self, mysql_windows: SlayerQueryEngine) -> None:
+        await assert_typed_refusal(mysql_windows, "scores", _RANGE_OFFSET.format(nulls=""), r"scores\.score", "MySQL")
+
+    async def test_a_stated_placement_the_database_can_give_runs(self, mysql_windows: SlayerQueryEngine) -> None:
+        got = await window_values(mysql_windows, "scores", _RANGE_OFFSET.format(nulls=" NULLS FIRST"))
+        assert {k: None if v is None else float(v) for k, v in got.items()} == {1: 10.0, 2: None, 3: 5.0}
 
 
 @pytest.fixture

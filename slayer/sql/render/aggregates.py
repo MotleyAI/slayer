@@ -144,18 +144,19 @@ def apply_aggregate(
     if entry.dispatch == DISPATCH_DISTINCT and input_type is DataType.ARRAY:
         return entry.node_class(this=exp.Distinct(expressions=[dialect.build_list_key(value)]))
     read = aggregate_input(value=value, aggregation=entry.name, input_type=input_type)
-    # A DOUBLE input is already fractional (and may be an exact decimal whose precision is kept).
-    fractional = entry.node_class is exp.Avg and dialect.integer_avg and kind_of(input_type) is not TypeKind.DOUBLE
-    # FLOAT would merge distinct integers past 2^53 before DISTINCT; an exact decimal keeps them apart.
+    fractional = entry.node_class is exp.Avg and dialect.fractional_avg(input_type)
+    # A float would merge distinct integers past 2^53 before DISTINCT; an exact decimal keeps them apart.
     exact = fractional and entry.dispatch == DISPATCH_DISTINCT and kind_of(input_type) in (TypeKind.INT,
                                                                                            TypeKind.BOOLEAN)
-    if fractional:
-        read = exp.Cast(this=read, to=exp.DataType.build("DECIMAL(38, 10)" if exact else "FLOAT"))
+    if exact:
+        read = exp.Cast(this=read, to=exp.DataType.build("DECIMAL(38, 10)"))
+    elif fractional:
+        read = dialect.avg_input(read, input_type=input_type)
     if entry.dispatch == DISPATCH_DISTINCT:
         read = exp.Distinct(expressions=[read])
     aggregate: Expression = entry.node_class(this=read)
     if exact:
-        aggregate = exp.Cast(this=aggregate, to=exp.DataType.build("FLOAT"))
+        aggregate = exp.Cast(this=aggregate, to=exp.DataType.build(dialect.avg_input_type))
     return restore_boolean(aggregate, aggregation=entry.name, input_type=input_type, dialect=dialect)
 
 

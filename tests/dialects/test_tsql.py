@@ -19,7 +19,9 @@ from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuer
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.engine_factory import client_cache_key
 from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name, cast_target
+from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.dialects.tsql import TsqlDialect
+from slayer.sql.render.parse import parse_expression
 from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -664,3 +666,17 @@ def test_tsql_keeps_a_volatile_group_key(key: str) -> None:
     """Column-free but per-row: it still splits groups."""
     rewritten = _rewritten(f"SELECT COUNT(*) AS n FROM {_ORDERS} GROUP BY {key}")
     assert rewritten.args["group"] is not None
+
+
+def test_a_nested_substring_inside_length_keeps_its_length() -> None:
+    tree = parse_expression(sql="LENGTH(SUBSTRING(x, 2))", target_dialect=TsqlDialect(), parse_dialect=PostgresDialect())
+    (inner,) = tree.find_all(exp.Substring)
+    assert inner.args.get("length") is not None
+
+
+def test_a_nested_round_inside_power_gets_its_digits() -> None:
+    parsed = sqlglot.parse_one("POWER(ROUND(x), 2)")
+    assert isinstance(parsed, Expression)
+    tree = TsqlDialect().rewrite_library_ast(parsed)
+    (inner,) = tree.find_all(exp.Round)
+    assert inner.args.get("decimals") is not None

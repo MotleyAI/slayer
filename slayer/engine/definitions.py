@@ -6,6 +6,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+import hashlib
+
+import sqlglot
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 from sqlglot.expressions.core import Expression as SqlExpression
@@ -28,10 +31,11 @@ from slayer.core.syntax import DottedRef, Ref, parse_expr, walk_parsed
 from slayer.engine.binding import bind_expr
 from slayer.engine.elaborate_env import check_numeric_arguments
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.sql.definitions import check_metric_forms, check_portable_window, with_converted_sql
+from slayer.sql.definitions import check_metric_forms, with_converted_sql
 from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.window_detect import holds_window
+from slayer.engine.window_columns import WINDOW_FIELD_PREFIX
 
 __all__ = [
     "SOURCE_READER_PREFIX", "ColumnTypes", "check_metric_forms", "check_portable_fields", "needs_live_types",
@@ -245,9 +249,9 @@ def _resolved_field(
         return field.with_native(form.text, windowed=holds_window(form.text, dialect=dialect_for_ds_type(ds_type).sqlglot_name))
     if unquoted_identifier(form.text) is not None:
         return field.with_native(form.text)
-    check_portable_window(form.text, field=field.name, dataset=dataset.name)
-    return field.with_native(portable_native(form.text, field=field.name, dataset=dataset, datasets=datasets,
-                                              ds_type=ds_type, live=live))
+    native = portable_native(form.text, field=field.name, dataset=dataset, datasets=datasets, ds_type=ds_type, live=live)
+    return field.with_native(native, windowed=holds_window(native, dialect=dialect_for_ds_type(ds_type).sqlglot_name),
+                             states_nulls=True)
 
 
 def _metric_readers(dataset: SlayerDataset, *, live: ColumnTypes, ds_type: str | None) -> list[DatasetField]:
@@ -272,4 +276,29 @@ def resolved_dataset(
     check_metric_forms(dataset, ds_type=ds_type)
     fields = [_resolved_field(c, dataset=dataset, datasets=datasets, ds_type=ds_type, live=live)
               for c in dataset.fields]
+    fields = _filter_windows(fields, dataset=dataset.name, dialect=dialect_for_ds_type(ds_type).sqlglot_name)
     return dataset.model_copy(update={"fields": [*fields, *_metric_readers(dataset, live=live, ds_type=ds_type)]})
+
+
+def _filter_windows(fields: list[DatasetField], *, dataset: str, dialect: str) -> list[DatasetField]:
+    """Each window in a field's ``filter`` read as a windowed column of ``dataset``: a hidden field running it as
+    written (the database's own NULL placement), the filter masking on that column."""
+    extra: dict[str, DatasetField] = {}
+    out: list[DatasetField] = []
+    for field in fields:
+        if not field.filter or not holds_window(field.filter, dialect=dialect):
+            out.append(field)
+            continue
+
+        def column(node: SqlExpression) -> SqlExpression:
+            if not isinstance(node, exp.Window):
+                return node
+            native = node.sql(dialect=dialect)
+            name = WINDOW_FIELD_PREFIX + hashlib.sha256(native.encode()).hexdigest()[:16]
+            extra.setdefault(name, DatasetField.model_construct(name=name, hidden=True).with_native(
+                native, windowed=True))
+            return exp.column(name, table=dataset)
+
+        masked = sqlglot.parse_one(field.filter, dialect=dialect).transform(column)
+        out.append(field.model_copy(update={"filter": masked.sql(dialect=dialect)}))
+    return [*out, *extra.values()]

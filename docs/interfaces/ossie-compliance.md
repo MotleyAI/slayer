@@ -31,15 +31,15 @@ cases are:
 
 | Database | Pass | Refused | Gap |
 |---|---|---|---|
-| SQLite | 185 | 0 | 21 |
-| DuckDB | 185 | 0 | 21 |
-| PostgreSQL | 185 | 0 | 21 |
-| MySQL | 184 | 1 | 21 |
-| ClickHouse | 185 | 0 | 21 |
-| SQL Server | 181 | 4 | 21 |
-| Trino | 185 | 0 | 21 |
-| Snowflake | 185 | 0 | 21 |
-| BigQuery | 185 | 0 | 21 |
+| SQLite | 206 | 0 | 0 |
+| DuckDB | 206 | 0 | 0 |
+| PostgreSQL | 206 | 0 | 0 |
+| MySQL | 205 | 1 | 0 |
+| ClickHouse | 206 | 0 | 0 |
+| SQL Server | 202 | 4 | 0 |
+| Trino | 206 | 0 | 0 |
+| Snowflake | 206 | 0 | 0 |
+| BigQuery | 206 | 0 | 0 |
 
 | Construct | Example | Status |
 |---|---|---|
@@ -47,32 +47,11 @@ cases are:
 | `REGEXP_LIKE` | `REGEXP_LIKE(orders.status, '^pe')`, on SQL Server before 2025 | refused |
 | `REGEXP_EXTRACT` | `REGEXP_EXTRACT(orders.status, 'e.d')`, on SQL Server before 2025 | refused |
 | `REGEXP_REPLACE` | `REGEXP_REPLACE(orders.status, 'n', 'N')`, on SQL Server before 2025 | refused |
-| `ROW_NUMBER` | `ROW_NUMBER() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `RANK` | `RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `DENSE_RANK` | `DENSE_RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `NTILE` | `NTILE(2) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `PERCENT_RANK` | `PERCENT_RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `CUME_DIST` | `CUME_DIST() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `LAG` | `LAG(orders.amount, 1, 0) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `LEAD` | `LEAD(orders.amount, 1, 0) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `FIRST_VALUE` | `FIRST_VALUE(orders.amount) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `LAST_VALUE` | `LAST_VALUE(orders.amount) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `NTH_VALUE` | `NTH_VALUE(orders.amount, 2) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `RUNNING TOTAL` | `SUM(orders.amount) OVER (ORDER BY orders.order_date)` in a query dimension | planned |
-| `RUNNING AVERAGE` | `AVG(…) OVER (ORDER BY … ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)` in a query dimension | planned |
-| `PARTITION TOTALS` | `SUM(orders.amount) OVER (PARTITION BY orders.region)` in a query dimension | planned |
-| `PERCENT OF TOTAL` | `orders.amount / SUM(orders.amount) OVER () * 100` in a query dimension | planned |
-| `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | a window frame in a query dimension | planned |
-| `ROWS BETWEEN N PRECEDING AND N FOLLOWING` | a window frame in a query dimension | planned |
-| `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | a window frame in a query dimension | planned |
-| `NULLS FIRST` | `NULLS FIRST` in a window's `ORDER BY` in a query dimension | planned |
-| `NULLS LAST` | `NULLS LAST` in a window's `ORDER BY` in a query dimension | planned |
-| `DEFAULT NULL PLACEMENT` | Ossie's default NULL placement in a window's `ORDER BY` | planned |
 
-Ossie's window functions are refused in a query's dimensions; a dataset field's expression may hold one (see
-[Datasets](../concepts/datasets.md#window-functions-in-a-fields-expression)), and SLayer's own query language
-computes ranks, offsets and running totals with its transforms (see
-[Expressions](../concepts/expressions.md#transform-functions)). Ossie does not fix `DAYOFWEEK`'s numbering or
+Ossie's window functions run in every position (see
+[SQL window functions](../concepts/expressions.md#sql-window-functions-over)); `COUNT(DISTINCT …)`, `MEDIAN` and
+`PERCENTILE_CONT` under `OVER` run only where the database windows them (see
+[Database support](../database-support.md#window-functions)). Ossie does not fix `DAYOFWEEK`'s numbering or
 `MILLISECOND`'s meaning, so SLayer rules them: `EXTRACT(DAYOFWEEK FROM x)` is ISO (Monday 1, Sunday 7), as
 `date_part('day_of_week', x)` is, and `EXTRACT(MILLISECOND FROM x)` is the millisecond component (0 to 999, truncated).
 Both are parts only: `DAYOFWEEK(x)` and `MILLISECOND(x)` are refused, as those function names mean other numberings
