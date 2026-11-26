@@ -53,7 +53,8 @@ pyodbc = {version = ">=5.0", optional = true}
 sqlalchemy-bigquery = {version = ">=1.11", optional = true, python = "<3.15"}
 # DuckDB + jafgen are core deps so the bundled `slayer datasources create demo`
 # works after a single `pip install motley-slayer`. 1.1 is the first catalog with every key column ingestion reads.
-duckdb = ">=1.1"
+# 2.0 drops relation fetch methods and changes an emulated percentile; DEV-2482 lifts the cap.
+duckdb = ">=1.1,<2.0"
 duckdb-engine = ">=0.13"
 # The demo data (and the count the docs show) depends on this exact jafgen version.
 jafgen = "0.4.14"
@@ -123,7 +124,7 @@ psycopg2-binary = "^2.9.11"
 asyncpg = ">=0.27"
 aiomysql = ">=0.2"
 pytest-benchmark = "^5.2.3"
-duckdb = ">=1.1"
+duckdb = ">=1.1,<2.0"
 duckdb-engine = ">=0.13"
 nbclient = ">=0.10"
 nbformat = ">=5.10"

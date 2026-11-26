@@ -8630,4 +8630,4 @@ trino = ["trino"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "02d54fe889e6f838d4a88eaa4a9b3a28554062daaf3258f309879f7bdf82511b"
+content-hash = "89dd967cadc830d6e54db6da7cbe2e6656eee82ffd5ea72e808020f97002ad5f"
