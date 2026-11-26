@@ -42,6 +42,11 @@ async def _sql(expression: str, *, dialect: str, dimensions: tuple[str, ...] = (
     return " ".join(sql.split())
 
 
+def _unquoted(sql: str) -> str:
+    """``sql`` without its quoted identifiers: an output alias names its aggregation."""
+    return re.sub(r'`[^`]*`|"[^"]*"|\[[^\]]*\]', "", sql)
+
+
 def _sqlglot(dialect: str) -> str:
     return dialect_for_ds_type(dialect).sqlglot_name
 
@@ -70,7 +75,9 @@ def _without_output_alias(sql: str, *, dialect: str) -> str:
 async def test_distinct_aggregate_is_the_sql_distinct_form(dialect: str, agg: str, sql_agg: str) -> None:
     """DISTINCT sum and average: ``SUM/AVG(DISTINCT x)`` on every dialect."""
     sql = await _sql(f"{agg}(orders.qty)", dialect=dialect)
-    assert f"{sql_agg}(DISTINCT ORDERS.QTY)" in sql.upper().replace("`", "").replace('"', "")
+    # SQL Server's AVG of an integer is an integer: the value is read as a float.
+    operand = "CAST(ORDERS.QTY AS FLOAT)" if (dialect, agg) == ("tsql", "avg_distinct") else "ORDERS.QTY"
+    assert f"{sql_agg}(DISTINCT {operand})" in sql.upper().replace("`", "").replace('"', "")
 
 
 @pytest.mark.parametrize("dialect", TIER1)
@@ -94,11 +101,21 @@ async def test_ossie_spelling_emits_the_native_sql(dialect: str, ossie: str, nat
 # --------------------------------------------------------------------------- #
 # percentile_disc
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("dialect", ["postgres", "snowflake"])
-@pytest.mark.parametrize("column", ["amount", "status", "order_date"])
+@pytest.mark.parametrize(("dialect", "column"), [
+    ("postgres", "amount"), ("postgres", "status"), ("postgres", "order_date"), ("snowflake", "amount"),
+])
 async def test_percentile_disc_is_native_within_group(dialect: str, column: str) -> None:
     sql = await _sql(f"percentile_disc(orders.{column}, 0.5)", dialect=dialect)
     assert f"PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY orders.{column})" in sql
+
+
+@pytest.mark.parametrize("column", ["status", "order_date"])
+async def test_percentile_disc_on_snowflake_non_numeric_is_the_split(column: str) -> None:
+    """Snowflake's ``PERCENTILE_DISC`` orders numbers only."""
+    sql = _unquoted(await _sql(f"percentile_disc(orders.{column}, 0.5)", dialect="snowflake",
+                               dimensions=("orders.id",))).upper()
+    assert "ROW_NUMBER() OVER" in sql
+    assert "PERCENTILE_DISC" not in sql
 
 
 @pytest.mark.parametrize("column", ["amount", "status", "order_date"])
@@ -117,8 +134,8 @@ async def test_percentile_disc_on_sqlite_calls_the_udf(column: str) -> None:
 @pytest.mark.parametrize("dialect", ["mysql", "trino"])
 @pytest.mark.parametrize("column", ["amount", "status", "order_date"])
 async def test_percentile_disc_is_the_ordered_set_split(dialect: str, column: str) -> None:
-    sql = (await _sql(f"percentile_disc(orders.{column}, 0.5)", dialect=dialect,
-                      dimensions=("orders.id",))).upper()
+    sql = _unquoted(await _sql(f"percentile_disc(orders.{column}, 0.5)", dialect=dialect,
+                               dimensions=("orders.id",))).upper()
     assert "ROW_NUMBER() OVER" in sql
     assert not any(name in sql for name in ("PERCENTILE_DISC", "PERCENTILE_CONT", "APPROX"))
 
@@ -137,14 +154,15 @@ async def test_percentile_disc_on_sql_server_numeric_is_native_windowed() -> Non
 
 @pytest.mark.parametrize("column", ["status", "order_date", "created_at", "is_paid"])
 async def test_percentile_disc_on_sql_server_non_numeric_is_the_split(column: str) -> None:
-    sql = (await _sql(f"percentile_disc(orders.{column}, 0.5)", dialect="tsql", dimensions=("orders.id",))).upper()
+    sql = _unquoted(await _sql(f"percentile_disc(orders.{column}, 0.5)", dialect="tsql",
+                               dimensions=("orders.id",))).upper()
     assert "ROW_NUMBER() OVER" in sql
     assert "PERCENTILE_DISC" not in sql
 
 
 @pytest.mark.parametrize("column", ["amount", "status", "order_date"])
 async def test_percentile_disc_on_clickhouse_is_never_reservoir_sampled(column: str) -> None:
-    sql = (await _sql(f"percentile_disc(orders.{column}, 0.5)", dialect="clickhouse")).lower()
+    sql = _unquoted(await _sql(f"percentile_disc(orders.{column}, 0.5)", dialect="clickhouse")).lower()
     assert re.search(r"\bquantile\(", sql) is None
     assert "percentile_disc" not in sql
 

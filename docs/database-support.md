@@ -169,7 +169,8 @@ everywhere.
 
 | Engine | `percentile_disc` | `percentile_approx` |
 |---|---|---|
-| Postgres / Snowflake | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)` | `PERCENTILE_CONT` (exact) on Postgres; `APPROX_PERCENTILE(x, p)` on Snowflake |
+| Postgres | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)` | `percentile` (exact) |
+| Snowflake | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)` over a number, the ranked subquery otherwise | `APPROX_PERCENTILE(x, p)` |
 | DuckDB | `QUANTILE_DISC` | `APPROX_QUANTILE(x, p)` |
 | SQLite | the `percentile_disc(x, p)` UDF | `percentile` (exact) |
 | MySQL / Trino / ClickHouse | the value ranked ⌈p·n⌉ over `ROW_NUMBER`/`COUNT` windows in a subquery | exact on MySQL; `approx_percentile(x, p)` on Trino; `quantile(p)(x)` on ClickHouse |

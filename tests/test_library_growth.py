@@ -196,16 +196,16 @@ class TestRenameGates:
         assert gate_findings(reserved=reserved, gates=gates) == ["new_window"]
 
     def test_a_stepped_gate_passes(self) -> None:
-        reserved, gates = _with("new_window", {"SlayerModel": 31, "SlayerQuery": 20, "Memory": 15})
+        reserved, gates = _with("new_window", {"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16})
         assert gate_findings(reserved=reserved, gates=gates) == []
 
     @pytest.mark.parametrize(("second", "caught"), [
-        ({"SlayerModel": 32, "SlayerQuery": 20, "Memory": 16}, ["new_a", "new_b"]),
-        ({"SlayerModel": 32, "SlayerQuery": 21, "Memory": 16}, []),
-        ({"SlayerModel": 31, "SlayerQuery": 20, "Memory": 15}, []),
+        ({"SlayerModel": 34, "SlayerQuery": 21, "Memory": 17}, ["new_a", "new_b"]),
+        ({"SlayerModel": 34, "SlayerQuery": 22, "Memory": 17}, []),
+        ({"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16}, []),
     ], ids=["not-stepped", "stepped", "same-release"])
     def test_later_gates_step_each_other(self, second: dict[str, int], caught: list[str]) -> None:
-        reserved, gates = _with("new_a", {"SlayerModel": 31, "SlayerQuery": 20, "Memory": 15})
+        reserved, gates = _with("new_a", {"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16})
         gates = {**gates, "new_b": second}
         assert gate_findings(reserved=reserved | {"new_b"}, gates=gates) == caught
 

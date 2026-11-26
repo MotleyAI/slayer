@@ -42,13 +42,17 @@ def _run(expr: str, *, ds_type: str | None = None) -> ExprResult:
     )
 
 
-def _cube(sql: str, *, name: str = "m") -> dict[str, Any]:
-    return {"name": "orders", "sql_table": "orders", "dimensions": [ID],
+def _cube(sql: str, *, name: str = "m", dimensions: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
+    return {"name": "orders", "sql_table": "orders", "dimensions": [ID, *dimensions],
             "measures": [{"name": name, "type": "number", "sql": sql}]}
 
 
-def _cube_text(sql: str, *, target: str | None = None) -> str | None:
-    project = CubeProject.model_validate({"cubes": [_cube(sql)]})
+#: Declares ``amount``'s type: offline, ``percentile_disc``'s operand needs one, as ``min`` / ``max``'s does.
+AMOUNT = {"name": "amount", "sql": "{CUBE}.amount", "type": "number"}
+
+
+def _cube_text(sql: str, *, target: str | None = None, dimensions: tuple[dict[str, Any], ...] = ()) -> str | None:
+    project = CubeProject.model_validate({"cubes": [_cube(sql, dimensions=dimensions)]})
     result = CubeToSlayerConverter(project=project, data_source=DS, target_dialect=target).convert()
     found = datasets_of(result)["orders"].get_metric("m")
     return None if found is None else found.text
@@ -79,19 +83,21 @@ def test_converts(sql: str, expected: str) -> None:
     assert result.expression == expected
 
 
-@pytest.mark.parametrize(("sql", "head"), [
-    ("SUM(DISTINCT amount) FILTER (WHERE status = 'paid')", "sum_distinct(amount)"),
-    ("AVG(DISTINCT amount) FILTER (WHERE status = 'paid')", "avg_distinct(amount)"),
+#: A FILTER masks the operand, as for every aggregate the importer reads.
+MASKED = "CASE WHEN status = 'paid' THEN amount END"
+
+
+@pytest.mark.parametrize(("sql", "expected"), [
+    ("SUM(DISTINCT amount) FILTER (WHERE status = 'paid')", f"sum_distinct({MASKED})"),
+    ("AVG(DISTINCT amount) FILTER (WHERE status = 'paid')", f"avg_distinct({MASKED})"),
     ("PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY amount) FILTER (WHERE status = 'paid')",
-     "percentile_disc(amount, p=0.5)"),
-    ("APPROX_PERCENTILE(amount, 0.5) FILTER (WHERE status = 'paid')", "percentile_approx(amount, p=0.5)"),
+     f"percentile_disc({MASKED}, p=0.5)"),
+    ("APPROX_PERCENTILE(amount, 0.5) FILTER (WHERE status = 'paid')", f"percentile_approx({MASKED}, p=0.5)"),
 ])
-def test_filtered_form_converts(sql: str, head: str) -> None:
+def test_filtered_form_converts(sql: str, expected: str) -> None:
     result = _run(sql)
     assert result.ok, result.reason
-    assert result.expression is not None
-    assert result.expression.startswith(head)
-    assert "FILTER" in result.expression.upper()
+    assert result.expression == expected
 
 
 @pytest.mark.parametrize("ds_type", ["trino", "snowflake"])
@@ -159,7 +165,7 @@ class TestCube:
 
     def test_discrete_percentile(self) -> None:
         """Spec: Discrete percentile."""
-        assert _cube_text("PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY {CUBE}.amount)") == \
+        assert _cube_text("PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY {CUBE}.amount)", dimensions=(AMOUNT,)) == \
             "percentile_disc(amount, p=0.9)"
 
     @pytest.mark.parametrize("target", ["trino", "snowflake"])

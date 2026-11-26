@@ -18,7 +18,7 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
-from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
+from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind
 from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import ScalarCallKey
@@ -51,9 +51,9 @@ from slayer.sql.dialects.base import (
     iso_text,
 )
 from slayer.sql.dialects._ordered_set_split import (
-    RANKED,
     PercentileColumns,
-    discrete_percentile,
+    marked_ranked,
+    ranked_unless_numeric,
     split_percentile_selects,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
@@ -223,7 +223,7 @@ def _percentile_columns(node: exp.WithinGroup) -> Optional[PercentileColumns]:
     if isinstance(node.this, exp.PercentileCont):
         return _windowed(exp.PercentileCont)
     if isinstance(node.this, exp.PercentileDisc):
-        return discrete_percentile if node.meta.get(RANKED) else _windowed(exp.PercentileDisc)
+        return marked_ranked(node) or _windowed(exp.PercentileDisc)
     return None
 
 
@@ -649,9 +649,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     ) -> Expression:
         """Native over a number; ranked otherwise (SQL Server's ``PERCENTILE_DISC`` orders numbers only)."""
         node = super().build_percentile_disc(p=p, col_expr=col_expr, input_type=input_type)
-        if kind_of(input_type) not in (TypeKind.INT, TypeKind.DOUBLE):
-            node.meta[RANKED] = True
-        return node
+        return ranked_unless_numeric(node, input_type=input_type) if isinstance(node, exp.WithinGroup) else node
 
     def build_percentile_approx(
         self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType] = None,

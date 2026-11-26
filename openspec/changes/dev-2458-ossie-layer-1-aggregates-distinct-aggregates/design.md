@@ -60,7 +60,9 @@ carry the new names.
   `quantile(p)` becomes `percentile_approx`'s native form.
 - **(codex #4)** — ClickHouse percentile translations are guarded by a non-NULL count so an empty or all-NULL group is
   NULL, never NaN or a type default; tested for nullable / non-nullable numeric, date and timestamp inputs.
-- `percentile_disc` per dialect: native `PERCENTILE_DISC … WITHIN GROUP` on Postgres, DuckDB, Snowflake; the SQLite UDF
+- `percentile_disc` per dialect: native `PERCENTILE_DISC … WITHIN GROUP` on Postgres and DuckDB, and on Snowflake over
+  numeric input only (Snowflake's `PERCENTILE_DISC` orders numbers only; text, date, timestamp and boolean take the
+  ordered-set split, as on SQL Server); the SQLite UDF
   widened to any ordered type; the ordered-set split with a new discrete pick (rank ⌈p·n⌉ of the non-NULL values,
   rank 1 at p = 0) on MySQL and Trino; BigQuery's analytic `PERCENTILE_DISC(x, p) OVER (PARTITION BY keys)` collapsed
   by MAX via the split; ClickHouse via the split unless a native exact function's index rule matches ⌈p·n⌉ exactly.
@@ -87,6 +89,7 @@ carry the new names.
 - **D12 (default), codex #8 rejected** — dbt approximate + discrete → `percentile_disc`: the exact discrete value is
   within any approximation, which importers P1 accepts (meaning, not algorithm); refusing would drop an answerable
   measure. Codex's coverage point is folded: tests cover the measure and the metric path.
+- `percentile_disc` implies no operand type: offline, a Cube operand needs a declared or live type, as for `min` / `max`.
 - **(codex #9)** — Only `APPROX_PERCENTILE(x, p)` with a literal fraction and no accuracy / weight argument converts;
   BigQuery `APPROX_QUANTILES` (bucket / array) is dropped with a report.
 

@@ -108,7 +108,8 @@ async def test_association_dimension(engine: SlayerQueryEngine) -> None:
     """Scenarios: A dimension the home does not determine (sum_distinct and percentile_disc)."""
     got = await _by(engine, "order_items.product", m("sum_distinct(orders.qty)", "s"),
                     m("percentile_disc(orders.amount, 0.5)", "p"))
-    assert {k: (num(r["s"]), num(r["p"])) for k, r in got.items()} == {"A": (6, 20), "B": (3, 10)}
+    # Orders without items form the NULL product's group, as for every aggregate.
+    assert {k: (num(r["s"]), num(r["p"])) for k, r in got.items()} == {"A": (6, 20), "B": (3, 10), None: (1, 40)}
 
 
 # --------------------------------------------------------------------------- #

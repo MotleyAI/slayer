@@ -328,7 +328,8 @@ class TestCalculatedMeasures:
         assert found.text == text
 
     def test_percentile_disc_is_imported(self) -> None:
-        result = import_cube([cube(metrics=[
+        # Offline, percentile_disc's operand needs a declared type, as min / max's does.
+        result = import_cube([cube(dimensions=[dim("amount", "{CUBE}.amount", type="number")], metrics=[
             meas("p", "number", "PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY {CUBE}.amount)")])])
         found = datasets_of(result)["orders"].get_metric("p")
         assert found is not None, result.report.issues

@@ -13,6 +13,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
 
+from slayer.core.enums import DataType, TypeKind, kind_of
+
 _ROWS = "__slayer_os"
 _COLUMN = "__slayer_o"
 
@@ -79,6 +81,18 @@ def interpolated_percentile(p: Expr, value: Expr, partition: Sequence[Expr]
             this=fraction, expression=exp.Paren(this=exp.Sub(this=at(exp.Ceil), expression=low.copy()))))
 
     return _ranked(value, partition), pick
+
+
+def ranked_unless_numeric(node: exp.WithinGroup, *, input_type: Optional[DataType]) -> exp.WithinGroup:
+    """``node`` marked for ranking unless it orders numbers (a native ``PERCENTILE_DISC`` that orders numbers only)."""
+    if kind_of(input_type) not in (TypeKind.INT, TypeKind.DOUBLE):
+        node.meta[RANKED] = True
+    return node
+
+
+def marked_ranked(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    """Ranks only the nodes marked for it."""
+    return discrete_percentile if node.meta.get(RANKED) else None
 
 
 def ranked_percentiles(node: exp.WithinGroup) -> Optional[PercentileColumns]:

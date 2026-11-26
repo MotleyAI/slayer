@@ -226,10 +226,9 @@ def test_non_passthrough_function_clean_fails():
     assert not r.ok
 
 
-def test_sum_distinct_clean_fails():
-    # Only COUNT(DISTINCT) is supported; SUM/AVG/MIN/MAX DISTINCT clean-fail.
-    assert not _run("SUM(DISTINCT amount)").ok
-    assert not _run("AVG(DISTINCT amount)").ok
+def test_sum_and_avg_distinct_convert():
+    assert _run("SUM(DISTINCT amount)").expression == "sum_distinct(amount)"
+    assert _run("AVG(DISTINCT amount)").expression == "avg_distinct(amount)"
 
 
 # ───────────────────────── cross-dataset refs ────────────────────────────────

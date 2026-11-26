@@ -28,6 +28,7 @@ from slayer.sql.dialects.base import (
     iso_text,
     zone_name,
 )
+from slayer.sql.dialects._ordered_set_split import marked_ranked, ranked_unless_numeric, split_percentile_selects
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 from slayer.sql.dialects.reflection import (
@@ -197,6 +198,17 @@ class SnowflakeDialect(SqlDialect):
     def naive_timestamp_type(self) -> exp.DataType:
         """``TIMESTAMP_NTZ``: a bare ``TIMESTAMP`` follows the session's ``TIMESTAMP_TYPE_MAPPING``."""
         return exp.DataType.build("TIMESTAMPNTZ")
+
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """Native over a number; ranked otherwise (Snowflake's ``PERCENTILE_DISC`` orders numbers only)."""
+        node = super().build_percentile_disc(p=p, col_expr=col_expr, input_type=input_type)
+        return ranked_unless_numeric(node, input_type=input_type) if isinstance(node, exp.WithinGroup) else node
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """A ``PERCENTILE_DISC`` over a non-number is ranked in a subquery."""
+        return split_percentile_selects(statement.copy(), columns=marked_ranked)
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         return info_schema_comments_query(
