@@ -7,17 +7,13 @@ The public surface in ``slayer.sql.sql_expr``:
   preservation), and returns the canonical string.
 - ``has_window_function(text) -> bool`` — re-export of
   ``slayer.sql.window_detect.has_window_function``.
-- ``assert_no_window_in_filter(text, *, source) -> None`` — raises
-  ``IllegalWindowInFilterError`` if ``text`` contains ``OVER(...)``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import IllegalWindowInFilterError
 from slayer.sql.sql_expr import (
-    assert_no_window_in_filter,
     canonicalize_sql,
     has_window_function,
 )
@@ -196,24 +192,6 @@ class TestWindowDetection:
 
     def test_empty_string_returns_false(self):
         assert not has_window_function("")
-
-    def test_assert_raises_on_window(self):
-        with pytest.raises(IllegalWindowInFilterError) as exc:
-            assert_no_window_in_filter(
-                "SUM(x) OVER (PARTITION BY y)",
-                source="Column.filter on orders.foo",
-            )
-        # The supplied source is part of the public diagnostic surface.
-        assert "Column.filter on orders.foo" in str(exc.value)
-
-    def test_assert_passes_on_plain_filter(self):
-        # No exception — function returns None.
-        assert assert_no_window_in_filter(
-            "status = 'paid'", source="Column.filter on orders.foo",
-        ) is None
-
-    def test_assert_passes_on_empty(self):
-        assert assert_no_window_in_filter("", source="(test)") is None
 
 
 # ---------------------------------------------------------------------------

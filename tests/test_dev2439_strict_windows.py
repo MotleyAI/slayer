@@ -172,13 +172,10 @@ async def test_an_aggregate_takes_ossies_arguments(engine: SlayerQueryEngine, ag
     await strict_error(engine, _query(f"{aggregate} OVER () > 1"), windowed)
 
 
-async def test_native_still_refuses_a_window_in_the_filter(engine: SlayerQueryEngine) -> None:
+async def test_native_evaluates_a_window_in_the_filter_before_and_after_strict(engine: SlayerQueryEngine) -> None:
     query = _query(f"ROW_NUMBER() {ORDERED} = 1")
-    with pytest.raises(Exception) as before:  # noqa: PT011 — whatever native raises today
-        await engine.execute(query)
+    before = await engine.execute(query)
     await strict_error(engine, query, "E_WINDOW_IN_WHERE")
-    with pytest.raises(Exception) as after:  # noqa: PT011 — the same, after the strict reading
-        await engine.execute(query)
-    assert type(after.value) is type(before.value)
-    assert str(after.value) == str(before.value)
-    assert "window function" in str(before.value)
+    after = await engine.execute(query)
+    assert [r["orders.order_id"] for r in before.data] == ["O3"]
+    assert [r["orders.order_id"] for r in after.data] == ["O3"]

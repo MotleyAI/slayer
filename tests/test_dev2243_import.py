@@ -221,8 +221,8 @@ async def test_a_windowed_metric_is_reported_not_refused(tmp_path: Path, monkeyp
     result = await run_import(storage, path)
     assert result.stored == ["tpcds_retail_model"]
     assert await storage.get_semantic_model_text("tpcds_retail_model", DS) == path.read_text(encoding="utf-8")
-    assert {e.entity for e in kinds(result, "not_evaluable")} >= {"cumulative_sales"}
-    assert all("window" in e.message.lower() for e in kinds(result, "not_evaluable"))
+    assert not {e.entity for e in kinds(result, "not_evaluable")} & {
+        "cumulative_sales", "brand_rank_in_store", "monthly_sales_change"}
 
 
 # --------------------------------------------------------------------------- #

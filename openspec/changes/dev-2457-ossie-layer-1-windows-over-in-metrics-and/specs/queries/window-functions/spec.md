@@ -88,7 +88,7 @@ A window function whose arguments, partition keys and order keys hold no aggrega
 
 #### Scenario: A row-level window as a metric
 - **WHEN** a query has the dimension `orders.region` and the metric `SUM(orders.amount) OVER (PARTITION BY orders.region)`
-- **THEN** it fails with the position typing error for an aggregate-free measure over a non-dimension column, as the metric `orders.amount` does
+- **THEN** it fails with the position typing error for an aggregate-free measure over a non-dimension column, as the metric `round(orders.amount, 2)` does
 
 #### Scenario: The query zone applies inside the window
 - **WHEN** dataset `events(id, at)` holds the UTC instants `(1, 2024-01-01 22:30)` and `(2, 2024-01-01 23:30)`, and a raw-row query in zone `Europe/Berlin` lists `events.id` and `ROW_NUMBER() OVER (PARTITION BY CAST(events.at AS DATE) ORDER BY events.id)`

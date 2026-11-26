@@ -67,5 +67,5 @@ Each aggregate call of a model-scoped metric SHALL be a component homed on the o
 - **THEN** it returns 162.5 (650 / 4), the customer count including the customer without orders
 
 #### Scenario: A dataset-scoped windowed metric answers under strict
-- **WHEN** dataset `orders` of the retail model gains the metric `revenue_rank` with expression `RANK() OVER (ORDER BY SUM(amount) DESC)`, and `{"dimensions": ["orders.status"], "metrics": ["orders.revenue_rank"]}` runs under `ossie-l3` and under `slayer`
+- **WHEN** dataset `orders` of the retail model gains the metric `revenue_rank` with expression `RANK() OVER (ORDER BY SUM(amount) DESC)`, and `{"dimensions": ["orders.customer_id"], "metrics": ["orders.revenue_rank"]}` runs under `ossie-l3` and under `slayer`
 - **THEN** both return the same rows, and `{"metrics": ["running_revenue"]}` still raises `E_DEFERRED_WINDOWED_METRIC` under `ossie-l3` while answering under `slayer`

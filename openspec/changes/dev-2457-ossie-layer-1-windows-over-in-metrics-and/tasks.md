@@ -12,7 +12,7 @@
 - [ ] 2.1 Remove the `windows=` parser mode and `_reject_over` from `slayer/core/syntax.py` so every Mode B parse reads `OVER`; resolve an omitted NULL placement to Ossie's default at parse (design.md decision 16); add the literal and frame shape checks of the spec; verify the "Malformed windows are refused" tests and `tests/test_dev2439_window_syntax.py` pass.
 - [ ] 2.2 Remove the regex window gates (`check_metric_text`, `DatasetMetric._reject_raw_window_function`, `QueryMetric._check_metric`'s window check, `_validate_query_filter_string`'s window check, `check_portable_window`, the unused `assert_no_window_in_filter`); retire `has_window_function` if no caller remains; verify `ruff` and the one-reader law tests (`tests/test_dev2172_one_mode_b_reader.py`, `tests/test_dev2187_one_reader_law.py`) pass.
 - [ ] 2.3 Add the window key kind to `slayer/core/keys.py` with the `children()` / `map_children()` protocol and a derived phase (design.md decision 15); verify the key-traversal law tests pass and two windows differing only in how the placement is written intern to one key.
-- [ ] 2.4 Keep `slayer/core/ossie_conformance.py` refusing a window in a window, a non-Ossie function and an out-of-order frame under strict, reading the one grammar; verify `tests/test_dev2439_strict_windows.py` and `tests/test_dev2217_errors.py` pass unchanged.
+- [ ] 2.4 Keep `slayer/core/ossie_conformance.py` refusing a window in a window, a non-Ossie function and an out-of-order frame under strict, reading the one grammar; verify `tests/test_dev2439_strict_windows.py` (its native-refusal test aligned to native evaluation) and `tests/test_dev2217_errors.py` pass.
 
 ## 3. Binding and typing
 

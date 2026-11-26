@@ -1,8 +1,7 @@
 """A windowed field is a column of its dataset: computed over the dataset's filtered rows, then read as a column everywhere.
 
-Spec: models/field-expressions › A windowed field is a column of its dataset; › A portable windowed field is refused
-at both save doors; models/model-filters › Filters whose dataset reaches itself are refused; › Model filters are
-validated wherever read and at save time.
+Spec: models/field-expressions › A windowed field is a column of its dataset; models/model-filters › Filters whose
+dataset reaches itself are refused; › Model filters are validated wherever read and at save time.
 
 orders (id, region, amount, ordered_at, customer_id, slot):  slot is a stored copy of rn
   1 EU 10 2024-01-01 1 1 | 2 EU 20 2024-01-02 1 2 | 3 EU 30 2024-01-03 2 3 | 4 US 40 2024-01-01 2 1
@@ -25,8 +24,6 @@ from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import (
     DatasetFieldCycleError,
     DatasetFilterCycleError,
-    IllegalWindowInFilterError,
-    UnevaluableEntityError,
     UnsafeRelationshipInputError,
 )
 from slayer.core.field_expression import DialectEntry, ExpressionObject
@@ -490,19 +487,10 @@ class TestPortableWindowedField:
         return _orders_like("orders_portable", fields=[DatasetField(
             name="rn", datatype=DataType.INTEGER, expression=ExpressionObject(**expression))])
 
-    @pytest.mark.parametrize("door", ["engine", "storage"])
-    async def test_both_doors_refuse_a_portable_window(self, engine, door):
-        dataset = self._portable(sql=RN)
-        save = engine.save_dataset if door == "engine" else engine.storage.save_dataset
-        with pytest.raises(IllegalWindowInFilterError, match="rn"):
-            await save(dataset)
-        assert await engine.storage.get_dataset("orders_portable", data_source="test") is None
-
-    async def test_a_stored_portable_window_fails_the_query(self, engine):
+    async def test_a_stored_portable_window_answers_its_query(self, engine):
         await engine.storage.save_dataset(self._portable(sql=RN), _validate=False)
-        query = SlayerQuery.model_validate(_raw("orders_portable", "id", "rn"))
-        with pytest.raises(IllegalWindowInFilterError, match="rn"):
-            await engine.execute(query)
+        resp = await _run(engine, _raw("orders_portable", "id", "rn"))
+        assert _num(_by_id(resp, "orders_portable", "orders_portable.rn")) == RN_OF_ID
 
     @pytest.mark.parametrize("door", ["engine", "storage"])
     async def test_a_windowed_dialect_entry_is_accepted_beside_a_portable_window(self, engine, door):
@@ -513,26 +501,26 @@ class TestPortableWindowedField:
         resp = await _run(engine, _grouped("orders_portable", "orders_portable.rn", "sum(orders_portable.amount)"))
         assert _num(_by(resp, "orders_portable.rn", "m")) == {1: 120, 2: 70, 3: 90}
 
-    async def test_a_document_window_saves_and_its_query_is_unevaluable(self, engine):
+    async def test_a_document_window_saves_and_is_evaluated(self, engine):
         await engine.storage.save_semantic_model_text(data_source="test", name="m_doc", text=DOC_WINDOW)
         dataset = await engine.storage.get_dataset("doc_orders", data_source="test")
         assert dataset is not None
         await engine.storage.save_dataset(dataset)
-        query = SlayerQuery.model_validate(_raw("doc_orders", "rn"))
-        with pytest.raises(UnevaluableEntityError, match="doc_orders.rn"):
-            await engine.execute(query)
+        resp = await _run(engine, _raw("doc_orders", "id", "rn"))
+        assert _num(_by_id(resp, "doc_orders", "doc_orders.rn")) == {i: i for i in range(1, 8)}
 
     @pytest.mark.parametrize("door", ["engine", "storage"])
-    async def test_an_authored_document_window_is_refused(self, engine, door):
+    async def test_an_authored_document_window_is_accepted(self, engine, door):
         await engine.storage.save_semantic_model_text(data_source="test", name="m_doc", text=DOC_WINDOW)
         dataset = await engine.storage.get_dataset("doc_orders", data_source="test")
         assert dataset is not None
         added = DatasetField(name="rn2", datatype=DataType.INTEGER, expression=ExpressionObject(
-            dialects=[DialectEntry(dialect="OSSIE_SQL_2026", expression="RANK() OVER (ORDER BY id)")]))
+            dialects=[DialectEntry(dialect="OSSIE_SQL_2026", expression="RANK() OVER (ORDER BY id DESC)")]))
         changed = dataset.model_copy(update={"fields": [*dataset.fields, added]})
         save = engine.save_dataset if door == "engine" else engine.storage.save_dataset
-        with pytest.raises(IllegalWindowInFilterError, match="rn2"):
-            await save(changed)
+        await save(changed)
+        resp = await _run(engine, _raw("doc_orders", "id", "rn2"))
+        assert _num(_by_id(resp, "doc_orders", "doc_orders.rn2")) == {i: 8 - i for i in range(1, 8)}
 
 
 RANKED = "rank() over (order by amount)"
