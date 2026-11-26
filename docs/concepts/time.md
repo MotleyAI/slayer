@@ -46,7 +46,7 @@ So `orders.ordered_at <= '2024-12'` includes Dec 31 10:00, and `orders.ordered_a
 
 A date-only string in a comparison is its midnight, as in SQL: `orders.ordered_at <= '2024-12-31'` stops at `2024-12-31 00:00:00`. For the whole day write `orders.ordered_at in '2024-12-31'`, or `orders.ordered_at < '2025-01-01'` as an upper bound. Where this differs from the whole day (`<=`, `>`, `=`, `!=` or `BETWEEN` against a TIMESTAMP), the response carries a `date_only_midnight` warning naming that spelling; it is dropped in SLayer 3.0.
 
-A temporal operand is anything typed DATE or TIMESTAMP: a declared field (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `date_trunc` bucket in any position, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, a `DATE '…'` / `TIMESTAMP '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal field keeps its string meaning; a relative token or single-string `in` there is a type error naming the field — declare its `datatype`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
+A temporal operand is anything typed DATE or TIMESTAMP: a declared field (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `date_trunc` bucket in any position, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)` (or `TO_DATE(s)` / `TO_TIMESTAMP(s)`), a `DATE '…'` / `TIMESTAMP '…'` / `TIMESTAMP_NTZ '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal field keeps its string meaning; a relative token or single-string `in` there is a type error naming the field — declare its `datatype`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
 
 ## Time buckets
 
@@ -56,7 +56,7 @@ A bucket is a DATE when `expr` is a DATE and the unit (a custom granularity's ba
 
 Wherever a DATE meets a TIMESTAMP — a comparison, `in`, `IS [NOT] DISTINCT FROM`, a TIMESTAMP-typed `coalesce` / `ifnull` / `iif` / `CASE` / `greatest` / `least`, the comparison inside `nullif` (which keeps its first argument's type), and the time spine's join to a DATE axis — the DATE reads as its midnight instant, and on SQLite two temporal values compare equal whatever ISO spelling they are stored in.
 
-`year(x)` … `second(x)` are integer extraction (`month(orders.created_at)` is the month of year, 1–12), and comparing one with a date (`month(orders.created_at) = '2025-03'`) is an error naming the `date_trunc` form.
+`year(x)` … `second(x)` are integer extraction (`month(orders.created_at)` is the month of year, 1–12; `EXTRACT(DAYOFWEEK FROM x)` is the ISO weekday, Monday 1 … Sunday 7, and `EXTRACT(MILLISECOND FROM x)` the millisecond component, 0 … 999), and comparing one with a date (`month(orders.created_at) = '2025-03'`) is an error naming the `date_trunc` form.
 
 ## `date_range`
 

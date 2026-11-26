@@ -113,10 +113,10 @@ def extension_relationships(query: SlayerQuery) -> list[DatasetRelationship]:
 
 
 def test_versions_bumped() -> None:
-    # SlayerModel 30 then unwraps AGG in field expressions; 31 types BigQuery TIMESTAMP fields DateTimeTz; 32/20/15
-    # reserve the DISTINCT and percentile aggregate names.
-    assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == {
-        "SlayerModel": 32, "SlayerQuery": 20, "Memory": 15}
+    # SlayerModel 30 then unwraps AGG in field expressions; 31 types BigQuery TIMESTAMP fields DateTimeTz; 32/20/15 stamp
+    # the Ossie function and aggregate reservations.
+    assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == {"SlayerModel": 32, "SlayerQuery": 20,
+                                                                            "Memory": 15}
 
 
 @pytest.mark.parametrize("kind", STORE_KINDS)

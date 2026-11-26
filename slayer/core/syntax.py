@@ -33,10 +33,12 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DATE_PART_ALIASES,
     GRANULARITY_NAMES,
+    PART_ONLY_WORDS,
     RESERVED_NAMES,
+    WEEKDAY_CALLS,
     TimeGranularity,
-    ambiguous_weekday_message,
     normalize_aggregation_name,
+    part_call_hint,
 )
 from slayer.core.errors import (
     AggArgumentError,
@@ -51,7 +53,9 @@ from slayer.core.errors import (
 )
 from slayer.core.json_path import JsonPathError, check_key, json_path_text, parse_json_path
 from slayer.core.legacy_spellings import LegacySpan, note_legacy_spellings
-from slayer.core.keys import DATE_UNIT_ARGS, RESERVED_SCALAR_NAMES, SCALAR_FUNCTIONS, check_scalar_arity
+from slayer.core.keys import (
+    DATE_UNIT_ARGS, RESERVED_SCALAR_NAMES, SCALAR_FUNCTIONS, SCALAR_SPELLING_REGISTRY, SPELLING_REWRITE, check_scalar_arity,
+)
 from slayer.core.names import match_name
 from slayer.core.regex_pattern import RegexPattern
 from slayer.core.scalar_args import STRING_SLOTS, check_path, check_pattern, check_replacement, slot_name
@@ -203,6 +207,16 @@ class Cast(_BaseNode):
     source: Any
     type_text: str
     try_: bool = False
+    # A spelling's callee and arguments as written (``TO_DATE(s)``), as on ``ScalarCall``; not part of identity.
+    written: Optional[str] = None
+    written_args: Optional[Tuple[Any, ...]] = None
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Cast) and (self.source, self.type_text, self.try_) == (
+            other.source, other.type_text, other.try_)
+
+    def __hash__(self) -> int:
+        return hash(("Cast", self.source, self.type_text, self.try_))
 
 
 class Arith(_BaseNode):
@@ -303,6 +317,7 @@ _ORDERED_SET_ONLY = ("WITHIN GROUP is supported only as PERCENTILE_CONT(p) WITHI
                      "PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x), one fraction p, ascending order")
 _NOT_IN = "not in"
 _IN_OPS = frozenset({"in", _NOT_IN})
+_IS_NOT = "is not"
 
 
 class _Problem(ValueError):
@@ -964,7 +979,10 @@ _TRIM_FORM = (_kw("trim") + LPAR + _kw("both", "leading", "trailing")) + _fail(
 
 # -- typed literals, intervals, clock keywords ----------------------------------
 
-_TEMPORAL = _on((_kw("date", "timestamp") + _STRING), lambda toks: TemporalLiteral(kind=toks[0].lower(), text=toks[1].value))
+#: Typed-literal keywords → their literal kind (Ossie's ``TIMESTAMP_NTZ`` is SLayer's naive ``TIMESTAMP``).
+_TEMPORAL_KINDS = {"date": "date", "timestamp": "timestamp", "timestamp_ntz": "timestamp"}
+_TEMPORAL = _on((_kw(*_TEMPORAL_KINDS) + _STRING),
+                lambda toks: TemporalLiteral(kind=_TEMPORAL_KINDS[toks[0].lower()], text=toks[1].value))
 _TIME_LITERAL = (_kw("time") + _STRING) + _fail(
     "TIME '…' literals are not supported (there is no time-of-day type); compare with a TIMESTAMP '…' literal.",
 )
@@ -1028,7 +1046,8 @@ _CLOCK = _on((_kw("current_date", "current_timestamp") + ~pp.FollowedBy(LPAR)), 
 _PAREN = LPAR + expr + RPAR
 _PLACEHOLDER_ATOM = _PLACEHOLDER.copy().set_parse_action(_placeholder_node)
 _KEYWORD_LED = pp.FollowedBy(pp.Regex(
-    r"(?i:case|cast|try_cast|extract|position|substring|trim|date|timestamp|time|interval|current_date|current_timestamp"
+    r"(?i:case|cast|try_cast|extract|position|substring|trim|date|timestamp|timestamp_ntz|time|interval|current_date"
+    r"|current_timestamp"
     r"|json_value)(?![A-Za-z0-9_])"
 )) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL | _INTERVAL | _CLOCK
       | _JSON_VALUE_RETURNING)
@@ -1309,7 +1328,7 @@ def _suffix(element: pp.ParserElement, build) -> pp.ParserElement:
 
 
 def _is_op(negate: bool) -> str:
-    return "is not" if negate else "is"
+    return _IS_NOT if negate else "is"
 
 
 def _negated(node: Any, negate: bool) -> Any:
@@ -2266,7 +2285,8 @@ def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -
         written = None if node.written_args is None else tuple(_onto_path(a, path=path, memo=memo) for a in node.written_args)
         return node.model_copy(update={"args": args, "written_args": written})
     if isinstance(node, Cast):
-        return node.model_copy(update={"source": _onto_path(node.source, path=path, memo=memo)})
+        written = None if node.written_args is None else tuple(_onto_path(a, path=path, memo=memo) for a in node.written_args)
+        return node.model_copy(update={"source": _onto_path(node.source, path=path, memo=memo), "written_args": written})
     if isinstance(node, (DateTrunc, NamedArg)):
         return node.model_copy(update={"value": _onto_path(node.value, path=path, memo=memo)})
     if isinstance(node, (Arith, Cmp)):
@@ -2409,12 +2429,17 @@ def _keyword_args(
     return tuple(out), kwargs
 
 
-def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
+def aggregation_reading(call: ScalarCall | Cast) -> Optional[AggCall]:
     """The aggregation call ``call`` reads as when its owning dataset defines ``call.written``; ``None`` when it has no
     field-bearing value argument."""
     if call.written is None:
         return None
-    args = call.written_args if call.written_args is not None else call.args
+    if call.written_args is not None:
+        args = call.written_args
+    elif isinstance(call, ScalarCall):
+        args = call.args
+    else:
+        return None
     return _aggregation_candidate(call.written, args=args, kwargs=(), error=None)
 
 
@@ -2485,16 +2510,21 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
             message = f"Invalid Mode-B expression {original!r}: {problem.detail}"
             if bucket:
                 message += f" Units: {', '.join(g.value for g in TimeGranularity)} or a datasource granularity."
-            deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=message)
-            if deferred is None:
-                raise (GranularityCallError if bucket else ValueError)(message) from None
-            return deferred
-        if isinstance(built, ScalarCall):
+            unknown = func_name.lower() in _ISO_PARSERS
+            deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=None if unknown else message)
+            if deferred is not None:
+                return deferred
+            if unknown:
+                raise UnknownFunctionError(name=func_name, location=original, suggestion=problem.detail) from None
+            raise (GranularityCallError if bucket else ValueError)(message) from None
+        if isinstance(built, (ScalarCall, Cast)):
             return built.model_copy(update={"written": func_name, "written_args": args})
         return built
 
-    # Normalised to lower case so ``COALESCE`` / ``coalesce`` intern to one key.
-    if func_name.lower() in SCALAR_FUNCTIONS:
+    # A renaming spelling is its library function, written as spelled; lower case interns ``COALESCE`` / ``coalesce``.
+    registered = SCALAR_SPELLING_REGISTRY.get(func_name.lower())
+    library = func_name.lower() if registered is None or registered.dispatch == SPELLING_REWRITE else registered.dispatch
+    if library in SCALAR_FUNCTIONS:
         if kwargs:
             message = (
                 f"Invalid Mode-B expression {original!r}: scalar function "
@@ -2506,15 +2536,14 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
                 raise ValueError(message)
             return deferred
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
-        name = func_name.lower()
         try:
-            date_args = _date_args(name=name, args=args, original=original)
+            date_args = _date_args(name=library, args=args, original=original)
         except ValueError as error:
             deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=str(error))
             if deferred is None:
                 raise
             return deferred
-        return ScalarCall(name=name, args=date_args, written=func_name)
+        return ScalarCall(name=library, args=date_args, written=func_name)
 
     part = DATE_PART_ALIASES.get(func_name.lower())
     if part is not None:
@@ -2540,7 +2569,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     raise UnknownFunctionError(
         name=func_name,
         location=original,
-        suggestion=ambiguous_weekday_message(func_name) if func_name.lower() in AMBIGUOUS_WEEKDAY_NAMES else (
+        suggestion=unknown_call_hint(func_name) or (
             f"Mode-B accepts the closed scalar allowlist "
             f"({sorted(SCALAR_FUNCTIONS)}), transforms "
             f"({sorted(ALL_TRANSFORMS)}), and aggregations "
@@ -2562,7 +2591,7 @@ def _date_trunc(args: Tuple[Any, ...]) -> ParsedExpr:
     unit = args[0].value.lower()
     if not unit.isidentifier() or (unit not in GRANULARITY_NAMES and (
         unit in RESERVED_SCALAR_NAMES or unit in ALL_TRANSFORMS or normalize_aggregation_name(unit) in BUILTIN_AGGREGATIONS
-        or unit in DATE_PART_ALIASES or unit in AMBIGUOUS_WEEKDAY_NAMES
+        or unit in DATE_PART_ALIASES or unit in WEEKDAY_CALLS
     )):
         raise _Problem(f"unknown date_trunc() unit {args[0].value!r}; use a granularity such as 'month'.")
     return DateTrunc(unit=unit, value=args[1])
@@ -2611,6 +2640,44 @@ def _dateadd(args: Tuple[Any, ...]) -> ParsedExpr:
     return _dispatch_call("date_add", args=(args[2], args[1], _ossie_unit(args[0])), kwargs=(), original=_STATE.text)
 
 
+def _nvl2(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``NVL2(e, a, b)`` as ``iif(e IS NOT NULL, a, b)``."""
+    if len(args) != 3:
+        raise _Problem(f"NVL2 takes (expr, not_null_result, null_result); got {len(args)} arguments.")
+    return ScalarCall(name="iif", args=(Cmp(op=_IS_NOT, left=args[0], right=Literal(value=None)), *args[1:]))
+
+
+def _charindex(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``CHARINDEX(sub, s)`` as ``instr(s, sub)``."""
+    if len(args) != 2:
+        raise _Problem(f"CHARINDEX takes (substring, string); got {len(args)} arguments (a start position is not "
+                       f"supported).")
+    return ScalarCall(name="instr", args=(args[1], args[0]))
+
+
+#: Ossie's ISO-string parsers → the cast each one is.
+_ISO_PARSERS = {"to_date": "DATE", "to_timestamp": "TIMESTAMP_NTZ"}
+
+
+def _iso_parser_hint(name: str) -> str:
+    return (f"{name.upper()}(s) takes one ISO-8601 string and is CAST(s AS {_ISO_PARSERS[name.lower()]}); a format "
+            f"string, or any other argument count, is not supported.")
+
+
+def _iso_parser(name: str):
+    """Ossie ``TO_DATE(s)`` / ``TO_TIMESTAMP(s)`` as the ``CAST`` it is."""
+    def build(args: Tuple[Any, ...]) -> ParsedExpr:
+        if len(args) != 1:
+            raise _Problem(_iso_parser_hint(name))
+        return Cast(source=args[0], type_text=_ISO_PARSERS[name])
+    return build
+
+
+def unknown_call_hint(name: str) -> Optional[str]:
+    """Why a call of ``name`` that resolves to nothing is refused, when the name means something else."""
+    return _iso_parser_hint(name) if name.lower() in _ISO_PARSERS else part_call_hint(name)
+
+
 def _current_timestamp(args: Tuple[Any, ...]) -> ParsedExpr:
     """SQL ``CURRENT_TIMESTAMP()`` as ``now()``."""
     if args:
@@ -2618,16 +2685,15 @@ def _current_timestamp(args: Tuple[Any, ...]) -> ParsedExpr:
     return _dispatch_call("now", args=(), kwargs=(), original=_STATE.text)
 
 
-# Spellings collapsed into one library node (engine P2); each name is reserved (``SCALAR_SPELLINGS``).
+# The rewriting spellings of ``SCALAR_SPELLING_REGISTRY`` (a renaming one is dispatched as its library function).
 _SPELLINGS: Dict[str, Callable[[Tuple[Any, ...]], ParsedExpr]] = {
     "datediff": _datediff,
     "dateadd": _dateadd,
     "current_timestamp": lambda args: _current_timestamp(args),
-    "strpos": lambda args: ScalarCall(name="instr", args=args),
-    "iff": lambda args: ScalarCall(name="iif", args=args),
-    "cardinality": lambda args: ScalarCall(name="length", args=args),
-    "array_length": lambda args: ScalarCall(name="length", args=args),
-    "array_contains": lambda args: ScalarCall(name="contains", args=args),
+    "nvl2": _nvl2,
+    "charindex": _charindex,
+    "to_date": _iso_parser("to_date"),
+    "to_timestamp": _iso_parser("to_timestamp"),
     "date_trunc": _date_trunc,
     "json_extract": _json_alias("json_extract"),
     "json_extract_scalar": _json_alias("json_extract_scalar"),
@@ -2722,8 +2788,9 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
     word = arg.value.lower()
     if name == "date_part":
         if word in AMBIGUOUS_WEEKDAY_NAMES:
-            raise ValueError(f"Invalid Mode-B expression {original!r}: {ambiguous_weekday_message(arg.value)}")
-        word = DATE_PART_ALIASES[word].value if word in DATE_PART_ALIASES else word
+            raise ValueError(f"Invalid Mode-B expression {original!r}: {part_call_hint(arg.value)}")
+        alias = DATE_PART_ALIASES.get(word) or PART_ONLY_WORDS.get(word)
+        word = alias.value if alias is not None else word
     if word not in words:
         raise ValueError(
             f"Invalid Mode-B expression {original!r}: unknown {name}() {what} "
@@ -2737,7 +2804,7 @@ def _bare_part(arg: Any, *, words: Tuple[str, ...]) -> bool:
     if not isinstance(arg, Ref) or arg.quoted or arg.evaluated:
         return False
     word = arg.name.lower()
-    return word in words or word in DATE_PART_ALIASES or word in AMBIGUOUS_WEEKDAY_NAMES
+    return word in words or word in DATE_PART_ALIASES or word in AMBIGUOUS_WEEKDAY_NAMES or word in PART_ONLY_WORDS
 
 
 def _folded(node: Any) -> Any:
@@ -3151,7 +3218,7 @@ def _render(parsed: Any, *, style: _Style) -> str:  # NOSONAR(S3776) — flat pe
     if isinstance(parsed, (Arith, Cmp)):
         prec = _precedence(parsed)
         left = _operand_text(parsed.left, minimum=prec + 1 if isinstance(parsed, Cmp) else prec, style=style)
-        if style is not _Style.LEGACY and isinstance(parsed, Cmp) and parsed.op in ("is", "is not") and _is_null(parsed.right):
+        if style is not _Style.LEGACY and isinstance(parsed, Cmp) and parsed.op in ("is", _IS_NOT) and _is_null(parsed.right):
             return f"{left} {parsed.op.upper()} NULL"
         right = _operand_text(parsed.right, minimum=prec + 1, style=style)
         return f"{left} {parsed.op if style is _Style.LEGACY else _CANONICAL_OPS.get(parsed.op, parsed.op)} {right}"
@@ -3373,5 +3440,5 @@ __all__ = [
     "quote_blind_metric_text",
     "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths",
     "rewrite_colon_spans", "root_relative", "split_entity_agg_ref", "StringLiteralSpan", "string_literal_spans",
-    "text_paths", "value_text", "variable_names", "walk_parsed", "walk_parsed_refs",
+    "text_paths", "unknown_call_hint", "value_text", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]

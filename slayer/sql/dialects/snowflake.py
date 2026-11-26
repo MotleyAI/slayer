@@ -220,6 +220,7 @@ class SnowflakeDialect(SqlDialect):
         DatePart.ISO_YEAR: "YEAROFWEEKISO", DatePart.WEEK: "WEEKISO",
         DatePart.DAY_OF_WEEK: "DAYOFWEEKISO", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
     }
+    _SUBSECOND_FIELD: ClassVar[tuple[str, int]] = ("NANOSECOND", 1_000_000)
     regex_flavour: ClassVar[Optional[RegexFlavour]] = POSIX
     json_db_types: ClassVar[frozenset[str]] = frozenset({"VARIANT", "OBJECT", "ARRAY"})
     database_name: ClassVar[str] = "Snowflake"
@@ -341,6 +342,9 @@ class SnowflakeDialect(SqlDialect):
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement), lit(1),
                     lit(0), _parameters(case_insensitive))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern), lit(1), _parameters(case_insensitive))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """``GET_PATH`` on the VARIANT (text parsed with ``TRY_PARSE_JSON``); objects, arrays and null are NULL."""

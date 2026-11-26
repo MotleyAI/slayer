@@ -100,6 +100,7 @@ from tests._dev2101_fixtures import (
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
+    REFUSED_FUNCTIONS,
     check_library,
     check_native_json,
     lib_dataset,
@@ -1762,7 +1763,8 @@ def _mysql_dev2120_storage(mysql_container, tmp_path_factory):
 @pytest.mark.integration
 class TestMySQLPortableLibrary:
     async def test_library(self, _mysql_dev2120_storage) -> None:
-        await check_library(SlayerQueryEngine(storage=_mysql_dev2120_storage))
+        await check_library(SlayerQueryEngine(storage=_mysql_dev2120_storage), gated=REFUSED_FUNCTIONS["mysql"],
+                            refusal="MySQL")
 
     async def test_native_json_column(self, _mysql_dev2120_storage) -> None:
         await check_native_json(SlayerQueryEngine(storage=_mysql_dev2120_storage))

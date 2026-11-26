@@ -258,6 +258,7 @@ class DatePart(StrEnum):
     HOUR = "hour"
     MINUTE = "minute"
     SECOND = "second"
+    MILLISECOND = "millisecond"
 
 
 # Lowercased spellings meaning one ``date_part`` part, as ``<alias>(x)`` and as a part word.
@@ -271,7 +272,11 @@ DATE_PART_ALIASES: dict[str, DatePart] = {
     "dayofmonth": DatePart.DAY, "day_of_month": DatePart.DAY,
 }
 # Weekday names whose numbering differs across databases.
-AMBIGUOUS_WEEKDAY_NAMES: frozenset[str] = frozenset({"dow", "dayofweek", "weekday"})
+AMBIGUOUS_WEEKDAY_NAMES: frozenset[str] = frozenset({"dow", "weekday"})
+# Part words with no function form (Ossie's ``EXTRACT(DAYOFWEEK FROM x)``); a call of one is refused.
+PART_ONLY_WORDS: dict[str, DatePart] = {"dayofweek": DatePart.DAY_OF_WEEK, "millisecond": DatePart.MILLISECOND}
+# Weekday words refused as functions, each naming both numberings.
+WEEKDAY_CALLS: frozenset[str] = AMBIGUOUS_WEEKDAY_NAMES | {"dayofweek"}
 # Date spellings a custom aggregation or granularity may not take (lowercased).
 RESERVED_DATE_SYNTAX_NAMES: frozenset[str] = frozenset({*DATE_PART_ALIASES, "extract"})
 # Function names reserved for evaluation (Ossie's ``AGG``); a field may still take one.
@@ -279,11 +284,23 @@ RESERVED_NAMES: frozenset[str] = frozenset({"agg"})
 
 
 def ambiguous_weekday_message(name: str) -> str:
+    extract = "EXTRACT(DAYOFWEEK FROM x) or " if name.lower() == "dayofweek" else ""
     return (
         f"{name!r} has conflicting weekday numberings across databases; write "
-        f"date_part('day_of_week', x) (ISO, Monday = 1 … Sunday = 7) or "
+        f"{extract}date_part('day_of_week', x) (ISO, Monday = 1 … Sunday = 7) or "
         f"date_part('day_of_week', x) % 7 (Sunday = 0 … Saturday = 6)."
     )
+
+
+def part_call_hint(name: str) -> Optional[str]:
+    """Why a call of ``name`` is refused when it names a weekday or a part word rather than a function."""
+    low = name.lower()
+    if low in WEEKDAY_CALLS:
+        return ambiguous_weekday_message(name)
+    if low in PART_ONLY_WORDS:
+        return (f"{name!r} is a date part, not a function; write EXTRACT({low.upper()} FROM x) or "
+                f"date_part('{PART_ONLY_WORDS[low].value}', x).")
+    return None
 
 
 SUB_DAY_GRANULARITIES: frozenset[TimeGranularity] = frozenset({

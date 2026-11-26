@@ -1319,6 +1319,9 @@ def _plan_shifted_attaches(
             kernel_answer=_kernel_answer(decision),
             domain_of=key,
         )
+        if not any(s.key == answer for s in producer_plan.aggregate_slots):
+            # The answer nests as an attach carrying its own kernel.
+            decision = None
         answer_ids = list(producer_plan.projection)[len(ordered_pks):]
         answer_slot = _regroup_answer_slot_id(
             value_slots=[*producer_plan.aggregate_slots,
@@ -2153,6 +2156,8 @@ class _ProducerSynthesisContext(BaseModel):
     homes: AggregateHomes = Field(default_factory=AggregateHomes)
     # The population a windowed producer's endpoints are drawn from.
     population: Optional[Population] = None
+    # A transform's domain: a windowed constituent's cells are its unwindowed twin's (Axiom 11.6).
+    own_window_cells: bool = False
 
     def home_of(self, agg: AggregateKey) -> Tuple[str, ...]:
         return self.homes.of(agg).path
@@ -2682,9 +2687,9 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         cm_attach_kwargs["kernel"] = kernel
     if isinstance(kernel, TrailingWindowProducerKernel):
         cm_attach_kwargs["kernel"] = kernel.model_copy(update={
-            "endpoints": _window_endpoints(
-                host_keys=[host_by_rerooted[rr] for rr in ordered_pks], source=context.endpoints_source(),
-                producer_registry=producer_registry,
+            "endpoints": _windowed_attach_endpoints(
+                context=context, home=home, ordered_pks=ordered_pks, host_by_rerooted=host_by_rerooted,
+                window_td_key=window_td_key, filters=inherited, producer_registry=producer_registry,
             ),
             "endpoint_keys": list(ordered_pks),
         })
@@ -2763,6 +2768,47 @@ def _window_endpoints(
         producer_registry=producer_registry, population=source.population,
     )
     return plan.model_copy(update={"stage_bundle": source.bundle})
+
+
+def _windowed_attach_endpoints(
+    *, context: _ProducerSynthesisContext, home: SlayerDataset, ordered_pks: List[ValueKey],
+    host_by_rerooted: Dict[ValueKey, ValueKey], window_td_key: Optional[TimeTruncKey], filters: List[BoundFilter],
+    producer_registry: Optional[Dict[Hashable, PlannedQuery]],
+) -> Optional[PlannedQuery]:
+    """A windowed cross-dataset producer's cells: the population's; in a transform's domain its own (``None``), over
+    the spine its home's tuples × every bucket (Decision 17)."""
+    if not context.own_window_cells:
+        return _window_endpoints(
+            host_keys=[host_by_rerooted[rr] for rr in ordered_pks], source=context.endpoints_source(),
+            producer_registry=producer_registry,
+        )
+    active_td = context.prebound.main_time_key
+    host_spine = spine_field(context.host_dataset, bundle=context.bundle)
+    if host_spine is None or active_td is None:
+        return None
+    factor = home.as_population_factor()
+    spine = spine_field(factor, bundle=context.bundle)
+    assert spine is not None
+    bucket = active_td.model_copy(update={"source": spine})
+    # The producer's (shifted) spine bounds, read on the home's spine hop; its other filters already are the home's.
+    bounds = [
+        bound_filter_from_key(substitute_value_keys(cj, {host_spine: spine}))
+        for bf in context.masks.filters for cj in split_top_level_and(bf.value_key)
+        if is_spine_bound(cj, spine=host_spine)
+    ]
+    source = _EndpointsSource(
+        # A population plan keeps the product hop a producer's rerooting drops.
+        host_dataset=factor, bundle=context.bundle.rerooted(factor).model_copy(update={"population": factor}),
+        scope=DatasetScope(population=factor),
+        stage_schemas=context.stage_schemas,
+        population=NoInheritedPopulation(reason="a windowed transform constituent's spine cells: its home's"),
+        population_filters=[*filters, *bounds], n_population_date=0, mode_policy=context.prebound.mode_policy,
+        ranking_candidates=(),
+    )
+    return _window_endpoints(
+        host_keys=[bucket if rr == window_td_key else rr for rr in ordered_pks], source=source,
+        producer_registry=producer_registry,
+    )
 
 
 def _param_values(agg: AggregateKey) -> List[Tuple[str, ValueKey]]:
@@ -4342,10 +4388,12 @@ def _plan_regroups(
     homes: AggregateHomes,
     population: Population,
     reserved_placeholders: AbstractSet[ValueKey] = frozenset(),
+    own_window_cells: bool = False,
 ) -> Tuple[PreboundQuery, List[RegroupAttachPlan]]:
     """Group the discovered roots and desugar them into producer stages +
     reserved-leaf placeholders (row attach at base FROM, combined at the combined
-    SELECT); producers compiled meanwhile read each placeholder's type here."""
+    SELECT); producers compiled meanwhile read each placeholder's type here.
+    ``own_window_cells``: a windowed cross-dataset producer evaluates over its own cells, never the population's."""
     registry = RegroupPlaceholderRegistry(
         reserved=reserved_placeholders, typing=SlotTyping(scope=scope, bundle=bundle),
     )
@@ -4354,7 +4402,7 @@ def _plan_regroups(
             registry=registry, prebound=prebound, filter_typings=filter_typings, scope=scope,
             bundle=bundle, stage_schemas=stage_schemas, producer_source_dataset=producer_source_dataset,
             producer_registry=producer_registry, dispositions=dispositions, nests=nests, homes=homes,
-            population=population,
+            population=population, own_window_cells=own_window_cells,
         )
 
 
@@ -4372,6 +4420,7 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
     nests: Callable[[ValueKey, str], bool],
     homes: AggregateHomes,
     population: Population,
+    own_window_cells: bool = False,
 ) -> Tuple[PreboundQuery, List[RegroupAttachPlan]]:
     reagg_mapping: Dict[ValueKey, ValueKey] = {
         d.root: registry.placeholder_for(d.root)
@@ -4471,7 +4520,7 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body, unchanged
         projected_td_keys=projected_td_keys,
         masks=masks, scope=scope,
         stage_schemas=stage_schemas, homes=homes,
-        population=population,
+        population=population, own_window_cells=own_window_cells,
     )
     _check_inline_params_determined(dispositions=dispositions, context=synthesis_context)
     reagg_context = synthesis_context.model_copy(update={
@@ -4692,11 +4741,12 @@ def _route_producer(
     producer_registry: Dict[Hashable, PlannedQuery],
 ) -> _Routed:
     prebound, scope, bundle = env.prebound, env.scope, env.bundle
+    on_spine = spine_field(scope.population, bundle=bundle) is not None
     dispositions = discover_roots(
         prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle, homes=env.homes,
         transforms=TransformRouting(answers=frozenset(
             dm.bound.value_key for dm in prebound.declared_metrics if not dm.is_dimension
-        ), spine=spine_field(scope.population, bundle=bundle) is not None),
+        ), spine=on_spine),
     )
     routed_prebound, attaches = _plan_regroups(
         prebound=prebound, filter_typings=list(env.filter_typings),
@@ -4708,6 +4758,7 @@ def _route_producer(
         homes=env.homes,
         population=context.population,
         reserved_placeholders=context.reserved_placeholders,
+        own_window_cells=context.domain_of is not None,
     )
     return _Routed(
         query=env.query, env=env, typed_prebound=prebound, prebound=routed_prebound,

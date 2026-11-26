@@ -60,6 +60,13 @@ PINNED: dict[str, frozenset[str]] = {
 
 #: A dataset's own definition shadows these, so a new name in them needs no migration.
 SHADOWABLE = frozenset({"functions", "spellings"})
+#: Ossie Layer 1 functions and spellings reserved after ``PINNED``.
+OSSIE_NAMES = frozenset({
+    "if", "nvl", "nvl2", "startswith", "endswith", "charindex", "truncate", "to_date", "to_timestamp",
+    "zeroifnull", "nullifzero", "radians", "degrees", "regexp_count",
+})
+#: Date-part words with no function form; a stored aggregation of the name keeps working.
+PART_ONLY_NAMES = frozenset({"millisecond", "dayofweek"})
 
 #: A newly reserved name outside ``SHADOWABLE`` → the ``(entity, source_version)`` migration that renames it in stores.
 MIGRATED: dict[str, tuple[str, int]] = {
@@ -97,6 +104,12 @@ class TestGuard:
 
     def test_every_vocabulary_is_pinned(self) -> None:
         assert set(live_vocabularies()) == set(PINNED)
+
+    def test_ossie_names_are_shadowable_reservations(self) -> None:
+        assert sorted(OSSIE_NAMES - (SCALAR_FUNCTIONS | SCALAR_SPELLINGS)) == []
+
+    def test_part_only_names_are_not_functions(self) -> None:
+        assert PART_ONLY_NAMES & (SCALAR_FUNCTIONS | SCALAR_SPELLINGS) == set()
 
     def test_agg_is_reserved_and_migrated(self) -> None:
         assert "agg" in live_vocabularies()["reserved"]
@@ -175,11 +188,11 @@ class TestRenameGates:
         assert initial_gate_findings(reserved=reserved_granularity_names(), gates=granularity_rename.RENAME_GATES) == []
 
     def test_a_stepped_later_reservation_keeps_the_initial_gates(self) -> None:
-        reserved, gates = _with("new_window", {"SlayerModel": 31, "SlayerQuery": 20, "Memory": 15})
+        reserved, gates = _with("new_window", {"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16})
         assert initial_gate_findings(reserved=reserved, gates=gates) == []
 
     def test_a_changed_initial_gate_is_caught(self) -> None:
-        reserved, gates = _with("left", {"SlayerModel": 31, "SlayerQuery": 20, "Memory": 15})
+        reserved, gates = _with("left", {"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16})
         assert initial_gate_findings(reserved=reserved, gates=gates) == ["left"]
 
     @pytest.mark.parametrize("name", ["new_window", "new_fn"], ids=["transform", "function"])
@@ -210,7 +223,7 @@ class TestRenameGates:
         assert gate_findings(reserved=reserved | {"new_b"}, gates=gates) == caught
 
 
-_FUNCTION_NAMES = sorted(SCALAR_FUNCTIONS | SCALAR_SPELLINGS)
+_FUNCTION_NAMES = sorted(SCALAR_FUNCTIONS | SCALAR_SPELLINGS | OSSIE_NAMES | PART_ONLY_NAMES)
 
 
 @pytest.fixture(scope="module")
