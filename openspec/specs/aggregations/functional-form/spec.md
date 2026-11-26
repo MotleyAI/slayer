@@ -98,16 +98,18 @@ or expression).
 - **THEN** construction succeeds and the name is validated later at binding
 
 ### Requirement: Ambiguous first and last names dispatch by argument shape
-For `first` and `last` (both aggregation and transform names), the call SHALL
-parse to one node and dispatch by the type of its bound first argument, which
-binds exactly like any transform input: an argument that resolves to a row-level
-value (a column, a literal, or an expression with a row-level leaf) SHALL be the
-aggregation; an argument that resolves to an aggregate-valued operand — an
-aggregation, a saved measure, or a grained transform, alone or composed through
-arithmetic and scalar calls — SHALL be the transform over that series. The
-dispatch SHALL NOT depend on the spelling of the argument, and SHALL NOT pre-empt
-transform-input validation: an ill-formed transform inside the argument fails
-with that transform's own error.
+`first` and `last` SHALL always be aggregations — there is no `first` / `last` transform.
+The call SHALL parse to one node whose home is decided by the bound shape of its first
+argument, which binds exactly like any aggregation source: an argument with a row-level
+leaf (a column, a literal, an expression over columns, or a mixed expression whose
+attached values are broadcast onto the rows) SHALL rank its home's rows; an argument with
+no row-level leaf — an aggregation, a saved measure, or a grained transform, alone or
+composed through arithmetic and scalar calls — SHALL be the second-order ranked
+aggregation over that operand dataset's cells (per `queries/semantics` › first and last
+over an aggregate rank their operand's cells). The dispatch SHALL NOT depend on the
+spelling of the argument, and SHALL NOT pre-empt transform-input validation: an
+ill-formed transform inside the argument fails with that transform's own error. A
+dataset-defined custom aggregation named `first` or `last` SHALL shadow the built-in.
 
 #### Scenario: Aggregation reading
 - **WHEN** a measure is written `last(balance)` or `last(balance, updated_at)`
@@ -115,27 +117,34 @@ with that transform's own error.
   axis, or by `updated_at`
 
 #### Scenario: Transform reading
-- **WHEN** a measure is written `last(sum(revenue))`
-- **THEN** it is the `last` transform over the aggregated series
+- **WHEN** a query over a month time dimension has a measure written `last(sum(revenue))`
+- **THEN** it is the second-order `last` over the `sum(revenue)` cells, ranked by the
+  month bucket, with the values the former `last` transform returned
 
 #### Scenario: Saved-measure operand reads as the transform
-- **WHEN** the model declares a measure `rev` with formula `sum(revenue)` and a
-  query measure is written `first(rev)` or `first(rev * 2)`
-- **THEN** it is the `first` transform over the saved measure's series — the
-  same plan and executed values as `first(sum(revenue))` / `first(sum(revenue) * 2)`
-  on SQLite and DuckDB — never an unknown-reference error
+- **WHEN** the model declares a measure `rev` with formula `sum(revenue)` and a query over
+  a month time dimension has a measure written `first(rev)` or `first(rev * 2)`
+- **THEN** it is the second-order `first` over the saved measure's cells — the same plan
+  and executed values as `first(sum(revenue))` / `first(sum(revenue) * 2)` on SQLite and
+  DuckDB — never an unknown-reference error
 
 #### Scenario: Row-grain composite keeps the aggregation reading
 - **WHEN** a measure is written `first(quantity * avg(unit_price, partition_by=product))`
   or `first(1)`
-- **THEN** it is the `first` aggregation, picking the row-level value at the ranked
-  row, by executed values — never the transform reading
+- **THEN** it is the `first` aggregation over the home's rows, picking the row-level value
+  at the ranked row, by executed values — never the second-order reading
 
 #### Scenario: Dispatch does not pre-empt transform-input validation
 - **WHEN** a measure is written `first(cumsum(weight))` with `weight` an unprojected
   row-level column
 - **THEN** it fails at plan time with the grain-refining row-level-leaf error naming
-  `cumsum` — never the aggregation reading
+  `cumsum` — never a ranked pick
+
+#### Scenario: A custom first or last shadows the built-in
+- **WHEN** a dataset defines the custom aggregation `last` with formula `MAX({value})` and
+  a query on it selects `last(balance)`
+- **THEN** each cell carries its maximum `balance`, the custom formula rendered — never
+  the built-in ranked pick
 
 ### Requirement: Functional input is first-class — no rewriting, no warning
 The system SHALL NOT emit a normalization warning for functional aggregations,
@@ -212,8 +221,8 @@ values than declared parameters — any positional value at all on an aggregatio
 that declares none — SHALL fail with a clear error naming the rule. Ranked
 `first`/`last` declare no parameters — they take at most one positional value,
 their ranking key (resolved per › Default ranking key when omitted), which, when
-given, SHALL be a row-level expression — a column being the one-leaf case — never a
-literal-only expression or one carrying an aggregate, transform or attached value. After binding an
+given, SHALL be determined by the aggregation's home per › An expression ranking key is
+judged by its leaves — never a literal-only expression. After binding an
 attached (aggregate- or transform-valued) parameter is therefore always a named
 parameter.
 
@@ -242,8 +251,8 @@ parameter.
   takes no parameters — never an executed value
 
 #### Scenario: Invalid first/last ranking key errors
-- **WHEN** `last(amount, sum(amount, partition_by=region))`, `last(amount, 1)` or
-  `last(amount, id, amount)` is submitted
+- **WHEN** `last(amount, 1)`, `last(sum(amount), 1)` or `last(amount, id, amount)` is
+  submitted
 - **THEN** each fails at bind with a clear error naming the ranking-key rule
 
 #### Scenario: Expression ranking key
@@ -432,7 +441,8 @@ date-part alias (including `year` … `second`) or a transform-only name.
 - **THEN** each customer's value is their number of paid orders, NULL for a customer with no paid order
 
 ### Requirement: Default ranking key
-A ranked `first` / `last` aggregation without an explicit ranking key SHALL rank by,
+A ranked `first` / `last` aggregation over rows without an explicit ranking key SHALL
+rank its home's rows by,
 in order: the first entry of the query's `dimensions` (in projection order) that is
 row-level and types DATE or TIMESTAMP — a column or a computed dimension, never a
 granularity bucket, which ties every row of a cell; else the first time dimension's un-truncated source, column or
@@ -441,14 +451,22 @@ existing ranking-key resolution error. The query is the one the aggregation is a
 measure of — each stage its own — whatever the aggregation's `partition_by=`,
 `window=`, `time_shift` or nesting inside another aggregation. A cross-model
 aggregation SHALL read each candidate in its home's coordinates, skipping one its home
-does not determine, and fall back to its home model's default time dimension.
+does not determine, and fall back to its home model's default time dimension. A ranked
+aggregation over an aggregate operand without an explicit ranking key SHALL rank the
+operand's cells by the query's active time bucket (each stage its own); when that bucket
+is not a member of the operand's grain, or the query has no time dimension, it SHALL
+fail at plan time with a `TimeAxisError`. A defaulted key is dropped from the grain like
+an explicit one (`queries/semantics` › A ranked aggregation's grain drops its ranking
+key).
 
 #### Scenario: A temporal computed dimension is the default ranking key
 - **WHEN** a query groups by the computed dimension `coalesce(shipped_at, created_at)`
   (typed TIMESTAMP) and a month time dimension on `created_at`, and selects
   `last(amount)`
-- **THEN** each cell's value is the `amount` of its row latest by the coalesced
-  timestamp, by executed values on SQLite and DuckDB
+- **THEN** the key is a query dimension and is dropped from the grain: each month's
+  value is the `amount` of its row latest by the coalesced timestamp, broadcast onto
+  every coalesced-timestamp row of that month with no warning, by executed values on
+  SQLite and DuckDB
 
 #### Scenario: An expression time dimension's source is the default ranking key
 - **WHEN** a query's only temporal dimension is the time dimension
@@ -538,13 +556,36 @@ does not determine, and fall back to its home model's default time dimension.
 - **THEN** it fails at plan time with the ranked-input safety error naming `created_at`
   and the hop to `orders`, as the same query without `partition_by=` does
 
+#### Scenario: An aggregate operand ranks by the active time bucket
+- **WHEN** on the snapshot fixture of `queries/partitioned-aggregates` › Re-aggregation over
+  ranked and windowed operands, a query by `customer_id` with a month time dimension on
+  `snapshot_date` selects `last(sum(balance))`
+- **THEN** every row of customer 100 reads 160 and every row of customer 200 reads NULL —
+  its February cell, whose value is NULL, is picked — never 70, by executed values on
+  SQLite and DuckDB, with no broadcast warning
+
+#### Scenario: An operand without the active time bucket fails
+- **WHEN** the same query selects `last(sum(balance, partition_by=customer_id))`, and a
+  query by `customer_id` with no time dimension selects `last(sum(balance))`
+- **THEN** each fails at plan time with a `TimeAxisError`, never a value
+
 ### Requirement: An expression ranking key is judged by its leaves
 An explicit or defaulted ranking key SHALL be determined by the aggregation's home
-and never widen it (semantics Axiom 2.4), judged over every leaf the expression reads
-and every dependency of a derived column it names, for local and cross-model
-(target-rooted) producers alike: a key reading a leaf across a fanning or unproven
+and never widen it (semantics Axiom 2.4) — one predicate for both forms — judged over
+every leaf the expression reads and every dependency of a derived column it names,
+determination being closed under row-level combination. Over rows the key SHALL be
+a column of the home, a field reached from it over provably to-one hops, or an
+attached value (an aggregate or a transform) whose grain the home determines, broadcast
+onto the home's rows before the ranking exactly as a mixed-source constituent is. Over
+an aggregate operand the key SHALL be determined by the operand's grain (`queries/semantics`
+Axiom 1): a member of the grain, a field the grain determines over an entity key or provably
+to-one hops, or an attached value whose grain the operand's grain determines. A literal-only
+key stays refused (› Positional
+parameters fold onto declared parameter order). For local and cross-model
+(target-rooted) producers alike, a key reading a leaf across a fanning or unproven
 hop from the home SHALL fail with the existing ranked-input safety error naming that
-leaf and the hop. Two ranked aggregations differing only in their ranking key SHALL
+leaf and the hop, and any other key the home does not determine SHALL fail at plan
+time with the same typed error naming the key. Two ranked aggregations differing only in their ranking key SHALL
 stay separate producers; equal keys, however spelled, SHALL share one.
 
 #### Scenario: Fanning leaf inside an expression ranking key
@@ -558,6 +599,53 @@ stay separate producers; equal keys, however spelled, SHALL share one.
 - **WHEN** a query rooted at `orders` selects
   `last(customers.spend, coalesce(customers.updated_at, customers.signup_ts), partition_by=region)`
 - **THEN** it executes ranked inside the `customers`-rooted producer, by executed values
+
+#### Scenario: An attached aggregate ranks the rows
+- **WHEN** on the Appendix B seed of `queries/population` › Rows of an inferred query are
+  the row supply, a query groups by `customers.segment` and selects
+  `last(orders.amount, orders.amount - avg(orders.amount, partition_by=customers.region))`
+- **THEN** retail reads 200 and corporate 50 — the amount of the order furthest above its
+  region's average — equal to the hand-computed oracle on SQLite and DuckDB
+
+#### Scenario: An attached transform ranks the rows
+- **WHEN** on the Appendix B seed a query groups by `customers.segment` and selects
+  `last(orders.amount, rank(sum(orders.amount, partition_by=orders.id), direction='desc'))`
+- **THEN** retail reads 100 and corporate 50 — the amount of the order ranked last — equal
+  to the hand-computed oracle on SQLite and DuckDB, never a refusal
+
+#### Scenario: An aggregate ranks an aggregate's cells
+- **WHEN** `orders` holds the rows (EAST, P1, revenue 100, units 5), (EAST, P2, 40, 9),
+  (WEST, P1, 70, 2) and (WEST, P3, 10, 1), and a query by `region` and `product` selects
+  `last(sum(revenue), sum(units), partition_by=region)`
+- **THEN** both EAST rows read 40 and both WEST rows 70 — the revenue of the region's
+  product with the most units — with no broadcast warning, on SQLite and DuckDB
+
+#### Scenario: A grain member ranks an aggregate's cells
+- **WHEN** on the snapshot fixture of `queries/partitioned-aggregates` › Re-aggregation
+  over ranked and windowed operands, a query by a month time dimension on `snapshot_date`
+  selects `first(sum(balance, partition_by=[customer_id, snapshot_date]), customer_id)`
+- **THEN** January reads 370 and February 160 — customer 100's monthly total — by executed
+  values on SQLite and DuckDB
+
+#### Scenario: A field the operand grain determines ranks its cells
+- **WHEN** a query by `customers.region` selects
+  `last(sum(orders.amount, partition_by=customers.id), customers.signup_ts, partition_by=customers.region)`
+- **THEN** each region's value is the sum of its customer latest by `signup_ts`, identical
+  to ranking by `max(customers.signup_ts, partition_by=customers.id)`; the same key over
+  an operand grained by `customers.region` alone fails with the ranking-key safety error
+
+#### Scenario: A key the operand does not determine fails closed
+- **WHEN** the same query selects
+  `last(sum(balance, partition_by=[customer_id, snapshot_date]), account_id)` or
+  `last(sum(balance, partition_by=customer_id), sum(balance, partition_by=account_id))`
+- **THEN** each fails at plan time with the ranked-input safety error naming the key,
+  never a value
+
+#### Scenario: An attached key the row home does not determine fails closed
+- **WHEN** on the Appendix B seed a query groups by `customers.region` and selects
+  `last(customers.segment, count(orders.*, partition_by=orders.status))`
+- **THEN** it fails at plan time with the ranked-input safety error naming the key — the
+  `customers` home does not determine `orders.status` — never a value
 
 ### Requirement: The colon spelling is refused
 
@@ -614,7 +702,7 @@ Fresh input using the colon aggregation spelling `<source>:<name>[(<args>)]` —
 - **THEN** each is accepted
 
 ### Requirement: first and last never pick a NULL ranking key
-A ranked `first` / `last` aggregation (plain, partitioned, windowed or cross-model) SHALL pick only among the rows whose ranking key is non-NULL: `first` the row with the smallest key, `last` the row with the largest, on every dialect and independent of its native NULL ordering or session settings. A cell whose rows all have a NULL ranking key SHALL take the empty value, NULL. A NULL value under a non-NULL key SHALL be picked like any other value.
+A ranked `first` / `last` aggregation (plain, partitioned, windowed, cross-model, or over an aggregate operand, whose cells it ranks as rows) SHALL pick only among the rows whose ranking key is non-NULL: `first` the row with the smallest key, `last` the row with the largest, on every dialect and independent of its native NULL ordering or session settings. A cell whose rows all have a NULL ranking key SHALL take the empty value, NULL. A NULL value under a non-NULL key SHALL be picked like any other value. Over an aggregate operand, a cell in the NULL time bucket has a NULL ranking key.
 
 #### Scenario: NULL keys are skipped in both directions
 - **WHEN** a customer's rows are `(updated_at 2024-01-01, status 'a')`, `(NULL, 'b')`, `(2024-03-01, 'c')` and a query selects `first(status, updated_at)` and `last(status, updated_at)`
@@ -631,3 +719,9 @@ A ranked `first` / `last` aggregation (plain, partitioned, windowed or cross-mod
 #### Scenario: Partitioned and cross-model
 - **WHEN** a query rooted at `orders` selects `last(customers.status, customers.updated_at, partition_by=region)` over customers some of whose `updated_at` are NULL
 - **THEN** each region's value is the status of its latest non-NULL-keyed customer, by executed values on SQLite and DuckDB
+
+#### Scenario: A NULL time bucket is never picked over an aggregate
+- **WHEN** a query rooted at `customers` selects `last(sum(customers.spend))` by month of
+  `orders.ordered_at`, a customer without orders (spend 55) falling in the NULL bucket
+  beside monthly sums 100, 150, 100, 110 for 2024-01 to 2024-04
+- **THEN** every row reads 110 on SQLite and DuckDB, never 55

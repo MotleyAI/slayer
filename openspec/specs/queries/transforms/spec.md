@@ -563,7 +563,7 @@ its total.
 
 ### Requirement: Time axis on stage datasets
 
-A downstream stage's own time dimension SHALL be the time axis for every time-ordered transform in that stage (`time_shift`, `change`, `change_pct`, `cumsum`, `lag`, `lead`, `first`, `last`, `consecutive_periods`) and for its windowed aggregates, with values identical to the same shapes evaluated over a model-backed dataset holding the same rows. With two stage time dimensions and no `main_time_dimension`, a time-ordered transform SHALL fail with the existing unambiguous-time-dimension remedy; `main_time_dimension` SHALL select the axis. A stage has no model-level default time dimension, so no default is applied.
+A downstream stage's own time dimension SHALL be the time axis for every time-ordered transform in that stage (`time_shift`, `change`, `change_pct`, `cumsum`, `lag`, `lead`, `consecutive_periods`), for its windowed aggregates and for the default ranking key of a `first` / `last` over an aggregate in that stage, with values identical to the same shapes evaluated over a model-backed dataset holding the same rows. With two stage time dimensions and no `main_time_dimension`, a time-ordered transform SHALL fail with the existing unambiguous-time-dimension remedy; `main_time_dimension` SHALL select the axis. A stage has no model-level default time dimension, so no default is applied.
 
 #### Scenario: time_shift over a stage time dimension
 
@@ -578,7 +578,8 @@ A downstream stage's own time dimension SHALL be the time axis for every time-or
 #### Scenario: last over a stage time dimension
 
 - **WHEN** the same outer stage selects `last(sum(rev))`
-- **THEN** every row carries the value of the latest month, by executed values
+- **THEN** every row carries the value of the latest month — the second-order `last`
+  ranked by the stage's month bucket — by executed values
 
 #### Scenario: Windowed aggregate over a stage time dimension
 
@@ -597,7 +598,7 @@ A downstream stage's own time dimension SHALL be the time axis for every time-or
 
 ### Requirement: Transforms reject grain-refining row-level leaves
 
-A transform other than the aggregation-dispatched `first` / `last`, used in
+A transform, used in
 measure, filter, or order position, or as a constituent of an aggregation
 source, SHALL reject with a typed plan-time error — before any SQL is
 generated — any row-level (non-aggregate) leaf in its input that refines the
@@ -610,7 +611,7 @@ rank family and the shift family (`time_shift`, `change`, `change_pct`)
 included. Leaves that are projected grain keys — plain or computed dimensions
 — remain legal, evaluated at the query grain. The raw source column of a
 bucketed time dimension is not a projected grain key (it refines the bucket).
-`first` / `last` keep their aggregation dispatch, and the stricter
+`first` / `last` are aggregations, never transforms, and the stricter
 dimension-position rules are unchanged.
 
 #### Scenario: Bare grain-refining leaf rejected
@@ -676,8 +677,8 @@ operand's cells, so every key in its own `partition_by=` SHALL be a member of th
 transform's operand grain, in every position. The operand grain is the union over the
 transform's input: an aggregate contributes its explicit `partition_by=` keys, else the
 query grain (its dimensions and time buckets), plus the query's active time bucket when
-it is windowed; a nested transform contributes its own operand grain, minus its time
-axis when it is `first` or `last`; a composite contributes the union of its operands,
+it is windowed, a `first` / `last` contributing its own grain (`queries/semantics` › A ranked aggregation's grain drops its ranking key);
+a nested transform contributes its own operand grain; a composite contributes the union of its operands,
 with a projected row-level leaf contributing itself; an input with no aggregate (only
 row-level leaves or literals) is the query grain, since it is evaluated once per
 query-grain cell. A non-member key SHALL fail at plan time with an error naming
@@ -717,7 +718,7 @@ precedence over the membership error.
 
 #### Scenario: Nested collapsing transform drops its axis
 - **WHEN** a monthly query selects `rank(last(sum(amount, partition_by=[customers.regions.name, ordered_at])), partition_by=ordered_at, direction='desc')`
-- **THEN** planning fails with the operand-grain error naming `ordered_at` and the grain `customers.regions.name`; with `partition_by=customers.regions.name` the key passes the rule
+- **THEN** planning fails with the operand-grain error naming `ordered_at` and the grain `customers.regions.name` — the `last` drops its ranking key, the month bucket; with `partition_by=customers.regions.name` the key passes the rule
 
 #### Scenario: Aggregate-free input takes the query grain
 - **WHEN** a query over `[city, region, product]` selects `rank(city, partition_by=region, direction='desc')`
@@ -1146,9 +1147,8 @@ version only by a save or `slayer storage upgrade`.
 A window transform — `cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`,
 `consecutive_periods`, `rank`, `dense_rank`, `percent_rank` and `ntile` — whose input is a
 bare literal SHALL execute at the query grain, treating the literal as the same value in
-every result row, and SHALL NOT fail with an internal error. `first` and `last` over an
-aggregate-free input bind as the aggregation, not the transform, and are outside this
-requirement.
+every result row, and SHALL NOT fail with an internal error. `first` and `last` are
+aggregations, not transforms, and are outside this requirement.
 
 #### Scenario: Running and offset transforms over a literal
 - **WHEN** a query rooted at `orders` with a month time dimension selects `sum(amount)`
@@ -1180,8 +1180,8 @@ requirement.
 ### Requirement: A time-ordered transform over extraction dimensions names the date_trunc remedy
 
 When a time-ordered transform (`time_shift`, `change`, `change_pct`, `cumsum`,
-`lag`, `lead`, `first` / `last` as transforms, `consecutive_periods`) or a
-windowed aggregate fails with the existing typed no-time-dimension error because
+`lag`, `lead`, `consecutive_periods`), a `first` / `last` over an aggregate
+defaulting its ranking key to the active time bucket, or a windowed aggregate fails with the existing typed no-time-dimension error because
 the query projects no time dimension, and a dimension of the query is a
 date-part extraction whose part is a built-in granularity (`year(x)`,
 `quarter(x)`, `month(x)`, `week(x)`, `day(x)`, `hour(x)`, `minute(x)`,
@@ -1203,7 +1203,7 @@ transform's or window's time axis.
 #### Scenario: Shift family and windowed aggregate name the remedy
 
 - **WHEN** a query has `dimensions=["year(created_at)"]`, no time dimension, and
-  selects `change(sum(amount))`, or `sum(amount, window='3m')`
+  selects `change(sum(amount))`, `last(sum(amount))`, or `sum(amount, window='3m')`
 - **THEN** each fails with the typed no-time-dimension error naming
   `date_trunc('year', created_at)`
 
@@ -1222,7 +1222,7 @@ transform's or window's time axis.
   names no `date_trunc` remedy
 
 ### Requirement: Transforms evaluate over their operand's domain
-Every transform — the rank family (`rank`, `dense_rank`, `percent_rank`, `ntile`), `cumsum`, `lag`, `lead`, `first`, `last`, `time_shift`, `change`, `change_pct` and `consecutive_periods` — SHALL evaluate over its operand's domain and attach its result to the query's cells on its result grain, in every position (dimension, measure, filter, order) and whether or not the query names `population`. The domain SHALL be the cells of the operand's constituents at the operand grain: an aggregate constituent's cells are the grain tuples its filtered home rows reach (rows hidden by a model filter or a row-level-security policy do not exist); a nested transform constituent's cells are its own result cells; constituents at the full operand grain supply their cells, and a coarser constituent's cells extend to the agreeing cells of the finer constituents, else of the query's dimension anchor; an operand with no aggregate constituent takes the dimension anchor's cells. In a spine query the domain SHALL be the operand's non-time tuples that have a cell in a visible bucket, each crossed with every bucket in range. A query cell outside the domain SHALL read NULL for the transform. The query's rows, its other measures, its measure-typed filters and its order SHALL NOT change a transform's value in any cell, and a transform used only in a filter or the order SHALL supply no rows. Ranking, row offsets (`lag`, `lead`), running totals and collapsing picks SHALL step over the domain's cells only; calendar-step transforms keep stepping by calendar buckets. A NULL time bucket SHALL have no position on the time axis on every dialect: it is adjacent to no bucket, so a preserving time-ordered transform evaluates it as a series of its own (`cumsum` reads its own value; `lag`, `lead`, `time_shift`, `change` and `change_pct` read NULL there), it never contributes to or reads from another bucket's value, and a collapsing pick skips it; the rank family treats it as an ordinary cell.
+Every transform — the rank family (`rank`, `dense_rank`, `percent_rank`, `ntile`), `cumsum`, `lag`, `lead`, `time_shift`, `change`, `change_pct` and `consecutive_periods` — SHALL evaluate over its operand's domain and attach its result to the query's cells on its result grain, in every position (dimension, measure, filter, order) and whether or not the query names `population`. The domain SHALL be the cells of the operand's constituents at the operand grain: an aggregate constituent's cells are the grain tuples its filtered home rows reach (rows hidden by a model filter or a row-level-security policy do not exist); a nested transform constituent's cells are its own result cells; constituents at the full operand grain supply their cells, and a coarser constituent's cells extend to the agreeing cells of the finer constituents, else of the query's dimension anchor; an operand with no aggregate constituent takes the dimension anchor's cells. In a spine query the domain SHALL be the operand's non-time tuples that have a cell in a visible bucket, each crossed with every bucket in range. A query cell outside the domain SHALL read NULL for the transform. The query's rows, its other measures, its measure-typed filters and its order SHALL NOT change a transform's value in any cell, and a transform used only in a filter or the order SHALL supply no rows. Ranking, row offsets (`lag`, `lead`) and running totals SHALL step over the domain's cells only; calendar-step transforms keep stepping by calendar buckets. A NULL time bucket SHALL have no position on the time axis on every dialect: it is adjacent to no bucket, so a preserving time-ordered transform evaluates it as a series of its own (`cumsum` reads its own value; `lag`, `lead`, `time_shift`, `change` and `change_pct` read NULL there), and it never contributes to or reads from another bucket's value; the rank family treats it as an ordinary cell. A `first` / `last` over an aggregate is an aggregation, not a transform, and ranks exactly this domain's cells (`queries/semantics` › first and last over an aggregate rank their operand's cells).
 
 Scenarios marked "the Appendix B seed" use customers C1 EAST retail, C2 EAST corporate, C3 WEST retail, C4 NORTH retail; orders C1 100 (2025-01-10), C1 200 (2025-02-10), C2 50 (2025-01-20), C3 300 (2025-02-20); returns C1 25, C4 10. "Daily sales" uses `sales` 10 on 2025-01-05 and 30 on 2025-03-05, and `refunds` 5 on 2025-02-05, both joining a `days` dataset.
 
@@ -1240,7 +1240,7 @@ Scenarios marked "the Appendix B seed" use customers C1 EAST retail, C2 EAST cor
 
 #### Scenario: A collapsing pick reads the operand's cells
 - **WHEN** the daily-sales query selects `last(sum(sales.amount))`, once alone and once beside `sum(refunds.amount)` with a refund dated in April
-- **THEN** every row of both runs reads 30, the latest month with sales, never the April row the sibling adds
+- **THEN** every row of both runs reads 30, the latest month with sales — the second-order `last` ranks this domain's cells — never the April row the sibling adds
 
 #### Scenario: A coarser operand ranks its own cells
 - **WHEN** a query without `population` on the Appendix B seed groups by `customers.region` and `customers.segment` and selects only `rank(sum(orders.amount, partition_by=customers.region), direction='desc')`

@@ -253,7 +253,7 @@ Non-shift transforms reject grain-refining row-level leaves. An aggregation sour
 consisting entirely of attached values is a re-aggregation and SHALL be accepted; a
 source mixing row-level references with attached values is a row-grain aggregation
 and SHALL be accepted (per `queries/semantics` › Row-grain aggregation sources),
-a collapsing (`first`/`last`) transform constituent included (per
+a `first`/`last` over an aggregate included as an attached constituent (per
 `queries/partitioned-aggregates` › Mixed sources carry the full expression-source
 surface); an
 attached (aggregate-valued) parameter on a row-level source SHALL be accepted when the
@@ -300,9 +300,9 @@ operand dataset for an attached one.
 #### Scenario: Collapsing constituent mixed with a row leaf fails closed
 - **WHEN** a query over a month time dimension selects
   `sum(amount * last(sum(amount, partition_by=[region, ordered_at])))`
-- **THEN** it executes with the collapsed value broadcast onto each row of its
-  partition (Jan 375 / Feb 825 / Mar 900 on the reference dataset), never a
-  multiplied value
+- **THEN** it executes with the `last` value — its month key dropped, one value per
+  region — broadcast onto each row of its region (Jan 375 / Feb 825 / Mar 900 on the
+  reference dataset), never a multiplied value
 
 #### Scenario: Unanalysable derived leaf fails closed
 - **WHEN** an expression leaf names a derived column whose definition no dialect can
