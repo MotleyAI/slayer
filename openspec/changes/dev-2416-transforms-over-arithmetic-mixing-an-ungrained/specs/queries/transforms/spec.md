@@ -17,8 +17,8 @@ Scenarios marked "the city seed" use one dataset `orders(id, customer_id, region
 - **THEN** the filter keeps exactly North/B, and the order is B, D, C, A
 
 #### Scenario: Other spellings of the mixed operand
-- **WHEN** the query selects `rank(sum(orders.amount) - sum(orders.amount, partition_by=orders.region), direction='desc')`, the rank of a dataset metric defined as `share`, and `rank(count(orders.*) / sum(orders.amount, partition_by=orders.region), direction='desc')`
-- **THEN** each equals its explicit-grain spelling; the count form reads 1, 1, 4, 3 for A, B, C, D
+- **WHEN** the query selects `rank(sum(orders.amount) - sum(orders.amount, partition_by=orders.region), direction='desc')`, the rank of a dataset metric defined as `share`, `rank(count(orders.*) / sum(orders.amount, partition_by=orders.region), direction='desc')`, and `rank(sum(orders.amount) / sum(orders.amount, partition_by=orders.region) + sum(orders.amount, partition_by=[]), direction='desc')`
+- **THEN** each equals its explicit-grain spelling; the count form reads 1, 1, 4, 3 for A, B, C, D; the three-way form reads 4, 1, 3, 2
 
 #### Scenario: A month bucket joins the query grain
 - **WHEN** the city-seed query groups by `orders.region`, `orders.city` and month of `orders.ordered_at` and selects `rank(share, direction='desc')`, and again with `partition_by=orders.region` on the rank
@@ -33,7 +33,7 @@ Scenarios marked "the city seed" use one dataset `orders(id, customer_id, region
 - **THEN** they read 4, 1, 3, 1 and 3, 5, 1, 5
 
 #### Scenario: Shapes that already work keep their values
-- **WHEN** the same query selects `time_shift(share, -1)`, `change(share)`, `change_pct(share)`, `first(share)`, `last(share)`, a rank over `sum(orders.amount) / sum(orders.amount, partition_by=[])`, a rank over a three-way mix of an ungrained, a region-grained and a scalar sum, a mixed operand whose numerator is `sum(orders.amount, window='2m')`, and `time_shift` of an operand mixing a region-grained aggregate with the dimension `orders.region`
+- **WHEN** the same query selects `time_shift(share, -1)`, `change(share)`, `change_pct(share)`, `first(share)`, `last(share)`, a rank over `sum(orders.amount) / sum(orders.amount, partition_by=[])`, a mixed operand whose numerator is `sum(orders.amount, window='2m')`, and `time_shift` of an operand mixing an aggregate grained by region and month with the dimension `orders.region`
 - **THEN** each returns the values it returns before this change, equal to its explicit-grain spelling
 
 #### Scenario: A row-level leaf beside a coarser aggregate
