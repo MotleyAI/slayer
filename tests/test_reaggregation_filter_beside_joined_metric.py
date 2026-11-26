@@ -38,7 +38,7 @@ def _q(
     *, metrics: Sequence[QueryMetric], filters: Sequence[str], dims: Sequence[Any] = REGION,
     time_dims: bool = False, population: bool = True,
 ) -> SlayerQuery:
-    kw: Dict[str, Any] = {"dimensions": list(dims), "metrics": list(metrics), "filters": list(filters)}
+    kw: Dict[str, Any] = {"dimensions": list(dims), "metrics": list(metrics), "filter": list(filters)}
     if time_dims:
         kw["time_dimensions"] = month_td()
     if population:
@@ -138,7 +138,8 @@ class TestReaggregationFilterBesideJoinedMetric:
         attached = f"{REGION_TOTAL} > 55"
         predicate = f"max({INNER}) > 35"
         typings = _typings(_q(metrics=[SPEND], filters=[attached, predicate], dims=dims))
-        assert typings[0][0] == MaskTyping.FIELD and typings[0][1] > 0
+        assert typings[0][0] == MaskTyping.FIELD
+        assert typings[0][1] > 0
         await _assert_masked(
             exec_engine, metrics=[SPEND], predicate=predicate, other=[attached], dims=dims,
             hand={("North", "CityB", 100.0): {"m0": 200.0}, (None, "CityD", 60.0): {"m0": 100.0}},
