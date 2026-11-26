@@ -2065,19 +2065,21 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             key.source,
             *[a for a in key.args if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
+                a, (AggregateKey, TransformKey, WindowKey, ArithmeticKey, ScalarCallKey, CastKey))],
             *[v for _, v in key.kwargs if isinstance(
-                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
+                v, (AggregateKey, TransformKey, WindowKey, ArithmeticKey, ScalarCallKey, CastKey))],
         ]
     if isinstance(key, TransformKey):
         return [key.input]
+    if isinstance(key, WindowKey):
+        return list(key.children())
     if isinstance(key, ArithmeticKey):
         return list(key.operands)
     if isinstance(key, ScalarCallKey):
         return [
             a for a in key.args
             if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
+                a, (AggregateKey, TransformKey, WindowKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
             )
         ]
     if isinstance(key, (CastKey, ListSetKey)):

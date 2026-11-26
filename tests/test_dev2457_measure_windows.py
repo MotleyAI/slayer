@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.errors import IllegalWindowInFilterError, ModelMetricReferenceError, QueryTypeError
+from slayer.core.errors import IllegalWindowInFilterError, ModelMetricReferenceError, QueryTypeError, TimeAxisError
 from slayer.core.models import DatasetMetric
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev2243_fixtures import DS, dataset, document_engine, document_text, field, metric, relationship
@@ -152,6 +152,17 @@ class TestPositions:
     async def test_in_dimension_position_with_an_explicit_grain(self, engine: SlayerQueryEngine) -> None:
         resp = await run(engine, {"population": "orders", **_query(dimension=REGION_RANK, metrics={"m": REVENUE})})
         assert _cells(resp) == {1: 150, 2: 70, 3: 60}
+
+    @pytest.mark.parametrize("metric", [
+        "SUM(change(sum(orders.amount))) OVER ()", "RANK() OVER (ORDER BY change(sum(orders.amount)))",
+        "abs(SUM(change(sum(orders.amount))) OVER ())",
+        "weighted_avg(orders.amount, weight=RANK() OVER (ORDER BY change(sum(orders.amount))))",
+    ], ids=["argument", "order-key", "in-a-scalar-call", "as-an-aggregation-parameter"])
+    async def test_a_time_transform_inside_a_window_needs_a_time_dimension(
+        self, engine: SlayerQueryEngine, metric: str,
+    ) -> None:
+        with pytest.raises(TimeAxisError):
+            await run(engine, grouped("orders", REGION, metric))
 
     async def test_in_dimension_position_without_an_explicit_grain_is_refused(self, engine: SlayerQueryEngine) -> None:
         body = {"population": "orders", **_query(dimension=RANK, metrics={"m": REVENUE})}
