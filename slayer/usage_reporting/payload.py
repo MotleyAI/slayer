@@ -26,6 +26,9 @@ UsageKey = Literal[
     "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types", "cli:storage.upgrade",
     "cli:datasources.refresh-samples", "cli:inspect", "cli:search",
     "cli:otel.status", "cli:otel.test",
+    "cli:ontologies.list", "cli:ontologies.show", "cli:ontologies.create", "cli:ontologies.replace",
+    "cli:ontologies.delete", "cli:ontology-mappings.list", "cli:ontology-mappings.show",
+    "cli:ontology-mappings.create", "cli:ontology-mappings.replace", "cli:ontology-mappings.delete",
     "cli:other",
     # MCP tools
     "mcp:create_datasource", "mcp:create_dataset", "mcp:delete_datasource", "mcp:delete_dataset",
@@ -34,12 +37,16 @@ UsageKey = Literal[
     "mcp:list_datasources", "mcp:datasets_summary", "mcp:query",
     "mcp:recommend_population", "mcp:save_memory", "mcp:search", "mcp:set_datasource_priority",
     "mcp:validate_datasets", "mcp:create_semantic_model", "mcp:edit_semantic_model", "mcp:delete_semantic_model",
+    "mcp:create_ontology", "mcp:edit_ontology", "mcp:delete_ontology", "mcp:create_ontology_mapping",
+    "mcp:edit_ontology_mapping", "mcp:delete_ontology_mapping",
     "mcp:other",
     # REST route templates
     "rest:/datasources", "rest:/datasources/priority", "rest:/datasources/{name}", "rest:/health",
     "rest:/ingest", "rest:/inspect", "rest:/memories", "rest:/memories/{memory_id}", "rest:/datasets",
     "rest:/datasets/{name}", "rest:/query", "rest:/recommend-population", "rest:/search",
-    "rest:/validate-datasets", "rest:/semantic-models", "rest:/semantic-models/{data_source}/{name}", "rest:other",
+    "rest:/validate-datasets", "rest:/semantic-models", "rest:/semantic-models/{data_source}/{name}",
+    "rest:/ontologies", "rest:/ontologies/{name}", "rest:/ontology-mappings",
+    "rest:/ontology-mappings/{data_source}/{name}", "rest:other",
     # wire protocols
     "flight:query", "flight:probe", "pg:query", "pg:probe",
 ]

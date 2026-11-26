@@ -1,0 +1,16 @@
+document:
+  version: 0.3.0.dev0
+  name: sales_mapping
+  ontology_ref:
+    name: sales
+    iri: ./sales.ontology.yaml
+  semantic_model_ref:
+    name: sales_model
+    iri: ./sales.semantic_model.yaml
+  concept_mappings:
+  - concept: Order
+    object_mappings:
+    - expression: orders.order_id
+files:
+  ./sales.ontology.yaml: "name: sales\nontology:\n- concept: Party\n  relationships:\n  - name: nr\n    roles:\n    - concept: Integer\n    verbalizes:\n    - '{_} has {Integer}'\n  type: EntityType\n- concept: Customer\n  extends:\n  - Party\n  identify_by:\n  - nr\n  type: EntityType\n- concept: Order\n  identify_by:\n  - nr\n  relationships:\n  - name: nr\n    roles:\n    - concept: Integer\n    verbalizes:\n    - '{_} has {Integer}'\n  - name: customer\n    roles:\n    - concept: Customer\n    verbalizes:\n    - '{_} has {Customer}'\n  - name: placed_by\n    verbalizes:\n    - '{Order} is placed'\n  - name: total\n    roles:\n    - concept: Decimal\n    verbalizes:\n    - '{_} has {Decimal}'\n  - name: active\n    verbalizes:\n    - '{Order} is active'\n  type: EntityType\nversion: 0.3.0.dev0\n"
+  ./sales.semantic_model.yaml: 'a: ['

@@ -1,0 +1,36 @@
+document:
+  ontology:
+  - concept: Item
+    type: EntityType
+    identify_by:
+    - nr
+    relationships:
+    - name: nr
+      roles:
+      - concept: SkuNr
+      multiplicity: OneToOne
+      verbalizes:
+      - '{Item} is identified by {SkuNr}'
+    - name: active
+      verbalizes:
+      - '{Item} is actively sold'
+    - name: active_in
+      roles:
+      - concept: Store
+      verbalizes:
+      - '{Item} is actively sold in {Store}'
+    - name: returned_in_for
+      roles:
+      - concept: Store
+      - concept: Amount
+      verbalizes:
+      - '{Item} returned in {Store} for {Amount}'
+      multiplicity: ManyToOne
+    - name: sold_in_for
+      roles:
+      - concept: Store
+      - concept: Amount
+      verbalizes:
+      - '{Item} sells in {Store} for {Amount}'
+      multiplicity: ManyToOne
+files: {}

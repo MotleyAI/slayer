@@ -44,6 +44,7 @@ from slayer.memories.models import (
     SaveMemoryResponse,
 )
 from slayer.memories.service import MemoryService
+from slayer.ontology.documents import content_text, document_name
 from slayer.search.service import SearchResponse, SearchService
 from slayer.storage.base import StorageBackend
 
@@ -91,6 +92,14 @@ def _raise_for_status(resp: Any) -> None:
 
 def _semantic_model_path(*, data_source: str, name: str) -> str:
     return f"/semantic-models/{quote(data_source, safe='')}/{quote(name, safe='')}"
+
+
+def _ontology_path(name: str) -> str:
+    return f"/ontologies/{quote(name, safe='')}"
+
+
+def _mapping_path(*, data_source: str, name: str) -> str:
+    return f"/ontology-mappings/{quote(data_source, safe='')}/{quote(name, safe='')}"
 
 class SlayerClient:
     """Async-first client for the SLayer REST API, or direct local mode.
@@ -499,6 +508,114 @@ class SlayerClient:
 
     def delete_semantic_model_sync(self, name: str, *, data_source: str) -> bool:
         return self._run_sync(self.delete_semantic_model(name, data_source=data_source))
+
+    # ----- Ontologies and mappings -----
+
+    async def list_ontologies(self) -> list[dict[str, str]]:
+        """Every stored ontology as ``{name}``."""
+        if self._storage is not None:
+            return [{"name": n} for n in await self._storage.list_ontologies()]
+        return await self._request(method="GET", path="/ontologies")
+
+    async def get_ontology(self, name: str) -> str | None:
+        """An ontology's text as stored; ``None`` when absent."""
+        if self._storage is not None:
+            return await self._storage.get_ontology_text(name)
+        found = await self._request_or_none(method="GET", path=_ontology_path(name))
+        return found["text"] if found is not None else None
+
+    async def create_ontology(self, *, content: str | dict[str, Any]) -> str:
+        """Store an ontology under its own ``name``; that name."""
+        if self._storage is not None:
+            text = content_text(content)
+            name = document_name(text)
+            await self._storage.save_ontology_text(name=name, text=text)
+            return name
+        return (await self._request(method="POST", path="/ontologies", json={"content": content}))["name"]
+
+    async def replace_ontology(self, name: str, *, content: str | dict[str, Any]) -> None:
+        """Replace ontology ``name``'s text."""
+        if self._storage is not None:
+            await self._storage.save_ontology_text(name=name, text=content_text(content))
+            return
+        await self._request(method="PUT", path=_ontology_path(name), json={"content": content})
+
+    async def delete_ontology(self, name: str) -> bool:
+        """Delete an ontology; ``False`` when absent."""
+        if self._storage is not None:
+            return await self._storage.delete_ontology(name)
+        return await self._request_or_none(method="DELETE", path=_ontology_path(name)) is not None
+
+    async def list_ontology_mappings(self, data_source: str | None = None) -> list[dict[str, str]]:
+        """Every stored mapping as ``{data_source, name}``."""
+        if self._storage is not None:
+            return [{"data_source": ds, "name": n} for ds, n in await self._storage.list_ontology_mappings(data_source)]
+        params = {"data_source": data_source} if data_source else None
+        return await self._request(method="GET", path="/ontology-mappings", params=params)
+
+    async def get_ontology_mapping(self, name: str, *, data_source: str) -> str | None:
+        """A mapping's text as stored; ``None`` when absent."""
+        if self._storage is not None:
+            return await self._storage.get_ontology_mapping_text(name, data_source)
+        found = await self._request_or_none(method="GET", path=_mapping_path(data_source=data_source, name=name))
+        return found["text"] if found is not None else None
+
+    async def create_ontology_mapping(self, *, data_source: str, content: str | dict[str, Any]) -> list[str]:
+        """Store a mapping of ``data_source`` under its own ``name``; the save's informational notes."""
+        if self._storage is not None:
+            text = content_text(content)
+            return await self._storage.save_ontology_mapping_text(data_source=data_source, name=document_name(text),
+                                                                  text=text)
+        found = await self._request(method="POST", path="/ontology-mappings",
+                                    json={"data_source": data_source, "content": content})
+        return found["notes"]
+
+    async def replace_ontology_mapping(self, name: str, *, data_source: str, content: str | dict[str, Any]) -> list[str]:
+        """Replace mapping ``name`` of ``data_source``; the save's informational notes."""
+        if self._storage is not None:
+            return await self._storage.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                                  text=content_text(content))
+        found = await self._request(method="PUT", path=_mapping_path(data_source=data_source, name=name),
+                                    json={"content": content})
+        return found["notes"]
+
+    async def delete_ontology_mapping(self, name: str, *, data_source: str) -> bool:
+        """Delete a mapping; ``False`` when absent."""
+        if self._storage is not None:
+            return await self._storage.delete_ontology_mapping(name, data_source)
+        return await self._request_or_none(method="DELETE",
+                                           path=_mapping_path(data_source=data_source, name=name)) is not None
+
+    def list_ontologies_sync(self) -> list[dict[str, str]]:
+        return self._run_sync(self.list_ontologies())
+
+    def get_ontology_sync(self, name: str) -> str | None:
+        return self._run_sync(self.get_ontology(name))
+
+    def create_ontology_sync(self, *, content: str | dict[str, Any]) -> str:
+        return self._run_sync(self.create_ontology(content=content))
+
+    def replace_ontology_sync(self, name: str, *, content: str | dict[str, Any]) -> None:
+        self._run_sync(self.replace_ontology(name, content=content))
+
+    def delete_ontology_sync(self, name: str) -> bool:
+        return self._run_sync(self.delete_ontology(name))
+
+    def list_ontology_mappings_sync(self, data_source: str | None = None) -> list[dict[str, str]]:
+        return self._run_sync(self.list_ontology_mappings(data_source=data_source))
+
+    def get_ontology_mapping_sync(self, name: str, *, data_source: str) -> str | None:
+        return self._run_sync(self.get_ontology_mapping(name, data_source=data_source))
+
+    def create_ontology_mapping_sync(self, *, data_source: str, content: str | dict[str, Any]) -> list[str]:
+        return self._run_sync(self.create_ontology_mapping(data_source=data_source, content=content))
+
+    def replace_ontology_mapping_sync(self, name: str, *, data_source: str,
+                                      content: str | dict[str, Any]) -> list[str]:
+        return self._run_sync(self.replace_ontology_mapping(name, data_source=data_source, content=content))
+
+    def delete_ontology_mapping_sync(self, name: str, *, data_source: str) -> bool:
+        return self._run_sync(self.delete_ontology_mapping(name, data_source=data_source))
 
     # ----- Memory API -----
 
