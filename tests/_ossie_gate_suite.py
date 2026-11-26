@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
-import json
-from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, Protocol
 
 import pytest
-from pydantic import BaseModel
 
 from slayer.core.errors import OssieQueryError, SlayerError
 from slayer.engine.query_engine import SlayerResponse
 from tests._dev2215_fixtures import q
-from tests._dev2217_fixtures import STRICT, WIDE_TABLE
+from tests._dev2217_fixtures import STRICT
 from tests._dev2446_required_manifest import Row
+from tests._ossie_case_scripts import CaseScriptError as CaseScriptError
+from tests._ossie_case_scripts import WideCase as WideCase
+from tests._ossie_case_scripts import cases as cases
+from tests._ossie_case_scripts import read_case as read_case
+from tests._ossie_case_scripts import row_cases as row_cases
 from tests._ossie_gate import PASS, Bracket, Declared, assert_logical, expand, multiset_problem, utc_now
 from tests._ossie_gate_fixtures import Provider, Table, gate_tables, select_statement
 
@@ -90,42 +91,6 @@ async def check_layer1_value(engine: QueryRunner, row: Row, *, engine_name: str)
 # --------------------------------------------------------------------------- #
 # Wide-table cases
 # --------------------------------------------------------------------------- #
-Cell = Decimal | str | None
-
-
-class Expected(BaseModel):
-    fixture: str
-    header: list[str] = []
-    rows: list[list[Cell]] = []
-    error: str | None = None
-
-
-def _cell(text: str) -> Cell:
-    """A value as written: empty is NULL, ``""`` the empty string, a number its exact value."""
-    if text == "":
-        return None
-    if text == '""':
-        return ""
-    try:
-        return Decimal(text)
-    except InvalidOperation:
-        return text
-
-
-def read_expected(case: Path) -> Expected:
-    lines = (case / "expected.txt").read_text(encoding="utf-8").splitlines()
-    fixture = next(line.split(":", 1)[1].strip() for line in lines if line.startswith("# fixture:"))
-    error = next((line.removeprefix("> error:").strip() for line in lines if line.startswith("> error:")), None)
-    if error is not None:
-        return Expected(fixture=fixture, error=error)
-    table = [[c.strip() for c in line.strip().strip("|").split("|")] for line in lines if line.startswith("|")]
-    return Expected(fixture=fixture, header=table[0], rows=[[_cell(c) for c in row] for row in table[1:]])
-
-
-def case_query(case: Path) -> dict[str, Any]:
-    return json.loads((case / "query.json").read_text(encoding="utf-8"))
-
-
 def translate(query: dict[str, Any]) -> dict[str, Any]:
     """Ossie's JSON binding (wide_table §3.7) as a root-less SLayer query under the default conformance."""
     out = {key: value for key, value in query.items() if key != "filter"}
@@ -142,43 +107,31 @@ def result_keys(query: dict[str, Any]) -> list[str]:
     return keys
 
 
-def cases() -> list[Path]:
-    return sorted(p for p in (WIDE_TABLE / "cases").iterdir() if p.is_dir())
-
-
-def row_cases() -> list[Path]:
-    return [c for c in cases() if c.name.startswith("a")]
-
-
-def rows_problem(response: SlayerResponse, keys: list[str], expected: Expected, *, engine: str) -> str | None:
+def rows_problem(response: SlayerResponse, keys: list[str], case: WideCase, *, engine: str) -> str | None:
     got = [tuple(row[key] for key in keys) for row in response.data]
-    return multiset_problem(got, expected.rows, engine=engine)
+    return multiset_problem(got, case.rows, engine=engine)
 
 
-async def check_case_under_strict(engines: Mapping[str, QueryRunner], case: Path, *, engine_name: str) -> None:
+async def check_case_under_strict(engines: Mapping[str, QueryRunner], case: WideCase, *, engine_name: str) -> None:
     """Ossie's rows, header and order, or Ossie's error code."""
-    expected = read_expected(case)
-    engine = engines[expected.fixture]
-    query = case_query(case)
-    if expected.error is not None:
+    engine = engines[case.model]
+    if case.error is not None:
         with pytest.raises(OssieQueryError) as raised:
-            await engine.execute(query, conformance=STRICT)
-        assert raised.value.code == expected.error, raised.value
+            await engine.execute(case.query, conformance=STRICT)
+        assert raised.value.code == case.error, raised.value
         return
-    response = await engine.execute(query, conformance=STRICT)
-    assert response.columns == expected.header
-    problem = rows_problem(response, expected.header, expected, engine=engine_name)
+    response = await engine.execute(case.query, conformance=STRICT)
+    assert response.columns == case.header
+    problem = rows_problem(response, case.header, case, engine=engine_name)
     assert problem is None, f"{problem}\n{response.sql}"
 
 
-async def check_row_case_under_the_default(engines: Mapping[str, QueryRunner], case: Path, *,
+async def check_row_case_under_the_default(engines: Mapping[str, QueryRunner], case: WideCase, *,
                                            engine_name: str) -> None:
-    expected = read_expected(case)
-    query = case_query(case)
-    response = await engines[expected.fixture].execute(translate(query))
-    keys = result_keys(query)
-    assert len(keys) == len(expected.header)
-    problem = rows_problem(response, keys, expected, engine=engine_name)
+    response = await engines[case.model].execute(translate(case.query))
+    keys = result_keys(case.query)
+    assert len(keys) == len(case.header)
+    problem = rows_problem(response, keys, case, engine=engine_name)
     assert problem is None, f"{problem}\n{response.sql}"
 
 

@@ -23,7 +23,7 @@ from tests._dev2217_fixtures import DS, sql_engine, strict
 from tests._dev2243_fixtures import dataset, document_text, field, metric, relationship
 
 #: The vendored Ossie revision the compliance page and these cases are measured against.
-REVISION = "d4dca4e9"
+REVISION = "c2980498"
 #: The issue that will make every valid Ossie document load and behave.
 FORMAT = "DEV-2464"
 

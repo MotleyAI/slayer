@@ -34,8 +34,8 @@ from tests._osi_export_fixtures import BASIC_METRICS, DATASOURCE as EXPORT_DS, E
 
 EXAMPLES = CORPUS / "examples"
 SHOP_EXAMPLE = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_import" / "shop.osi.yaml"
-CORE_EXAMPLES = ["flights.semantic_model.yaml", "renamed_fields.yaml", "sap_business_partner.semantic_model.yaml",
-                 "tpcds_semantic_model.yaml"]
+CORE_EXAMPLES = ["flights.semantic_model.yaml", "minimal.json", "minimal.yaml", "renamed_fields.yaml",
+                 "sap_business_partner.semantic_model.yaml", "tpcds_semantic_model.yaml"]
 ONTOLOGY_EXAMPLES = ["flights.yaml", "flights.ontology.yaml", "flights.mapping.yaml",
                      "sap_business_partner.ontology.yaml", "sap_business_partner.mapping.yaml", "foaf_owl_import.yaml"]
 
@@ -800,7 +800,7 @@ async def test_example_validates_and_imports(tmp_path: Path) -> None:
 # Upstream examples import
 # --------------------------------------------------------------------------- #
 def test_every_upstream_example_is_vendored() -> None:
-    assert sorted(p.name for p in EXAMPLES.iterdir()) == sorted([*CORE_EXAMPLES, *ONTOLOGY_EXAMPLES])
+    assert sorted(p.name for p in EXAMPLES.iterdir()) == sorted([*CORE_EXAMPLES, *ONTOLOGY_EXAMPLES, "README.md"])
 
 
 async def _loaded_dataset_names(storage: StorageBackend) -> list[str]:
