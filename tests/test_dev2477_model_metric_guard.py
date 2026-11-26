@@ -475,6 +475,17 @@ async def test_a_metric_already_unresolved_blocks_nothing_new(tmp_path: Path, ki
 
 
 @pytest.mark.parametrize("kind", STORAGES)
+async def test_restoring_a_missing_dataset_without_a_read_field_applies(tmp_path: Path, kind: str) -> None:
+    storage = await sales_store(kind, tmp_path, text=AMOUNTS)
+    customers = await must_get(storage, "customers")
+    with caught(), database_driven():
+        await storage.delete_dataset("customers", data_source=DS)
+    await storage.save_dataset(without_fields(customers, "region"))
+    assert (await must_get(storage, "customers")).get_field("region") is None
+    assert "customers.region" in (await metric_failures(storage))["regions"]
+
+
+@pytest.mark.parametrize("kind", STORAGES)
 async def test_a_further_break_of_a_partly_unresolved_metric_is_refused(tmp_path: Path, kind: str) -> None:
     """Spec scenario: A further break of a partly unresolved metric is refused."""
     storage = await _partly_unresolved(kind, tmp_path)

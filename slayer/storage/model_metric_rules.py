@@ -32,7 +32,8 @@ _OSSIE_SQL = "OSSIE_SQL_2026"
 RESERVED_WORDS = frozenset({"true", "false", "null", "and", "or", "not", "is", "in", "between", "like", "case", "when",
                             "then", "else", "end", "distinct", "filter", "where", "over", "as", "select", "from"})
 
-#: A metric's unresolved references by case-folded spelling: ``(spelling, why)``, read as "reads <spelling>, which <why>".
+#: A metric's unresolved references by case-folded reference (``d.f`` when qualified): ``(spelling, why)``, read as
+#: "reads <spelling>, which <why>".
 Unresolved = dict[str, tuple[str, str]]
 
 
@@ -238,7 +239,7 @@ def _unresolved(column: exp.Column, *, fields: Mapping[str, AbstractSet[str]],
         return leaf, column.name, f"is not a model-scoped metric of datasource {data_source!r}"
     if table not in fields:
         return None if table == "source" else (
-            table, column.table, f"is not a dataset of semantic model {document!r}")
+            f"{table}.{leaf}", column.table, f"is not a dataset of semantic model {document!r}")
     if isinstance(column.this, exp.Star):
         return None
     key = f"{table}.{leaf}"
@@ -282,7 +283,7 @@ def unresolved_metrics(direct: Mapping[str, Unresolved], *,
                        graph: Mapping[str, tuple[str, set[str]]]) -> dict[str, list[str]]:
     """Each model-scoped metric (case-folded) with ``direct`` unresolved references, or reading one through others
     (``graph``: folded name → spelling, reads): why, naming the chain for the latter."""
-    out = {k: [chain_warning([s], why) for s, why in v.values()] for k, v in direct.items() if v}
+    out = {k: list(dict.fromkeys(chain_warning([s], why) for s, why in v.values())) for k, v in direct.items() if v}
     targets = {}
     for k, v in direct.items():
         if v and k in graph:

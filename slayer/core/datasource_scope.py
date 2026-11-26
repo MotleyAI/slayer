@@ -44,12 +44,17 @@ class DatasourceScope(BaseModel):
                                        "datasets": [*kept, *(datasets or [])]})
 
     def with_dataset(self, name: str, dataset: SlayerDataset | None) -> DatasourceScope:
-        """The scope with dataset ``name`` replaced by ``dataset`` (``None``: deleted), in its document too."""
+        """The scope with dataset ``name`` replaced by ``dataset`` (``None``: deleted), in its document too; one no
+        document holds joins the document its ``semantic_model`` names."""
         def swapped(items: list[SlayerDataset]) -> list[SlayerDataset]:
             kept = [d for d in items if not name_taken(d.name, [name])]
             return [*kept, dataset] if len(kept) < len(items) and dataset is not None else kept
 
         documents = {k: swapped(v) for k, v in self.documents.items()}
+        home = dataset.semantic_model if dataset is not None else None
+        if dataset is not None and home is not None and home in documents and not any(
+                name_taken(name, [d.name for d in v]) for v in self.documents.values()):
+            documents[home] = [*documents[home], dataset]
         datasets = swapped(self.datasets)
         if dataset is not None and not name_taken(name, [d.name for d in self.datasets]):
             datasets.append(dataset)
