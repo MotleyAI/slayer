@@ -366,3 +366,50 @@ The query tool's schema guidance SHALL state, once, on the field that owns metri
 #### Scenario: A documented bare-metric query works as documented
 - **WHEN** the documented example query naming a model-scoped metric by bare name runs on the demo
 - **THEN** it returns the documented result
+
+### Requirement: Startup preparation never delays the handshake
+`slayer mcp` SHALL answer the MCP handshake (`initialize` and `tools/list`) without waiting for startup
+preparation. Startup preparation is the demo setup requested by `--demo` followed by the startup ingest
+requested by `--ingest-on-startup` or `SLAYER_INGEST_ON_STARTUP`; it SHALL run in the background once the
+server starts. Every tool call SHALL wait until preparation has finished and then run normally. While a call
+waits, the server SHALL send it progress notifications when the request carries a progress token. A
+cancelled call SHALL NOT stop preparation for other calls. When the demo setup fails, the server SHALL keep
+running and every tool call SHALL return the error `Failed to set up the Jaffle Shop demo: <reason>`, which
+is also written to stderr. A startup-ingest failure — of a datasource or of individual tables — SHALL be
+reported on stderr and SHALL NOT fail tool calls. Preparation SHALL write nothing to stdout. Without
+startup preparation, tool calls SHALL NOT wait. `slayer serve` SHALL keep finishing its preparation before
+it starts serving.
+
+#### Scenario: The handshake answers during the demo build
+- **WHEN** `slayer mcp --demo` starts on empty storage and the client sends `initialize` and `tools/list`
+  while the demo is still being built
+- **THEN** both answer without waiting for the build
+
+#### Scenario: A tool call waits for the demo
+- **WHEN** the client calls `query` on the demo while the demo is still being built
+- **THEN** the call returns the query's rows once the build has finished
+
+#### Scenario: Progress while waiting
+- **WHEN** a tool call carrying a progress token waits for preparation
+- **THEN** the client receives progress notifications for that call until it runs
+
+#### Scenario: A cancelled call does not stop preparation
+- **WHEN** one of two waiting tool calls is cancelled
+- **THEN** preparation continues and the other call returns its result
+
+#### Scenario: A failed demo setup becomes a tool error
+- **WHEN** the demo setup fails
+- **THEN** the server keeps running, every tool call returns `Failed to set up the Jaffle Shop demo:`
+  followed by the reason, and stderr holds the reason
+
+#### Scenario: Startup ingest runs behind the gate
+- **WHEN** `slayer mcp --ingest-on-startup` starts and one configured datasource fails to ingest
+- **THEN** the handshake answers without waiting for the ingest, stderr reports the failed datasource,
+  and tool calls succeed once the ingest has finished
+
+### Requirement: The ontology tools fit the surface rules
+The tools `create_ontology`, `edit_ontology`, `delete_ontology`, `create_ontology_mapping`, `edit_ontology_mapping` and `delete_ontology_mapping` SHALL obey every rule of this capability: their descriptions SHALL fit the client description budget, and every parameter SHALL be described in the input schema. `inspect`'s `entity_type` description SHALL list `ontology` and `ontology_mapping`.
+
+#### Scenario: The ontology tools fit the budget
+- **WHEN** the MCP server lists its tools
+- **THEN** each ontology tool's description fits the budget, every parameter carries a description, and `inspect`'s `entity_type` description names `ontology` and `ontology_mapping`

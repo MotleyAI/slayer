@@ -369,6 +369,7 @@ class TestBucketRequiredRemedy:
     @pytest.mark.parametrize(("dimension", "measure", "remedy"), [
         ("month(orders.created_at)", "cumsum(sum(orders.amount))", "date_trunc('month', created_at)"),
         ("year(orders.created_at)", "change(sum(orders.amount))", "date_trunc('year', created_at)"),
+        ("year(orders.created_at)", "last(sum(orders.amount))", "date_trunc('year', created_at)"),
         ("year(orders.created_at)", "sum(orders.amount, window='3m')", "date_trunc('year', created_at)"),
         ("date_part('quarter', orders.created_at)", "time_shift(sum(orders.amount), -1)", "date_trunc('quarter', created_at)"),
     ])

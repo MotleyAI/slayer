@@ -49,6 +49,7 @@ from slayer.search.render import (
     expression_text,
     render_model_scoped_metric_text,
 )
+from slayer.inspect.ontology_render import ontology_document_view
 from slayer.storage.base import StorageBackend
 
 try:  # SlayerQueryEngine is only needed for the dataset sample-data path.
@@ -57,7 +58,8 @@ except Exception:  # pragma: no cover - engine import always succeeds in-repo
     SlayerQueryEngine = None  # type: ignore[assignment, misc]
 
 VALID_ENTITY_TYPES = {
-    "datasource", "dataset", "field", "metric", "aggregation", "memory", "semantic_model",
+    "datasource", "dataset", "field", "metric", "aggregation", "memory", "semantic_model", "ontology",
+    "ontology_mapping",
 }
 _VALID_FORMATS = {"markdown", "json"}
 
@@ -237,6 +239,9 @@ class InspectService:
             )
         if entity_type == "semantic_model":
             return await self._inspect_semantic_model(reference=reference, fmt=fmt, warnings=warnings)
+        if entity_type in ("ontology", "ontology_mapping"):
+            return await self._inspect_ontology_document(reference=reference, kind=entity_type, compact=compact,
+                                                         fmt=fmt, warnings=warnings)
         # field / metric / aggregation
         return await self._inspect_leaf(
             reference=reference, entity_type=entity_type, compact=compact,
@@ -898,6 +903,30 @@ class InspectService:
                   "Model-scoped metrics:" if metrics else "Model-scoped metrics: _(none)_",
                   *(f"- `{m.name}`: {expression_text(m.expression)}" for m in metrics)]
         return _OneResult(canonical, False, self._markdown_with_warnings("\n".join(lines), warnings))
+
+    async def _inspect_ontology_document(self, *, reference: str, kind: str, compact: bool, fmt: str,
+                                         warnings: list[str]) -> _OneResult:
+        """An ontology (``Name``) or a mapping (``<datasource>.<name>``): compact, its description, what it names and,
+        for a mapping, whether it resolves; full, its stored text."""
+        if kind == "ontology":
+            names = [n for n in await self._storage.list_ontologies() if n == reference]
+            found = [(None, n) for n in names]
+        else:
+            ds_hint, _, name = reference.partition(".") if "." in reference else ("", "", reference)
+            found = [i for i in await self._storage.list_ontology_mappings(ds_hint or None) if i[1] == name]
+        if len(found) != 1:
+            what = "no" if not found else "more than one"
+            label = "ontology" if kind == "ontology" else "mapping; pass '<datasource>.<name>'"
+            return _OneResult(None, True, f"'{reference}' names {what} {label}.")
+        ds, name = found[0]
+        text = await (self._storage.get_ontology_text(name) if ds is None
+                      else self._storage.get_ontology_mapping_text(name, ds)) or ""
+        problems = await self._storage.ontology_mapping_problems(name, ds) if ds is not None else None
+        rendered = ontology_document_view(kind=kind, name=name, data_source=ds, text=text, problems=problems,
+                                          compact=compact, fmt=fmt)
+        canonical = name if ds is None else f"{ds}.{name}"
+        return _OneResult(canonical, False, rendered if fmt == "json" else self._markdown_with_warnings(rendered,
+                                                                                                       warnings))
 
     async def _inspect_model_scoped(self, *, reference: str, fmt: str, warnings: list[str]) -> _OneResult | None:
         """A bare model-scoped metric name, rendered as such; ``None`` when no datasource declares one."""

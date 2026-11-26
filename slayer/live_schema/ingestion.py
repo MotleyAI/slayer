@@ -73,6 +73,7 @@ from slayer.memories.resolver import (
     extract_entities_from_query,
 )
 from slayer.storage.base import StorageBackend
+from slayer.storage.ontology_documents import database_driven
 from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:
@@ -1970,11 +1971,32 @@ async def ingest_datasource_idempotent(
     include_views: bool = True,
     surface_internals: bool = False,
 ) -> "schema_drift.IdempotentIngestResult":
-    """Idempotent re-ingestion: create missing datasets, additively merge existing ones.
+    """Idempotent re-ingestion: create missing datasets, additively merge existing ones; a database-driven change.
 
     User-authored sql/query-backed datasets are skipped. Then validates the same
     scope so drift and dropped tables show up in ``to_delete``.
     """
+    with database_driven():
+        return await _ingest_datasource_idempotent(
+            datasource=datasource, storage=storage, client=client, include_tables=include_tables,
+            exclude_tables=exclude_tables, schema=schema, schemas=schemas, all_schemas=all_schemas,
+            include_views=include_views, surface_internals=surface_internals,
+        )
+
+
+async def _ingest_datasource_idempotent(
+    *,
+    datasource: DatasourceConfig,
+    storage: StorageBackend,
+    client: SqlClient,
+    include_tables: list[str] | None,
+    exclude_tables: list[str] | None,
+    schema: str | None,
+    schemas: list[str] | None,
+    all_schemas: bool,
+    include_views: bool,
+    surface_internals: bool,
+) -> "schema_drift.IdempotentIngestResult":
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
 
     scan = await ingest_datasource_report_async(
@@ -2332,6 +2354,13 @@ def _print_ingest_drift_and_errors(
     )
 
 
+def print_ingest_result(result, *, file: TextIO | None = None, data_source: str | None = None) -> None:
+    """The one renderer of an ingest result: ``Created:`` / ``Updated:`` lines, then every report section."""
+    for addition in result.additions:
+        _print_ingest_addition(addition, file=file)
+    _print_ingest_drift_and_errors(result, file=file, data_source=data_source)
+
+
 # --- Boot-time orchestrator ---
 
 
@@ -2411,9 +2440,7 @@ async def ingest_all_datasources_idempotent(
             print(f"Datasource '{name}': failed — {friendly}", file=out)
             continue
 
-        for addition in result.additions:
-            _print_ingest_addition(addition, file=out)
-        _print_ingest_drift_and_errors(result, file=out, data_source=name)
+        print_ingest_result(result, file=out, data_source=name)
         summary.succeeded.append(name)
         summary.drift_pending.extend(result.to_delete)
         print(f"Datasource '{name}': ingested", file=out)

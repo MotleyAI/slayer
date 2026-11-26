@@ -132,6 +132,20 @@ class TestCrossModelProducers:
         ), customers_default="signup_ts")
         assert _values_by(resp, "customers.region") == {"North": {100.0}, "South": {200.0}}
 
+    @pytest.mark.parametrize(("dimensions", "expected"), [
+        # no partition_by: orders.created_at is skipped, customers.updated_at ranks and is consumed
+        (["customers.region", "orders.created_at", "customers.updated_at"],
+         {"North": {100.0, None}, "South": {200.0}}),
+        # no candidate the home determines: the home default signup_ts ranks, nothing is consumed
+        (["customers.region", "orders.created_at"], {"North": {100.0, 300.0}, "South": {None}}),
+    ], ids=["home_dimension_consumed", "home_default"])
+    async def test_ungrained_skips_undetermined_population_dimension(
+        self, backend: str, dimensions: list[str], expected: dict[str, set],
+    ) -> None:
+        resp = await _run(backend, q(dimensions=dimensions, metrics=[m("last(customers.spend)")]),
+                          customers_default="signup_ts")
+        assert _values_by(resp, "customers.region") == expected
+
     async def test_falls_back_to_home_default(self, backend: str) -> None:
         resp = await _run(backend, q(
             dimensions=["customers.region"], time_dimensions=[td("orders.created_at")],

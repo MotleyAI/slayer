@@ -468,9 +468,10 @@ dataset is typed by the union of its constituents' grains: an aggregate
 constituent at its declared `partition_by=` grain; a transform constituent at the
 union of its inner aggregates' grains — each inner's explicit `partition_by=`, else
 the query's dimensions and time buckets — where a windowed inner's grain always
-includes the query's time bucket whether or not its `partition_by=` names it, and an
-axis-collapsing transform (`first`, `last`) at that union minus its time axis; a
-constituent with no declared grain is typed at the query's dimensions. Its rows are the
+includes the query's time bucket whether or not its `partition_by=` names it; a
+`first` / `last` over an aggregate at its own grain (› A ranked aggregation's grain
+drops its ranking key); a constituent with no declared grain is typed at the query's
+dimensions. Its rows are the
 row supply of its constituents at the union grain (`queries/population` › Rows of an
 inferred query are the row supply), whatever the query's population: the NULL-safe union of
 the cells of every constituent at the full union grain — the tuples its row-filtered home
@@ -478,7 +479,9 @@ rows reach, a measure-local `FILTER (WHERE …)` narrowing only its value — an
 constituent is at the full union grain, the cells of the union grain's dimension anchor
 agreeing with the coarser constituents' cells, a query needing an undefined anchor failing
 closed with the population-inference error. The population's rows never add or remove an
-operand cell. Each constituent's value attaches null-safely at its own grain, coarser
+operand cell. A `first` / `last` whose source resolves entirely to attached values is
+such an aggregation, its operand dataset per › first and last over an aggregate rank
+their operand's cells. Each constituent's value attaches null-safely at its own grain, coarser
 constituents broadcast onto the finer cells, and a cell a constituent lacks contributes
 its empty value (NULL for a transform). The
 outer aggregation partitions those cells by the query dimensions attributable to
@@ -530,10 +533,11 @@ column's values.
   region — by hand-computed executed values distinguishable from the per-cell
   evaluation
 
-#### Scenario: Collapsing transform constituent drops the time axis
+#### Scenario: Ranked second-order constituent drops the time axis
 - **WHEN** a query over a month time dimension under `to_many_handling: "broadcast"`
   selects `sum(last(sum(amount, partition_by=[region, ordered_at])))`
-- **THEN** the constituent is typed at `(region)`: every month carries the sum over
+- **THEN** the constituent is typed at `(region)`, its ranking key — the month bucket —
+  dropped: every month carries the sum over
   regions of each region's most recent monthly total, the response warns that the
   month dimension is broadcast, and a region absent from a month still counts —
   distinguishable from summing the `(region, month)` cells present in that month
@@ -541,8 +545,8 @@ column's values.
 #### Scenario: Collapsing and preserving constituents share one operand dataset
 - **WHEN** the same query selects
   `sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - last(sum(amount, partition_by=[region, ordered_at])))`
-- **THEN** the operand dataset is the `(region, month)` cells, the collapsed value
-  broadcasts onto them, each month is attributable through the preserving
+- **THEN** the operand dataset is the `(region, month)` cells, the `last` value at
+  `(region)` broadcasts onto them, each month is attributable through the preserving
   constituent, and the value is correct with no warning
 
 #### Scenario: Composite operand keeps the population's cells
@@ -772,7 +776,8 @@ population rows of its home dataset, never over the attached operands' cells. Th
 operand types at row grain: the union of a row leaf's grain with any attached
 constituent's grain is row grain, the finest. Each attached constituent is computed
 at its own declared grain (an aggregate at its `partition_by=` grain, a transform at
-the union of its inner aggregates' grains, minus its time axis for `first`/`last`;
+the union of its inner aggregates' grains, a `first`/`last` over an aggregate at its
+own grain per › A ranked aggregation's grain drops its ranking key;
 a constituent with no declared grain is typed at the query's dimensions) and its
 value is broadcast onto each population
 row null-safely: a row whose constituent lacks a value carries NULL for that
@@ -1570,3 +1575,129 @@ population without multiplying it (Grain guarantee).
   `customers.region || orders.status` over an unknown-cardinality `orders` → `customers` hop, or a time dimension or
   list child no dataset provably determines together with the other dimensions
 - **THEN** it fails with `PopulationInferenceError` before binding
+
+### Requirement: first and last over an aggregate rank their operand's cells
+`first` / `last(value, [key], partition_by=, window=, FILTER)` SHALL always be an
+aggregation. Over a source with a row-level leaf — a mixed source included, its attached
+values broadcast onto the rows — it SHALL rank its home's rows. Over a source with no
+row-level leaf — an aggregate (`last(sum(x))`), a saved aggregate metric, a grained
+transform, or arithmetic and scalar calls over them — it SHALL be a second-order
+aggregation homed on its operand dataset (› Second-order aggregation over attached
+values), `first` picking the value of the operand cell with the least ranking key and
+`last` the greatest. Its operand dataset SHALL be exactly the domain of
+`queries/transforms` › Transforms evaluate over their operand's domain: its constituents'
+own cells at the recursive union of their grains, coarser constituents broadcast onto
+them, extended over the spine only as that requirement states, and never a cell that only
+a sibling term of the query supplies. A cell with no operand cells SHALL be NULL; ties on
+a non-unique key are nondeterministic. NULL ranking keys follow
+`aggregations/functional-form` › first and last never pick a NULL ranking key. The result
+SHALL keep its operand's value type, a boolean operand giving a boolean result in every
+position. `window=` and `FILTER (WHERE …)` on it SHALL fail at plan time with a
+`ReaggregationError` and an `AggregationFilterError` respectively, as on any
+re-aggregation. Its default grain is its operand's (› A ranked aggregation's grain drops
+its ranking key), so it is grain-self-contained without `partition_by=`. Every shape the
+former `first` / `last` transform reading accepted SHALL keep its values in every
+position — measure, filter, order key, aggregation source, aggregation parameter, mixed
+source, transform input, computed dimension and downstream stage — stored metrics
+included. An unwindowed `first` / `last` SHALL supply the same rows as `sum` over the same
+home and dimensions (`queries/population` › Rows of an inferred query are the row supply).
+
+Scenarios marked "the snapshot fixture" use the fixture of `queries/partitioned-aggregates` ›
+Re-aggregation over ranked and windowed operands, grouped by `customer_id` with a month time
+dimension on `snapshot_date`; there `sum(balance)` is (100, Jan) 370, (100, Feb) 160,
+(200, Jan) 70 and (200, Feb) NULL.
+
+#### Scenario: Last over an aggregate reads the latest cell in every position
+- **WHEN** on the snapshot fixture `last(sum(balance))` is selected as a measure, as the
+  filter `last(sum(balance)) > 100`, as a descending order key, inside
+  `rank(last(sum(balance)), direction='desc')`, as the source of `max(…)`, as the
+  `weight=` of `weighted_avg(balance, weight=…)`, inside the mixed source
+  `sum(balance * last(sum(balance)))`, and in a downstream stage over a monthly stage
+- **THEN** every position reads the per-customer value — 160 for customer 100, NULL for
+  customer 200 — directly or as the input of its enclosing expression, equal to the former
+  transform reading by independent hand-computed oracles on SQLite and DuckDB: the filter
+  keeps exactly customer 100's rows and the rank is 1 for customer 100 and NULL for
+  customer 200
+
+#### Scenario: A stored first or last metric keeps its meaning
+- **WHEN** on-disk YAML storage holds the saved metrics `bal = sum(balance)`,
+  `close = last(bal)`, `close_raw = last(balance)` and the nested
+  `close_rank = rank(last(bal), direction='desc')`, and a
+  query on the snapshot fixture uses each as a measure, a filter and an order key
+- **THEN** each returns the values it returned before `first` / `last` stopped being
+  transforms — `close` 160 / NULL, `close_raw` the per-month closing balance — by executed
+  values
+
+#### Scenario: A spine-backed operand picks its empty last bucket
+- **WHEN** a spine query by month of `time_spine.timestamp` over January to April 2025 on
+  the daily-sales data selects `last(count(sales.*))`
+- **THEN** every row reads 0 — April, a bucket in range with no sales — while the same
+  measure without the spine reads 1, the March count
+
+#### Scenario: A mixed-grain operand ranks its union-grain cells
+- **WHEN** on the snapshot fixture a query selects
+  `last(sum(balance, partition_by=[customer_id, snapshot_date]) - sum(balance, partition_by=snapshot_date))`
+- **THEN** the operand dataset is the `(customer_id, month)` cells with the month totals
+  (January 440, February 160) broadcast onto them, and customer 100 reads 0 and customer
+  200 NULL, by executed values
+
+#### Scenario: Boolean typing is preserved
+- **WHEN** a query over a month time dimension selects `last(max(flag))` for a boolean
+  `flag`, in the filter `last(max(flag)) = true`, in the comparison
+  `last(max(flag)) = max(flag)`, and as the source of `count(…)`
+- **THEN** the value is a BOOLEAN in every position and each reads the values of the
+  former transform reading on SQLite, DuckDB and Postgres
+
+#### Scenario: window and FILTER over an aggregate operand are refused
+- **WHEN** on the snapshot fixture a query selects `last(sum(balance), window='60d')`, and
+  another `last(sum(balance)) FILTER (WHERE balance > 0)`
+- **THEN** the first fails at plan time with a `ReaggregationError` and the second with an
+  `AggregationFilterError`, never a value
+
+### Requirement: A ranked aggregation's grain drops its ranking key
+A ranked `first` / `last` aggregation's grain SHALL be computed from a base: its explicit
+`partition_by=` when given, else the default — the query's dimensions over rows, its
+operand's grain over an aggregate. An unwindowed ranked aggregation SHALL then drop its
+ranking key, explicit or defaulted, from that base when the key is a member of it by exact
+structural match only: a raw time column never drops a bucket of that column (`last(balance)`
+by month keeps one closing value per month), and a bucket never drops another bucket. A
+windowed ranked aggregation SHALL keep the time bucket. A dropped key is a requested grain
+(semantics Axiom 8): the coarser value is broadcast onto the query's cells exactly like an
+explicit `partition_by=` — no broadcast or association warning for that dimension, and
+valid under every `to_many_handling` mode, `"error"` included.
+
+Scenarios use the snapshot fixture of › first and last over an aggregate rank their
+operand's cells.
+
+#### Scenario: A field key that is a query dimension is dropped
+- **WHEN** a query by `customer_id` and the raw `snapshot_date` selects
+  `last(balance, snapshot_date)`, omitting the mode and again under
+  `to_many_handling: "error"`
+- **THEN** every row of customer 100 reads 160 and every row of customer 200 NULL — one
+  value per customer — with no warning in either run, by executed values on SQLite and
+  DuckDB
+
+#### Scenario: A raw key never drops its month bucket
+- **WHEN** a query by `customer_id` with a month time dimension on `snapshot_date` selects
+  `last(balance, snapshot_date)`
+- **THEN** each month keeps its own closing value: (100, Jan) 70, (100, Feb) 160,
+  (200, Jan) 40 and (200, Feb) NULL
+
+#### Scenario: An explicit partition naming the key drops it
+- **WHEN** a query by `customer_id` and the raw `snapshot_date` selects
+  `last(balance, snapshot_date, partition_by=[customer_id, snapshot_date])`, and a monthly
+  query selects `last(sum(balance), partition_by=[customer_id, snapshot_date])`
+- **THEN** each equals the same aggregation partitioned by `customer_id` alone — 160 for
+  customer 100 and NULL for customer 200 on every row — with no warning
+
+#### Scenario: The time bucket over an aggregate is dropped without a warning
+- **WHEN** a monthly query by `customer_id` selects `last(sum(balance))`, omitting the mode
+  and again under `to_many_handling: "error"`
+- **THEN** both run with the values 160 / NULL broadcast onto every month and carry no
+  broadcast or association warning naming the month
+
+#### Scenario: A windowed ranked aggregation keeps the bucket
+- **WHEN** a monthly query by `customer_id` selects
+  `last(balance, date_trunc('month', snapshot_date), window='60d')`
+- **THEN** its grain stays `(customer_id, month)` — one value per month, never one value
+  broadcast across the months

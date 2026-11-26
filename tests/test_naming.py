@@ -1,20 +1,10 @@
-"""Minimal alias allocator (``slayer/sql/naming.py``).
-
-The allocator is per-generation and collision-safe. It mints ``_val_<n>``
-materialisation aliases (Law 2) and CTE names, seeded from every name already
-in scope so it can never collide with a user field, a ``__``-path join alias,
-or a reserved public alias. It also hands out generation-local ``ScopeFrame``
-ids (D-F). Stage 9 grows this module into the full naming module; Stage 2 only
-needs the collision-safe primitive.
-
-These tests fail at import until ``slayer/sql/naming.py`` exists — that is the
-intended "feature missing" red state (Step 4, tests-first).
-"""
+"""The naming module: the collision-safe alias allocator, result keys, flat names, alias mangling and quoting."""
 
 from __future__ import annotations
 
 import importlib
 import subprocess
+import sys
 
 import pytest
 import sqlglot
@@ -34,12 +24,9 @@ from slayer.sql.naming import (
 
 
 def test_naming_imports_cold_without_dialects_cycle() -> None:
-    """Regression: importing ``slayer.sql.naming`` FIRST (before
-    ``slayer.sql.dialects``) must not fail on a naming <-> dialects.base import
-    cycle. Runs in a fresh interpreter so the import order is genuinely cold —
-    the in-process suite imports dialects early and would mask the cycle."""
+    """Importing ``slayer.sql.naming`` first hits no naming <-> dialects.base cycle (fresh interpreter: truly cold)."""
     result = subprocess.run(
-        ["poetry", "run", "python", "-c", "import slayer.sql.naming"],
+        [sys.executable, "-c", "import slayer.sql.naming"],
         capture_output=True,
         text=True,
     )

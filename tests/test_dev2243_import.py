@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
-import shutil
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any
@@ -588,10 +587,10 @@ async def test_wrapped_0_3_document(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 async def test_ontology_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Ontology document."""
-    text_in = (EXAMPLES / "flights.ontology.yaml").read_text(encoding="utf-8")
-    _, text = await _refused_beside_a_valid_file(tmp_path, monkeypatch, text_in)
-    assert "semantic-model document" in text.lower()
-    assert "not" in text.lower()
+    _, text = await _refused_beside_a_valid_file(tmp_path, monkeypatch, {"version": "0.3.0.dev0", "name": "x"})
+    assert "semantic-model" in text.lower()
+    assert "ontology" in text.lower()
+    assert "mapping" in text.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -820,17 +819,6 @@ async def test_core_example_imports_natively_and_loads(tmp_path: Path, monkeypat
     assert result.stored == [document["name"]]
     assert await storage.get_semantic_model_text(document["name"], DS) == path.read_text(encoding="utf-8")
     assert await _loaded_dataset_names(storage) == sorted(d["name"] for d in document["datasets"])
-
-
-@pytest.mark.parametrize("name", ONTOLOGY_EXAMPLES)
-async def test_ontology_examples(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
-    """Ontology examples."""
-    storage = await offline_storage("yaml", tmp_path, monkeypatch)
-    shutil.copy(EXAMPLES / name, tmp_path / name)
-    result = await run_import(storage, tmp_path / name)
-    assert result.stored == []
-    assert "semantic-model document" in refusal_text(result, name).lower()
-    assert await storage.list_semantic_models(DS) == []
 
 
 async def test_renamed_fields_example(tmp_path: Path) -> None:
