@@ -523,15 +523,8 @@ def _bind(
         metric_ctx=metric_ctx, dim_alias_map=dim_alias_map,
     )
     if isinstance(parsed, Cast):
-        reading = aggregation_reading(parsed)
-        if reading is not None and _owner_definition(
-            reading, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-        ) is not None:
-            return _bind_agg_call(
-                reading, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
-                dim_alias_map=dim_alias_map,
-            )
-        return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
+        return _bind_cast_node(parsed, sub=sub, scope=scope, bundle=bundle, alias_map=alias_map,
+                               metric_ctx=metric_ctx, dim_alias_map=dim_alias_map)
     if isinstance(parsed, DateTrunc):
         return _bind_date_trunc(parsed, source=sub(parsed.value), scope=scope, bundle=bundle)
     if isinstance(parsed, NamedArg):
@@ -571,6 +564,22 @@ def _bind(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
 
+
+def _bind_cast_node(
+    parsed: Cast, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]], metric_ctx: Optional[MetricResolutionCtx],
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+) -> ValueKey:
+    """A cast, or the aggregation a cast spells when its owner defines one."""
+    reading = aggregation_reading(parsed)
+    if reading is not None and _owner_definition(
+        reading, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is not None:
+        return _bind_agg_call(
+            reading, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+            dim_alias_map=dim_alias_map,
+        )
+    return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
 
 
 def _bind_window(
