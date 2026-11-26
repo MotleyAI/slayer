@@ -177,6 +177,20 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS ontologies (
+                    name TEXT PRIMARY KEY,
+                    text TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ontology_mappings (
+                    data_source TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    PRIMARY KEY (data_source, name)
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -300,6 +314,50 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:
         return await asyncio.to_thread(self._patch_semantic_model_sync, data_source, name, patch)
+
+    # ---- ontology and mapping documents ------------------------------------
+
+    def _write_sync(self, sql: str, params: tuple[str, ...]) -> int:
+        with transaction(self.db_path) as conn:
+            return conn.execute(sql, params).rowcount
+
+    def _rows_sync(self, sql: str, params: tuple[str, ...] = ()) -> list[tuple[Any, ...]]:
+        with transaction(self.db_path) as conn:
+            return [tuple(r) for r in conn.execute(sql, params).fetchall()]
+
+    async def _save_ontology_text_impl(self, *, name: str, text: str) -> None:
+        await asyncio.to_thread(self._write_sync, "INSERT OR REPLACE INTO ontologies (name, text) VALUES (?, ?)",
+                                (name, text))
+
+    async def _get_ontology_text_impl(self, *, name: str) -> str | None:
+        rows = await asyncio.to_thread(self._rows_sync, "SELECT text FROM ontologies WHERE name = ?", (name,))
+        return rows[0][0] if rows else None
+
+    async def _list_ontology_names(self) -> list[str]:
+        return [r[0] for r in await asyncio.to_thread(self._rows_sync, "SELECT name FROM ontologies ORDER BY name")]
+
+    async def _delete_ontology_row(self, *, name: str) -> bool:
+        return await asyncio.to_thread(self._write_sync, "DELETE FROM ontologies WHERE name = ?", (name,)) > 0
+
+    async def _save_ontology_mapping_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        await asyncio.to_thread(
+            self._write_sync, "INSERT OR REPLACE INTO ontology_mappings (data_source, name, text) VALUES (?, ?, ?)",
+            (data_source, name, text))
+
+    async def _get_ontology_mapping_text_impl(self, *, data_source: str, name: str) -> str | None:
+        rows = await asyncio.to_thread(
+            self._rows_sync, "SELECT text FROM ontology_mappings WHERE data_source = ? AND name = ?", (data_source, name))
+        return rows[0][0] if rows else None
+
+    async def _list_ontology_mapping_identities(self) -> list[tuple[str, str]]:
+        rows = await asyncio.to_thread(
+            self._rows_sync, "SELECT data_source, name FROM ontology_mappings ORDER BY data_source, name")
+        return [(r[0], r[1]) for r in rows]
+
+    async def _delete_ontology_mapping_row(self, *, data_source: str, name: str) -> bool:
+        deleted = await asyncio.to_thread(
+            self._write_sync, "DELETE FROM ontology_mappings WHERE data_source = ? AND name = ?", (data_source, name))
+        return deleted > 0
 
     def _save_datasource_sync(self, datasource: DatasourceConfig) -> None:
         data = json.dumps(without_none(datasource.model_dump(mode="json")))

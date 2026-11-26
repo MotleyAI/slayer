@@ -8,7 +8,7 @@ The rest of this post is a tour of what "shape it at the moment you write it" ac
 
 ## Query-time transforms and aggregations
 
-The first form of dynamism is **query-time transforms**: expressions defined right inside the query, not the dataset. Time-shifted metrics, period-over-period changes, cumulative sums, ratios between metrics — all computed at query time, no dataset edit required. The time-specific family (time shifts, `change`, `last`) is covered in depth in the [time dimensions post](../04_time/time.md).
+The first form of dynamism is **query-time transforms**: expressions defined right inside the query, not the dataset. Time-shifted metrics, period-over-period changes, cumulative sums, ratios between metrics — all computed at query time, no dataset edit required. The time-specific family (time shifts, `change`, and `last` over an aggregate) is covered in depth in the [time dimensions post](../04_time/time.md).
 
 Closely related is **query-time aggregation**. A metric in SLayer is just a **named row-level expression** with the choice of aggregation deferred to query time.
 

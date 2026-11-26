@@ -1,0 +1,31 @@
+document:
+  ontology:
+  - concept: Person
+    type: EntityType
+    relationships:
+    - name: parent_of
+      roles:
+      - concept: Person
+        name: child
+      verbalizes:
+      - '{Person} is a parent of {Person:child}'
+      - '{Person:child} is a child of {Person}'
+    - name: ancestor_of
+      roles:
+      - concept: Person
+        name: descendant
+      verbalizes:
+      - '{Person} is an ancestor of {Person:descendant}'
+      - '{Person:descendant} is a descendant of {Person}'
+      derived_by:
+      - Person.parent_of(descendant)
+      - Person.ancestor_of.parent_of(descendant)
+    - name: taxed_at
+      roles:
+      - concept: TaxRate
+      verbalizes:
+      - '{Person} is taxed at {TaxRate}'
+      derived_by:
+      - Person.files_single AND Person.earns <= 11925 AND TaxRate == 10.0
+      - Person.files_married_joint AND Person.earns <= 23850 AND TaxRate == 10.0
+files: {}

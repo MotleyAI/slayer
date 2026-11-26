@@ -1,0 +1,16 @@
+document:
+  prefixes:
+    foaf: http://xmlns.com/foaf/0.1/
+    rdfs: http://www.w3.org/2000/01/rdf-schema#
+    owl: http://www.w3.org/2002/07/owl#
+    vs: http://www.w3.org/2003/06/sw-vocab-status/ns#
+  ontology:
+  - concept: Person
+    type: EntityType
+    description: A person.
+    iri: foaf:Person
+    annotations:
+      rdfs:label: Person
+      owl:equivalentClass: http://schema.org/Person
+      vs:term_status: stable
+files: {}

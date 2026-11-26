@@ -1,0 +1,20 @@
+document:
+  ontology:
+  - concept: Person
+    type: EntityType
+    identify_by:
+    - nr
+    relationships:
+    - name: nr
+      roles:
+      - concept: SocialSecurityNr
+      verbalizes:
+      - '{Person} is identified by {SocialSecurityNr}'
+      multiplicity: OneToOne
+    - name: earns
+      roles:
+      - concept: Salary
+      multiplicity: ManyToOne
+      verbalizes:
+      - '{Person} earns {Salary}'
+files: {}

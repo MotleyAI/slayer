@@ -1,0 +1,14 @@
+document:
+  ontology:
+  - concept: Store
+    type: EntityType
+    relationships:
+    - name: ships_to_in_days
+      roles:
+      - concept: Store
+        name: destination
+      - concept: NrDays
+      multiplicity: ManyToOne
+      verbalizes:
+      - '{Store} ships to {Store:destination} in {NrDays}'
+files: {}

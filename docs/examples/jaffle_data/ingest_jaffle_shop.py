@@ -5,7 +5,7 @@ This script is a thin wrapper around ``slayer.demo.jaffle_shop``, which is the
 single source of truth for the Jaffle Shop schema and setup. Keeping this file
 so ``docs/examples/jaffle_data/`` stays self-contained for tutorial runs.
 
-Dependencies: pip install jafgen duckdb
+Dependencies: pip install jafgen "duckdb>=1.1,<2.0"
 Usage: python ingest_jaffle_shop.py
 """
 

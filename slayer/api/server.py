@@ -6,7 +6,7 @@ import logging
 import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
-from typing import Any
+from typing import Any, TypeVar
 
 import yaml
 from sqlalchemy.exc import SQLAlchemyError
@@ -59,6 +59,7 @@ from slayer.live_schema.schema_scope import validate_scope_args
 from slayer.inspect.service import InspectService
 from slayer.memories.help_seed import seed_help_memories
 from slayer.memories.service import MemoryService
+from slayer.ontology.documents import content_text, document_name
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
@@ -216,6 +217,35 @@ class SemanticModelRequest(BaseModel):
     name: str | None = None
     content: str | dict[str, Any] | None = None
     datasets: list[str] | None = None
+
+
+_T = TypeVar("_T")
+
+
+class DocumentRequest(BaseModel):
+    """Body for ``POST /ontologies`` and every ``PUT`` of an ontology or mapping: the Ossie document."""
+    content: str | dict[str, Any]
+
+
+class MappingRequest(DocumentRequest):
+    """Body for ``POST /ontology-mappings``: the mapping and the datasource it belongs to."""
+    data_source: str
+
+
+async def _refused_as_400(call: Awaitable[_T]) -> _T:
+    """``call``; a refusal (every ``SlayerError`` is a ``ValueError``) answers 400 with every reason."""
+    try:
+        return await call
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+def _named(text: str) -> str:
+    """The document's own ``name``; 400 when it declares none."""
+    try:
+        return document_name(text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 class ValidateDatasetsRequest(BaseModel):
@@ -793,6 +823,70 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def delete_semantic_model(data_source: str, name: str) -> dict[str, Any]:
         if not await storage.delete_semantic_model(name, data_source=data_source):
             raise HTTPException(status_code=404, detail=f"Semantic model '{data_source}.{name}' not found")
+        return {"status": "deleted", "name": name}
+
+    @app.get("/ontologies")
+    async def list_ontologies() -> list[dict[str, str]]:
+        return [{"name": n} for n in await storage.list_ontologies()]
+
+    @app.get("/ontologies/{name}", responses={404: {"description": "Ontology not found."},
+                                              400: {"description": "The name is not a valid ontology name."}})
+    async def get_ontology(name: str) -> dict[str, str]:
+        text = await _refused_as_400(storage.get_ontology_text(name))
+        if text is None:
+            raise HTTPException(status_code=404, detail=f"Ontology '{name}' not found")
+        return {"name": name, "text": text}
+
+    @app.post("/ontologies", responses={400: {"description": "The document was refused."}})
+    async def create_ontology(body: DocumentRequest) -> dict[str, Any]:
+        text = content_text(body.content)
+        name = _named(text)
+        await _refused_as_400(storage.save_ontology_text(name=name, text=text))
+        return {"status": "created", "name": name}
+
+    @app.put("/ontologies/{name}", responses={400: {"description": "The document was refused."}})
+    async def replace_ontology(name: str, body: DocumentRequest) -> dict[str, Any]:
+        await _refused_as_400(storage.save_ontology_text(name=name, text=content_text(body.content)))
+        return {"status": "replaced", "name": name}
+
+    @app.delete("/ontologies/{name}", responses={404: {"description": "Ontology not found."},
+                                                400: {"description": "A stored mapping resolves against it."}})
+    async def delete_ontology(name: str) -> dict[str, Any]:
+        if not await _refused_as_400(storage.delete_ontology(name)):
+            raise HTTPException(status_code=404, detail=f"Ontology '{name}' not found")
+        return {"status": "deleted", "name": name}
+
+    @app.get("/ontology-mappings")
+    async def list_ontology_mappings(data_source: str | None = None) -> list[dict[str, str]]:
+        return [{"data_source": ds, "name": n} for ds, n in await storage.list_ontology_mappings(data_source)]
+
+    @app.get("/ontology-mappings/{data_source}/{name}", responses={
+        404: {"description": "Mapping not found."}, 400: {"description": "The name is not a valid mapping name."}})
+    async def get_ontology_mapping(data_source: str, name: str) -> dict[str, str]:
+        text = await _refused_as_400(storage.get_ontology_mapping_text(name, data_source))
+        if text is None:
+            raise HTTPException(status_code=404, detail=f"Mapping '{data_source}.{name}' not found")
+        return {"data_source": data_source, "name": name, "text": text}
+
+    @app.post("/ontology-mappings", responses={400: {"description": "The document was refused."}})
+    async def create_ontology_mapping(body: MappingRequest) -> dict[str, Any]:
+        text = content_text(body.content)
+        name = _named(text)
+        notes = await _refused_as_400(storage.save_ontology_mapping_text(data_source=body.data_source, name=name,
+                                                                         text=text))
+        return {"status": "created", "name": name, "notes": notes}
+
+    @app.put("/ontology-mappings/{data_source}/{name}", responses={400: {"description": "The document was refused."}})
+    async def replace_ontology_mapping(data_source: str, name: str, body: DocumentRequest) -> dict[str, Any]:
+        notes = await _refused_as_400(storage.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                                         text=content_text(body.content)))
+        return {"status": "replaced", "name": name, "notes": notes}
+
+    @app.delete("/ontology-mappings/{data_source}/{name}", responses={
+        404: {"description": "Mapping not found."}, 400: {"description": "The deletion was refused."}})
+    async def delete_ontology_mapping(data_source: str, name: str) -> dict[str, Any]:
+        if not await _refused_as_400(storage.delete_ontology_mapping(name, data_source)):
+            raise HTTPException(status_code=404, detail=f"Mapping '{data_source}.{name}' not found")
         return {"status": "deleted", "name": name}
 
     @app.get("/datasources/priority")
