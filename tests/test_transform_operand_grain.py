@@ -45,6 +45,10 @@ from tests._dev1832_fixtures import make_exec_engine as make_monthly_engine
 from tests._dev1832_fixtures import month_td as monthly_month_td
 from tests._dev2212_fixtures import BACKENDS, DS, kinds, run, seed_engine, warned_metrics
 from tests._engine_helpers import seeded_exec_engine
+from tests.test_dev2419_windowed_supply import CAT_KEYS, CAT_ORDER_MONTH
+from tests.test_dev2419_windowed_supply import _cells as windowed_cells
+from tests.test_dev2419_windowed_supply import _engine as windowed_engine
+from tests.test_dev2419_windowed_supply import _run as run_windowed
 
 R, C, MONTH = "orders.region", "orders.city", "orders.ordered_at"
 CR, CS = "customers.region", "customers.segment"
@@ -317,6 +321,26 @@ async def test_a_windowed_inner_nested_in_transforms_inside_an_aggregation(backe
 async def test_a_windowed_inner_under_last_inside_an_aggregation(backend: str) -> None:
     await _assert_spellings(backend, RM, lambda n: f"max(last({n}))", implicit=WIN, explicit=WIN_AT_RM,
                             expected=_region_months(105, 105, 110, 110))
+
+
+# Customers per (category, order month) over 60 days: food-Mar 1, toys-Jan 1, toys-Feb 2, none-Apr 1, no order 0.
+FANNING_CELLS = [("food", "2024-03"), ("toys", "2024-01"), ("toys", "2024-02"), (None, "2024-04"), (None, None)]
+FANNING_WINDOW = "count(customers.*, window='60d')"
+
+
+@pytest.mark.parametrize("operand, expected", [
+    (FANNING_WINDOW, [1.0, 1.0, 3.0, 1.0, 0.0]),
+    # customers per category: food 1, toys 2, none 3
+    (f"{FANNING_WINDOW} / count(customers.*, partition_by=products.category)", [1.0, 0.5, 1.5, 1 / 3, 0.0]),
+    # customers per cell: 1, 1, 1, 1 and 2 without an order
+    (f"{FANNING_WINDOW} / count(customers.*, partition_by=[products.category, orders.ordered_at])",
+     [1.0, 1.0, 3.0, 1.0, 0.0]),
+], ids=["alone", "by-category", "by-cell"])
+async def test_a_windowed_operand_over_a_fanning_time_axis_associates(backend: str, operand: str,
+                                                                       expected: list) -> None:
+    async with windowed_engine(backend) as eng:
+        resp = await run_windowed(eng, CAT_ORDER_MONTH, metrics=[_mt(f"cumsum({operand})", "v")])
+    _assert_cells(windowed_cells(resp, CAT_KEYS), dict(zip(FANNING_CELLS, expected)))
 
 
 @pytest.fixture(params=BACKENDS)

@@ -1216,7 +1216,8 @@ def effective_root_grain(
 ) -> Tuple[Grain, bool]:
     """A combined-root's producer grain and windowedness.
 
-    A transform evaluates at its operand grain. An explicitly-partitioned aggregate
+    A transform evaluates at its operand grain, which holds a windowed inner's bucket;
+    its windowed inners resolve their own axis. An explicitly-partitioned aggregate
     keeps ``regroup_root_grain``. A bare windowed / first-last root takes the FULL
     projected grain (a windowed root's bucket enters via ``window_td_key``, so it is
     excluded here)."""
@@ -1224,8 +1225,7 @@ def effective_root_grain(
         grain = transform_operand_grain(
             agg.input, query_grain=Grain.of([*projected_dim_keys, *projected_td_keys]), active_bucket=active_bucket,
         )
-        over_window = active_bucket is not None and any(window_kwarg_of(k) is not None for k in walk_value_keys(agg))
-        return grain, over_window
+        return grain, False
     windowed = window_kwarg_of(agg) is not None
     if getattr(agg, "partition_keys", None) is not None:
         return regroup_root_grain(agg), windowed
