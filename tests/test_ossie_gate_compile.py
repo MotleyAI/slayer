@@ -19,11 +19,11 @@ from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev2217_fixtures import FIXTURES, STRICT, fixture_texts
+from tests._dev2217_fixtures import STRICT
 from tests._dev2243_fixtures import store_document
 from tests._ossie_gate import TIER1
 from tests._ossie_gate_fixtures import MIXED_CASE_DS, WIDE_TABLE_DS, Placement, mixed_case_datasets, placed_model
-from tests._ossie_gate_suite import MIXED_CASE_QUERY, ROOTED_QUERY, case_query, cases, read_expected
+from tests._ossie_gate_suite import MIXED_CASE_QUERY, ROOTED_QUERY, WideCase, cases
 
 #: The datasource type each Tier-1 engine is configured as.
 DS_TYPE = {"tsql": "mssql"}
@@ -41,24 +41,26 @@ async def _engine(engine: str, base: Path) -> SlayerQueryEngine:
 
 @pytest_asyncio.fixture
 async def wide_table(tmp_path: Path) -> AsyncGenerator[dict[str, dict[str, SlayerQueryEngine]]]:
-    """Engine → fixture → a dry-run engine over that fixture's model."""
+    """Engine → model → a dry-run engine over the model the cases load."""
+    models = {case.model: case.model_path for case in cases()}
     out: dict[str, dict[str, SlayerQueryEngine]] = {}
     for engine in TIER1:
         out[engine] = {}
-        for fixture in FIXTURES:
-            base = tmp_path / engine / fixture
+        for model, path in models.items():
+            base = tmp_path / engine / model
             storage = YAMLStorage(base_dir=str(base))
             await storage.save_datasource(DatasourceConfig(name=WIDE_TABLE_DS, type=DS_TYPE.get(engine, engine),
                                                            host="h", database="d"))
-            await store_document(storage, placed_model(fixture_texts(fixture)[1], Placement(engine=engine, token="t")),
+            await store_document(storage, placed_model(path.read_text(encoding="utf-8"),
+                                                       Placement(engine=engine, token="t")),
                                  data_source=WIDE_TABLE_DS)
-            out[engine][fixture] = SlayerQueryEngine(storage=storage)
+            out[engine][model] = SlayerQueryEngine(storage=storage)
     yield out
 
 
-async def _outcome(engine: SlayerQueryEngine, case: Path) -> str:
+async def _outcome(engine: SlayerQueryEngine, case: WideCase) -> str:
     try:
-        await engine.execute(case_query(case), conformance=STRICT, dry_run=True)
+        await engine.execute(case.query, conformance=STRICT, dry_run=True)
     except OssieQueryError as error:
         return error.code
     return "sql"
@@ -66,10 +68,9 @@ async def _outcome(engine: SlayerQueryEngine, case: Path) -> str:
 
 @pytest.mark.parametrize("case", cases(), ids=lambda c: c.name)
 async def test_every_wide_table_case_compiles_alike_on_every_dialect(
-        wide_table: dict[str, dict[str, SlayerQueryEngine]], case: Path) -> None:
-    fixture = read_expected(case).fixture
-    outcomes = {engine: await _outcome(wide_table[engine][fixture], case) for engine in TIER1}
-    assert set(outcomes.values()) == {read_expected(case).error or "sql"}, outcomes
+        wide_table: dict[str, dict[str, SlayerQueryEngine]], case: WideCase) -> None:
+    outcomes = {engine: await _outcome(wide_table[engine][case.model], case) for engine in TIER1}
+    assert set(outcomes.values()) == {case.error or "sql"}, outcomes
 
 
 def _column_references(sql: str, *, engine: str, name: str) -> list[exp.Column]:
