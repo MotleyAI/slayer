@@ -8,6 +8,7 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from decimal import ROUND_HALF_UP, Context, Decimal
+from fractions import Fraction
 from functools import lru_cache
 from urllib.parse import unquote
 
@@ -236,14 +237,15 @@ class _PercentileDiscAgg:
 
     def __init__(self) -> None:
         self._vals: list[Any] = []
-        self._p: float | None = None
+        self._p: Fraction | None = None
 
     def step(self, value, p) -> None:
         if p is not None:
-            p_float = float(p)
-            if not 0.0 <= p_float <= 1.0:
-                raise ValueError(f"percentile p must be in [0, 1], got {p_float}")
-            self._p = p_float
+            # Text keeps every digit of the literal (a SQLite REAL would round it); a Fraction multiplies exactly.
+            exact = Fraction(Decimal(p if isinstance(p, str) else str(p)))
+            if not 0 <= exact <= 1:
+                raise ValueError(f"percentile p must be in [0, 1], got {exact}")
+            self._p = exact
         if value is not None:
             self._vals.append(value)
 
@@ -253,7 +255,7 @@ class _PercentileDiscAgg:
         s = sorted(self._vals)
         n = len(s)
         # Smallest k with cume_dist (k+1)/n >= p; exact, so p·n never rounds past an integer.
-        k = max(0, math.ceil(Decimal(str(self._p)) * n) - 1)
+        k = max(0, math.ceil(self._p * n) - 1)
         return s[k]
 
 
@@ -1186,8 +1188,9 @@ class SqliteDialect(SqlDialect):
     def build_percentile_disc(
         self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
     ) -> Expression:
-        """SQLite: ``percentile_disc(value, p)`` — registered UDF."""
-        return exp.PercentileDisc(this=col_expr.copy(), expression=p.copy())
+        """SQLite: ``percentile_disc(value, p)`` — registered UDF; a literal ``p`` passed as text, every digit kept."""
+        exact = exp.Literal.string(p.this) if isinstance(p, exp.Literal) and p.is_number else p.copy()
+        return exp.PercentileDisc(this=col_expr.copy(), expression=exact)
 
     def rewrite_parsed_ast(self, tree: Expression) -> Expression:
         """Emit JSON extraction in the ``json_extract(...)`` function-call form."""

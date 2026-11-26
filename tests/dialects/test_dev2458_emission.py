@@ -131,7 +131,7 @@ async def test_percentile_disc_on_duckdb_is_its_discrete_quantile(column: str) -
 @pytest.mark.parametrize("column", ["amount", "status", "order_date"])
 async def test_percentile_disc_on_sqlite_calls_the_udf(column: str) -> None:
     sql = await _sql(f"percentile_disc(orders.{column}, 0.5)", dialect="sqlite")
-    assert f"PERCENTILE_DISC(orders.{column}, 0.5)" in sql
+    assert f"PERCENTILE_DISC(orders.{column}, '0.5')" in sql
 
 
 @pytest.mark.parametrize("dialect", ["mysql", "trino"])
