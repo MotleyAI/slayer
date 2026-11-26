@@ -51,7 +51,7 @@ AGGREGATES = {
 }
 
 #: A count SLayer does not accept.
-WRONG_COUNT = ["ABS(orders.amount, 1) > 0", "UPPER(orders.status, 1) = 'X'", "TRUNC(orders.amount, 1) > 0"]
+WRONG_COUNT = ["ABS(orders.amount, 1) > 0", "UPPER(orders.status, 1) = 'X'", "TRUNC(orders.amount, 1, 2) > 0"]
 
 
 @pytest.fixture

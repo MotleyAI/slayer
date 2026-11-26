@@ -26,6 +26,7 @@ from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.core.errors import TimeZoneError
 from slayer.sql.dialects._windows_zones import WINDOWS_ZONES
 from slayer.sql.dialects.base import (
+    AngleFn,
     PORTABLE_LIBRARY,
     NativeFn,
     TransactionMode,
@@ -457,6 +458,15 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement), lit(1), lit(0), lit("c"))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        self._require_regex("regexp_count")
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern, case_insensitive=case_insensitive), lit(1),
+                    lit("c"))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """``RADIANS`` / ``DEGREES`` keep an integer argument's type: read it as a FLOAT."""
+        return super().angle(fn, exp.Cast(this=value.copy(), to=exp.DataType.build("FLOAT")))
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """On 2022+ (and an unknown version) a scalar the lax read leaves NULL is re-read strictly, so one over
         4,000 characters raises instead of reading NULL; ``ISJSON(…, VALUE)`` takes a scalar document, which
@@ -670,6 +680,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                 this=exp.Literal.number(3), expression=exp.Paren(this=_days_since_monday(expr)),
             ), expr.copy())
             return _datepart("YEAR", thursday)
+        if part is DatePart.MILLISECOND:
+            return exp.Floor(this=exp.Div(this=_datepart("MICROSECOND", expr), expression=lit(1000)))
         return _datepart(_DATEPART_UNITS[part], expr)
 
     def build_date_diff(
