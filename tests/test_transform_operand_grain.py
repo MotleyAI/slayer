@@ -715,6 +715,16 @@ def test_a_written_grain_over_a_nested_aggregate_is_pinned_without_the_marker(in
     assert not any(k.grain_defaulted for k in outers)
 
 
+@pytest.mark.parametrize("written_first", [False, True])
+async def test_a_grain_the_query_also_writes_resolves_as_written(backend: str, written_first: bool) -> None:
+    twins = [_mt("max(rank(sum(returns.amount), direction='desc'))", "d"),
+             _mt("max(rank(sum(returns.amount, partition_by=orders.status), direction='desc'))", "w")]
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, metrics=twins[::-1] if written_first else twins, **BY_STATUS)
+    assert _by(resp, ("orders.status",), "d") == _by(resp, ("orders.status",), "w") == ONE_EACH
+    assert not kinds(resp, "associated")
+
+
 NESTED_TWINS = {"d": "max(rank(max(sum(returns.amount)), direction='desc'))",
                 "w": "max(rank(max(sum(returns.amount), partition_by=orders.status), direction='desc'))"}
 
