@@ -3298,7 +3298,8 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     grain_placeholders: Dict[ValueKey, ValueKey] = (
         {g: registry.placeholder_for(g) for g in _regroup_partition_order(carrier_grain)}
         if union_grain and not _cells_are_the_carrier(
-            carrier_grain=carrier_grain, union_grain=union_grain, constituents=constituents, context=context)
+            carrier_grain=carrier_grain, union_grain=union_grain, outer_grain=outer_grain, constituents=constituents,
+            context=context)
         else {})
     # The carrier: one producer at the union grain carrying every constituent
     # (coarser constituents broadcast within it).
@@ -3682,11 +3683,14 @@ def _operand_constituent_grain(c: ValueKey, *, context: _ProducerSynthesisContex
 
 
 def _cells_are_the_carrier(
-    *, carrier_grain: Grain, union_grain: Grain, constituents: Sequence[ValueKey], context: _ProducerSynthesisContext,
+    *, carrier_grain: Grain, union_grain: Grain, outer_grain: Sequence[ValueKey], constituents: Sequence[ValueKey],
+    context: _ProducerSynthesisContext,
 ) -> bool:
-    """Every constituent groups the host's own rows at exactly the operand's grain, unfiltered: its groups are the
-    operand's cells, so the carrier needs no row supply of its own."""
+    """Every constituent groups the host's own rows at exactly the operand's grain, unfiltered, and every grain key
+    the outer grain does not attach reads off a host row: its groups are the operand's cells, so the carrier needs
+    no row supply of its own."""
     return carrier_grain == union_grain and all(
+        not operand_constituents(g) for g in union_grain if g not in outer_grain) and all(
         _operand_constituent_grain(c, context=context) == union_grain and _reads_host_rows(c, context=context)
         for c in constituents)
 

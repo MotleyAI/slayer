@@ -243,7 +243,24 @@ async def test_a_reaggregation_beside_a_reaggregation_dimension(
     assert _region_month(resp) == expected
 
 
-W1M = "sum(orders.amount, partition_by=orders.region, window='1m')"
+@pytest.mark.parametrize(("agg", "expected"), [
+    ("last", {"North": 70.0, "South": 25.0, None: 60.0}),
+    ("max", {"North": 70.0, "South": 25.0, None: 60.0}),
+])
+async def test_an_explicit_partition_reaggregation_beside_an_aggregate_dimension(
+    region_engine: SlayerQueryEngine, agg: str, expected: dict,
+) -> None:
+    resp = await region_engine.execute(orders_q(
+        dimensions=["orders.region", {"field": "sum(orders.amount, partition_by=[orders.region])", "alias": "d"}],
+        time_dimensions=month_td(),
+        metrics=[QueryMetric(metric=f"{agg}(sum(orders.amount), partition_by=[orders.region])", alias="v")]))
+    got: dict = {}
+    for r in resp.data:
+        got.setdefault(r["orders.region"], set()).add(_num(r["v"]))
+    assert got == {k: {v} for k, v in expected.items()}
+
+
+W1M ="sum(orders.amount, partition_by=orders.region, window='1m')"
 
 
 async def test_a_windowed_attached_key_ranks_the_rows(region_engine: SlayerQueryEngine) -> None:
