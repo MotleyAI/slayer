@@ -141,7 +141,7 @@ class _Walker:
         """An aggregate computed over the plan's host rows at the plan grain (inline, or host-rooted across its
         inputs' hops)."""
         return (
-            a.partition_keys is None and not attached_inputs(a) and not is_reaggregation_key(a)
+            a.written_grain is None and not attached_inputs(a) and not is_reaggregation_key(a)
             and not self.homes.target_rooted(a) and not _is_bare_own_rows_local(a, homes=self.homes)
             and not self.local_broadcasts(a)
         )
@@ -183,10 +183,11 @@ class _Walker:
             or any(is_placeholder(r) for r in walk_value_keys(k.source))  # a lowered re-aggregation outer
         ):
             return False
-        if k.partition_keys is not None:
+        written = k.written_grain
+        if written is not None:
             # A requested key the host reaches but does not determine resolves per the mode axis, as does a fanning
             # window axis.
-            return any(self._associable_key(pk, host=host) for pk in k.partition_keys) or (
+            return any(self._associable_key(pk, host=host) for pk in written) or (
                 window_kwarg_of(k) is not None and self.active_td is not None
                 and not self._attributable(self.active_td, host=host)
             )
@@ -196,7 +197,7 @@ class _Walker:
             reads_population_spine(g, host=host, datasets_by_name=self.bundle.datasets_by_name)
             or not self._attributable(g, host=host)
             or mixes_untrusted_branch(g, root_dataset=host, host_dataset=host, bundle=self.bundle)
-            for g in self.grain
+            for g in (self.grain if k.partition_keys is None else k.partition_keys)
         )
 
     def _associable_key(self, pk: ValueKey, *, host: SlayerDataset) -> bool:
