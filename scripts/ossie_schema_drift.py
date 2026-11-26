@@ -5,7 +5,8 @@ Exit 0 = all identical, 1 = any file drifted (diffs printed), 2 = any upstream f
 
 `--harvest <checkout> [--out DIR]` runs upstream `validation/test_validate.py` and `validation/tests/` through
 `uv run` with `ossie_harvest_plugin.py`, writing every semantic-model document they pass to `validate_document` and
-upstream accepts to DIR (default: the corpus `harvested/`). Exit 0 = harvested, 3 = the harvest failed.
+upstream accepts to DIR (default: the corpus `harvested/`), and every ontology and mapping case they validate to
+DIR/ontology/. Exit 0 = harvested, 3 = the harvest failed.
 
 `--vendor <checkout> [--out DIR]` re-vendors the corpus (default DIR: the corpus) from an apache/ossie checkout: copies
 every managed file byte for byte, harvests, then swaps the snapshot in and writes the provenance last. Exit 0 =
@@ -37,6 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CORPUS = ROOT / "tests" / "fixtures" / "ossie_corpus"
 PROVENANCE = CORPUS / "provenance.yaml"
 HARVESTED = CORPUS / "harvested"
+HARVESTED_ONTOLOGY = "ontology"
 HARVEST_PLUGIN = "ossie_harvest_plugin"
 HARVEST_TESTS = ("validation/test_validate.py", "validation/tests")
 COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits?per_page=1"
@@ -51,7 +53,7 @@ MANAGED_FILES = (
     "LICENSE", "NOTICE", SCHEMA_PATH, "core-spec/spec.md", "core-spec/spec.yaml", "core-spec/expression_language.md",
     "core-spec/relational_semantics.md", "core-spec/wide_table_semantics.md", "core-spec/spec_layers.md",
     "compliance/expressions/valid.txt", "compliance/expressions/invalid.txt", "validation/validate.py",
-    "python/src/ossie/_loading.py",
+    "python/src/ossie/_loading.py", "ontology/ontology.json", "ontology/mapping.json", "ontology/ontology.md",
 )
 MANAGED_DIRS = ("examples/", "compliance/portability/", "compliance/wide_table/", "compliance/query/scott/")
 PROVENANCE_HEADER = (
@@ -175,15 +177,19 @@ def harvest(*, checkout: Path, out: Path) -> int:
                   file=sys.stderr)
             return EXIT_HARVEST
         texts = {path.name: path.read_text(encoding="utf-8") for path in sorted(staged.glob(_YAML_FILES))}
+        cases = {path.name: path.read_text(encoding="utf-8")
+                 for path in sorted((staged / HARVESTED_ONTOLOGY).glob(_YAML_FILES))}
     if not texts:
         print("The harvest captured no accepted document.", file=sys.stderr)
         return EXIT_HARVEST
-    out.mkdir(parents=True, exist_ok=True)
-    for stale in out.glob(_YAML_FILES):
-        stale.unlink()
-    for name, text in texts.items():
-        (out / name).write_text(text, encoding="utf-8")
-    print(f"Harvested {len(texts)} document(s) into {out}.")
+    for directory, documents in ((out, texts), (out / HARVESTED_ONTOLOGY, cases)):
+        if documents:
+            directory.mkdir(parents=True, exist_ok=True)
+        for stale in directory.glob(_YAML_FILES):
+            stale.unlink()
+        for name, text in documents.items():
+            (directory / name).write_text(text, encoding="utf-8")
+    print(f"Harvested {len(texts)} document(s) and {len(cases)} ontology case(s) into {out}.")
     return EXIT_SAME
 
 
@@ -344,6 +350,11 @@ def _prune_empty_parents(target: Path, *, root: Path) -> None:
         parent.rmdir()
 
 
+def _harvested_files(directory: Path) -> list[Path]:
+    """The harvested documents and ontology cases under ``directory``."""
+    return [*directory.glob(_YAML_FILES), *(directory / HARVESTED_ONTOLOGY).glob(_YAML_FILES)]
+
+
 def vendor(*, checkout: Path, out: Path) -> int:
     """Re-vendor the managed files of ``checkout`` into ``out``; ``out`` is untouched unless every step succeeds."""
     try:
@@ -361,8 +372,10 @@ def vendor(*, checkout: Path, out: Path) -> int:
         code = harvest(checkout=checkout, out=staged_harvest)
         if code != EXIT_SAME:
             return code
-        documents = {f"{HARVESTED.name}/{d.name}": d.read_bytes() for d in sorted(staged_harvest.glob(_YAML_FILES))}
-    stale = [f"{HARVESTED.name}/{d.name}" for d in (out / HARVESTED.name).glob(_YAML_FILES)]
+        documents = {f"{HARVESTED.name}/{d.relative_to(staged_harvest).as_posix()}": d.read_bytes()
+                     for d in sorted(_harvested_files(staged_harvest))}
+    stale = [f"{HARVESTED.name}/{d.relative_to(out / HARVESTED.name).as_posix()}"
+             for d in _harvested_files(out / HARVESTED.name)]
     writes = {**files, **documents,
               PROVENANCE.name: _provenance_text(commit=commit, committed=committed, files=files).encode("utf-8")}
     deletes = [p for p in [*removed, *stale] if p not in writes]

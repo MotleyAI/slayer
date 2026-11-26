@@ -34,6 +34,7 @@ flowchart TD
   subgraph storage["Storage backends"]
     storage__migrations["Migrations"]
   end
+  ontology["Ontologies and mappings"]
   importers("Importers")
   search("Search & embeddings")
   memories("Agent memories")
@@ -67,8 +68,9 @@ flowchart TD
   surfaces --> core
   usage_reporting__features --> core
   otel --> core__probes
+  ontology --> core
   classDef leaf fill:none;
-  class core__query,core__models,core__syntax,core__probes,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,database,live_schema,ir,storage__migrations,importers,search,memories,protocols,usage_reporting__features,otel,surfaces leaf;
+  class core__query,core__models,core__syntax,core__probes,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,database,live_schema,ir,storage__migrations,ontology,importers,search,memories,protocols,usage_reporting__features,otel,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:core_focus -->

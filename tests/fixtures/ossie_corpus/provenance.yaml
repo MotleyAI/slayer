@@ -106,5 +106,8 @@ files:
   examples/tpcds_semantic_model.yaml: daa513a21a12ed616d52cb33a4e87ae325d5ff25
   LICENSE: 261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64
   NOTICE: e4bc78e2bb5c7e6df4f7692daa419da3076a9bc5
+  ontology/mapping.json: b0471cf489ac616a6aed27a8f13ec8b531c91f47
+  ontology/ontology.json: 274a1c1e2a8bf46648196085f2c3c68c139098b6
+  ontology/ontology.md: 89dad577ad256d6432a8a832ddaabf65e4cfd75d
   python/src/ossie/_loading.py: fb889e0a4da45023d2edba1a0972ae619c552c35
   validation/validate.py: 15ed6ee95c6ace0073ba5c2a4ae869eded5ab726
