@@ -1,6 +1,7 @@
 """Unit tests for the Jaffle Shop demo CLI affordances."""
 
 import argparse
+import os
 import subprocess
 import sys
 import types
@@ -109,8 +110,9 @@ class TestServeMcpDemoHook:
 
         assert calls == ["prepare", "uvicorn:APP:h:1"]
 
-    def test_mcp_demo_flag_calls_prepare_demo(self, monkeypatch: pytest.MonkeyPatch):
+    def test_mcp_demo_flag_defers_demo_setup_to_the_server(self, monkeypatch: pytest.MonkeyPatch):
         calls = []
+        created = {}
         monkeypatch.setattr(
             cli, "_prepare_demo", lambda *args, **kwargs: calls.append("prepare")
         )
@@ -120,24 +122,39 @@ class TestServeMcpDemoHook:
             def run(self):
                 calls.append("mcp.run")
 
+        def fake_create(*args, **kwargs):
+            created.update(kwargs)
+            return _FakeMCP()
+
         fake_mcp = types.ModuleType("slayer.mcp.server")
-        fake_mcp.create_mcp_server = lambda *args, **kwargs: _FakeMCP()
+        fake_mcp.create_mcp_server = fake_create
         monkeypatch.setitem(sys.modules, "slayer.mcp.server", fake_mcp)
 
         args = argparse.Namespace(storage=None, demo=True)
         cli._run_mcp(args=args)
 
-        assert calls == ["prepare", "mcp.run"]
+        assert calls == ["mcp.run"]
+        created["demo_setup"]()
+        assert calls == ["mcp.run", "prepare"]
+
+
+class TestPrepareDemo:
+    def test_a_failed_setup_raises_demo_setup_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(cli, "ensure_demo_datasource", boom)
+        store = str(tmp_path / "store")
+        args, storage = argparse.Namespace(storage=store), YAMLStorage(base_dir=store)
+        with pytest.raises(jaffle_shop.DemoSetupError) as caught:
+            cli._prepare_demo(args, storage)
+        assert caught.value.reason == "disk full"
+        assert str(caught.value) == "Failed to set up the Jaffle Shop demo: disk full"
 
 
 class TestJafgenCmdResolution:
     def test_prefers_current_interpreter_when_package_importable(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: object())
-        monkeypatch.setattr(
-            jaffle_shop.shutil,
-            "which",
-            lambda name: pytest.fail("PATH lookup should not run when jafgen is importable"),
-        )
 
         cmd = jaffle_shop._jafgen_cmd(3)
 
@@ -146,15 +163,18 @@ class TestJafgenCmdResolution:
         assert "jafgen" in cmd[2]
         assert cmd[-1] == "3"
 
-    def test_falls_back_to_path_lookup(self, monkeypatch: pytest.MonkeyPatch):
+    def test_jafgen_on_path_is_never_used(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: None)
-        monkeypatch.setattr(jaffle_shop.shutil, "which", lambda name: "/usr/bin/jafgen")
+        fake = tmp_path / "jafgen"
+        fake.write_text("#!/bin/sh\nexit 0\n")
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
 
-        assert jaffle_shop._jafgen_cmd(2) == ["/usr/bin/jafgen", "2"]
+        with pytest.raises(RuntimeError, match="jafgen is required"):
+            jaffle_shop._jafgen_cmd(2)
 
     def test_missing_everywhere_raises_install_hint(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: None)
-        monkeypatch.setattr(jaffle_shop.shutil, "which", lambda name: None)
 
         with pytest.raises(RuntimeError, match="pip install jafgen"):
             jaffle_shop._jafgen_cmd(1)
@@ -355,6 +375,7 @@ class TestBuildJaffleShopIdempotency:
         conn = duckdb.connect(str(db))
         try:
             jaffle_shop.create_schema(conn)
+            jaffle_shop.write_demo_stamp(conn, jaffle_shop.current_demo_stamp(years=2))
         finally:
             conn.close()
 

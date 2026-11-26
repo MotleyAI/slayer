@@ -1,4 +1,4 @@
-version: 28
+version: 30
 name: orders
 sql_table: orders
 source_kind: table
@@ -150,6 +150,7 @@ relationships:
   - id
   join_type: left
   cardinality: many_to_one
+  trusted: true
 - to: stores
   from_columns:
   - store_id
@@ -157,6 +158,9 @@ relationships:
   - id
   join_type: left
   cardinality: many_to_one
+  trusted: true
+enforced_keys:
+- - id
 filters: []
 default_time_dimension: ordered_at
 description: "Customer orders \u2014 one row per order. Monetary amounts are in dollars.\
