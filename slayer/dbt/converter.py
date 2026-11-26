@@ -42,6 +42,7 @@ from slayer.dbt.models import (
     DbtDimension,
     DbtEntity,
     DbtMeasure,
+    DbtMeasureAggParams,
     DbtMetric,
     DbtMetricInput,
     DbtMetricTimeWindow,
@@ -140,6 +141,13 @@ def _map_agg(dbt_agg: str) -> str:
         logger.warning("Unknown dbt aggregation '%s', passing through as-is", dbt_agg)
         return dbt_agg.lower()
     return mapped
+
+
+def _percentile_agg(params: DbtMeasureAggParams) -> str:
+    """dbt's percentile flags as the aggregation; a discrete one is exact even when approximate is asked."""
+    if params.use_discrete_percentile:
+        return "percentile_disc"
+    return "percentile_approx" if params.use_approximate_percentile else "percentile"
 
 
 def _is_simple_identifier(s: str) -> bool:
@@ -623,7 +631,9 @@ class DbtToSlayerConverter:
         sources = {m.name or "": src for m in metrics if (src := _aggregated_field(m.text)) is not None}
         aggs_of: dict[str, list[str]] = defaultdict(list)
         for name, (col_name, agg) in sources.items():
-            aggs_of[col_name].append("sum_boolean" if dbt_aggs.get(name) == "sum_boolean" else agg)
+            # dbt's own aggregation types its input: ``sum_boolean`` a boolean, ``percentile`` a number.
+            dbt_agg = dbt_aggs.get(name)
+            aggs_of[col_name].append(dbt_agg if dbt_agg in ("sum_boolean", "percentile") else agg)
         dims = {d.name for d in sm.dimensions}
         untyped = {c.name for c in cols if not self._type_field(
             sm=sm, col=c, live=live, aggs=aggs_of.get(c.name, []), dimension=c.name in dims)}
@@ -878,7 +888,7 @@ class DbtToSlayerConverter:
         self, m: DbtMeasure, col_name: str, sm_name: str, dataset_meta: dict[str, Any]
     ) -> str | None:
         """Build the ``<agg>(<col>)`` expression for a dbt measure, or ``None`` if
-        it clean-fails (percentile without a value / discrete-approx flags)."""
+        it clean-fails (a percentile without a value)."""
         mapped = _map_agg(m.agg)
         suffix = mapped
         if mapped == "percentile":
@@ -892,19 +902,8 @@ class DbtToSlayerConverter:
                     raw={"agg": m.agg, "agg_params": ap.model_dump() if ap else None},
                 )
                 return None
-            if ap.use_discrete_percentile or ap.use_approximate_percentile:
-                self._fail_measure(
-                    m, sm_name, dataset_meta,
-                    category="percentile", severity="dropped",
-                    message=(
-                        f"Measure '{m.name}' uses discrete/approximate percentile; "
-                        f"only continuous-exact PERCENTILE_CONT is supported."
-                    ),
-                    suggestion="Remove use_discrete_percentile / use_approximate_percentile.",
-                    raw={"agg_params": ap.model_dump()},
-                )
-                return None
-            suffix = f"percentile(p={ap.percentile})"
+            mapped = _percentile_agg(ap)
+            suffix = f"{mapped}(p={ap.percentile})"
         if (refusal := dialect_refusal(mapped, dialect=self._sql_dialect)) is not None:
             self._fail_measure(m, sm_name, dataset_meta, category="percentile", severity="dropped",
                                message=f"Measure '{m.name}' dropped: {refusal}", raw={"agg": m.agg})
@@ -1854,17 +1853,17 @@ class DbtToSlayerConverter:
         mapped = _map_agg(dbt_measure.agg)
         if mapped == "percentile":
             ap = dbt_measure.agg_params
-            if ap is None or ap.percentile is None or ap.use_discrete_percentile or ap.use_approximate_percentile:
+            if ap is None or ap.percentile is None:
                 self._fail_metric(
                     metric, category="percentile", severity="dropped",
                     message=(
                         f"Filtered metric '{metric.name}' wraps a percentile measure "
-                        f"with no usable continuous percentile value."
+                        f"with no percentile value."
                     ),
-                    suggestion="Set agg_params.percentile (continuous, in [0, 1]).",
+                    suggestion="Set agg_params.percentile (in [0, 1]).",
                 )
                 return None
-            return column_expr, DataType.FLOAT, _FLOAT_FORMAT, f"percentile(p={ap.percentile})"
+            return column_expr, DataType.FLOAT, _FLOAT_FORMAT, f"{_percentile_agg(ap)}(p={ap.percentile})"
         return column_expr, DataType.FLOAT, _FLOAT_FORMAT, mapped
 
     @staticmethod
