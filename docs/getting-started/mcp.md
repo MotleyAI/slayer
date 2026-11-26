@@ -16,7 +16,7 @@ Register SLayer as an MCP server — Claude Code will spawn it automatically whe
 claude mcp add slayer -- uvx --from 'motley-slayer[advanced_search]' slayer mcp --ingest-on-startup
 ```
 
-`--ingest-on-startup` walks every configured datasource on boot and runs idempotent auto-ingestion before the MCP channel opens, so datasets are available on the agent's first tool call. Drop it to defer ingestion to a manual `ingest_datasource` call.
+`--ingest-on-startup` walks every configured datasource on boot and runs idempotent auto-ingestion in the background; the handshake answers at once and the agent's first tool call waits until the datasets are in. Drop it to defer ingestion to a manual `ingest_datasource` call.
 
 The `advanced_search` extra enables semantic search over datasets and memories. When it's installed **and** a provider API key is in the environment (`OPENAI_API_KEY` by default; override the embedding model with `SLAYER_EMBEDDING_MODEL=voyage/voyage-3` + `VOYAGE_API_KEY`, etc.), the boot-time ingest pass also refreshes per-entity embeddings — hash-skipped, so steady-state boots make zero embedding API calls. Without the extra (or without a provider key), search and ingest still work; the embedding channel is silently disabled.
 
@@ -60,7 +60,7 @@ claude mcp list
 
 The recommended approach is to drop a datasource YAML file into your storage folder. This keeps credentials out of the agent conversation and lets you use environment variable references.
 
-Create a file in the `datasources/` subdirectory of your [storage path](../configuration/storage.md) (e.g. `~/.local/share/slayer/datasources/mydb.yaml`):
+Create a file in the `datasources/` subdirectory of your [storage path](../configuration/storage.md) — `~/.local/share/slayer/datasources/mydb.yaml` on Linux, `~/Library/Application Support/slayer/datasources/mydb.yaml` on macOS, `%LOCALAPPDATA%\slayer\datasources\mydb.yaml` on Windows:
 
 ```yaml
 name: mydb
@@ -77,7 +77,7 @@ schema_name: public
 
 Datasource configs are **hot-reloaded** — you can add or edit YAML files while the server is running, and the next MCP tool call will pick up the changes. No restart needed.
 
-Once the datasource file is in place, the recommended setup runs MCP with `--ingest-on-startup` (above), which walks every configured datasource on every boot and runs idempotent auto-ingestion before the MCP channel opens. Datasets are then available on the agent's first tool call — no `ingest_datasource` call required.
+Once the datasource file is in place, the recommended setup runs MCP with `--ingest-on-startup` (above), which walks every configured datasource on every boot and runs idempotent auto-ingestion in the background. Tool calls wait for it, so datasets are available on the agent's first tool call — no `ingest_datasource` call required.
 
 If you didn't start with `--ingest-on-startup`, fall back to asking your agent:
 
