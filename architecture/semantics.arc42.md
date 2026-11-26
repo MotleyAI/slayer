@@ -227,6 +227,7 @@ principles every layer obeys.
     [enforced: test:tests/test_consecutive_periods_calendar.py]
     [enforced: test:tests/test_dev2218_transform_domain.py]
     [enforced: test:tests/test_dev2457_measure_windows.py]
+    [enforced: test:tests/test_transform_operand_grain.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw rows are 12.5; spec: `queries/semantics` › Grain guarantee)
