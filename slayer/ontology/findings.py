@@ -52,7 +52,11 @@ class OntologyFinding(BaseModel):
         if self.check == "required_link":
             return (f"{head}: {self.violations} '{self.concept}' object(s) from {self.position} have no "
                     f"'{self.relationship}'" + (f", e.g. {_listed(self.samples)}." if self.samples else "."))
-        what = f"'{self.constraint}'" if self.constraint else f"position {self.position}" if self.position else "it"
+        what = "it"
+        if self.constraint:
+            what = f"'{self.constraint}'"
+        elif self.position:
+            what = f"position {self.position}"
         return f"{head}: {what} is not checked: {self.reason}"
 
     def as_warning(self) -> OntologyMismatchWarning:

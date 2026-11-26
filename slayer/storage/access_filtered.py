@@ -378,11 +378,16 @@ class AccessFilteredStorage(StorageBackend):
             raise HiddenContentConflictError(kind="dataset", name=dataset.name)
         await self._inner.save_dataset_extensions(dataset)
 
-    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str],
+                                   warnings_out: list[SlayerWarning] | None = None) -> None:
+        entities = _entities(text, name=name)
         if not self._bypass:
-            await self._refuse_hidden_in_document(data_source=data_source, document=name,
-                                                  entities=_entities(text, name=name), datasets=replacing)
-        await self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing)
+            await self._refuse_hidden_in_document(data_source=data_source, document=name, entities=entities,
+                                                  datasets=replacing)
+        members = [*(str(d.get("name")) for d in entities.get("datasets") or [] if isinstance(d, dict)), *replacing]
+        await self._visible_mismatches(lambda out: self._inner.adopt_semantic_model(
+            data_source=data_source, name=name, text=text, replacing=replacing, warnings_out=out),
+            warnings_out=warnings_out, data_source=data_source, datasets=members)
 
     async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
                                     datasets: list[str] | None = None,

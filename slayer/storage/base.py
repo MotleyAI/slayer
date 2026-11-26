@@ -1335,12 +1335,15 @@ class StorageBackend(ABC):
         report_save_warnings(warnings_out, await self.ontology_mismatches(
             data_source=data_source, datasets=[d.name for d in doc.datasets]))
 
-    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str],
+                                   warnings_out: list[SlayerWarning] | None = None) -> None:
         """Store document ``name`` in place of the standalone datasets ``replacing`` (same names, so references keep
         resolving); the standalone datasets are restored when the document is refused."""
         replaced = [d for n in replacing if (d := await self.get_dataset(n, data_source=data_source)) is not None]
+        found: list[SlayerWarning] = []
         await self._moving_standalone(data_source=data_source, datasets=replaced, write=lambda: self.save_semantic_model_text(
-            data_source=data_source, name=name, text=text))
+            data_source=data_source, name=name, text=text, warnings_out=found))
+        report_save_warnings(warnings_out, found)
 
     async def _moving_standalone(self, *, data_source: str, datasets: list[SlayerDataset],
                                  write: Callable[[], Awaitable[Any]]) -> None:
@@ -1419,7 +1422,8 @@ class StorageBackend(ABC):
         if reasons:
             raise OssieDocumentInvalidError(name=name, reasons=reasons)
         await self.adopt_semantic_model(data_source=data_source, name=name, replacing=[d.name for d in moved],
-                                        text=yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))
+                                        text=yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+                                        warnings_out=warnings_out)
 
     async def _standalone_members(self, names: list[str], *, data_source: str) -> list[SlayerDataset]:
         out = []

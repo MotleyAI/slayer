@@ -134,8 +134,10 @@ class EngineStorage(StorageBackend):
     async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
         await self._sourced(self._inner.save_dataset_extensions(dataset))
 
-    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
-        await self._sourced(self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing))
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str],
+                                   warnings_out: list[SlayerWarning] | None = None) -> None:
+        await self._sourced(self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text,
+                                                             replacing=replacing, warnings_out=warnings_out))
 
     async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
                                     datasets: list[str] | None = None,

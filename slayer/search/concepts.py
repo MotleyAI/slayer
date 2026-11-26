@@ -75,24 +75,26 @@ def _matches(ontology: Ontology | None, concept: str | None, *, wanted: str) -> 
 def concept_matches(concepts: Annotations, *, reference: str, datasets: list[SlayerDataset]) -> list[str]:
     """The canonical ids of the visible ``datasets`` and their fields annotated with the concept ``reference``
     (``Concept`` or ``Ontology.Concept``) names, or a subtype of it, each once."""
-    def hit(ontology_name: str, concept: str | None) -> bool:
-        for name, wanted in candidates:
-            if name in (None, ontology_name) and _matches(concepts.ontologies.get(ontology_name), concept,
-                                                         wanted=wanted):
-                return True
-        return False
-
     candidates: list[tuple[str | None, str]] = [(None, reference)]
     if "." in reference:
         prefix, rest = reference.split(".", 1)
         candidates = [(prefix, rest)] if prefix in concepts.ontologies else candidates
     out: list[str] = []
     for dataset in (d for d in datasets if not d.hidden):
-        held = concepts.of(dataset.name)
-        qualifier = f"{dataset.data_source}.{dataset.name}"
-        if any(hit(r.ontology, r.concept) for r in [*held.own, *held.also]):
-            out.append(qualifier)
-        for field in (f for f in dataset.fields if not f.hidden):
-            if any(hit(a.ontology, a.concept) or hit(a.ontology, a.entity) for a in held.of_field(field.name)):
-                out.append(f"{qualifier}.{field.name}")
+        out += _dataset_matches(concepts, dataset=dataset, candidates=candidates)
     return list(dict.fromkeys(out))
+
+
+def _dataset_matches(concepts: Annotations, *, dataset: SlayerDataset,
+                     candidates: list[tuple[str | None, str]]) -> list[str]:
+    """The canonical ids of ``dataset`` and its visible fields annotated with one of ``candidates``."""
+    def hit(ontology_name: str, concept: str | None) -> bool:
+        ontology = concepts.ontologies.get(ontology_name)
+        return any(name in (None, ontology_name) and _matches(ontology, concept, wanted=wanted)
+                   for name, wanted in candidates)
+
+    held = concepts.of(dataset.name)
+    qualifier = f"{dataset.data_source}.{dataset.name}"
+    out = [qualifier] if any(hit(r.ontology, r.concept) for r in [*held.own, *held.also]) else []
+    return out + [f"{qualifier}.{field.name}" for field in dataset.fields if not field.hidden and any(
+        hit(a.ontology, a.concept) or hit(a.ontology, a.entity) for a in held.of_field(field.name))]

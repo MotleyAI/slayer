@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.models import SlayerDataset, is_key_set_unique
+from slayer.core.models import DatasetRelationship, SlayerDataset, is_key_set_unique
 from slayer.core.syntax import (
     BoolOp, Cmp, DottedRef, Literal as LiteralNode, Ref, TupleLit, UnaryOp, mapped_value, parse_mapping_expression,
     read_requires, requires_violation, walk_parsed,
@@ -361,6 +361,10 @@ class Annotations(BaseModel):
     def of(self, dataset: str) -> DatasetAnnotations:
         return self.datasets.get(identifier_key(dataset), DatasetAnnotations())
 
+    def held(self, dataset: str) -> DatasetAnnotations:
+        """``dataset``'s annotations, added when absent."""
+        return self.datasets.setdefault(identifier_key(dataset), DatasetAnnotations())
+
 
 def _domain(tree: Any, *, variable: str) -> tuple[str, Any] | str | None:
     """A plain constraint's bound ``(op, value)``, its enumeration text, or ``None``."""
@@ -520,23 +524,30 @@ def _annotation_relationship(occurrence: Occurrence, leaf: Leaf) -> tuple[str | 
     return leaf.via, None
 
 
+def _identifying_verbalization(ontology: Ontology, occurrence: Occurrence, leaf: Leaf) -> str | None:
+    """The filled verbalization of the identifying relationship an object's ``leaf`` is reached by."""
+    if not leaf.via or occurrence.kind not in ("object", "subject"):
+        return None
+    identifying = ontology.resolve(occurrence.object.concept, leaf.via)
+    if identifying is None:
+        return None
+    value = ObjectMap(concept=leaf.concept, entity=False, leaves=[leaf])
+    return verbalized(identifying, subject=occurrence.object, roles=[value])
+
+
 def _field_annotations(mapped: _Mapped, occurrence: Occurrence) -> Iterator[tuple[str, str, FieldAnnotation]]:
     ontology = mapped.ontology
+    entity = occurrence.object.concept if occurrence.object.entity else None
     for leaf in occurrence.object.leaves:
         relationship, verbalization = _annotation_relationship(occurrence, leaf)
-        if verbalization is None and leaf.via and occurrence.kind in ("object", "subject"):
-            identifying = ontology.resolve(occurrence.object.concept, leaf.via)
-            if identifying is not None:
-                value = ObjectMap(concept=leaf.concept, entity=False, leaves=[leaf])
-                verbalization = verbalized(identifying, subject=occurrence.object, roles=[value])
+        verbalization = verbalization or _identifying_verbalization(ontology, occurrence, leaf)
         shown, other = domains(ontology, leaf.concept) if ontology.is_value(leaf.concept) else ([], [])
-        description = ontology.description(leaf.concept) or (
-            ontology.description(occurrence.object.concept) if occurrence.object.entity else None)
+        description = ontology.description(leaf.concept) or (ontology.description(entity) if entity else None)
         for dataset, field in leaf.reads:
             yield dataset, field, FieldAnnotation(
                 ontology=ontology.name, mapping=mapped.name, concept=leaf.concept,
                 chain=ontology.ancestors(leaf.concept), role=_role(mapped, occurrence, dataset=dataset),
-                entity=occurrence.object.concept if occurrence.object.entity else None, relationship=relationship,
+                entity=entity, relationship=relationship,
                 expression=None if leaf.plain else leaf.expression, description=description,
                 verbalization=verbalization, domains=shown, not_checked=other)
 
@@ -547,23 +558,26 @@ def annotate(use: StoredUse) -> Annotations:
     for mapped in walked(use):
         out.ontologies.setdefault(mapped.ontology.name, mapped.ontology)
         for dataset, concepts in mapped.own.items():
-            target = out.datasets.setdefault(identifier_key(dataset), DatasetAnnotations())
-            target.own += [ConceptRef(ontology=mapped.ontology.name, mapping=mapped.name, concept=c) for c in concepts]
+            out.held(dataset).own += _refs(mapped, concepts)
         for dataset, concepts in mapped.also.items():
-            target = out.datasets.setdefault(identifier_key(dataset), DatasetAnnotations())
-            target.also += [ConceptRef(ontology=mapped.ontology.name, mapping=mapped.name, concept=c) for c in concepts]
-        for occurrence in mapped.occurrences:
-            if occurrence.kind == "referent":
-                continue
-            for dataset, field, annotation in _field_annotations(mapped, occurrence):
-                held = out.datasets.setdefault(identifier_key(dataset), DatasetAnnotations()).fields.setdefault(
-                    identifier_key(field), [])
-                if annotation not in held:
-                    held.append(annotation)
+            out.held(dataset).also += _refs(mapped, concepts)
+        _add_field_annotations(out, mapped)
         for lineup in mapped.lineups:
             for dataset in {identifier_key(lineup.source), identifier_key(lineup.target)}:
-                out.datasets.setdefault(dataset, DatasetAnnotations()).lineups.append(lineup)
+                out.held(dataset).lineups.append(lineup)
     return out
+
+
+def _add_field_annotations(out: Annotations, mapped: _Mapped) -> None:
+    for occurrence in (o for o in mapped.occurrences if o.kind != "referent"):
+        for dataset, field, annotation in _field_annotations(mapped, occurrence):
+            held = out.held(dataset).fields.setdefault(identifier_key(field), [])
+            if annotation not in held:
+                held.append(annotation)
+
+
+def _refs(mapped: _Mapped, concepts: list[str]) -> list[ConceptRef]:
+    return [ConceptRef(ontology=mapped.ontology.name, mapping=mapped.name, concept=c) for c in concepts]
 
 
 # --------------------------------------------------------------------------- #
@@ -613,28 +627,35 @@ _EXPECTED = {("ManyToOne", "forward"): ("many_to_one", {"many_to_one", "one_to_o
 def _multiplicity_findings(mapped: _Mapped, *, data_source: str) -> Iterator[OntologyFinding]:
     for dataset in mapped.datasets:
         for relationship in dataset.relationships:
-            from_columns = [a for a, _ in relationship.column_pairs]
-            to_columns = [b for _, b in relationship.column_pairs]
             for lineup in mapped.lineups:
-                orientation = lineup.orientation(dataset=dataset.name, to=relationship.to, from_columns=from_columns,
-                                                 to_columns=to_columns)
-                expected = _EXPECTED.get((lineup.annotation.multiplicity or "", orientation or ""))
-                if expected is None:
-                    continue
-                declared = relationship.cardinality.value if relationship.cardinality is not None else None
-                if declared in expected[1]:
-                    continue
-                suggestion = f"declare its cardinality {expected[0]}" if declared is None else (
-                    f"it is declared {declared}, but {lineup.annotation.multiplicity} makes it {expected[0]} from "
-                    f"'{dataset.name}'; declare it {expected[0]}")
-                pairs = ", ".join(f"{a} = {b}" for a, b in relationship.column_pairs)
-                shown = f"'{relationship.name}' " if relationship.name else ""
-                yield OntologyFinding(
-                    check="multiplicity", data_source=data_source, mapping=mapped.name,
-                    ontology=mapped.ontology.name, dataset_name=dataset.name, fields=from_columns,
-                    relationship=lineup.annotation.relationship, multiplicity=lineup.annotation.multiplicity,
-                    dataset_relationship=f"{shown}({dataset.name} → {relationship.to} on {pairs})",
-                    suggestion=suggestion)
+                finding = _multiplicity_finding(mapped, dataset=dataset, relationship=relationship, lineup=lineup,
+                                                data_source=data_source)
+                if finding is not None:
+                    yield finding
+
+
+def _multiplicity_finding(mapped: _Mapped, *, dataset: SlayerDataset, relationship: DatasetRelationship,
+                          lineup: LineUp, data_source: str) -> OntologyFinding | None:
+    """How ``relationship``'s cardinality disagrees with the ontology relationship of ``lineup``; ``None`` when it
+    agrees or does not line up."""
+    from_columns = [a for a, _ in relationship.column_pairs]
+    orientation = lineup.orientation(dataset=dataset.name, to=relationship.to, from_columns=from_columns,
+                                     to_columns=[b for _, b in relationship.column_pairs])
+    expected = _EXPECTED.get((lineup.annotation.multiplicity or "", orientation or ""))
+    declared = relationship.cardinality.value if relationship.cardinality is not None else None
+    if expected is None or declared in expected[1]:
+        return None
+    suggestion = f"declare its cardinality {expected[0]}" if declared is None else (
+        f"it is declared {declared}, but {lineup.annotation.multiplicity} makes it {expected[0]} from "
+        f"'{dataset.name}'; declare it {expected[0]}")
+    pairs = ", ".join(f"{a} = {b}" for a, b in relationship.column_pairs)
+    shown = f"'{relationship.name}' " if relationship.name else ""
+    return OntologyFinding(
+        check="multiplicity", data_source=data_source, mapping=mapped.name,
+        ontology=mapped.ontology.name, dataset_name=dataset.name, fields=from_columns,
+        relationship=lineup.annotation.relationship, multiplicity=lineup.annotation.multiplicity,
+        dataset_relationship=f"{shown}({dataset.name} → {relationship.to} on {pairs})",
+        suggestion=suggestion)
 
 
 def model_findings(use: StoredUse) -> list[OntologyFinding]:
@@ -678,15 +699,21 @@ def _literal_mismatch(ontology: Ontology, concept: str, text: str) -> str | None
     built_in = ontology.built_in(concept)
     if built_in in (None, "Any"):
         return None
+    fits = {"Boolean": built_in == "Boolean", "number": built_in in _NUMERIC,
+            "string": built_in not in _NUMERIC | {"Boolean"}}
     for node in walk_parsed(read_requires(text).tree):
-        value = node.value if isinstance(node, LiteralNode) else None
-        kind = "Boolean" if isinstance(value, bool) else "number" if isinstance(value, Decimal) else \
-            "string" if isinstance(value, str) else None
-        fits = {"Boolean": built_in == "Boolean", "number": built_in in _NUMERIC,
-                "string": built_in not in _NUMERIC | {"Boolean"}}
+        kind = _literal_kind(node.value) if isinstance(node, LiteralNode) else None
         if kind is not None and not fits[kind]:
             return f"it compares '{concept}' ({built_in}) with a {kind} literal, which SLayer cannot check"
     return None
+
+
+def _literal_kind(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return "Boolean"
+    if isinstance(value, Decimal):
+        return "number"
+    return "string" if isinstance(value, str) else None
 
 
 def _not_checked(mapped: _Mapped, *, data_source: str, **values: Any) -> OntologyFinding:
@@ -727,37 +754,40 @@ def _value_plans(mapped: _Mapped, *, data_source: str) -> Iterator[CheckPlan | O
     ontology = mapped.ontology
     listed: set[str] = set()
     for leaf in _leaves(mapped):
-        if len(leaf.datasets) > 1:
-            if leaf.expression not in listed:
-                listed.add(leaf.expression)
-                yield _not_checked(mapped, data_source=data_source, concept=leaf.concept, position=leaf.expression,
-                                   reason="the expression reads more than one dataset")
-            continue
+        if len(leaf.datasets) > 1 and leaf.expression not in listed:
+            listed.add(leaf.expression)
+            yield _not_checked(mapped, data_source=data_source, concept=leaf.concept, position=leaf.expression,
+                               reason="the expression reads more than one dataset")
         if len(leaf.datasets) != 1 or not ontology.is_value(leaf.concept):
             continue
-        dataset = next(iter(leaf.datasets))
         for declaring, text in ontology.inherited_requires(leaf.concept):
-            if not _value_requirement(ontology, declaring, text):
-                continue
-            finding = OntologyFinding(check="constraint", data_source=data_source, mapping=mapped.name,
-                                      ontology=ontology.name, concept=leaf.concept, dataset_name=dataset,
-                                      fields=[f for _, f in leaf.reads], constraint=text, position=leaf.expression)
-            mismatch = _literal_mismatch(ontology, declaring, text)
-            if mismatch is not None:
-                yield finding.model_copy(update={"check": "not_checked", "reason": mismatch})
-                continue
-            try:
-                filters = requires_violation(text, variable=declaring, expression=leaf.expression)
-                value = mapped_value(leaf.expression).value
-            except ValueError as exc:
-                yield finding.model_copy(update={"check": "not_checked", "reason": str(exc)})
-                continue
-            yield CheckPlan(
-                finding=finding, width=1,
-                count={"population": dataset, "filter": filters,
-                       "metrics": [{"metric": f"count({dataset}.*)", "alias": "n"}]},
-                sample={"population": dataset, "filter": filters, "dimensions": [{"field": value, "alias": "s0"}],
-                        "limit": SAMPLE_SIZE})
+            if _value_requirement(ontology, declaring, text):
+                yield _value_plan(mapped, leaf=leaf, declaring=declaring, text=text, data_source=data_source)
+
+
+def _value_plan(mapped: _Mapped, *, leaf: Leaf, declaring: str, text: str,
+                data_source: str) -> CheckPlan | OntologyFinding:
+    """The data check of value constraint ``text`` (declared on ``declaring``) on single-dataset ``leaf``, or why it
+    is not checked."""
+    ontology = mapped.ontology
+    dataset = next(iter(leaf.datasets))
+    finding = OntologyFinding(check="constraint", data_source=data_source, mapping=mapped.name,
+                              ontology=ontology.name, concept=leaf.concept, dataset_name=dataset,
+                              fields=[f for _, f in leaf.reads], constraint=text, position=leaf.expression)
+    mismatch = _literal_mismatch(ontology, declaring, text)
+    if mismatch is not None:
+        return finding.model_copy(update={"check": "not_checked", "reason": mismatch})
+    try:
+        filters = requires_violation(text, variable=declaring, expression=leaf.expression)
+        value = mapped_value(leaf.expression).value
+    except ValueError as exc:
+        return finding.model_copy(update={"check": "not_checked", "reason": str(exc)})
+    return CheckPlan(
+        finding=finding, width=1,
+        count={"population": dataset, "filter": filters,
+               "metrics": [{"metric": f"count({dataset}.*)", "alias": "n"}]},
+        sample={"population": dataset, "filter": filters, "dimensions": [{"field": value, "alias": "s0"}],
+                "limit": SAMPLE_SIZE})
 
 
 def _stage(name: str, mapped_object: ObjectMap, *, extra: list[ObjectMap]) -> dict[str, Any]:
@@ -790,34 +820,43 @@ def _link_plans(mapped: _Mapped, *, data_source: str) -> Iterator[CheckPlan | On
     for concept in ontology.kinds:
         for text in ontology.requires.get(concept, []):
             relationship = link_requirement(ontology, concept, text)
-            if relationship is None or relationship.name in ontology.identify_by(concept):
-                continue
-            base: dict[str, Any] = {"data_source": data_source, "mapping": mapped.name, "ontology": ontology.name,
-                    "concept": concept, "relationship": relationship.label, "constraint": text}
-            linkers = [link for link in mapped.links if link.relationship.label == relationship.label
-                       and ontology.related(link.subject.concept, concept)]
-            if any(len(link.subject.datasets | {d for o in link.roles for d in o.datasets}) != 1 for link in linkers):
-                yield OntologyFinding(check="not_checked", **base, reason="a link of it reads more than one dataset")
-                continue
-            producers: dict[tuple[str, ...], ObjectMap] = {}
-            for occurrence in mapped.occurrences:
-                found = occurrence.object
-                if found.entity and found.leaves and ontology.subtype_of(found.concept, concept):
-                    producers.setdefault(found.expressions, found)
-            for producer in producers.values():
-                position = ", ".join(producer.expressions)
-                if len(producer.datasets) != 1:
-                    yield OntologyFinding(check="not_checked", **base, position=position,
-                                          reason="the position reads more than one dataset")
-                    continue
-                finding = OntologyFinding(check="required_link", **base, position=position,
-                                          dataset_name=next(iter(producer.datasets)),
-                                          fields=[f for leaf in producer.leaves for _, f in leaf.reads])
-                matching = [link for link in linkers if len(link.subject.leaves) == len(producer.leaves)]
-                try:
-                    yield _link_plan(producer, matching, finding)
-                except ValueError as exc:
-                    yield finding.model_copy(update={"check": "not_checked", "reason": str(exc)})
+            if relationship is not None and relationship.name not in ontology.identify_by(concept):
+                yield from _requirement_plans(mapped, concept=concept, text=text, relationship=relationship,
+                                              data_source=data_source)
+
+
+def _requirement_plans(mapped: _Mapped, *, concept: str, text: str, relationship: Relationship,
+                       data_source: str) -> Iterator[CheckPlan | OntologyFinding]:
+    """The data checks of required link ``text`` of ``concept``, one per position producing its objects."""
+    ontology = mapped.ontology
+    base: dict[str, Any] = {"data_source": data_source, "mapping": mapped.name, "ontology": ontology.name,
+                            "concept": concept, "relationship": relationship.label, "constraint": text}
+    linkers = [link for link in mapped.links if link.relationship.label == relationship.label
+               and ontology.related(link.subject.concept, concept)]
+    if any(len(link.subject.datasets | {d for o in link.roles for d in o.datasets}) != 1 for link in linkers):
+        yield OntologyFinding(check="not_checked", **base, reason="a link of it reads more than one dataset")
+        return
+    producers: dict[tuple[str, ...], ObjectMap] = {}
+    for found in (o.object for o in mapped.occurrences):
+        if found.entity and found.leaves and ontology.subtype_of(found.concept, concept):
+            producers.setdefault(found.expressions, found)
+    for producer in producers.values():
+        yield _producer_plan(producer, linkers=linkers, base=base)
+
+
+def _producer_plan(producer: ObjectMap, *, linkers: list[Link], base: dict[str, Any]) -> CheckPlan | OntologyFinding:
+    position = ", ".join(producer.expressions)
+    if len(producer.datasets) != 1:
+        return OntologyFinding(check="not_checked", **base, position=position,
+                               reason="the position reads more than one dataset")
+    finding = OntologyFinding(check="required_link", **base, position=position,
+                              dataset_name=next(iter(producer.datasets)),
+                              fields=[f for leaf in producer.leaves for _, f in leaf.reads])
+    matching = [link for link in linkers if len(link.subject.leaves) == len(producer.leaves)]
+    try:
+        return _link_plan(producer, matching, finding)
+    except ValueError as exc:
+        return finding.model_copy(update={"check": "not_checked", "reason": str(exc)})
 
 
 def ontology_checks(use: StoredUse) -> tuple[list[OntologyFinding], list[CheckPlan]]:

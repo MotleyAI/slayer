@@ -77,24 +77,27 @@ def concept_graph(ontology: Ontology, *, fields: dict[str, list[str]]) -> list[d
 def _graph_lines(graph: list[dict[str, Any]]) -> list[str]:
     lines = ["Concepts:"]
     for entry in graph:
-        parts = [f"- `{entry['concept']}` ({entry['type']})"
-                 + (f" extends {_listed(entry['extends'])}" if entry["extends"] else "")
-                 + (f": {entry['description']}" if entry["description"] else "")]
-        if entry["identify_by"]:
-            parts.append(f"identified by {_listed(entry['identify_by'])}")
-        if entry["requires"]:
-            parts.append(f"requires {_listed(entry['requires'])}")
-        if entry["fields"]:
-            parts.append(f"fields {_listed(entry['fields'])}")
-        lines.append("; ".join(parts))
-        for r in entry["relationships"]:
-            roles = ", ".join(r["roles"])
-            shown = [f"  - `{entry['concept']}.{r['name']}`" + (f" ({roles})" if roles else "")
-                     + (f" {r['multiplicity']}" if r["multiplicity"] else "")]
-            shown += [f"`{v}`" for v in r["verbalizes"]]
-            shown += [f"requires {_listed(r['requires'])}"] if r["requires"] else []
-            lines.append(": ".join(shown[:2]) + "".join(f"; {p}" for p in shown[2:]))
+        lines.append(_concept_line(entry))
+        lines += [_relationship_line(entry["concept"], r) for r in entry["relationships"]]
     return lines
+
+
+def _concept_line(entry: dict[str, Any]) -> str:
+    parts = [f"- `{entry['concept']}` ({entry['type']})"
+             + (f" extends {_listed(entry['extends'])}" if entry["extends"] else "")
+             + (f": {entry['description']}" if entry["description"] else "")]
+    parts += [f"{label} {_listed(entry[key])}" for key, label in (
+        ("identify_by", "identified by"), ("requires", "requires"), ("fields", "fields")) if entry[key]]
+    return "; ".join(parts)
+
+
+def _relationship_line(concept: str, r: dict[str, Any]) -> str:
+    roles = ", ".join(r["roles"])
+    shown = [f"  - `{concept}.{r['name']}`" + (f" ({roles})" if roles else "")
+             + (f" {r['multiplicity']}" if r["multiplicity"] else "")]
+    shown += [f"`{v}`" for v in r["verbalizes"]]
+    shown += [f"requires {_listed(r['requires'])}"] if r["requires"] else []
+    return ": ".join(shown[:2]) + "".join(f"; {p}" for p in shown[2:])
 
 
 def _refs(refs: list[ConceptRef]) -> str:

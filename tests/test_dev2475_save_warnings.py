@@ -8,10 +8,12 @@ warnings).
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
@@ -19,6 +21,7 @@ from slayer.api.server import create_app
 from slayer.client import slayer_client as slayer_client_module
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import RelationshipCardinality
+from slayer.ontology.documents import edited_mapping
 from tests._cli_inprocess import run_cli_in_process
 from tests._dataset_access_fixtures import mcp_text
 from tests._dev2243_fixtures import STORAGES
@@ -86,6 +89,57 @@ async def test_a_semantic_model_save_and_edit_warn(tmp_path: Path) -> None:
     await storage.edit_semantic_model(FLIGHTS_MODEL, data_source=FLIGHTS_DS, description="Edited.",
                                       warnings_out=edited_notes)
     assert aircraft_key(edited_notes)
+
+
+async def _standalone_flights(tmp_path: Path) -> tuple[Any, list[str]]:
+    """The flights datasets as standalone datasets, mapped by a mapping on the datasource."""
+    storage = await flights_store("yaml", tmp_path, mapping=False)
+    names = await storage.list_datasets(FLIGHTS_DS)
+    standalone = await storage.standalone_datasets_of(text=flights_model(typed=True), data_source=FLIGHTS_DS,
+                                                      names=names)
+    await storage.delete_semantic_model(FLIGHTS_MODEL, data_source=FLIGHTS_DS)
+    for dataset in standalone:
+        await storage.save_dataset(dataset)
+    await storage.save_ontology_mapping_text(data_source=FLIGHTS_DS, name=FLIGHTS_MAPPING, warnings_out=[],
+                                             text=edited_mapping(MAPPING, semantic_model_ref={"name": FLIGHTS_DS}))
+    return storage, names
+
+
+@pytest.mark.parametrize("access_filtered", [False, True])
+async def test_a_semantic_model_made_from_standalone_datasets_warns(tmp_path: Path, access_filtered: bool) -> None:
+    storage, names = await _standalone_flights(tmp_path)
+    notes: list[Any] = []
+    target = view(storage) if access_filtered else storage
+    await target.create_semantic_model(data_source=FLIGHTS_DS, name=FLIGHTS_MODEL, datasets=names, warnings_out=notes)
+    assert aircraft_key(notes)
+
+
+async def test_a_mismatch_raised_as_an_error_leaves_the_adopted_semantic_model_whole(tmp_path: Path) -> None:
+    storage, names = await _standalone_flights(tmp_path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(UserWarning):
+            await storage.create_semantic_model(data_source=FLIGHTS_DS, name=FLIGHTS_MODEL, datasets=names)
+    owners = [(await storage.get_dataset(n, data_source=FLIGHTS_DS)).semantic_model for n in names]
+    assert owners == [FLIGHTS_MODEL] * len(names)
+
+
+async def test_the_access_filtered_adoption_returns_only_visible_mismatches(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    storage = await flights_store("yaml", tmp_path)
+    leaked = aircraft_key(await storage.ontology_mismatches(data_source=FLIGHTS_DS))
+    assert leaked
+    await hide(storage, "AIRCRAFT", data_source=FLIGHTS_DS)
+
+    async def adopt(*, warnings_out: list[Any] | None = None, **_: Any) -> None:
+        assert warnings_out is not None
+        warnings_out.extend(leaked)
+
+    monkeypatch.setattr(storage, "adopt_semantic_model", adopt)
+    notes: list[Any] = []
+    await view(storage).adopt_semantic_model(data_source=FLIGHTS_DS, name="adopted", replacing=[], warnings_out=notes,
+                                             text=yaml.safe_dump({"name": "adopted", "datasets": [{"name": "FLIGHT"}]}))
+    assert not aircraft_key(notes)
 
 
 async def test_a_save_with_nothing_to_report_returns_no_ontology_warning(tmp_path: Path) -> None:

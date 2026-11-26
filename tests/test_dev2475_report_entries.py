@@ -99,9 +99,10 @@ async def test_force_clean_ignores_ontology_findings(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "DegreesLatitude <= 90" in result.stdout
     storage = make_storage("yaml", tmp_path)
-    assert (await storage.get_ontology_text(FLIGHTS), await storage.get_ontology_mapping_text(
-        FLIGHTS_MAPPING, FLIGHTS_DS), await storage.get_semantic_model_text(
-        FLIGHTS_MODEL, data_source=FLIGHTS_DS)) == before
+    after = (await storage.get_ontology_text(FLIGHTS),
+             await storage.get_ontology_mapping_text(FLIGHTS_MAPPING, FLIGHTS_DS),
+             await storage.get_semantic_model_text(FLIGHTS_MODEL, data_source=FLIGHTS_DS))
+    assert after == before
     assert sorted(d.model_dump_json() for d in (await storage.load_datasets(data_source=FLIGHTS_DS))[0]) == datasets
 
 

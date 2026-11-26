@@ -668,6 +668,9 @@ carve_outs:
   - {name: model, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_name, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_of, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
+  - {name: from_columns, file: slayer/ontology/use.py, reason: "Ossie's own wire name"}
+  - {name: model_findings, file: slayer/ontology/use.py, reason: "Ossie's semantic model (the document)"}
+  - {name: to_columns, file: slayer/ontology/use.py, reason: "Ossie's own wire name"}
   - {name: _declare_columns, file: slayer/osi/importer.py, reason: "physical database or result-set column"}
   - {name: column, file: slayer/osi/importer.py, reason: "physical database or result-set column"}
   - {name: model, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}

@@ -3444,7 +3444,7 @@ class SlayerQueryEngine:
             try:
                 count = await self.execute(query=plan.count, data_source=data_source)
                 sample = await self.execute(query=plan.sample, data_source=data_source)
-            except Exception as exc:  # noqa: BLE001 — a check the engine or the database refuses is listed, not fatal
+            except Exception as exc:  # noqa: BLE001  # a check the engine or the database refuses is listed, not fatal
                 findings.append(plan.finding.model_copy(update={"check": "not_checked", "reason": str(exc)}))
                 continue
             rows = [[row.get(f"s{i}") for i in range(plan.width)] for row in sample.data]

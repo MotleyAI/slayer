@@ -975,7 +975,8 @@ class SearchService:
             failures = DocumentLoadFailures()
             datasets = failures.skip(await self._storage.load_datasets(data_source=data_source))
             warnings += await self._fan_out_with_isolation(
-                hook_name="refresh_concepts", invoke=lambda r: r.refresh_concepts(datasets, concepts=concepts))
+                hook_name="refresh_concepts",
+                invoke=lambda r, datasets=datasets, concepts=concepts: r.refresh_concepts(datasets, concepts=concepts))
         return _dedup(warnings)
 
     async def _concepts(self, datasource: str | None) -> dict[str, Annotations]:
@@ -1043,30 +1044,11 @@ class SearchService:
         """Resolve ``entities`` + ``query`` into deduped canonicals and warnings; per-token failures warn."""
         canonical: list[str] = []
         warnings: list[str] = []
-        if entities:
-            for raw in entities:
-                if not isinstance(raw, str):
-                    raise ValueError(
-                        f"entities list items must be strings; got "
-                        f"{type(raw).__name__}."
-                    )
-                if raw.startswith(CONCEPT_PREFIX):
-                    found = await self._concept_entities(raw[len(CONCEPT_PREFIX):], concepts=concepts or {},
-                                                         failures=failures or DocumentLoadFailures())
-                    canonical.extend(found)
-                    if not found:
-                        warnings.append(f"entity {raw!r} dropped: no field or dataset you can see is mapped to "
-                                        f"that concept or a subtype.")
-                    continue
-                try:
-                    result = await resolve_entity(
-                        raw=raw, storage=self._storage,
-                    )
-                except (EntityResolutionError, AmbiguousDatasetError) as exc:
-                    warnings.append(f"entity {raw!r} dropped: {exc}")
-                    continue
-                canonical.extend(result.canonical_forms)
-                warnings.extend(result.warnings)
+        for raw in entities or []:
+            found, dropped = await self._resolve_entity_token(raw, concepts=concepts or {},
+                                                              failures=failures or DocumentLoadFailures())
+            canonical.extend(found)
+            warnings.extend(dropped)
         if query is not None:
             try:
                 extraction = await extract_entities_from_query(
@@ -1078,6 +1060,27 @@ class SearchService:
                 canonical.extend(extraction.canonical_forms)
                 warnings.extend(extraction.warnings)
         return _dedup(canonical), _dedup(warnings)
+
+    async def _resolve_entity_token(self, raw: Any, *, concepts: dict[str, Annotations],
+                                    failures: DocumentLoadFailures) -> tuple[list[str], list[str]]:
+        """One ``entities`` item's canonicals and warnings; a ``concept:`` item resolves to the visible ids mapped to
+        that concept."""
+        if not isinstance(raw, str):
+            raise ValueError(
+                f"entities list items must be strings; got "
+                f"{type(raw).__name__}."
+            )
+        if raw.startswith(CONCEPT_PREFIX):
+            found = await self._concept_entities(raw[len(CONCEPT_PREFIX):], concepts=concepts, failures=failures)
+            return found, [] if found else [f"entity {raw!r} dropped: no field or dataset you can see is mapped to "
+                                            f"that concept or a subtype."]
+        try:
+            result = await resolve_entity(
+                raw=raw, storage=self._storage,
+            )
+        except (EntityResolutionError, AmbiguousDatasetError) as exc:
+            return [], [f"entity {raw!r} dropped: {exc}"]
+        return list(result.canonical_forms), list(result.warnings)
 
     async def _recency_fallback(
         self,
