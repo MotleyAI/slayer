@@ -1,5 +1,5 @@
-"""SlayerModel v32 / SlayerQuery v20 / Memory v15: stamps only; a stored granularity named like an Ossie function the
-library reserved here is renamed through its gate (``slayer.storage.granularity_rename``). Stored-only."""
+"""SlayerModel v32 / SlayerQuery v20 / Memory v15: stamps only; a stored granularity named like an Ossie function or
+aggregate the library reserved here is renamed through its gate (``slayer.storage.granularity_rename``). Stored-only."""
 
 from slayer.storage.migrations import register_migration
 from slayer.storage.rank_direction_migration import stamp_memory_query

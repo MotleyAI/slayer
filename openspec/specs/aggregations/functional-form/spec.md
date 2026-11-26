@@ -183,15 +183,16 @@ every legal aggregation is reachable in functional form.
 - **THEN** validation fails with an error naming the collision
 
 ### Requirement: Syntax boundaries are preserved
-Mode-A raw-SQL surfaces SHALL continue to treat `SUM(x)` as raw SQL. In Mode B,
-`count(distinct <expr>[, <arguments>])` (`count` and `distinct` matched
-case-insensitively, `<expr>` any aggregation source other than `*`) SHALL be an
-exact equivalent of `count_distinct(<expr>[, <arguments>])` — same result key,
-SQL and values. Every other SQL-style `DISTINCT` inside a call — another
-aggregation, `count(distinct *)`, or several distinct operands — SHALL be
-rejected with an error stating that `DISTINCT` is supported only as
-`count(distinct x)`, i.e. `count_distinct(x)`. Text inside string literals SHALL
-never be read as `distinct`.
+Mode-A raw-SQL surfaces SHALL continue to treat `SUM(x)` as raw SQL. In Mode B, a leading `DISTINCT` inside a call
+(`distinct` and the callee matched case-insensitively, over one operand `<expr>` that is any aggregation source other
+than `*`) SHALL be an exact equivalent — same result key, SQL and values — of:
+`count(distinct <expr>[, <arguments>])` of `count_distinct(<expr>[, <arguments>])`,
+`sum(distinct <expr>[, <arguments>])` of `sum_distinct(<expr>[, <arguments>])`,
+`avg(distinct <expr>[, <arguments>])` of `avg_distinct(<expr>[, <arguments>])`,
+`min(distinct <expr>[, <arguments>])` and `max(distinct <expr>[, <arguments>])` of `min(<expr>[, <arguments>])` and
+`max(<expr>[, <arguments>])`, and `array_agg(distinct <expr>)` of `collect(<expr>)`. Every other SQL-style `DISTINCT`
+inside a call — another aggregation, `distinct *`, or several distinct operands — SHALL be rejected with an error
+listing the accepted DISTINCT forms. Text inside string literals SHALL never be read as `distinct`.
 
 #### Scenario: Mode A unchanged
 - **WHEN** a model column's `sql` contains `SUM(amount)`
@@ -205,30 +206,34 @@ never be read as `distinct`.
 - **WHEN** a measure is written `count(distinct coalesce(user_id, 0), partition_by=region)`
 - **THEN** it equals `count_distinct(coalesce(user_id, 0), partition_by=region)`
 
+#### Scenario: sum, avg, min and max with DISTINCT
+- **WHEN** measures are written `sum(distinct amount)`, `AVG(DISTINCT amount)`, `min(distinct amount)` and `MAX(DISTINCT amount, partition_by=region)`
+- **THEN** they equal `sum_distinct(amount)`, `avg_distinct(amount)`, `min(amount)` and `max(amount, partition_by=region)`
+
 #### Scenario: DISTINCT keyword rejected
-- **WHEN** a measure is written `sum(distinct amount)`, `count(distinct *)` or `count(distinct a, b)`
-- **THEN** each is rejected with the error stating that `DISTINCT` is supported only as `count(distinct x)`
+- **WHEN** a measure is written `stddev(distinct amount)`, `count(distinct *)` or `count(distinct a, b)`
+- **THEN** each is rejected with the error listing the accepted DISTINCT forms
 
 ### Requirement: Positional parameters fold onto declared parameter order
 An aggregation call MAY pass declared parameters positionally after its source
 (or, for a re-aggregation, after its operand): positional values SHALL bind to
 the aggregation's declared parameter order — the built-in registry
-(`percentile` → `p`; `weighted_avg` → `weight`; `corr`/`covar_samp`/`covar_pop`
-→ `other`) or a custom aggregation's `params` declaration order — yielding the
+(`percentile`, `percentile_disc` and `percentile_approx` → `p`; `weighted_avg` → `weight`;
+`corr`/`covar_samp`/`covar_pop` → `other`) or a custom aggregation's `params` declaration order — yielding the
 identical aggregation identity, SQL, results, and result keys as the named
 spelling. Passing a parameter both positionally and by name, or more positional
 values than declared parameters — any positional value at all on an aggregation
 that declares none — SHALL fail with a clear error naming the rule. Ranked
 `first`/`last` declare no parameters — they take at most one positional value,
 their ranking key (resolved per › Default ranking key when omitted), which, when
-given, SHALL be determined by the aggregation's home per › An expression ranking key is
-judged by its leaves — never a literal-only expression. After binding an
+given, SHALL be a row-level expression — a column being the one-leaf case — never a
+literal-only expression or one carrying an aggregate, transform or attached value. After binding an
 attached (aggregate- or transform-valued) parameter is therefore always a named
 parameter.
 
 #### Scenario: Positional percentile equals named
-- **WHEN** a measure is written `percentile(price, 0.9)`
-- **THEN** SQL, results, and result keys are identical to `percentile(price, p=0.9)`
+- **WHEN** a measure is written `percentile(price, 0.9)`, `percentile_disc(price, 0.9)` or `percentile_approx(price, 0.9)`
+- **THEN** SQL, results, and result keys are identical to the `p=0.9` spelling of the same aggregation
 
 #### Scenario: Positional parameter on a re-aggregation outer
 - **WHEN** a measure is written
@@ -251,8 +256,8 @@ parameter.
   takes no parameters — never an executed value
 
 #### Scenario: Invalid first/last ranking key errors
-- **WHEN** `last(amount, 1)`, `last(sum(amount), 1)` or `last(amount, id, amount)` is
-  submitted
+- **WHEN** `last(amount, sum(amount, partition_by=region))`, `last(amount, 1)` or
+  `last(amount, id, amount)` is submitted
 - **THEN** each fails at bind with a clear error naming the ranking-key rule
 
 #### Scenario: Expression ranking key

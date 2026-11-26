@@ -106,8 +106,9 @@ def test_percentile_without_value_clean_fails() -> None:
     assert any("p_nope" in (e.metric_name or e.message) for e in entries)
 
 
-@pytest.mark.parametrize("flag", ["use_discrete_percentile", "use_approximate_percentile"])
-def test_percentile_discrete_or_approx_flag_clean_fails(flag: str) -> None:
+@pytest.mark.parametrize(("flag", "agg"), [("use_discrete_percentile", "percentile_disc"),
+                                           ("use_approximate_percentile", "percentile_approx")])
+def test_percentile_discrete_or_approx_flag_converts(flag: str, agg: str) -> None:
     params = DbtMeasureAggParams(percentile=0.9, **{flag: True})
     project = DbtProject(
         semantic_models=[
@@ -119,8 +120,7 @@ def test_percentile_discrete_or_approx_flag_clean_fails(flag: str) -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "p_flag" for m in _dataset(result).metrics)
-    assert any("p_flag" in (e.metric_name or e.message) for e in _all_report_entries(result))
+    assert _metric(result, "p_flag").expression == f"{agg}(latency, p=0.9)"
 
 
 # ───────────────────────── Part 1.2 — ratio nullif guard ─────────────────────────
