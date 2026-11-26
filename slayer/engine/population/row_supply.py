@@ -40,8 +40,6 @@ from slayer.ir.source_bundle import RowSupply, RowSupplyBranch
 
 #: ``row_sources`` of a query with no dimensions.
 UNIT = "unit"
-#: Aggregations that associate only through a window or a ranking: they broadcast instead (semantics Axiom 8).
-_BROADCAST_ONLY = frozenset({"first", "last"})
 
 
 class CoarseCells(BaseModel):
@@ -210,7 +208,7 @@ def _operand(agg: AggCall, *, owner: Optional[str], dims: list[str],
     if len(determined) == len(dims):
         return _Operand(home=home, full=True)
     reached = [d for d in dims if d in determined or _reaches(home=home, item=d, datasets_by_name=datasets_by_name)]
-    associates = mode.associates and agg.agg.lower() not in _BROADCAST_ONLY
+    associates = mode.associates
     if len(reached) == len(dims) and associates:
         return _Operand(home=home, full=True)
     return _Operand(home=home, full=False, grain=tuple(reached if associates else determined))

@@ -24,6 +24,7 @@ flowchart TD
   live_schema["Live schema"]
   ir["Intermediate representation"]
   storage["Storage backends"]
+  ontology["Ontologies and mappings"]
   importers("Importers")
   search("Search & embeddings")
   memories("Agent memories")
@@ -91,6 +92,10 @@ flowchart TD
   protocols --> otel
   surfaces --> otel
   otel --> core
+  ontology --> core
+  storage --> ontology
+  importers --> ontology
+  surfaces --> ontology
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:landscape -->

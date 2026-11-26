@@ -53,8 +53,7 @@ principles every layer obeys.
      determines them all, the expression is illegal, except as a field filter, which restricts by association (Axiom 14).
    - **2.3 Attached constituent.** An aggregate or transform appearing as an operand
      is a typed dataset (Axiom 6) and is opaque: only its type is consulted (Axiom 9)
-     — its grain: the explicit `partition_by=`, else the query's dimensions; for a
-     transform, its result grain (Axiom 11), where a windowed inner's
+     — its grain (Axiom 5; for a transform, its result grain, Axiom 11), where a windowed inner's
      grain always includes the query's time bucket whether or not its `partition_by=`
      names it. Its value is broadcast onto the home's rows (Axiom 10; the
      virtual-model join of Axiom 6), which is
@@ -72,8 +71,7 @@ principles every layer obeys.
      query path is refused (its anchor is no revisit, Principle 1), a revisiting
      `DatasetField.sql` likewise.
      It is counted over that
-     dataset's rows. The ordering key of a ranked aggregation must be determined by the
-     home and never widens it; the aggregation's own `partition_by=` is not an input.
+     dataset's rows. A **ranked** aggregation (`first`, `last`) picks the value of the home row with the least or greatest **ranking key**, which must be determined by the home and never widens it; the aggregation's own `partition_by=` is not an input.
      A source with no row-level leaf is a second-order aggregation: its home is the
      operand dataset — the row supply (12.3–12.4) of its constituents at their union
      grain — not a model.
@@ -111,6 +109,7 @@ principles every layer obeys.
    [enforced: test:tests/test_dev2367_list_elements_across_joins.py]
    [enforced: test:tests/test_dev2388_own_anchor.py]
    [enforced: test:tests/test_dev2430_row_expression_home.py]
+   [enforced: test:tests/test_dev2436_ranked_aggregation.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
@@ -137,8 +136,7 @@ principles every layer obeys.
    dataset, each counted exactly once — never over the row product of a join,
    so no fan-out can multiply its inputs (spec: `queries/semantics` › No double
    counting). A cell with no home rows takes the aggregation's **empty value**:
-   0 for the count family, the empty list for `collect`, NULL otherwise. A built-in aggregation skips NULL
-   inputs, so a cell whose inputs are all NULL takes the same empty value —
+   0 for the count family, the empty list for `collect`, NULL otherwise. A built-in aggregation skips NULL inputs (a ranked one, NULL ranking keys, returning the picked value as is), so a cell whose inputs are all NULL takes the same empty value —
    wherever the aggregation is evaluated (locally, across a join, in a stage,
    window, partition or association) and whatever its input type.
    This holds even on data violating declared cardinality (Ossie L3 §4); only a **trusted** hop — its relationship marked trusted, or its target key unique by construction or enforced by the database — may be lowered assuming it, and on data violating a trusted relationship the result is undefined.
@@ -146,9 +144,7 @@ principles every layer obeys.
    [enforced: test:tests/test_dev1836_producer_execution.py]
    [enforced: test:tests/test_dev1994_empty_value.py]
    [enforced: test:tests/test_dev2046_all_null_inputs.py]
-5. **Grain and cells**: an aggregate is typed by its grain — its partition_by
-   dimension set, defaulting to the query's dimensions; one combination of
-   grain values is a cell. [enforced: test:tests/test_dev1871_grain_retype.py]
+5. **Grain and cells**: an aggregate is typed by its grain — its partition_by dimension set, defaulting to the query's dimensions, or for a ranked aggregation over an aggregate to that operand's grain; an unwindowed ranked aggregation's grain drops its ranking key. One combination of grain values is a cell. [enforced: test:tests/test_dev1871_grain_retype.py] [enforced: test:tests/test_dev2436_ranked_aggregation.py]
 6. **An aggregate is a dataset**
    [enforced: test:tests/test_dev1871_terms.py]: it can be filtered, queried,
    and aggregated again; a strictly coarser grain is reached only through an
@@ -190,11 +186,11 @@ principles every layer obeys.
    constructed — any "not supported inside" refusal of a well-typed term is a
    closure violation. [enforced: test:tests/test_law_guard_ratchet.py] [enforced: test:tests/test_dev1919_home_rooted_attached_inputs.py] Typed
    residue, by design and NOT a closure violation: an aggregate in dimension
-   position must declare its grain explicitly — the ungrained default (the
+   position must declare its grain explicitly, unless Axiom 5 types it by an aggregate operand — the ungrained default (the
    query's dimensions) would include the dimension being defined, a
    self-referential grain, so the explicit `partition_by=` requirement is a
    type rule [enforced: test:tests/test_dev1824_computed_dim_execution.py];
-   a transform in dimension position must likewise wrap aggregates, each
+   a transform, or such a ranked aggregation, in dimension position must likewise wrap aggregates, each
    declaring `partition_by=` — two distinct typed errors for the same
    self-referential-grain reason.
    [enforced: test:tests/test_dev1868_residue_split.py]
@@ -203,24 +199,17 @@ principles every layer obeys.
     the population supplies the row set — inside a second-order source, its operand dataset (2.4) —, a cell an operand lacks contributes
     its empty value (Axiom 4; NULL for a transform), and combining never removes rows (spec: `queries/semantics` ›
     Grain-union broadcasting). [enforced: test:tests/test_dev1739_execution.py]
-11. **Transforms are typed**: a transform consumes an aggregate-valued dataset and
-    produces one, consulting only its operand's type (Axiom 9). Its grain is resolved by:
+11. **Transforms are typed**: a transform consumes an aggregate-valued dataset and produces one at its operand's grain, consulting only its operand's type (Axiom 9). That grain is resolved by:
     - **11.1 Operand grain.** The union of the inner aggregates' grains (Axiom 10):
       each explicit `partition_by=`, else the query grain; a windowed inner always
       includes the query's time bucket. An operand naming no explicit aggregation
       (`rank(region)`) is the degenerate query-grain identity — grain = the query
       dimensions, warned like `sum(sum(x))`.
-    - **11.2 Timeless.** The rank family preserves the operand grain; its own
-      `partition_by=` partitions the operand's cells and must name operand-grain members.
-    - **11.3 Time-ordered.** The axis is the query's active time bucket and must be in
+    - **11.2 Timeless.** The rank family's own `partition_by=` partitions the operand's cells and must name operand-grain members.
+    - **11.3 Time-ordered** (`cumsum`, `lag`, `lead`, `time_shift`, `change`, `change_pct`, `consecutive_periods`). The axis is the query's active time bucket and must be in
       the operand grain; otherwise the transform fails with the `partition_by=` remedy.
       Steps along the axis are calendar steps: a bucket absent from the series is a gap,
       never a neighbour; `lag` / `lead` alone step over the domain's cells (11.6).
-      **11.3a Preserving** (`cumsum`, `lag`, `lead`, `time_shift`, `change`,
-      `change_pct`, `consecutive_periods`): one value per operand cell, result grain =
-      operand grain. **11.3b Collapsing** (`first`, `last`): one value per partition,
-      result grain = operand grain minus the axis, realised as the preserving
-      evaluation followed by an exact per-partition pick (Axiom 6).
     - **11.4 Position.** As a measure, filter or order key the result is broadcast onto
       the query grain (Axiom 10; a finer result is Axiom 6's implicit collapse); as an
       aggregation-source constituent or aggregation parameter it is an opaque dataset at its result grain (2.3);

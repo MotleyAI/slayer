@@ -493,7 +493,7 @@ Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite
 Use one of:
 
 * `rank(<metric>, direction='desc') <= N` (or `dense_rank` / `percent_rank` / `ntile(<metric>, n=N)`) for ranking — simpler and dialect-portable. Pass `partition_by=` to rank within groups.
-* `first(x)` / `last(x)` / `lag(x, n)` / `lead(x, n)` for time-based window transforms.
+* `lag(x, n)` / `lead(x, n)` for time-based window transforms, and the `first(x)` / `last(x)` aggregations for the earliest or latest value.
 * A multi-stage `source_queries` dataset where the window computation lives in an earlier stage.
 
 ### Variables

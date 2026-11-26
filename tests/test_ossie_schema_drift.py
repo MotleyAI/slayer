@@ -30,6 +30,7 @@ PROVENANCE_PATH = CORPUS / "provenance.yaml"
 PROVENANCE = yaml.safe_load(PROVENANCE_PATH.read_text(encoding="utf-8"))
 VENDORED = {upstream: (CORPUS / upstream).read_bytes().decode("utf-8") for upstream in PROVENANCE["files"]}
 HARVESTED = sorted((CORPUS / "harvested").glob("*.yaml"))
+HARVESTED_CASES = sorted((CORPUS / "harvested" / "ontology").glob("*.yaml"))
 
 ORDERS = {"version": "0.3.0.dev0", "name": "sales", "datasets": [{"name": "orders", "source": "db.orders"}]}
 
@@ -249,6 +250,24 @@ def test_the_harvest_replaces_the_output_with_the_staged_documents(monkeypatch: 
     assert envs[0]["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
+def test_the_harvest_writes_the_ontology_cases_beside_the_documents(monkeypatch: pytest.MonkeyPatch,
+                                                                     tmp_path: Path) -> None:
+    out = tmp_path / "harvested"
+    (out / "ontology").mkdir(parents=True)
+    (out / "ontology" / "stale.yaml").write_text("old\n", encoding="utf-8")
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        staged = Path(kwargs["env"][plugin.ENV_OUT])
+        plugin.write_harvest({"aaa.yaml": "a\n"}, staged)
+        plugin.write_harvest({"ccc.yaml": "c\n"}, staged / "ontology")
+        return subprocess.CompletedProcess(command, 0, stdout="ran", stderr="")
+
+    monkeypatch.setattr(drift_check.shutil, "which", lambda name: "/bin/uv")
+    monkeypatch.setattr(drift_check.subprocess, "run", fake_run)
+    assert drift_check.harvest(checkout=CORPUS, out=out) == drift_check.EXIT_SAME
+    assert sorted(p.relative_to(out).as_posix() for p in out.rglob("*.yaml")) == ["aaa.yaml", "ontology/ccc.yaml"]
+
+
 @pytest.mark.parametrize(("returncode", "written"), [
     pytest.param(1, {"aaa.yaml": "a\n"}, id="an-upstream-test-failed"),
     pytest.param(2, {"aaa.yaml": "a\n"}, id="pytest-could-not-run"),
@@ -306,6 +325,62 @@ def test_wrap_captures_copies_of_semantic_model_documents_only(tmp_path: Path) -
     module.validate_document(["datasets"], {})
     document["name"] = "mutated"
     assert sink == [ORDERS]
+
+
+MAPPING = {"version": "0.3.0.dev0", "name": "m", "ontology_ref": {"name": "o", "iri": "./o.yaml"},
+           "semantic_model_ref": {"name": "s", "iri": "https://example.org/s.yaml"},
+           "concept_mappings": [{"concept": "A", "object_mappings": [{"expression": "t.a"}]}]}
+
+
+def test_wrap_captures_ontology_and_mapping_cases_with_their_referenced_files(tmp_path: Path) -> None:
+    (tmp_path / "o.yaml").write_text("name: o\n", encoding="utf-8")
+    module = _fake_validate(findings=lambda data: [], schema=tmp_path / "s.json")
+    sink: list[dict[str, Any]] = []
+    cases: list[dict[str, Any]] = []
+    assert plugin.wrap(module, sink, cases) is True
+    module.validate_document({"version": "0.3.0.dev0", "name": "o", "ontology": []}, {})
+    module.validate_document(MAPPING, {}, tmp_path)
+    module.validate_document({**MAPPING, "ontology_ref": {"name": "o", "iri": str(tmp_path / "o.yaml")}}, {})
+    module.validate_document(ORDERS, {})
+    assert sink == [ORDERS]
+    assert cases == [{"document": {"version": "0.3.0.dev0", "name": "o", "ontology": []}, "files": {}},
+                     {"document": MAPPING, "files": {"./o.yaml": "name: o\n"}}]
+
+
+def test_schema_validation_outside_validate_document_captures_ontology_cases(tmp_path: Path) -> None:
+    class FakeValidator:
+        def __init__(self, schema: dict[str, Any]) -> None:
+            self.schema = schema
+
+        def iter_errors(self, instance: Any) -> list[str]:
+            return []
+
+    cases: list[dict[str, Any]] = []
+    assert plugin.wrap_schema_validator(FakeValidator, cases) is True
+    assert plugin.wrap_schema_validator(FakeValidator, cases) is False
+    ontology_root = FakeValidator({"$id": "https://github.com/apache/ossie/ontology/ontology.json"})
+    ontology_root.iter_errors({"name": "o", "ontology": []})
+    FakeValidator({"$ref": "https://github.com/apache/ossie/ontology/ontology.json#/$defs/X"}).iter_errors(
+        {"name": "sub", "ontology": []})
+    module = _fake_validate(findings=lambda data: ontology_root.iter_errors(data), schema=tmp_path / "s.json")
+    plugin.wrap(module, [], [])
+    module.validate_document({"name": "inside", "ontology": []}, {})
+    assert cases == [{"document": {"name": "o", "ontology": []}, "files": {}}]
+
+
+def test_harvested_ontology_cases_are_named_by_their_canonical_hash() -> None:
+    assert len(HARVESTED_CASES) > 100
+    for path in HARVESTED_CASES:
+        case = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert set(case) == {"document", "files"}, path.name
+        assert plugin.is_ontology_case(case["document"]), path.name
+        key = plugin.canonical_json(case)
+        assert key is not None
+        assert path.stem == hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def test_the_corpus_vendors_the_ontology_schemas() -> None:
+    assert {"ontology/ontology.json", "ontology/mapping.json", "ontology/ontology.md"} <= set(PROVENANCE["files"])
 
 
 def test_the_full_check_accepts_warnings_only(tmp_path: Path) -> None:
@@ -399,6 +474,9 @@ CHECKOUT_FILES: dict[str, bytes] = {
     "examples/shop.yaml": b"version: 0.3.0.dev0\nname: shop\n",
     "validation/validate.py": b"# validator\n",
     "python/src/ossie/_loading.py": b"# loader\n",
+    "ontology/ontology.json": b'{"type": "object"}\n',
+    "ontology/mapping.json": b'{"type": "object"}\n',
+    "ontology/ontology.md": b"# Ontology\n",
 }
 UNMANAGED = {"README.md": b"# Ossie\n", "website/index.md": b"# Site\n"}
 COMMIT_DATE = "2026-11-21T10:00:00+00:00"
@@ -460,6 +538,23 @@ def _fake_harvest(monkeypatch: pytest.MonkeyPatch, *, code: int = 0) -> list[Pat
 
 def _vendor(checkout: Path, corpus: Path) -> int:
     return drift_check.cli(["--vendor", str(checkout), "--out", str(corpus)])
+
+
+def test_vendor_carries_the_ontology_cases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path / "ossie", CHECKOUT_FILES)
+    corpus = _corpus(tmp_path / "corpus", listed={})
+    (corpus / "harvested" / "ontology").mkdir()
+    (corpus / "harvested" / "ontology" / "stale.yaml").write_text("old\n", encoding="utf-8")
+
+    def fake(*, checkout: Path, out: Path) -> int:
+        plugin.write_harvest({"abc123def456.yaml": "version: 0.3.0.dev0\n"}, out)
+        plugin.write_harvest({"fedcba654321.yaml": "document: {}\n"}, out / "ontology")
+        return drift_check.EXIT_SAME
+
+    monkeypatch.setattr(drift_check, "harvest", fake)
+    assert _vendor(checkout, corpus) == drift_check.EXIT_SAME
+    assert sorted(p for p in _tree(corpus) if p.startswith("harvested/")) == [
+        "harvested/abc123def456.yaml", "harvested/ontology/fedcba654321.yaml"]
 
 
 def test_vendor_copies_the_managed_files_byte_for_byte(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

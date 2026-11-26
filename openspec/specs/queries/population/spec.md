@@ -614,15 +614,16 @@ A query omitting `population` SHALL list its **row supply**, before measure-type
 `order` and `limit`. An aggregate grouped by the query's dimensions whose home determines or
 associates each of them over a join path is **full-grain**; it supplies its cells — the dimension
 tuples its filtered home rows reach along the home's own null-extending paths, so a home row with
-no related row lands in the NULL tuple. Any other aggregate (an explicit `partition_by=`, an
-aggregate homed on an unrelated dataset, whose cell is the one empty tuple, or one that falls back
+no related row lands in the NULL tuple. Any other aggregate (an explicit `partition_by=`, a ranked
+aggregation whose grain drops its ranking key, an aggregate homed on an unrelated dataset, whose cell is the one empty tuple, or one that falls back
 to broadcast) has cells on a coarser grain; they SHALL extend to the cells of the dimension anchor
 agreeing with them there. A metric SHALL supply the union of its full-grain aggregate operands'
 cells, through combinations and transforms, and with none, the union of its operands' extended
 cells. The rows SHALL be the NULL-safe union of every metric's supply; with no metrics, the
 dimension anchor's cells (the rows of the query anchored at that dataset); with no dimensions,
 exactly one row. Aggregates appearing only in filters, order entries or computed dimensions SHALL
-supply nothing. Each term SHALL attach to the rows on its own grain, a cell it lacks taking its
+supply nothing. An unwindowed `first` / `last` SHALL supply the same cells as `sum`
+over the same home and dimensions. Each term SHALL attach to the rows on its own grain, a cell it lacks taking its
 empty value. Field filters SHALL restrict every supply before its tuples are taken and SHALL NEVER
 choose the dimension anchor or a supply. Rows a row-level security policy or a model filter
 removes SHALL NOT exist for any of this: a home row reaching only such a row lands in the NULL
@@ -638,6 +639,12 @@ them. The **orphan variant** adds order O5 C9 70 open. Saved metrics `customers.
 count(*)`, `orders.total_revenue = sum(amount)`, `returns.total_returns = sum(amount)`,
 `visits.visit_count = count(*)`, `tickets.ticket_count = count(*)`. No query below names
 `population`.
+
+The **ranked-supply seed**: `customers(id, name, credit, signup_at)`, where Eve (credit NULL) and
+Fay (credit 25, the latest signup) have no orders; `orders(id, customer_id, status, amount,
+ordered_at)` joined many-to-one to `customers`; `order_items(id, order_id, product_id, qty)`
+joined many-to-one to `orders` and to `products(id, category)`, product P5 (`books`) having no
+items.
 
 #### Scenario: A dimension value no metric reaches is not a row
 
@@ -757,3 +764,17 @@ count(*)`, `orders.total_revenue = sum(amount)`, `returns.total_returns = sum(am
 - **WHEN** a query whose rows union several homes groups by a nullable decimal, a timestamp and a
   text dimension, one home supplying only NULL tuples
 - **THEN** it executes on every dialect with each key column of one type
+
+#### Scenario: An associated ranked metric supplies the tuples its home rows reach
+
+- **WHEN** over the ranked-supply seed a query groups by `orders.status` and measures
+  `last(customers.credit, customers.signup_at)`, and another measures `sum(customers.credit)`
+- **THEN** the first's rows are open 50, paid 70 and NULL 25 — the NULL row from the customers
+  with no orders, Fay signing up latest — the same row set as the second's, on SQLite and DuckDB
+
+#### Scenario: A ranked metric adds no row its home rows do not reach
+
+- **WHEN** over the ranked-supply seed a query groups by `products.category` and measures
+  `last(orders.amount)`, and another measures `sum(orders.amount)`
+- **THEN** the first's rows are food 30, toys 5 and NULL 60, with no `books` row, the same row
+  set as the second's, on SQLite and DuckDB

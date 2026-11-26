@@ -22,6 +22,15 @@ result.text             # the document as YAML text
 print(result.render_report())
 ```
 
+## Ontologies and Mappings
+
+```bash
+slayer export-osi --ontology Flights --out flights.ontology.yaml
+slayer export-osi --mapping flights_mapping --datasource flights --out flights.mapping.yaml
+```
+
+Each writes the stored [ontology or mapping](../concepts/ontologies.md) as its stored text, converted to JSON only for a `.json` file. `--ontology` takes no `--datasource` or `--datasets`; `--mapping` needs `--datasource`. An ontology imported with embedded `ontology_mappings` exports without them; each exports as its own mapping. From Python: `await export_ontology(storage=storage, name="Flights")` and `await export_ontology_mapping(storage=storage, data_source="flights", name="flights_mapping")` in `slayer.osi.exporter`.
+
 ## One Document per Datasource
 
 **A single semantic model exports verbatim.** When the datasource holds exactly one semantic model and no standalone dataset, and no `--datasets` subset is given, the output is that document's stored text unchanged, comments included (converted to JSON only for a `.json` file). With `--no-extensions` it is the same text with only its `SLAYER` entries removed; other vendors' entries and every other line are kept.

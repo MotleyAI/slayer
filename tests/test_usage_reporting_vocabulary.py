@@ -76,7 +76,7 @@ def test_demo_database_detected_by_bundled_layout(database: str, demo: bool) -> 
 @pytest.mark.parametrize(("formula", "transforms", "aggregations"), [
     ("count(*)", [], ["count"]),
     ("sum(amount)", [], ["sum"]),
-    ("last(sum(amount))", ["last"], ["sum"]),
+    ("last(sum(amount))", [], ["last", "sum"]),
     ("last(amount, ordered_at)", [], ["last"]),
     ("cumsum(sum(amount)) / count(*)", ["cumsum"], ["sum", "count"]),
     ("sum(iif(status = 'x(', 1, 0))", [], ["sum"]),
