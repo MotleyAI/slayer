@@ -533,7 +533,7 @@ column's values.
   region — by hand-computed executed values distinguishable from the per-cell
   evaluation
 
-#### Scenario: Collapsing transform constituent drops the time axis
+#### Scenario: Ranked second-order constituent drops the time axis
 - **WHEN** a query over a month time dimension under `to_many_handling: "broadcast"`
   selects `sum(last(sum(amount, partition_by=[region, ordered_at])))`
 - **THEN** the constituent is typed at `(region)`, its ranking key — the month bucket —

@@ -116,12 +116,12 @@ dataset-defined custom aggregation named `first` or `last` SHALL shadow the buil
 - **THEN** it is the `last` aggregation — the latest `balance` ranked by the time
   axis, or by `updated_at`
 
-#### Scenario: Transform reading
+#### Scenario: Aggregate-operand reading
 - **WHEN** a query over a month time dimension has a measure written `last(sum(revenue))`
 - **THEN** it is the second-order `last` over the `sum(revenue)` cells, ranked by the
   month bucket, with the values the former `last` transform returned
 
-#### Scenario: Saved-measure operand reads as the transform
+#### Scenario: Saved-measure operand reads as a second-order aggregation
 - **WHEN** the model declares a measure `rev` with formula `sum(revenue)` and a query over
   a month time dimension has a measure written `first(rev)` or `first(rev * 2)`
 - **THEN** it is the second-order `first` over the saved measure's cells — the same plan

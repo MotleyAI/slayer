@@ -716,7 +716,7 @@ precedence over the membership error.
 - **WHEN** a monthly query selects `rank(sum(amount, window='1y', partition_by=customers.regions.name), partition_by=ordered_at, direction='desc')`
 - **THEN** the partition key passes the operand-grain rule as the query's month bucket, a member contributed by the windowed inner
 
-#### Scenario: Nested collapsing transform drops its axis
+#### Scenario: Nested ranked aggregation drops its axis
 - **WHEN** a monthly query selects `rank(last(sum(amount, partition_by=[customers.regions.name, ordered_at])), partition_by=ordered_at, direction='desc')`
 - **THEN** planning fails with the operand-grain error naming `ordered_at` and the grain `customers.regions.name` — the `last` drops its ranking key, the month bucket; with `partition_by=customers.regions.name` the key passes the rule
 

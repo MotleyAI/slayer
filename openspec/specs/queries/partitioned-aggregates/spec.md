@@ -494,7 +494,7 @@ attached operand, and a measure-local `filter=` on the outer aggregation — for
 - **THEN** each fails with a typed error naming the unsupported combination and
   the remedy — never a silently wrong value
 
-#### Scenario: First and last keep transform dispatch
+#### Scenario: First and last over a partitioned aggregate rank its cells
 - **WHEN** a query over a month time dimension selects
   `last(sum(amount, partition_by=[city, region]))`, and again
   `last(sum(amount, partition_by=[city, region, ordered_at]))`
@@ -701,13 +701,7 @@ its `partition_by=` still gets the outer attach the grain join needs.
   the hand-computed row-weighted value, by executed values — never the former
   nested-transform rejection
 
-#### Scenario: Collapsing constituent mixed with a row leaf fails closed
-- **WHEN** a query over a month time dimension selects
-  `sum(amount * last(sum(amount, partition_by=[region, ordered_at])))`
-- **THEN** it no longer fails with the collapsing-transform error — it executes per the
-  next scenario; the former fail-closed pin is retired
-
-#### Scenario: Collapsing transform constituent inside a mixed source
+#### Scenario: Ranked second-order constituent inside a mixed source
 - **WHEN** a query over a month time dimension selects `sum(amount * last(X))` with
   `X = sum(amount, partition_by=[region, ordered_at])`
 - **THEN** it executes with the hand-computed values Jan 375 / Feb 825 / Mar 900 on
@@ -1091,7 +1085,7 @@ SHALL be legal in measure, filter (typing as a measure) and ORDER BY positions.
   Zeta/East 80, NULL/Gap 6, Kappa/Gap 8, Xi/Void NULL; globally 810 / 33, the
   NULL-total Void cell carrying a NULL rank and so no weight, on SQLite and DuckDB alike
 
-#### Scenario: Collapsing transform parameter drops the axis
+#### Scenario: Ranked second-order parameter drops the axis
 - **WHEN** a query rooted at `orders` over an `ordered_at` month time dimension selects
   `weighted_avg(customers.spend, weight=last(sum(amount, partition_by=[customers.regions.name, ordered_at])))`
 - **THEN** the parameter is typed at `[customers.regions.name]`, its month key

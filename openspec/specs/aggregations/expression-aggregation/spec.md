@@ -297,7 +297,7 @@ operand dataset for an attached one.
 - **THEN** the query fails with the input-safety error naming the leaf and the hop,
   never a multiplied value
 
-#### Scenario: Collapsing constituent mixed with a row leaf fails closed
+#### Scenario: Ranked second-order constituent mixed with a row leaf broadcasts per region
 - **WHEN** a query over a month time dimension selects
   `sum(amount * last(sum(amount, partition_by=[region, ordered_at])))`
 - **THEN** it executes with the `last` value — its month key dropped, one value per

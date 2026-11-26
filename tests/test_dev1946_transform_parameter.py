@@ -195,7 +195,7 @@ class TestLocalRootSales:
 
 
 class TestCollapsingLast:
-    """Scenario: Collapsing transform parameter drops the axis."""
+    """Scenario: Ranked second-order parameter drops the axis."""
 
     async def test_broadcast_mode_broadcasts_over_months(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
