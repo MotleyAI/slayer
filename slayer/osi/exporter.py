@@ -197,6 +197,8 @@ def _time_role(field: DatasetField) -> bool:
 
 
 _AGGREGATE_MARK = "slayer_rendered_aggregate"
+#: Aggregations with no portable Ossie value (approximate) or spelling (a DISTINCT average): dialect entries only.
+_DIALECT_ONLY_AGGREGATIONS = frozenset({"count_distinct_approx", "avg_distinct", "percentile_approx"})
 #: Stands in for an ``AGG(d.m)`` operand while a model-scoped metric re-renders.
 _SENTINEL = 7_314_159_265_358
 
@@ -752,7 +754,7 @@ class _Exporter:
         for agg in aggregates:
             readers.append(self._aggregate_reader(ds, agg))
         readers += [self._field_reader(ds, leaf) for leaf in _window_key_leaves(key)]
-        portable = not any(a.agg == "count_distinct_approx" for a in aggregates) and not any(
+        portable = not any(a.agg in _DIALECT_ONLY_AGGREGATIONS for a in aggregates) and not any(
             isinstance(k, TimeTruncKey) and isinstance(k.granularity, CustomGranularity) for k in walk_value_keys(key))
         scoped = len(set(readers)) == 1 and readers[0] not in self.fixed
         try:

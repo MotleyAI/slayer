@@ -173,8 +173,7 @@ class TestMedianPercentilePerDialect:
         gen = SQLGenerator(dialect="clickhouse")
         inner = sqlglot.parse_one("amount", dialect="clickhouse")
         sql = gen._build_median(inner).sql(dialect="clickhouse")
-        # ClickHouse has native median(); sqlglot transpiles to its parametric form.
-        assert sql == "quantile(0.5)(amount)"
+        assert "quantileExactInclusive(0.5)(amount)" in sql
 
     def test_build_median_duckdb(self) -> None:
         gen = SQLGenerator(dialect="duckdb")
@@ -198,15 +197,14 @@ class TestMedianPercentilePerDialect:
         sql = await orders_agg_sql("percentile(orders.amount, p=0.5)", dialect="sqlite")
         assert "PERCENTILE_CONT(orders.amount, 0.5)" in sql
 
-    async def test_build_percentile_clickhouse_emits_quantile(self) -> None:
+    async def test_build_percentile_clickhouse_emits_quantile_exact_inclusive(self) -> None:
         sql = await orders_agg_sql("percentile(orders.amount, p=0.75)", dialect="clickhouse")
-        # ClickHouse parametric aggregate syntax.
-        assert "quantile(0.75)(orders.amount)" in sql
+        assert "quantileExactInclusive(0.75)(orders.amount)" in sql
 
     @pytest.mark.parametrize("p", ["0.05", "0.25", "0.5", "0.95"])
     async def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
         sql = await orders_agg_sql(f"percentile(orders.amount, p={p})", dialect="clickhouse")
-        assert f"quantile({p})(orders.amount)" in sql
+        assert f"quantileExactInclusive({p})(orders.amount)" in sql
 
     async def test_build_percentile_duckdb(self) -> None:
         sql = await orders_agg_sql("percentile(orders.amount, p=0.5)", dialect="duckdb")

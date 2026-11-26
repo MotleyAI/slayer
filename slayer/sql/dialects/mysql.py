@@ -57,7 +57,7 @@ from slayer.sql.dialects.base import (
     iso_text,
     zone_name,
 )
-from slayer.sql.dialects._ordered_set_split import interpolated_percentile, split_percentile_selects
+from slayer.sql.dialects._ordered_set_split import ranked_percentiles, split_percentile_selects
 from slayer.sql.dialects.patterns import ICU, RegexFlavour
 from slayer.sql.dialects.reflection import (
     ResultColumnType,
@@ -408,7 +408,7 @@ class MysqlDialect(SqlDialect):
 
         sqlglot's emulation inlines an aliased projection, which ``ONLY_FULL_GROUP_BY`` can fail to match.
         """
-        statement = split_percentile_selects(statement.copy(), columns=interpolated_percentile)
+        statement = split_percentile_selects(statement.copy(), columns=ranked_percentiles)
         for select in statement.find_all(exp.Select):
             order = select.args.get("order")
             if order is not None:

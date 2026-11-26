@@ -960,6 +960,8 @@ class SqlDialect(BaseModel):
 
     # Oracle/T-SQL name the call: sqlglot mis-spells theirs.
     approx_count_distinct_native: bool = False
+    # A native approximate percentile taking any fraction (``APPROX_PERCENTILE`` / ``APPROX_QUANTILE``).
+    approx_percentile_native: bool = False
     approx_count_distinct_anonymous_name: str | None = None
 
     # A rejected ``statement_timeout_sql`` is rolled back and reported instead of raised.
@@ -1771,9 +1773,14 @@ class SqlDialect(BaseModel):
             args = [self.avg_input(args[0], input_type=input_type), *args[1:]]
         return _WINDOW_CALLS[function](args)
 
+    def fractional_avg(self, input_type: Optional[DataType]) -> bool:
+        """Whether ``AVG`` over ``input_type`` needs its input cast to be a full-precision fraction; a DOUBLE input
+        already is one (an exact decimal keeps its precision)."""
+        return self.integer_avg and kind_of(input_type) is not TypeKind.DOUBLE
+
     def avg_input(self, value: Expression, *, input_type: Optional[DataType]) -> Expression:
-        """``value`` as ``AVG``'s input; a DOUBLE input is already fractional (an exact decimal keeps its precision)."""
-        if not self.integer_avg or kind_of(input_type) is TypeKind.DOUBLE:
+        """``value`` as ``AVG``'s input."""
+        if not self.fractional_avg(input_type):
             return value
         return exp.Cast(this=value, to=exp.DataType.build(self.avg_input_type))
 
@@ -2160,12 +2167,12 @@ class SqlDialect(BaseModel):
         """The source time column as compared in a trailing-window frame."""
         return expr
 
-    def build_median(self, inner: Expression) -> Expression:
+    def build_median(self, inner: Expression, *, input_type: Optional[DataType] = None) -> Expression:
         """``PERCENTILE_CONT(0.5)``."""
-        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner)
+        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner, input_type=input_type)
 
     def build_percentile(
-        self, p: Expression, col_expr: Expression,
+        self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,  # NOSONAR(S1172) — hook parameter dialect overrides read
     ) -> Expression:
         """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)``."""
         return exp.WithinGroup(
@@ -2175,6 +2182,26 @@ class SqlDialect(BaseModel):
                 nulls_first=self.native_nulls_first(descending=False),
             )]),
         )
+
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],  # NOSONAR(S1172) — hook parameter dialect overrides read
+    ) -> Expression:
+        """``PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)``."""
+        return exp.WithinGroup(
+            this=exp.PercentileDisc(this=p.copy()),
+            expression=exp.Order(expressions=[exp.Ordered(
+                this=col_expr.copy(),
+                nulls_first=self.native_nulls_first(descending=False),
+            )]),
+        )
+
+    def build_percentile_approx(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType] = None,
+    ) -> Expression:
+        """The native approximate percentile, else the exact one."""
+        if self.approx_percentile_native:
+            return exp.ApproxQuantile(this=col_expr.copy(), quantile=p.copy())
+        return self.build_percentile(p=p, col_expr=col_expr, input_type=input_type)
 
     def build_approx_count_distinct(self, col_expr: Expression) -> Expression:
         """Approximate distinct; the exact ``COUNT(DISTINCT col)`` unless the dialect has a native one."""

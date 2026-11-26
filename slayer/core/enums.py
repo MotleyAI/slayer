@@ -397,9 +397,10 @@ ObjectKind = Literal["table", "view", "materialized_view"]
 BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "min", "max",
     "count", "count_distinct", "count_distinct_approx",
+    "sum_distinct", "avg_distinct",
     "first", "last",
     "weighted_avg",
-    "median", "percentile",
+    "median", "percentile", "percentile_disc", "percentile_approx",
     "stddev_samp", "stddev_pop",
     "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
@@ -446,7 +447,7 @@ def builtin_empty_value(aggregation: str) -> Optional[int]:
     return 0 if aggregation in INTEGER_AGGREGATIONS else None
 # Result is a float in the SAME units as the source (display format inherited).
 FLOAT_SOURCE_UNIT_AGGREGATIONS: frozenset[str] = frozenset({
-    "avg", "weighted_avg", "median", "percentile",
+    "avg", "avg_distinct", "weighted_avg", "median", "percentile", "percentile_approx",
     "stddev_samp", "stddev_pop",
 })
 # Result is a float in different units (dimensionless / squared / product), so it
@@ -456,8 +457,12 @@ FLOAT_PLAIN_AGGREGATIONS: frozenset[str] = frozenset({
 })
 # Result preserves the source field's type AND format.
 PRESERVING_AGGREGATIONS: frozenset[str] = frozenset({
-    "sum", "min", "max", "first", "last",
+    "sum", "sum_distinct", "min", "max", "first", "last", "percentile_disc",
 })
+# Sums: a boolean input gives an integer count.
+SUM_AGGREGATIONS: frozenset[str] = frozenset({"sum", "sum_distinct"})
+# Result is one of the input values, so it keeps the input's type (temporal, text or boolean).
+OBSERVED_VALUE_AGGREGATIONS: frozenset[str] = frozenset({"min", "max", "first", "last", "percentile_disc"})
 
 
 class AggregationValueClass(StrEnum):
@@ -485,7 +490,7 @@ def classify_aggregation(
         return AggregationValueClass.COUNT
     if aggregation in LIST_AGGREGATIONS:
         return AggregationValueClass.LIST
-    if source_type is DataType.BOOLEAN and aggregation == "sum":
+    if source_type is DataType.BOOLEAN and aggregation in SUM_AGGREGATIONS:
         return AggregationValueClass.COUNT
     if aggregation in FLOAT_SOURCE_UNIT_AGGREGATIONS:
         return AggregationValueClass.FLOAT_SOURCE_UNITS
@@ -501,6 +506,8 @@ AGGREGATION_ALIASES: dict[str, str] = {
     # Approximate-distinct spellings agents / dbt-to-cube emit.
     "approx_count_distinct": "count_distinct_approx",
     "countdistinctapprox": "count_distinct_approx",  # matches "countDistinctApprox" lowercased
+    "approx_percentile": "percentile_approx",
+    "approx_quantile": "percentile_approx",  # DuckDB
     "stddev": "stddev_samp",
     "var": "var_samp",
     "variance": "var_samp",
@@ -537,22 +544,27 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
 # Declared parameter order for built-in parametric aggregations: positional
 # call values fold onto these names at binding (`percentile(x, 0.9)` ≡ `p=0.9`).
 # first/last are absent on purpose — their positional arg is the ranking field.
+# Percentiles: ``p`` is one numeric literal in [0, 1].
+PERCENTILE_AGGREGATIONS: frozenset[str] = frozenset({"percentile", "percentile_disc", "percentile_approx"})
+
 BUILTIN_AGGREGATION_PARAM_ORDER: dict[str, list[str]] = {
     "percentile": ["p"],
+    "percentile_disc": ["p"],
+    "percentile_approx": ["p"],
     **BUILTIN_AGGREGATION_REQUIRED_PARAMS,
 }
 
 # Rejected at binding on non-numeric metrics; min/max/count*/first/last
 # work on any type and are deliberately absent.
 NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
-    "sum", "avg", "median", "weighted_avg", "percentile",
+    "sum", "sum_distinct", "avg", "avg_distinct", "median", "weighted_avg", "percentile", "percentile_approx",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
 })
 
 # Aggregations that read a boolean input as its integer (true 1, false 0); min / max
 # convert the result back to BOOLEAN.
-BOOLEAN_RESTORED_AGGREGATIONS: frozenset[str] = frozenset({"min", "max"})
+BOOLEAN_RESTORED_AGGREGATIONS: frozenset[str] = frozenset({"min", "max", "percentile_disc"})
 BOOLEAN_LOWERED_AGGREGATIONS: frozenset[str] = NUMERIC_ONLY_AGGREGATIONS | BOOLEAN_RESTORED_AGGREGATIONS
 
 
@@ -560,12 +572,13 @@ BOOLEAN_LOWERED_AGGREGATIONS: frozenset[str] = NUMERIC_ONLY_AGGREGATIONS | BOOLE
 # ``allowed_aggregations``.
 _NUMERIC_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
-    "median", "weighted_avg", "percentile", "first", "last",
+    "sum_distinct", "avg_distinct", "median", "weighted_avg", "percentile", "percentile_disc", "percentile_approx",
+    "first", "last",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop", "collect",
 })
 _ORDERED_AGGREGATIONS: frozenset[str] = frozenset({
-    "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max", "collect",
+    "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max", "percentile_disc", "collect",
 })
 
 _AGGREGATIONS_BY_KIND: dict[TypeKind, frozenset[str]] = {

@@ -23,7 +23,8 @@ from slayer.sql.render.parse import parse_expression, parse_query, parse_table
 
 Typed = tuple[DataType, DataType | None]
 
-_NUMERIC_AGGS = frozenset({"sum", "avg", "average", "median", "percentile", "stddev", "variance"})
+_NUMERIC_AGGS = frozenset({"sum", "sum_distinct", "avg", "avg_distinct", "average", "median", "percentile",
+                           "percentile_approx", "stddev", "variance"})
 _COUNT_AGGS = frozenset({"count", "count_distinct", "count_distinct_approx"})
 
 

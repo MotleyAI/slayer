@@ -46,9 +46,11 @@ from slayer.core.enums import (
     LIST_AGGREGATIONS,
     NUMERIC_DATATYPES,
     NUMERIC_ONLY_AGGREGATIONS,
+    OBSERVED_VALUE_AGGREGATIONS,
     RANKED_AGGREGATIONS,
     RANK_FAMILY_TRANSFORMS,
     SUB_DAY_GRANULARITIES,
+    SUM_AGGREGATIONS,
     TEMPORAL_DATATYPES,
     TimeGranularity,
     TypeKind,
@@ -1647,8 +1649,6 @@ def _joined_known_types(a: DataType, b: DataType) -> Optional[DataType]:
 
 
 TEMPORAL_TYPES = TEMPORAL_DATATYPES
-# Aggregations whose value is one of their inputs, so they keep a temporal type.
-_TEMPORAL_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 # Scalars returning one of their value arguments: name → value-argument positions (None = all).
 _VALUE_ARG_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyType({
     "coalesce": None, "ifnull": None, "nullif": None, "greatest": None, "least": None,
@@ -1728,7 +1728,7 @@ def _derived_temporal_type(
         argument = _window_argument(key)
         return None if argument is None or key.function == "sum" else temporal_type(argument, field_type=field_type)
     if isinstance(key, AggregateKey):
-        keeps = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
+        keeps = key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS
         return temporal_type(key.source, field_type=field_type) if keeps else None
     return temporal_type(key.input, field_type=field_type) if key.op in _VALUE_PRESERVING_TRANSFORMS else None
 
@@ -1763,8 +1763,6 @@ def _scalar_temporal_type(key: ScalarCallKey, *, field_type: FieldTypeFn) -> Opt
     return stamps.pop() if len(stamps) == 1 else DataType.DATETIME
 
 
-# Aggregations whose value is one of their (boolean) inputs.
-_BOOLEAN_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 # Scalars returning one of their arguments, keyed to the returnable positions (None = all).
 _BOOLEAN_BRANCH_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyType({
     "coalesce": None, "ifnull": None, "greatest": None, "least": None, "nullif": (0,), "iif": (1, 2),
@@ -1780,7 +1778,7 @@ def boolean_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     if is_boolean_shaped(cast("ValueKey", key)):
         return True
     if isinstance(key, AggregateKey):
-        return key.agg.lower() in _BOOLEAN_PRESERVING_AGGS and boolean_valued(key.source, field_type=field_type)
+        return key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS and boolean_valued(key.source, field_type=field_type)
     if isinstance(key, WindowKey):
         argument = _window_argument(key)
         return argument is not None and key.function != "sum" and boolean_valued(argument, field_type=field_type)
@@ -1846,7 +1844,7 @@ def numeric_valued(key: object, *, field_type: FieldTypeFn) -> bool:
         agg = key.agg.lower()
         if agg in INTEGER_AGGREGATIONS or agg in NUMERIC_ONLY_AGGREGATIONS:
             return True
-        return agg in _BOOLEAN_PRESERVING_AGGS and numeric_valued(key.source, field_type=field_type)
+        return agg in OBSERVED_VALUE_AGGREGATIONS and numeric_valued(key.source, field_type=field_type)
     if isinstance(key, TransformKey):
         return key.op in _NUMBER_RESULT_TRANSFORMS or numeric_valued(key.input, field_type=field_type)
     if isinstance(key, WindowKey):
@@ -1865,9 +1863,6 @@ def _scalar_numeric_valued(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bo
     branches = [key.args[i] for i in value_arg_positions(key.name, len(key.args)) if not _is_null_arg(key.args[i])]
     numbers = [numeric_valued(a, field_type=field_type) for a in branches]
     return any(numbers) and all(n or boolean_valued(a, field_type=field_type) for a, n in zip(branches, numbers))
-
-
-_INTEGER_RESULT_AGGS = frozenset({"count", "count_distinct", "count_distinct_approx"})
 
 
 def integer_valued(key: object, *, field_type: FieldTypeFn) -> bool:
@@ -1922,8 +1917,9 @@ def _not_plain_digits(value: object) -> bool:
 
 def _aggregate_integer_valued(key: AggregateKey, *, field_type: FieldTypeFn) -> bool:
     agg = key.agg.lower()
-    return agg in _INTEGER_RESULT_AGGS or (
-        agg in ("sum", "min", "max", "first", "last") and integer_valued(key.source, field_type=field_type)
+    return agg in INTEGER_AGGREGATIONS or (
+        (agg in SUM_AGGREGATIONS or agg in OBSERVED_VALUE_AGGREGATIONS)
+        and integer_valued(key.source, field_type=field_type)
     )
 
 

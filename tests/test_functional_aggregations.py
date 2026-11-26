@@ -217,9 +217,9 @@ class TestFunctionalParseErrors:
         with pytest.raises(UnknownFunctionError):
             bind_expr(parsed, scope=scope, bundle=bundle)
 
-    def test_sql_distinct_keyword_outside_count_rejected(self) -> None:
-        with pytest.raises(ValueError, match=r"count\(distinct x\)"):
-            parse_expr("sum(distinct user_id)")
+    def test_sql_distinct_keyword_outside_the_accepted_forms_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"(?i)sum\(distinct"):
+            parse_expr("stddev(distinct user_id)")
 
 
 # ===========================================================================

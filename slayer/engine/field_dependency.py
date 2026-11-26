@@ -45,9 +45,12 @@ from slayer.core.relationship_search import unreachable_target
 from slayer.core.relationship_walker import OrientedRelationship, provably_to_one, walk, walk_miss, walk_terminal
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.deprecation import outside_stacklevel
-from slayer.core.syntax import DottedRef, Ref, drop_root_hop, parse_template, walk_parsed
+from slayer.core.enums import normalize_aggregation_name
+from slayer.core.models import aggregation_definition, builtin_semantics
+from slayer.core.syntax import AggCall, DottedRef, Ref, drop_root_hop, parse_template, walk_parsed
 from slayer.engine.elaborate_env import validate_dataset_filter
 from slayer.engine.cardinality.relationship_safety import provably_fans
+from slayer.engine.param_binding import check_percentile_fraction
 from slayer.sql.definitions import qualified_siblings, sibling_names
 from slayer.sql.field_expansion import (
     is_trivial_base,
@@ -745,6 +748,45 @@ def check_field_agg(dataset: SlayerDataset) -> None:
         text = portable_text(field.expression)
         if text is not None and calls_agg(text):
             raise AggInFieldError(field=field.name)
+
+
+def check_metric_fractions(*, dataset: SlayerDataset, peers: dict[str, SlayerDataset]) -> None:
+    """Refuse a metric calling a built-in percentile with an invalid ``p`` (``AggregationArgumentError``); the
+    aggregated source's owner decides whether the call is built-in."""
+    datasets = {**peers, dataset.name: dataset}
+    for node in _metric_aggregates(dataset):
+        owner = _aggregation_owner(node.source, host=dataset, datasets=datasets)
+        if owner is not None and builtin_semantics(aggregation_definition(owner=owner, agg=node.agg)):
+            check_percentile_fraction(agg=normalize_aggregation_name(node.agg), args=node.args, kwargs=node.kwargs)
+
+
+def _metric_aggregates(dataset: SlayerDataset) -> Iterator[AggCall]:
+    """The aggregate calls in ``dataset``'s Mode-B metrics; an unparseable metric is left to binding."""
+    for metric in dataset.metrics:
+        text = portable_text(metric.expression)
+        try:
+            parsed = parse_template(text) if text is not None else None
+        except Exception:  # noqa: BLE001 — binding reports an unparseable metric
+            continue
+        yield from (n for n in walk_parsed(parsed) if isinstance(n, AggCall)) if parsed is not None else ()
+
+
+def _aggregation_owner(
+    source: object, *, host: SlayerDataset, datasets: dict[str, SlayerDataset],
+) -> SlayerDataset | None:
+    """The dataset declaring ``source``'s aggregation; ``None`` when its path does not resolve."""
+    if not isinstance(source, DottedRef):
+        return host
+    quals = source.parts[:-1]
+    path = _hop_path(quals=quals, host=host)
+    if not path:
+        return host
+    quoted = source.quoted_parts[:-1][len(quals) - len(path):] if source.quoted_parts else ()
+    try:
+        found = walk_terminal(root=host, path=path, datasets_by_name=datasets, quoted=quoted)
+    except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
+        return None
+    return None if found is None else found[0]
 
 
 def check_evaluated_metrics(

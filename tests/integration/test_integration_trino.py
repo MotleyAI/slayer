@@ -61,6 +61,7 @@ from tests._dev2137_fixtures import assignments_dataset, assignments_statements,
 from tests._engine_helpers import disposable_engine
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
+from tests.integration import _dev2458_matrix as dev2458
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -578,6 +579,22 @@ class TestTrinoMedianPercentile:
         )
         assert dry.sql is not None
         assert "APPROX_PERCENTILE" not in dry.sql.upper()
+
+
+@pytest.fixture(scope="module")
+def _trino_dev2458(trino_container, tmp_path_factory):
+    with _seeded_schema(trino_container, dev2458.statements(dialect="trino")) as schema:
+        ds = _ds_config(trino_container, schema)
+        yield _storage(str(tmp_path_factory.mktemp("trino_dev2458")), ds, dev2458.datasets(data_source=_DS))
+
+
+@pytest.mark.integration
+class TestTrinoDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles — the ordered-set split's discrete pick and native approx_percentile."""
+
+    @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_types], ids=lambda c: c.__name__)
+    async def test_matrix(self, _trino_dev2458, check) -> None:
+        await dev2458.run_check(check, storage=_trino_dev2458)
 
 
 # ---------------------------------------------------------------------------
