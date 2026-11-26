@@ -1451,7 +1451,10 @@ def _framed_leaves(key: _RerootableT, *, token: str) -> _RerootableT:
         return key
     if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
         return key if is_framed_path(key.path) else cast(_RerootableT, key.model_copy(update={"path": (token, *key.path)}))
-    return cast(_RerootableT, key.map_children(lambda c: _framed_leaves(c, token=token)))
+    mapped = key.map_children(lambda c: _framed_leaves(c, token=token))
+    if isinstance(mapped, WindowKey) and mapped.anchor is not None and not is_framed_path(mapped.anchor):
+        mapped = mapped.model_copy(update={"anchor": (token, *mapped.anchor)})
+    return cast(_RerootableT, mapped)
 
 
 def _unanchored_leaves(key: _RerootableT) -> _RerootableT:
@@ -1515,7 +1518,10 @@ def compose_frame(
         }))
     if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
         return _composed_grain(key, frame=frame, host_path=host_path)
-    return cast(_RerootableT, key.map_children(lambda c: compose_frame(c, frame=frame, host_path=host_path)))
+    mapped = key.map_children(lambda c: compose_frame(c, frame=frame, host_path=host_path))
+    if isinstance(mapped, WindowKey) and mapped.row_level and mapped.anchor is not None:
+        mapped = mapped.model_copy(update={"anchor": (*host_path(), *mapped.anchor)})
+    return cast(_RerootableT, mapped)
 
 
 def _compose_nested(key: _RerootableT, *, frame: str, host_path: Callable[[], Tuple[str, ...]]) -> _RerootableT:
@@ -2216,7 +2222,10 @@ def _window_value_type(
     if key.function in _WINDOW_FRACTION:
         return DataType.FLOAT
     argument = _window_argument(key)
-    return None if argument is None else value_type(argument, field_type=field_type, aggregate_type=aggregate_type)
+    if argument is None:
+        return None
+    argument_type = value_type(argument, field_type=field_type, aggregate_type=aggregate_type)
+    return DataType.INTEGER if key.function == "sum" and argument_type is DataType.BOOLEAN else argument_type
 
 
 def _row_value_type(

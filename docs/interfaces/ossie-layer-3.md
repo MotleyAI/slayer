@@ -88,7 +88,7 @@ A refusal is an `OssieQueryError` (a `SlayerError`) whose `code` is the first of
 | 16 | `E_UNSUPPORTED_FILTER_PATH` | a metric, or the anchor, does not reach the filter's dataset |
 | 17 | `E_AMBIGUOUS_PATH` | two paths lead where the lowering joins, or several datasets qualify as the anchor |
 
-A window function is refused only where these codes say: in the filter (7) and in a model-scoped metric (11); a windowed field and a dataset-scoped windowed metric evaluate.
+Of these codes, a window function is refused in the filter (7) and in a model-scoped metric (11); a windowed field and a dataset-scoped windowed metric evaluate unless a key is off the operand grain or the database cannot window the function, which raise `WindowFunctionError` ([database support](../database-support.md#window-functions)).
 
 Paths follow Ossie steps: from a relationship's many side to its one side. A semantic-model document's relationship
 steps from its `from` to its `to`; a SLayer relationship steps by its cardinality, else by the keys it joins.

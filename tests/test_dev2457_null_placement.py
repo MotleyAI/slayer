@@ -347,6 +347,12 @@ async def test_a_placement_the_database_cannot_give_is_refused_on_mysql():
     assert "mysql" in str(exc.value).lower()
 
 
+async def test_a_range_offset_frame_a_ranking_function_ignores_is_not_refused_on_mysql():
+    sql = await _emit("mysql", "RANK() OVER (ORDER BY scores.score RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)")
+    (keys,) = _orderings(sql, dialect="mysql", function=exp.Rank)
+    assert _is_null_key(keys[0], item=keys[1]), sql
+
+
 async def test_a_placement_the_database_cannot_give_is_refused_mysql_compiles_nulls_first():
     sql = await _emit("mysql", RANGE_SUM.format(nulls=" NULLS FIRST"))
     window = next(w for w in sqlglot.parse_one(sql, dialect="mysql").find_all(exp.Window) if isinstance(w.this, exp.Sum))

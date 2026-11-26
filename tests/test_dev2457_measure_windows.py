@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.errors import IllegalWindowInFilterError, QueryTypeError
+from slayer.core.errors import IllegalWindowInFilterError, ModelMetricReferenceError, QueryTypeError
 from slayer.core.models import DatasetMetric
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev2243_fixtures import DS, dataset, document_engine, document_text, field, metric, relationship
@@ -174,6 +174,23 @@ class TestModelScopedMetric:
         assert "region_rank" in text
         assert _cells(resp, value="region_rank") == RANK_OF_REGION
 
+    @pytest.mark.parametrize("door", ["document", "edit"])
+    async def test_a_field_partition_key_is_saved_and_evaluated(self, backend: str, door: str) -> None:
+        windowed = metric("region_total", f"SUM(SUM(orders.amount)) OVER (PARTITION BY {REGION})")
+        stored = _document(windowed) if door == "document" else _document(metric("revenue", "SUM(orders.amount)"))
+        async with document_engine(backend=backend, documents=(stored,), tables=[ORDERS, CUSTOMERS]) as engine:
+            if door == "edit":
+                await engine.storage.edit_semantic_model("sales", data_source=DS, metrics=[windowed])
+            resp = await run(engine, {"dimensions": [{"field": REGION, "alias": "d"}], "metrics": ["region_total"]})
+        assert _cells(resp, value="region_total") == {"EU": 60, "US": 150, "AS": 70}
+
+    async def test_a_field_read_outside_an_aggregate_or_window_key_is_still_refused(self, backend: str) -> None:
+        async with document_engine(backend=backend, documents=(_document(metric("revenue", "SUM(orders.amount)")),),
+                                   tables=[ORDERS, CUSTOMERS]) as engine:
+            bad = [metric("bad", "SUM(orders.amount) + orders.amount")]
+            with pytest.raises(ModelMetricReferenceError, match="only inside an aggregate"):
+                await engine.storage.edit_semantic_model("sales", data_source=DS, metrics=bad)
+
 
 class TestInvariance:
     async def test_a_sibling_measure_does_not_change_the_window(self, engine: SlayerQueryEngine) -> None:
@@ -203,3 +220,16 @@ class TestInvariance:
             assert _cells(resp, value="rk") == RANK_OF_CUSTOMER
         assert _cells(of_customers) == {**RUNNING_OF_CUSTOMER, 4: None}
         assert _cells(of_customers, value="rk") == {**RANK_OF_CUSTOMER, 4: None}
+
+
+async def test_a_shifted_window_shifts_its_series_like_its_transform_twin(backend: str) -> None:
+    window = "RANK() OVER (ORDER BY SUM(orders.amount) DESC)"
+    twin = "rank(sum(orders.amount), direction='desc')"
+    async with window_engine(backend) as eng:
+        resp = await run(eng, {
+            "population": "orders", "filter": "orders.ordered_at >= '2024-01-02'",
+            "time_dimensions": [{"field": DAY, "granularity": "day", "alias": "d"}],
+            "metrics": [{"metric": f"time_shift({window}, -1)", "alias": "w"},
+                        {"metric": f"time_shift({twin}, -1)", "alias": "t"}]})
+    got = {day(r["d"]): (r["w"], r["t"]) for r in resp.data}
+    assert got == {"2024-01-02": (None, None), "2024-01-03": (2, 2)}

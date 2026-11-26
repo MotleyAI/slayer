@@ -9,7 +9,7 @@ from typing import Any, Callable, List, Optional, Sequence
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from slayer.core.keys import StarKey, WindowFrameSpec, WindowKey
+from slayer.core.keys import FieldTypeFn, StarKey, WindowFrameSpec, WindowKey, value_type
 from slayer.core.refs import key_display
 from slayer.sql.dialects.base import SqlDialect
 
@@ -46,8 +46,9 @@ def window_order_items(
     key: WindowKey, *, values: List[Expression], dialect: SqlDialect, labels: Optional[Sequence[str]] = None,
 ) -> List[Expression]:
     """``key``'s order items with their NULL placement stated through ``dialect``; ``labels`` name them in errors."""
-    range_offset = key.frame is not None and key.frame.unit == "range" and any(
-        b is not None and b[1] is not None for b in (key.frame.start, key.frame.end))
+    frame = key.frame if frame_changes_value(key) else None
+    range_offset = frame is not None and frame.unit == "range" and any(
+        b is not None and b[1] is not None for b in (frame.start, frame.end))
     out: List[Expression] = []
     names = list(labels) if labels is not None else [key_display(item) for item in key.order]
     for value, name, desc, nulls_first in zip(values, names, key.descending, key.nulls_first, strict=True):
@@ -58,15 +59,17 @@ def window_order_items(
 
 def render_window(
     key: WindowKey, *, part: Callable[[Any], Expression], dialect: SqlDialect, labels: Optional[Sequence[str]] = None,
+    field_type: Optional[FieldTypeFn] = None,
 ) -> Expression:
-    """``key`` as ``function(args) OVER (PARTITION BY … ORDER BY … frame)``; each operand rendered by ``part``,
-    ``labels`` naming its order items in errors."""
+    """``key`` as ``function(args) OVER (PARTITION BY … ORDER BY … frame)``; each operand rendered by ``part`` and typed
+    by ``field_type``, ``labels`` naming its order items in errors."""
     args = [exp.Star() if isinstance(a, StarKey) and key.function == "count" else part(a) for a in key.args]
     if key.filter is not None:
         condition = part(key.filter)
         value = exp.Literal.number(1) if isinstance(args[0], exp.Star) else args[0]
         args[0] = exp.Case(ifs=[exp.If(this=condition, true=value)])
-    call = dialect.window_call(key, args)
+    input_type = value_type(key.args[0], field_type=field_type) if key.args and field_type is not None else None
+    call = dialect.window_call(key, args, input_type=input_type)
     order = window_order_items(key, values=[part(o) for o in key.order], dialect=dialect, labels=labels)
     window = exp.Window(
         this=call,

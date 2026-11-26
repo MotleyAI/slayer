@@ -726,7 +726,7 @@ def render_row_expression(
         return render_list_set(key=key, part=_part, dialect=dialect, field_type=field_type,
                                field_element=field_element)
     if isinstance(key, WindowKey):
-        return render_window(key, part=_part, dialect=dialect)
+        return render_window(key, part=_part, dialect=dialect, field_type=field_type)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )

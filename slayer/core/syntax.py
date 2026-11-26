@@ -1223,6 +1223,8 @@ def _primary_node(toks: List[Any]) -> Any:
     node = _with_filters(node, items[-1])
     if window is None:
         return node
+    if isinstance(node, AggCall) and node.agg.lower() == "percentile" and not node.args and not node.kwargs:
+        raise _Problem("a windowed percentile takes its fraction: PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x) OVER (…).")
     if window.frame is not None:
         _check_frame(window.frame, order=window.order)
     return WindowCall(function=node, partition=window.partition, order=window.order, frame=window.frame)
@@ -3227,11 +3229,12 @@ def _window_head_text(call: ParsedExpr, *, style: _Style) -> str:
         return _render(call, style=style)
     if call.agg == "percentile":
         p = call.args[0].value if isinstance(call.args[0], NamedArg) else call.args[0]
-        return f"PERCENTILE_CONT({_render(p, style=style)}) WITHIN GROUP (ORDER BY {_render(call.source, style=style)})"
-    if call.agg == "count_distinct":
+        head = f"PERCENTILE_CONT({_render(p, style=style)}) WITHIN GROUP (ORDER BY {_render(call.source, style=style)})"
+    elif call.agg == "count_distinct":
         head = f"COUNT(DISTINCT {_render(call.source, style=style)})"
-        return head if call.filter is None else f"{head} FILTER (WHERE {_render(call.filter, style=style)})"
-    return _canonical_agg_text(call, style=_Style.CANONICAL if style is _Style.LEGACY else style)
+    else:
+        return _canonical_agg_text(call, style=_Style.CANONICAL if style is _Style.LEGACY else style)
+    return head if call.filter is None else f"{head} FILTER (WHERE {_render(call.filter, style=style)})"
 
 
 def _frame_text(frame: WindowFrame) -> str:

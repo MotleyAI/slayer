@@ -141,11 +141,11 @@ class DuckdbDialect(SqlDialect):
         "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
     })
 
-    def window_call(self, key: WindowKey, args: list[Expression]) -> Expression:
+    def window_call(self, key: WindowKey, args: list[Expression], *, input_type: Optional[DataType] = None) -> Expression:
         """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` windows only as ``quantile_cont(x, p)``."""
         if key.function == "percentile_cont":
             return exp.Anonymous(this="quantile_cont", expressions=args)
-        return super().window_call(key, args)
+        return super().window_call(key, args, input_type=input_type)
 
     def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``(v AT TIME ZONE S) AT TIME ZONE Q``; an instant: ``v AT TIME ZONE Q``."""

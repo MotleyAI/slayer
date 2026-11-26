@@ -95,9 +95,7 @@ class _Lifter:
                 field = dataset.get_field(leaf)
                 if field is not None and field.is_physical_reader:
                     return exp.column(exp.to_identifier(field.physical_name, quoted=field.physical_quoted))
-            *quals, last = (*(ref.path or (dataset.name,)), leaf)
-            names = dict(zip(("table", "db", "catalog"), reversed(quals)))
-            return exp.column(last, **names)
+            return _dotted(*(ref.path or (dataset.name,)), leaf)
 
         field_type = dataset_field_type(dataset=dataset, datasets_by_name=self.by_name)
         field_element = dataset_field_element(dataset=dataset, datasets_by_name=self.by_name)
@@ -106,8 +104,18 @@ class _Lifter:
             return render_row_expression(key=k, dialect=self.dialect, resolve_field=resolve, field_type=field_type,
                                          field_element=field_element)
 
-        rendered = render_window(window, part=part, dialect=self.dialect, labels=labels)
+        rendered = render_window(window, part=part, dialect=self.dialect, labels=labels, field_type=field_type)
         return rendered.sql(dialect=self.dialect.sqlglot_name)
+
+
+def _dotted(*parts: str) -> Expression:
+    """``a.b.….z`` as sqlglot parses it: a column of up to four parts, each further part a ``Dot``."""
+    head, tail = parts[:4], parts[4:]
+    *quals, last = head
+    node: Expression = exp.column(last, **dict(zip(("table", "db", "catalog"), reversed(quals))))
+    for part in tail:
+        node = exp.Dot(this=node, expression=exp.to_identifier(part))
+    return node
 
 
 def _filter(bf: BoundFilter, *, lift) -> BoundFilter:

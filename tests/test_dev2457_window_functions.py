@@ -16,12 +16,14 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core import syntax
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.keys import FieldKey, WindowKey, value_type
 from slayer.core.errors import IllegalWindowInFilterError, PositionTypingError, QueryTypeError
-from slayer.core.models import SlayerDataset
+from slayer.core.models import DatasetMetric, DatasetRelationship, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from tests._dev1737_fixtures import TableSpec
 from tests._dev2000_fixtures import DS as ZONED_DS
 from tests._dev2000_fixtures import Table, tz_engine
 from tests._dev2101_fixtures import emit
@@ -32,6 +34,7 @@ from tests._dev2457_fixtures import (
     RN_OF_ID,
     by,
     col,
+    customers_dataset,
     column,
     day,
     floats,
@@ -196,8 +199,9 @@ async def test_a_function_ossie_does_not_window_is_refused(engine, expression, n
     ("SUM(orders.amount) OVER (ORDER BY orders.id ROWS BETWEEN CURRENT ROW AND 1 PRECEDING)", r"(?i)frame"),
     ("SUM(orders.amount) OVER (ORDER BY orders.id, orders.amount RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)",
      r"(?i)\brange\b"),
+    ("percentile(orders.amount) OVER ()", r"(?i)percentile"),
 ], ids=["argument_count", "over_a_column", "ntile_zero", "ntile_not_literal", "negative_lag_offset",
-        "nth_value_zero", "frame_out_of_order", "range_offset_two_keys"])
+        "nth_value_zero", "frame_out_of_order", "range_offset_two_keys", "percentile_without_fraction"])
 async def test_malformed_windows_are_refused(engine, expression, named):
     body = grouped("orders", expression, "sum(orders.amount)")
     with pytest.raises(ValueError, match=named) as exc:
@@ -284,6 +288,29 @@ async def test_a_dotted_star_anchors_as_spelled(engine):
     resp = await run(engine, raw("orders", "COUNT(customers.*) OVER ()", "COUNT(orders.customers.*) OVER ()"))
     assert ints(by(resp)) == {i: 4 for i in range(1, 8)}
     assert ints(by(resp, value="v1")) == {i: 7 for i in range(1, 8)}
+
+
+def _chain() -> tuple[list[SlayerDataset], list[TableSpec]]:
+    """``l1 → l2 → l3 → l4 → l5``: four to-one hops to ``l5.v``."""
+    datasets, tables = [], []
+    for i in range(1, 5):
+        datasets.append(SlayerDataset(name=f"l{i}", data_source="test", sql_table=f"l{i}", fields=[
+            col("id", primary_key=True), col("next_id")], relationships=[DatasetRelationship(
+                to=f"l{i + 1}", from_columns=["next_id"], to_columns=["id"],
+                cardinality=RelationshipCardinality.MANY_TO_ONE)]))
+        rows = [(1, 1), (2, 1), (3, 2), (4, 2)] if i == 1 else [(1, 1), (2, 2)]
+        tables.append(TableSpec(name=f"l{i}", columns=[("id", "INT"), ("next_id", "INT")], rows=rows))
+    datasets.append(SlayerDataset(name="l5", data_source="test", sql_table="l5",
+                                  fields=[col("id", primary_key=True), col("v", DataType.STRING)]))
+    tables.append(TableSpec(name="l5", columns=[("id", "INT"), ("v", "TEXT")], rows=[(1, "x"), (2, "y")]))
+    return datasets, tables
+
+
+async def test_a_window_reading_a_four_hop_field(backend):
+    datasets, tables = _chain()
+    async with window_engine(backend, datasets=datasets, tables=tables) as eng:
+        resp = await run(eng, raw("l1", "ROW_NUMBER() OVER (PARTITION BY l1.l2.l3.l4.l5.v ORDER BY l1.id)"))
+    assert ints(by(resp)) == {1: 1, 2: 2, 3: 1, 4: 2}
 
 
 async def test_a_window_reading_a_to_one_joined_field(engine):
@@ -389,3 +416,36 @@ def test_over_is_not_a_rejected_form():
     assert isinstance(parsed, syntax.WindowCall)
     assert isinstance(parsed.function, syntax.ScalarCall)
     assert parsed.function.name.lower() == "row_number"
+
+
+@pytest.mark.parametrize("text", [
+    "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY orders.amount) FILTER (WHERE orders.region = 'EU') OVER ()",
+    "COUNT(DISTINCT orders.id) FILTER (WHERE orders.amount > 10) OVER ()",
+])
+def test_a_windowed_aggregate_keeps_its_filter_in_canonical_text(text):
+    assert syntax.canonical_metric_text(syntax.parse_expr(text)) == text
+
+
+def test_a_windowed_sum_of_a_boolean_counts_true_rows():
+    flag = FieldKey(leaf="flag")
+    key = WindowKey(function="sum", args=(flag,))
+    assert value_type(key, field_type=lambda _k: DataType.BOOLEAN) is DataType.INTEGER
+
+
+async def test_another_datasets_window_metric_keeps_its_anchor(backend):
+    window = "RANK() OVER (ORDER BY id DESC)"
+    customers = customers_dataset().model_copy(update={"metrics": [
+        DatasetMetric(name="rowwin", expression=window), DatasetMetric(name="maxwin", expression=f"max({window})")]})
+    async with window_engine(backend, datasets=[orders_dataset(), customers]) as eng:
+        rows = await run(eng, raw("orders", "customers.rowwin"))
+        by_tier = await run(eng, {"population": "orders", "dimensions": [{"field": "customers.tier", "alias": "id"}],
+                                  "metrics": [{"metric": "customers.maxwin", "alias": "v0"}]})
+    assert ints(by(rows)) == {1: 4, 2: 4, 3: 3, 4: 3, 5: 2, 6: 2, 7: 4}
+    assert ints(by(by_tier)) == {"gold": 4, "silver": 3}
+
+
+async def test_a_row_window_dimension_beside_metrics_of_two_datasets(engine):
+    resp = await run(engine, {"dimensions": [{"field": "DENSE_RANK() OVER (ORDER BY customers.tier)", "alias": "d"}],
+                              "metrics": [{"metric": "sum(orders.amount)", "alias": "a"},
+                                          {"metric": "count(customers.*)", "alias": "c"}]})
+    assert sorted((int(r["d"]), int(r["a"]), int(r["c"])) for r in resp.data) == [(1, 210, 2), (2, 70, 2)]

@@ -23,7 +23,7 @@ from slayer.core.ossie_validity import agg_calls, columns, is_agg_call, parse_os
 from slayer.core.models import SlayerDataset
 from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.syntax import WindowCall, parse_expr, unwindowable_function, walk_parsed
-from slayer.storage.semantic_models import chain_warning, unevaluable_chain
+from slayer.storage.semantic_models import aggregate_window_key, chain_warning, unevaluable_chain
 
 __all__ = ["DocumentScope", "check_model_metric", "metric_cycle", "metric_references", "visible_model_metrics",
            "warn_broken_model_metrics"]
@@ -114,7 +114,7 @@ def _check_column(column: exp.Column, *, name: str, scope: DocumentScope) -> Non
             reason = f"{column.table!r} is not a dataset"
         raise ModelMetricReferenceError(metric=name, reference=reference, reason=reason)
     if leaf in scope.fields[table]:
-        if not _aggregated(column):
+        if not _aggregated(column) and not aggregate_window_key(column):
             raise ModelMetricReferenceError(metric=name, reference=reference,
                                             reason="a field is read only inside an aggregate")
         return

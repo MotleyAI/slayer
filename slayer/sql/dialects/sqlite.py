@@ -11,6 +11,7 @@ from decimal import ROUND_HALF_UP, Context, Decimal
 from functools import lru_cache
 from urllib.parse import unquote
 
+from fractions import Fraction
 from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, Optional
 
@@ -257,33 +258,40 @@ class _PercentileDiscAgg:
         return s[k]
 
 
-class _OneVarWelford:
-    """Welford ``(n, mean, M2)`` state for the 1-arg stat aggregates; NULLs skipped."""
+class _OneVarMoments:
+    """Exact ``(n, Σx, Σx²)`` state for the 1-arg stat aggregates, NULLs skipped: constant memory, and a row leaving a
+    window frame is removed exactly, whatever its magnitude."""
 
     def __init__(self) -> None:
         self._n: int = 0
-        self._mean: float = 0.0
-        self._m2: float = 0.0
+        self._nonfinite: int = 0
+        self._sum = Fraction(0)
+        self._sum_sq = Fraction(0)
+
+    def _add(self, value, sign: int) -> None:
+        if value is None:
+            return
+        self._n += sign
+        if isinstance(value, float) and not math.isfinite(value):
+            self._nonfinite += sign
+            return
+        x = Fraction(value)
+        self._sum += sign * x
+        self._sum_sq += sign * x * x
 
     def step(self, value) -> None:
-        if value is None:
-            return
-        self._n += 1
-        delta = value - self._mean
-        self._mean += delta / self._n
-        self._m2 += delta * (value - self._mean)
+        self._add(value, 1)
 
     def inverse(self, value) -> None:
-        """Remove ``value`` from the state: the row leaving a window frame."""
-        if value is None:
-            return
-        if self._n <= 1:
-            self._n, self._mean, self._m2 = 0, 0.0, 0.0
-            return
-        self._n -= 1
-        delta = value - self._mean
-        self._mean -= delta / self._n
-        self._m2 = max(0.0, self._m2 - delta * (value - self._mean))  # round-off can cross below zero
+        """Remove ``value``: the row leaving a window frame."""
+        self._add(value, -1)
+
+    @property
+    def _m2(self) -> float:
+        """The sum of squared deviations from the mean, rounded once; NaN beside an infinite or NaN row."""
+        if self._nonfinite:
+            return math.nan
+        return float(self._sum_sq - self._sum * self._sum / self._n) if self._n else 0.0
 
     def finalize(self) -> float | None:
         """Each statistic's result; the state alone has none."""
@@ -294,7 +302,7 @@ class _OneVarWelford:
         return self.finalize()
 
 
-class _StddevSampAgg(_OneVarWelford):
+class _StddevSampAgg(_OneVarMoments):
     """Sample standard deviation. NULL when N <= 1."""
 
     def finalize(self) -> float | None:
@@ -303,7 +311,7 @@ class _StddevSampAgg(_OneVarWelford):
         return math.sqrt(self._m2 / (self._n - 1))
 
 
-class _StddevPopAgg(_OneVarWelford):
+class _StddevPopAgg(_OneVarMoments):
     """Population standard deviation. NULL at N=0; 0 at N=1."""
 
     def finalize(self) -> float | None:
@@ -314,7 +322,7 @@ class _StddevPopAgg(_OneVarWelford):
         return math.sqrt(self._m2 / self._n)
 
 
-class _VarSampAgg(_OneVarWelford):
+class _VarSampAgg(_OneVarMoments):
     """Sample variance. NULL when N <= 1."""
 
     def finalize(self) -> float | None:
@@ -323,7 +331,7 @@ class _VarSampAgg(_OneVarWelford):
         return self._m2 / (self._n - 1)
 
 
-class _VarPopAgg(_OneVarWelford):
+class _VarPopAgg(_OneVarMoments):
     """Population variance. NULL at N=0; 0 at N=1."""
 
     def finalize(self) -> float | None:
@@ -743,7 +751,7 @@ def register_sqlite_udfs(dbapi_connection) -> None:
         else:
             dbapi_connection.create_function(name, narg, fn)
     for name, narg, cls in _AGGREGATE_UDFS:
-        if issubclass(cls, _OneVarWelford):
+        if issubclass(cls, _OneVarMoments):
             dbapi_connection.create_window_function(name, narg, cls)  # also usable under OVER
         else:
             dbapi_connection.create_aggregate(name, narg, cls)

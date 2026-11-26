@@ -18,6 +18,8 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.errors import WindowFunctionError
+from slayer.core.keys import WindowKey
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
@@ -79,7 +81,8 @@ _FIELD_TYPE_NAMES: dict[int, str] = {
 
 
 # snowflake-sqlalchemy has no ``connection_name=`` knob, so this sentinel routes via ``creator=``.
-_CONNECTION_NAME_PREFIX = "snowflake://?connection_name="
+_SCHEME = "snowflake://"
+_CONNECTION_NAME_PREFIX = f"{_SCHEME}?connection_name="
 
 _CONNECTOR_MODULE = "snowflake.connector"
 
@@ -105,7 +108,7 @@ def _validate_unquoted_identifier(*, field: str, value: str) -> str:
 
 def _is_connection_name_sentinel(connection_string: str) -> bool:
     """True iff the URL is the sentinel with ``connection_name`` as its only non-empty param."""
-    if not connection_string.startswith("snowflake://"):
+    if not connection_string.startswith(_SCHEME):
         return False
     try:
         url = _sa_url.make_url(connection_string)
@@ -179,6 +182,20 @@ class SnowflakeDialect(SqlDialect):
     row_number_needs_order: bool = True
     url_scheme: str | None = "snowflake"
     install_extra: str | None = "snowflake"
+
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:
+        """``MEDIAN`` / ``PERCENTILE_CONT`` take only ``PARTITION BY``; an ordered ``LAST_VALUE`` / ``NTH_VALUE`` with no
+        frame states the standard running one (Snowflake's default is the whole partition)."""
+        if key.function in ("median", "percentile_cont") and (key.order or key.frame is not None):
+            raise WindowFunctionError(
+                summary=f"{key.function.upper()} under OVER on Snowflake takes only PARTITION BY, not ORDER BY or a "
+                f"frame.",
+                suggestion="Drop the ORDER BY and frame, or run the query on a database that windows it.",
+            )
+        if key.function in ("last_value", "nth_value") and key.order and key.frame is None:
+            window.set("spec", exp.WindowSpec(kind="RANGE", start="UNBOUNDED", start_side="PRECEDING",
+                                              end="CURRENT ROW"))
+        return window
 
     def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``CONVERT_TIMEZONE(S, Q, v)``; an instant: ``CONVERT_TIMEZONE(Q, v)::TIMESTAMP_NTZ``."""
@@ -407,7 +424,7 @@ class SnowflakeDialect(SqlDialect):
         connection_string: str,
     ) -> sa.Engine | None:
         """Route the sentinel URL through ``creator=``; None for the default engine path."""
-        if connection_string.startswith("snowflake://"):
+        if connection_string.startswith(_SCHEME):
             try:
                 parsed = _sa_url.make_url(connection_string)
             except sa.exc.ArgumentError:
@@ -436,8 +453,8 @@ class SnowflakeDialect(SqlDialect):
             sf = import_driver(_CONNECTOR_MODULE, datasource=datasource, dialect=self)
             return sf.connect(connection_name=name)
 
-        return sa.create_engine("snowflake://", **connection_policy.engine_kwargs(
-            url="snowflake://", dialect=self, datasource=datasource, creator=_create_snowflake_connection,
+        return sa.create_engine(_SCHEME, **connection_policy.engine_kwargs(
+            url=_SCHEME, dialect=self, datasource=datasource, creator=_create_snowflake_connection,
         ))
 
     def deferred_driver_modules(self, connection_string: str) -> tuple[str, ...]:

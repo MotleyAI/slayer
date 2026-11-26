@@ -10,6 +10,9 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import OrderItem, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.dialects.mysql import MysqlDialect
+from slayer.sql.dialects.postgres import PostgresDialect
+from slayer.sql.render.parse import parse_expression
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers_mapped
 
 from tests._dev1965_fixtures import assert_single_top_level_with, cumsum_chain, gen, parse
 from tests._engine_helpers import _engine_generate
@@ -322,3 +325,34 @@ def test_mysql_parsed_variances_keep_mysqls_names() -> None:
     """sqlglot writes VAR_SAMP as VARIANCE, MySQL's population variance, and VAR_POP as VARIANCE_POP, no function."""
     tree = parse("SELECT VAR_SAMP(a), VAR_POP(a) FROM t", dialect="mysql")
     assert MysqlDialect().rewrite_target_ast(tree).sql(dialect="mysql") == "SELECT VAR_SAMP(a), VAR_POP(a) FROM t"
+
+
+def test_mysql_variance_rename_rewrites_its_argument_too() -> None:
+    tree = parse("SELECT VAR_SAMP(TRUNC(a)) FROM t", dialect="postgres")
+    assert MysqlDialect().rewrite_target_ast(tree).sql(dialect="mysql") == "SELECT VAR_SAMP(TRUNCATE(a, 0)) FROM t"
+
+
+@pytest.mark.parametrize(("text", "emitted"), [
+    ("VARIANCE(a)", "VAR_POP(a)"), ("VAR_SAMP(a)", "VAR_SAMP(a)"), ("VAR_POP(a)", "VAR_POP(a)"),
+    ("STD(a)", "STDDEV_POP(a)"), ("STDDEV(a)", "STDDEV_POP(a)"), ("STDDEV_SAMP(a)", "STDDEV_SAMP(a)"),
+    ("t.variance + variance(x)", "t.variance + VAR_POP(x)"), ("'VARIANCE(x)'", "'VARIANCE(x)'"),
+])
+def test_mysql_text_keeps_its_statistics_meaning(text: str, emitted: str) -> None:
+    mysql = MysqlDialect()
+    assert parse_expression(sql=text, target_dialect=mysql, parse_dialect=mysql).sql(dialect="mysql") == emitted
+
+
+@pytest.mark.parametrize(("text", "emitted"), [
+    ("VARIANCE(a)", "VAR_SAMP(a)"), ("STDDEV(a)", "STDDEV_SAMP(a)"), ("VAR_POP(a)", "VAR_POP(a)"),
+    ("STDDEV_POP(a)", "STDDEV_POP(a)"),
+])
+def test_portable_statistics_keep_their_meaning_on_mysql(text: str, emitted: str) -> None:
+    tree = parse_expression(sql=text, target_dialect=MysqlDialect(), parse_dialect=PostgresDialect())
+    assert tree.sql(dialect="mysql") == emitted
+
+
+def test_a_respelled_statistic_maps_back_to_its_source() -> None:
+    text, origin = prequote_reserved_identifiers_mapped("1 + std(a)", dialect="mysql")
+    assert text == "1 + STDDEV_POP(a)"
+    assert len(origin) == len(text)
+    assert [origin[i] for i in (0, 4, text.index("("), text.index("a"))] == [0, 4, 7, 8]

@@ -144,7 +144,7 @@ def _reserved_dot_edit(
 def prequote_reserved_identifiers(sql: str, *, dialect: str) -> str:
     """Quote reserved-word identifiers sitting in QUALIFIER (``word.``) or LEAF
     (``.word``) position so a generated string embedding a bare reserved
-    qualifier/leaf parses.
+    qualifier/leaf parses; MySQL's population ``VARIANCE`` / ``STD`` / ``STDDEV`` are spelled as such.
 
     Token-based (via ``sqlglot.tokenize``) so it is literal/comment/quoted-ident
     safe: a reserved word inside ``'...'`` / ``E'...'`` / ``$$...$$`` / ``--`` /
@@ -170,6 +170,23 @@ def prequote_reserved_identifiers(sql: str, *, dialect: str) -> str:
     return prequote_reserved_identifiers_mapped(sql, dialect=dialect)[0]
 
 
+#: MySQL's population statistics by the spellings sqlglot < 30.18 reads as sample ones (DEV-2468 lifts the pin).
+_MYSQL_POPULATION_SPELLINGS = {"variance": "VAR_POP", "std": "STDDEV_POP", "stddev": "STDDEV_POP"}
+
+
+def _mysql_population_edit(sql: str, toks: list, i: int, dialect: str) -> tuple[int, int, str] | None:
+    """MySQL's ``VARIANCE(`` / ``STD(`` / ``STDDEV(`` respelled as the population call it is."""
+    tok = toks[i]
+    spelled = _MYSQL_POPULATION_SPELLINGS.get(tok.text.lower()) if dialect == "mysql" else None
+    if spelled is None or tok.token_type != TokenType.VAR or sql[tok.start:tok.end + 1] != tok.text:
+        return None
+    after = toks[i + 1] if i + 1 < len(toks) else None
+    before = toks[i - 1] if i else None
+    if after is None or after.token_type != TokenType.L_PAREN or (before is not None and before.token_type == TokenType.DOT):
+        return None
+    return tok.start, tok.end, spelled
+
+
 def prequote_reserved_identifiers_mapped(sql: str, *, dialect: str) -> tuple[str, list[int | None]]:
     """:func:`prequote_reserved_identifiers`, with each output character's offset in ``sql`` (``None``: an inserted
     quote)."""
@@ -177,17 +194,20 @@ def prequote_reserved_identifiers_mapped(sql: str, *, dialect: str) -> tuple[str
         toks = sqlglot.tokenize(sql, dialect=dialect)
     except Exception:  # unsupported lexer construct — leave unchanged
         toks = []
-    edits = [
-        edit
-        for i in range(len(toks))
-        if (edit := _reserved_dot_edit(sql, toks, i, dialect)) is not None
-    ]
+    edits: list[tuple[int, int, str, list[int | None]]] = []
+    for i in range(len(toks)):
+        if (quote := _reserved_dot_edit(sql, toks, i, dialect)) is not None:
+            start, end, replacement = quote
+            edits.append((start, end, replacement, [None, *range(start, end + 1), None]))
+        elif (spelling := _mysql_population_edit(sql, toks, i, dialect)) is not None:
+            start, end, replacement = spelling
+            edits.append((start, end, replacement, [min(start + k, end) for k in range(len(replacement))]))
     out: list[str] = []
     origin: list[int | None] = []
     pos = 0
-    for start, end, replacement in sorted(edits):
+    for start, end, replacement, mapped in sorted(edits):
         out += [sql[pos:start], replacement]
-        origin += [*range(pos, start), None, *range(start, end + 1), None]
+        origin += [*range(pos, start), *mapped]
         pos = end + 1
     out.append(sql[pos:])
     origin += range(pos, len(sql))

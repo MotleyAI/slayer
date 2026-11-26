@@ -257,14 +257,20 @@ _RUNNING = ("unbounded preceding", None), ("current row", None)
 
 
 class _NthValueParts:
-    """The window calls ``_nth_value`` composes, each over ``key``'s partition and order."""
+    """The window calls ``_nth_value`` composes over ``key``'s partition: those reading row positions all order by one
+    ``ROW_NUMBER()`` of ``key``'s order, so tied rows sit in the same order in each (SQL Server orders ties freely)."""
 
     def __init__(self, key: WindowKey) -> None:
         self.x = key.args[0]
         self.bare = key.model_copy(update={"frame": None, "args": ()})
+        self.rn = self.bare.model_copy(update={"function": "row_number"})
+        # ASC with NULLS FIRST is SQL Server's own placement, so no NULL key is added; ``rn`` is never NULL.
+        self.by_rn = self.bare.model_copy(update={"order": (self.rn,), "descending": (False,), "nulls_first": (True,)})
 
-    def window(self, function: str, *args: ValueKey, frame: WindowFrameSpec | None = None) -> WindowKey:
-        return self.bare.model_copy(update={"function": function, "args": args, "frame": frame})
+    def window(self, function: str, *args: ValueKey, frame: WindowFrameSpec | None = None,
+               by_position: bool = True) -> WindowKey:
+        base = self.by_rn if by_position else self.bare
+        return base.model_copy(update={"function": function, "args": args, "frame": frame})
 
     def lead(self, offset: int) -> ValueKey:
         return self.x if offset == 0 else self.window("lead", self.x, LiteralKey(value=Decimal(offset)))
@@ -285,7 +291,9 @@ def _nth_value(key: WindowKey) -> ValueKey:
     frame = key.frame
     if frame is None or (frame.start, frame.end) == _RUNNING:
         unit = "range" if frame is None else frame.unit
-        held = parts.window("count", StarKey(), frame=WindowFrameSpec(unit=unit, start=_RUNNING[0], end=_RUNNING[1]))
+        # A RANGE count holds whole peer groups, whatever their inner order.
+        held = parts.window("count", StarKey(), frame=WindowFrameSpec(unit=unit, start=_RUNNING[0], end=_RUNNING[1]),
+                            by_position=unit == "rows")
         nth = parts.window("first_value", parts.lead(position - 1),
                            frame=WindowFrameSpec(unit="rows", start=_RUNNING[0], end=_RUNNING[1]))
         return ScalarCallKey(name="iif", args=(
@@ -293,7 +301,7 @@ def _nth_value(key: WindowKey) -> ValueKey:
     if frame.unit == "rows" and frame.start == ("preceding", Decimal(1)) and frame.end == ("following", Decimal(1)):
         at_start = parts.lead(position - 1) if position <= 2 else LiteralKey(value=None)
         return ScalarCallKey(name="iif", args=(
-            ArithmeticKey(op="=", operands=(parts.window("row_number"), LiteralKey(value=Decimal(1)))),
+            ArithmeticKey(op="=", operands=(parts.rn, LiteralKey(value=Decimal(1)))),
             at_start, parts.later(position)))
     raise WindowFunctionError(
         summary=f"`{key_display(key)}` cannot run on SQL Server: it lacks NTH_VALUE, which SLayer rewrites only over "
@@ -666,7 +674,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if isinstance(node, exp.Substring) and node.args.get("length") is None:
                 node.set("length", exp.Anonymous(this="DATALENGTH", expressions=[node.this.copy()]))
             if isinstance(node, exp.Length):
-                text = exp.Cast(this=node.this.copy(), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
+                # ``transform`` skips a replaced node's children, so they are rewritten here.
+                text = exp.Cast(this=node.this.transform(_fix), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
                 padded = exp.Add(this=text, expression=exp.Literal.string("x"))
                 return exp.Paren(this=exp.Sub(
                     this=exp.Anonymous(this="LEN", expressions=[padded]), expression=exp.Literal.number(1),
@@ -688,8 +697,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if isinstance(node, exp.Round) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
             if isinstance(node, exp.Pow):
-                return anon("POWER", exp.Cast(this=node.this.copy(), to=exp.DataType.build("FLOAT")),
-                            node.expression.copy())
+                return anon("POWER", exp.Cast(this=node.this.transform(_fix), to=exp.DataType.build("FLOAT")),
+                            node.expression.transform(_fix))
             return node
         return tree.transform(_fix)
 

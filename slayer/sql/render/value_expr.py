@@ -451,7 +451,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return ctx.dialect.true_division(rendered) if op == "/" else rendered
 
     if isinstance(key, WindowKey):
-        return render_window(key, part=lambda a: render_value_key(key=cast(ValueKey, a), ctx=ctx), dialect=ctx.dialect)
+        return render_window(key, part=lambda a: render_value_key(key=cast(ValueKey, a), ctx=ctx), dialect=ctx.dialect,
+                             field_type=_known_field_types(ctx))
 
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":

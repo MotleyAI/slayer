@@ -101,6 +101,8 @@ def _aggregation_cases() -> list[WindowCase]:
                 [50, 50, 50, 150, 150, 150, 70]),
         _orders("agg|count", f"COUNT(orders.amount) {by_region}", _per_region(3, 1)),
         _orders("agg|avg", f"AVG(orders.amount) {by_region}", [20, 20, 20, 50, 50, 50, 70], kind="float"),
+        _orders("agg|avg-fraction", f"AVG(orders.customer_id) {by_region}", [4 / 3] * 3 + [8 / 3] * 3 + [1],
+                kind="float"),
         _orders("agg|min", f"MIN(orders.amount) {by_region}", [10, 10, 10, 40, 40, 40, 70]),
         _orders("agg|max", f"MAX(orders.amount) {by_region}", [30, 30, 30, 60, 60, 60, 70]),
         _orders("agg|stddev", f"STDDEV(orders.amount) {by_region}", _per_region(10, None), kind="float"),

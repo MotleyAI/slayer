@@ -45,6 +45,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    WindowKey,
     aggregation_source_type,
     walk_value_keys,
 )
@@ -252,6 +253,18 @@ def _outermost_aggregates(key: ValueKey) -> Iterator[AggregateKey]:
         return
     for child in key.children():
         yield from _outermost_aggregates(child)
+
+
+def _window_key_leaves(key: ValueKey, *, windowed: bool = False) -> Iterator[FieldKey | FieldSqlKey]:
+    """The field leaves a measure window reads outside every aggregate (its partition and order keys)."""
+    if isinstance(key, AggregateKey):
+        return
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        if windowed:
+            yield key
+        return
+    for child in key.children():
+        yield from _window_key_leaves(child, windowed=windowed or isinstance(key, WindowKey))
 
 
 def _row_leaves(value: Any) -> Iterator[FieldKey | FieldSqlKey | StarKey]:
@@ -738,6 +751,7 @@ class _Exporter:
         readers: list[str] = []
         for agg in aggregates:
             readers.append(self._aggregate_reader(ds, agg))
+        readers += [self._field_reader(ds, leaf) for leaf in _window_key_leaves(key)]
         portable = not any(a.agg == "count_distinct_approx" for a in aggregates) and not any(
             isinstance(k, TimeTruncKey) and isinstance(k.granularity, CustomGranularity) for k in walk_value_keys(key))
         scoped = len(set(readers)) == 1 and readers[0] not in self.fixed
@@ -776,12 +790,23 @@ class _Exporter:
         owner = terminal_dataset(root=ds.graph, path=path, datasets_by_name=self.graph)
         if owner is None or not self._unique_route(ds.graph, path):
             raise _Refused("reads a dataset it reaches by more than one relationship route", _RESTORE)
-        fields = self.osi_datasets[owner.name].osi_fields if owner.name in self.osi_datasets else {}
         for leaf in leaves:
-            leaf_name = leaf.leaf if isinstance(leaf, FieldKey) else getattr(leaf, "field_name", None)
-            if leaf_name is not None and leaf_name not in fields and owner.name in self.osi_datasets:
-                raise _Refused(f"reads the SLayer-only field {leaf_name!r}", _RESTORE)
+            self._refuse_slayer_only_field(owner, leaf)
         return owner.name
+
+    def _field_reader(self, ds: _Dataset, leaf: FieldKey | FieldSqlKey) -> str:
+        """The dataset a window's key field lives on, or refused."""
+        owner = terminal_dataset(root=ds.graph, path=leaf.path, datasets_by_name=self.graph)
+        if owner is None or not self._unique_route(ds.graph, leaf.path):
+            raise _Refused("reads a dataset it reaches by more than one relationship route", _RESTORE)
+        self._refuse_slayer_only_field(owner, leaf)
+        return owner.name
+
+    def _refuse_slayer_only_field(self, owner: SlayerDataset, leaf: FieldKey | FieldSqlKey | StarKey) -> None:
+        leaf_name = leaf.leaf if isinstance(leaf, FieldKey) else getattr(leaf, "field_name", None)
+        exported = self.osi_datasets.get(owner.name)
+        if leaf_name is not None and exported is not None and leaf_name not in exported.osi_fields:
+            raise _Refused(f"reads the SLayer-only field {leaf_name!r}", _RESTORE)
 
     def _unique_route(self, home: SlayerDataset, path: tuple[str, ...]) -> bool:
         try:
@@ -820,13 +845,15 @@ class _Exporter:
         dialect = self.neutral if portable else self.dialect
         field_type = dataset_field_type(dataset=home, datasets_by_name=self.graph)
 
+        def slotted(leaves: list[FieldKey | FieldSqlKey]) -> AliasFacilities:
+            slots = {leaf: f"s{i}" for i, leaf in enumerate(leaves)}
+            return AliasFacilities(slotted_kinds=(FieldKey, FieldSqlKey), slot_id_by_key=slots,
+                                   value_by_slot_id={s: self._ref(home, k, scoped=scoped) for k, s in slots.items()})
+
         def row(value: ValueKey) -> Expression:
             leaves = [k for k in walk_value_keys(value) if isinstance(k, (FieldKey, FieldSqlKey))]
-            slots = {leaf: f"s{i}" for i, leaf in enumerate(leaves)}
-            aliases = AliasFacilities(slotted_kinds=(FieldKey, FieldSqlKey), slot_id_by_key=slots,
-                                      value_by_slot_id={s: self._ref(home, k, scoped=scoped) for k, s in slots.items()})
             return _ossie_division(render_value_key(key=value, ctx=RenderContext(
-                dialect=dialect, aliases=aliases, field_type=field_type)))
+                dialect=dialect, aliases=slotted(leaves), field_type=field_type)))
 
         def param(value: Any) -> Expression:
             if isinstance(value, (FieldKey, FieldSqlKey)):
@@ -847,7 +874,8 @@ class _Exporter:
             return rendered
 
         return _ossie_division(render_value_key(key=key, ctx=RenderContext(
-            dialect=dialect, composites=CompositeFacilities(agg_builder=aggregate), field_type=field_type)))
+            dialect=dialect, aliases=slotted(list(dict.fromkeys(_window_key_leaves(key)))),
+            composites=CompositeFacilities(agg_builder=aggregate), field_type=field_type)))
 
     # ---- naming and placement ----
 

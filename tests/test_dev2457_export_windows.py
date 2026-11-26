@@ -94,3 +94,23 @@ async def test_a_window_inside_a_window_stays_in_the_extension(tmp_path: Path) -
     assert carries(orders, top_sql)
     assert mentions(result, "top", severity="info", category="extension_only")
     await validates_upstream(result, tmp_path)
+
+
+async def test_a_field_keyed_windowed_measure_exports_as_a_metric(tmp_path: Path) -> None:
+    env = await make_env(tmp_path / "src", statements=STATEMENTS)
+    text = "SUM(SUM(amount)) OVER (PARTITION BY region)"
+    result = await export_datasets(env, *windowed_orders(metrics=[DatasetMetric(name="region_total", expression=text)]))
+    region_total = metric(dataset(result.document, "orders"), "region_total")
+    assert region_total is not None
+    assert same_sql(region_total["expression"]["sql"], text)
+    await validates_upstream(result, tmp_path)
+
+
+async def test_a_slayer_only_window_key_keeps_the_measure_in_the_extension(tmp_path: Path) -> None:
+    env = await make_env(tmp_path, statements=STATEMENTS)
+    top = col("top", expression="MAX(ROW_NUMBER() OVER (ORDER BY id)) OVER ()")
+    keyed = DatasetMetric(name="keyed", expression="SUM(SUM(amount)) OVER (ORDER BY top)")
+    result = await export_datasets(env, *windowed_orders(fields=[top], metrics=[keyed]))
+    assert "keyed" not in {m["name"] for m in all_metrics(result.document)}
+    assert carries(dataset(result.document, "orders"), keyed.text)
+    assert mentions(result, "keyed", severity="info", category="extension_only")

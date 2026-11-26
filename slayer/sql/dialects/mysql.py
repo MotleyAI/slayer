@@ -130,6 +130,12 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
     ]
 
 
+#: sqlglot writes these as VARIANCE / VARIANCE_POP / STDDEV: population, no function, population on MySQL.
+_MYSQL_STATISTIC_NAMES: dict[type[Expression], str] = {
+    exp.Variance: "VAR_SAMP", exp.VariancePop: "VAR_POP", exp.Stddev: "STDDEV_SAMP",
+}
+
+
 def _is_double(node: Expression) -> bool:
     return isinstance(node, exp.Cast) and node.to.is_type(exp.DataType.Type.DOUBLE)
 
@@ -373,15 +379,15 @@ class MysqlDialect(SqlDialect):
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is
-        a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``; the sample and population variances keep
+        a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``; the sample and population statistics keep
         MySQL's names."""
         def _fix(node: Expression) -> Expression:
             if isinstance(node, exp.Trunc) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
-            if isinstance(node, (exp.Variance, exp.VariancePop)):
-                # sqlglot writes these as VARIANCE / VARIANCE_POP: population variance and no function on MySQL.
-                name = "VAR_SAMP" if isinstance(node, exp.Variance) else "VAR_POP"
-                return exp.Anonymous(this=name, expressions=[node.this])
+            name = _MYSQL_STATISTIC_NAMES.get(type(node))
+            if name is not None:
+                # ``transform`` skips a replaced node's children, so they are rewritten here.
+                return exp.Anonymous(this=name, expressions=[node.this.transform(_fix)])
             return node
         return tree.transform(_fix)
 

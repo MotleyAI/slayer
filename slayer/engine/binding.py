@@ -642,7 +642,7 @@ def _window_anchor(
 def _anchor_route(leaf: FieldKey | FieldSqlKey | StarKey) -> Optional[Tuple[str, ...]]:
     """The route from the reader to the dataset ``leaf`` is anchored at; ``None`` for a time-spine reference."""
     path = tuple(leaf.path or ())
-    if path and path[0] in (TIME_SPINE_DATASET, SPINE_TOKEN):
+    if path[:1] in ((TIME_SPINE_DATASET,), (SPINE_TOKEN,)):
         return None
     anchor = getattr(leaf, "anchor", None)
     if anchor is None:

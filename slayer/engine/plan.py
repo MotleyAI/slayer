@@ -324,6 +324,8 @@ class _StagePlanner:
         )
         stamped = stamped.model_copy(update={"row_supply": RowSupply(product=True)})
         planned = plan_query(query=query, bundle=stamped, scope=scope, stage_schemas=self.state.schemas)
+        if planned.stage_bundle is not None:
+            stamped = with_window_fields(stamped, planned=planned.stage_bundle)
         return planned.model_copy(update={"stage_bundle": stamped})
 
     def _splice_demand(self, seen: Dict[str, bool], *, chain: Tuple[str, ...]) -> bool:

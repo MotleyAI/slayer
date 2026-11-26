@@ -1694,8 +1694,9 @@ class SqlDialect(BaseModel):
         """A Mode B ``/`` (true division), as the database divides exactly."""
         return quotient
 
-    def window_call(self, key: WindowKey, args: list[Expression]) -> Expression:
-        """The call under ``OVER`` over ``args``; a holistic aggregate the database does not window is refused."""
+    def window_call(self, key: WindowKey, args: list[Expression], *, input_type: Optional[DataType] = None) -> Expression:
+        """The call under ``OVER`` over ``args`` (the first typed ``input_type``); a holistic aggregate the database does
+        not window is refused."""
         function = key.function
         if function in _HOLISTIC_WINDOWS and function not in self.windowed_holistic:
             raise WindowFunctionError(
@@ -1706,6 +1707,9 @@ class SqlDialect(BaseModel):
             )
         if function in _WINDOW_STATS:
             return self.build_stat_agg_1arg(_WINDOW_STATS[function], args[0])
+        # A DOUBLE input is already fractional (and may be an exact decimal whose precision is kept).
+        if function == "avg" and self.integer_avg and kind_of(input_type) is not TypeKind.DOUBLE:
+            args = [exp.Cast(this=args[0], to=exp.DataType.build("FLOAT")), *args[1:]]
         return _WINDOW_CALLS[function](args)
 
     def row_number(self) -> Expression:
