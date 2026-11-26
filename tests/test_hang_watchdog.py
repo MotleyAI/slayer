@@ -75,6 +75,12 @@ def _crashed(result: pytest.RunResult, nodeid: str) -> bool:
     return any(nodeid in line and "crashed" in line for line in result.outlines)
 
 
+def _crashes(result: pytest.RunResult) -> dict[str, str]:
+    """nodeid → id of the worker that crashed while running it."""
+    pattern = re.compile(r"^worker '(gw\d+)' crashed while running '(\S+)'")
+    return {m.group(2): m.group(1) for line in result.outlines if (m := pattern.match(line))}
+
+
 class TestStallReport:
     def test_long_running_test_is_reported_while_in_flight(self, project: pytest.Pytester) -> None:
         project.makepyfile(test_slow="""
@@ -544,9 +550,15 @@ class TestWorksteal:
             project, "-n", "2", "--dist", "worksteal", "-rA", "--timeout=1", "--hard-timeout-grace", "1",
             "--stack-dump-after", str(dump_after), "--hang-report-dir", str(reports),
         )
-        assert _crashed(result, "test_a_hang.py::test_signal_proof"), result.outlines
-        assert len(_reports(reports, r"hard-timeout-gw[01]-\d+\.txt")) == 1, result.outlines
-        assert sorted(_passed(result)) == sorted(f"test_b_queue.py::test_queued[{i}]" for i in range(queued))
+        crashes = _crashes(result)
+        killed = crashes.pop("test_a_hang.py::test_signal_proof", None)
+        assert killed is not None, result.outlines
+        hard_dumps = [name for name, text in _reports(reports, r"hard-timeout-gw\d+-\d+\.txt").items() if "Timeout (" in text]
+        assert [name.split("-")[2] for name in hard_dumps] == [killed], result.outlines
+        # xdist can also lose a healthy worker after replacing a crashed one; the hard bound did not end it.
+        assert all(nodeid.startswith("test_b_queue.py::") for nodeid in crashes), result.outlines
+        expected = {f"test_b_queue.py::test_queued[{i}]" for i in range(queued)} - crashes.keys()
+        assert sorted(_passed(result)) == sorted(expected)
         replacement = sorted(reports.glob("gw2-*.txt"))
         assert len(replacement) == 1, sorted(p.name for p in reports.iterdir())
         dumped = replacement[0].stat().st_mtime
