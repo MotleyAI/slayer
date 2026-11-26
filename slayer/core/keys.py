@@ -2167,11 +2167,11 @@ def _int_scalar_type(
 ) -> Optional[DataType]:
     """``abs`` / ``round`` / … from its operands' resolved types: ``mod`` as ``%``; otherwise a DECIMAL first operand
     keeps DECIMAL, integers (or booleans) stay INT unless ``round`` takes digits, any other number is DOUBLE;
-    all-NULL is ``None``."""
+    all-NULL is ``None``, but ``zeroifnull(NULL)`` is 0."""
     types = [value_type(a, field_type=field_type, aggregate_type=aggregate_type)
              for a in key.args if not _is_null_arg(a)]
     if not types:
-        return None
+        return DataType.INTEGER if key.name == "zeroifnull" else None
     if key.name == "mod":
         return _arithmetic_result_type("%", types)
     if types[0] is DataType.DECIMAL:

@@ -67,6 +67,36 @@ class TestTrunc:
         assert "ROUND(" in sql
         assert "TRUNCATE(" not in sql
 
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("trunc(2147483647, -1)", 2147483640), ("trunc(-27, -1)", -20), ("trunc(fn.n, -1)", 0),
+        ("trunc(fn.n * 1000, -3)", 2000), ("trunc(fn.n, 1)", 2),
+    ])
+    async def test_integer_truncation_is_exact(self, engine: SlayerQueryEngine, expr: str, expected: int) -> None:
+        resp = await engine.execute(fn_query(expr, filter=["fn.id = 1"]))
+        assert by_id(resp) == {1: expected}
+
+    @pytest.mark.parametrize("digits", ["-19", "CAST(fn.n * -10 + 1 AS BIGINT)"])
+    async def test_duckdb_hugeint_past_bigint_places(self, digits: str) -> None:
+        async with fn_engine("duckdb") as engine:
+            resp = await engine.execute(fn_query(f"trunc(CAST('15000000000000000000' AS HUGEINT), {digits})",
+                                                 filter=["fn.id = 1"]))
+        assert by_id(resp) == {1: 10000000000000000000}
+
+    async def test_bigint_digits(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(fn_query(named("trunc(fn.x, CAST(fn.n AS BIGINT))", "t"),
+                                             named("round(fn.x, CAST(fn.n AS BIGINT))", "r"),
+                                             filter=["fn.id = 1"]))
+        _close(by_id(resp, "t"), {1: 2.78})
+        _close(by_id(resp, "r"), {1: 2.79})
+
+    @pytest.mark.parametrize("dialect", ["trino", "presto", "duckdb"])
+    async def test_integer_truncation_never_rounds(self, dialect: str) -> None:
+        # ROUND / ABS overflow at an integer type's limits.
+        sql = (await emit_fn(fn_query("trunc(fn.n, -1)", named("trunc(fn.n, fn.sla_days)", "c")),
+                             dialect=dialect)).upper()
+        assert "ROUND(" not in sql
+        assert "ABS(" not in sql
+
     async def test_truncate_is_trunc(self, engine: SlayerQueryEngine) -> None:
         await assert_twins(engine, "TRUNCATE(fn.x, 1)", "trunc(fn.x, 1)")
         await assert_twins(engine, "truncate(fn.x)", "trunc(fn.x)")
@@ -112,6 +142,11 @@ class TestAngles:
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_emits_on_every_dialect(self, dialect: str) -> None:
         await emit_fn(fn_query(named("radians(fn.x)", "r"), named("degrees(fn.x)", "d")), dialect=dialect)
+
+    async def test_bigquery_degrees_multiplies_in_float(self) -> None:
+        # INT64 * 180 overflows before the division by pi.
+        sql = await emit_fn(fn_query("degrees(fn.n)"), dialect="bigquery")
+        assert "* 180.0" in sql, sql
 
     @pytest.mark.parametrize("expr", ["radians(fn.status)", "degrees(fn.status)"])
     async def test_text_argument_refused(self, engine: SlayerQueryEngine, expr: str) -> None:

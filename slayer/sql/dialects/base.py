@@ -1133,12 +1133,16 @@ class SqlDialect(BaseModel):
         """Two-argument ``round``; ``None``: the database's own ``ROUND`` has the reference meaning."""
         return None
 
-    def build_trunc(self, value: Expression, digits: Expression) -> Expression:
-        """``value`` truncated toward zero to ``digits`` fractional digits (negative: left of the point)."""
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:  # NOSONAR(S1172) — hook signature
+        """``value`` truncated toward zero to ``digits`` fractional digits (negative: left of the point);
+        ``integer``: ``value`` is certainly an integer."""
         return self.rewrite_target_ast(exp.Trunc(this=value.copy(), decimals=digits.copy()))
 
-    def rounded_trunc(self, value: Expression, digits: Expression) -> Expression:
-        """``trunc(value, digits)`` from ``ROUND``: a rounding away from zero steps one unit back toward it."""
+    def rounded_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:
+        """``trunc(value, digits)`` from ``ROUND``: a rounding away from zero steps one unit back toward it. An
+        integer takes exact remainder arithmetic instead: ``ROUND`` and ``ABS`` overflow at its type's limits."""
+        if integer:
+            return self.integer_trunc(value, digits)
         rounded = exp.Round(this=value.copy(), decimals=digits.copy())
         known = literal_int(digits)
         unit = (exp.Literal.number(format(Decimal(1).scaleb(-known), "f")) if known is not None
@@ -1146,6 +1150,29 @@ class SqlDialect(BaseModel):
         back = exp.Sub(this=rounded.copy(), expression=exp.Mul(this=exp.Sign(this=value.copy()), expression=unit))
         away = exp.GT(this=exp.Abs(this=rounded.copy()), expression=exp.Abs(this=value.copy()))
         return case((away, exp.Round(this=back, decimals=digits.copy())), default=rounded)
+
+    #: The widest integer type, and the most places ``10^places`` it holds: a wider power exceeds every integer.
+    _WIDEST_INTEGER: ClassVar[tuple[str, int]] = ("BIGINT", 18)
+
+    def integer_trunc(self, value: Expression, digits: Expression) -> Expression:
+        """An integer truncated toward zero: itself for ``digits`` ≥ 0, else less its remainder by ``10^-digits``
+        (``%`` keeps the dividend's sign); 0 past the widest integer's places."""
+        widest, places = self._WIDEST_INTEGER
+
+        def less_remainder(unit: Expression) -> Expression:
+            return exp.Sub(this=operand_copy(value), expression=self.build_modulo(operand_copy(value), unit, True))
+
+        zero = exp.Mul(this=operand_copy(value), expression=lit(0))
+        known = literal_int(digits)
+        if known is not None:
+            if known >= 0:
+                return value.copy()
+            return zero if -known > places else less_remainder(lit(10 ** -known))
+        # Exact as text ('1' and -digits zeros): a floating POWER is not, past 10^22.
+        text = self.char_substring(lit("1" + "0" * places), lit(1), exp.Sub(this=lit(1), expression=digits.copy()))
+        unit = exp.Cast(this=text, to=exp.DataType.build(widest))
+        return case((exp.GTE(this=digits.copy(), expression=lit(0)), value.copy()),
+                    (exp.LT(this=digits.copy(), expression=lit(-places)), zero), default=less_remainder(unit))
 
     def round_half_away(self, value: Expression, digits: int) -> Expression:
         """``value`` rounded to ``digits`` fractional digits, an exact tie away from zero."""

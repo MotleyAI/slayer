@@ -1276,6 +1276,18 @@ class TestTrinoDateFunctions:
         assert str(buckets[4])[:19] == "2024-06-02 10:00:00"
 
 
+@pytest.mark.integration
+class TestTrinoTruncation:
+    """ROUND and ABS overflow at an integer's limits; ROUND takes INTEGER digits only."""
+
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("trunc(2147483647, -1)", 2147483640), ("trunc(-27, -1)", -20), ("trunc(orders.id * 1000 + 7, -1)", 1000),
+        ("trunc(2.789, CAST(orders.id AS BIGINT))", 2.7), ("round(2.789, CAST(orders.id AS BIGINT))", 2.8),
+    ])
+    async def test_value(self, trino_dates: SlayerQueryEngine, expr: str, expected: float) -> None:
+        assert await _order_value(trino_dates, expr, order_id=1) == pytest.approx(expected)
+
+
 # ---------------------------------------------------------------------------
 # Time spine and custom granularities
 # ---------------------------------------------------------------------------

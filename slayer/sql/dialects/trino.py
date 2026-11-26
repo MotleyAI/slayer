@@ -191,9 +191,9 @@ class PrestoFamilyDialect(SqlDialect):
         DatePart.DAY_OF_YEAR: "DAY_OF_YEAR",
     }
 
-    def build_trunc(self, value: Expression, digits: Expression) -> Expression:
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:
         """``TRUNCATE(x, d)`` takes only a DECIMAL."""
-        return self.rounded_trunc(value, digits)
+        return self.rounded_trunc(value, digits, integer=integer)
 
     def millisecond_part(self, expr: Expression) -> Expression:
         """``EXTRACT`` has no sub-second field; ``MILLISECOND`` truncates."""

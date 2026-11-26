@@ -344,7 +344,9 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         pi = anon("ACOS", lit(-1))
         if fn == "radians":
             return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=pi)), expression=lit(180))
-        return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=lit(180))), expression=pi)
+        # A FLOAT64 factor: INT64 * 180 can overflow.
+        factor = exp.Literal.number("180.0")
+        return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=factor)), expression=pi)
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_VALUE", _json_document(value, native=native), lit(path.text))

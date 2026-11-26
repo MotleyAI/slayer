@@ -964,7 +964,7 @@ class SqliteDialect(SqlDialect):
         known = literal_int(digits)
         return None if known is not None and known >= 0 else anon("slayer_round", value, digits)
 
-    def build_trunc(self, value: Expression, digits: Expression) -> Expression:
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:  # NOSONAR(S1172) — hook signature
         return anon("slayer_trunc", value, digits)
 
     def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:

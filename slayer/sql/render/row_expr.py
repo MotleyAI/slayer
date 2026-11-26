@@ -27,6 +27,7 @@ from slayer.core.keys import (
     CLOCK_FUNCTIONS,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
+    DIGITS_SCALARS,
     NULL_SAFE_COMPARISON_OPS,
     LIST_ONLY_FUNCTIONS,
     ArithmeticKey,
@@ -69,6 +70,7 @@ from slayer.sql.dialects.base import (
     func,
     is_list_fn,
     lit,
+    literal_int,
     operand_copy,
     require_library,
     temporal_type_of,
@@ -341,7 +343,7 @@ def render_scalar_call(
         if rounded is not None:
             return rounded
     if name == "trunc" and len(args) == 2:
-        return dialect.build_trunc(args[0], args[1])
+        raise RuntimeError("trunc(x, digits) renders only from its key (render_scalar_key).")
     if name == "zeroifnull":
         return exp.Coalesce(this=args[0], expressions=[exp.Literal.number(0)])
     if name == "nullifzero":
@@ -424,9 +426,14 @@ def render_scalar_key(
     *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, field_type: FieldTypeFn,
     part: Callable[[Any], Expression], field_element: Optional[FieldElementFn] = None,
 ) -> Expression:
-    """A non-date scalar key: ``mod`` by its operand types, else ``render_scalar_call``."""
+    """A non-date scalar key: ``mod`` and ``trunc`` by their operand types, else ``render_scalar_call``."""
     if key.name == "mod":
         return render_modulo(key=key, operands=args, dialect=dialect, field_type=field_type)
+    if key.name in DIGITS_SCALARS and len(args) == 2:
+        if literal_int(args[1]) is None:  # engines that take INTEGER digits never narrow a BIGINT
+            args = [args[0], exp.Cast(this=args[1], to=exp.DataType.build("INT"))]
+        if key.name == "trunc":
+            return dialect.build_trunc(args[0], args[1], integer=integer_valued(key.args[0], field_type=field_type))
     if is_list_fn(key.name) and is_list_call(key, field_type=field_type):
         numbers = numbers_read_list(key, field_type=field_type)
         if numbers is not None:

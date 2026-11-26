@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import ScalarOperandTypeError, SlayerError
+from slayer.core.errors import QueryTypeError, ScalarOperandTypeError, SlayerError
 from slayer.core.keys import SCALAR_SPECS
 from slayer.core.models import Aggregation, DatasetField
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -66,6 +66,10 @@ class TestConditionals:
     async def test_zeroifnull_keeps_a_value(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(fn_query("ZEROIFNULL(fn.sla_days)"))
         assert {k: int(v) for k, v in by_id(resp).items()} == {1: 0, 2: 0, 3: 0, 4: 3, 5: 1, 6: 2}
+
+    async def test_zeroifnull_of_null_is_an_integer_branch(self, engine: SlayerQueryEngine) -> None:
+        error = await refusal(engine, fn_body("IF(fn.amount > 20, ZEROIFNULL(NULL), DATE '2024-01-01')"))
+        assert isinstance(error, QueryTypeError), repr(error)
 
     async def test_nullifzero_keeps_a_value(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(fn_query("nullifzero(fn.sla_days)"))

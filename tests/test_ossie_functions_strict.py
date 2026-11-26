@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
+from slayer.core.errors import SlayerError
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2217_fixtures import rows, strict, strict_error
 from tests._dev2446_strict_fixtures import counting_engine
@@ -73,3 +74,10 @@ async def test_other_arities_and_spellings_refused(engine: SlayerQueryEngine, fi
     await strict_error(engine, _query(filter_text), "E_INVALID_QUERY")
     if REFUSED[filter_text]:
         await engine.execute(_query(filter_text))
+
+
+@pytest.mark.parametrize("filter_text", sorted(f for f, native in REFUSED.items() if not native))
+async def test_other_arities_refused_natively(engine: SlayerQueryEngine, filter_text: str) -> None:
+    query = _query(filter_text)
+    with pytest.raises((SlayerError, ValueError)):
+        await engine.execute(query)

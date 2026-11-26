@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from datetime import date, datetime
-from typing import Any
-
 import pytest
 
 from slayer.core.errors import UnknownFunctionError
@@ -25,10 +23,6 @@ async def engine(request: pytest.FixtureRequest) -> AsyncGenerator[SlayerQueryEn
         yield e
 
 
-def ints(values: dict[int, Any]) -> dict[int, Any]:
-    return {k: None if v is None else int(v) for k, v in values.items()}
-
-
 MILLISECONDS = {1: 123, 2: 1, 3: 999, 4: 0, 5: 500, 6: 0}
 SECONDS = {1: 42, 2: 42, 3: 42, 4: 42, 5: 40, 6: 0}
 #: ISO weekday per row: 2024-12-30 is a Monday, 2024-12-29 and 1969-07-20 Sundays.
@@ -43,12 +37,12 @@ class TestMillisecond:
     async def test_millisecond_is_the_truncated_component(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(fn_query(named("date_part('millisecond', fn.created_at)", "ms"),
                                              named("date_part('second', fn.created_at)", "s")))
-        assert ints(by_id(resp, "ms")) == MILLISECONDS
-        assert ints(by_id(resp, "s")) == SECONDS
+        assert by_id(resp, "ms") == MILLISECONDS
+        assert by_id(resp, "s") == SECONDS
 
     async def test_millisecond_of_a_date(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(fn_query("date_part('millisecond', fn.order_date)"))
-        assert ints(by_id(resp)) == dict.fromkeys(range(1, 7), 0)
+        assert by_id(resp) == dict.fromkeys(range(1, 7), 0)
 
     @pytest.mark.parametrize("written", MILLISECOND_SPELLINGS)
     async def test_spelling_is_its_twin(self, engine: SlayerQueryEngine, written: str) -> None:
@@ -81,7 +75,7 @@ class TestMillisecond:
 class TestDayOfWeek:
     async def test_values_are_iso(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(fn_query("EXTRACT(DAYOFWEEK FROM fn.created_at)"))
-        assert ints(by_id(resp)) == WEEKDAYS
+        assert by_id(resp) == WEEKDAYS
 
     @pytest.mark.parametrize("written", DAYOFWEEK_SPELLINGS)
     async def test_spelling_is_its_twin(self, engine: SlayerQueryEngine, written: str) -> None:
