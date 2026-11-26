@@ -134,6 +134,9 @@ class PrestoFamilyDialect(SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern, case_insensitive=case_insensitive))
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_EXTRACT_SCALAR", value, lit(_presto_path(path)))
 
@@ -187,6 +190,14 @@ class PrestoFamilyDialect(SqlDialect):
         DatePart.ISO_YEAR: "YEAR_OF_WEEK", DatePart.DAY_OF_WEEK: "DAY_OF_WEEK",
         DatePart.DAY_OF_YEAR: "DAY_OF_YEAR",
     }
+
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:
+        """``TRUNCATE(x, d)`` takes only a DECIMAL."""
+        return self.rounded_trunc(value, digits, integer=integer)
+
+    def millisecond_part(self, expr: Expression) -> Expression:
+        """``EXTRACT`` has no sub-second field; ``MILLISECOND`` truncates."""
+        return exp.Cast(this=anon("MILLISECOND", expr), to=exp.DataType.build("INT"))
 
     def _interval(self, amount: int, unit: exp.Var) -> exp.Interval:
         """The count is a quoted string: ``INTERVAL '1' DAY``."""
