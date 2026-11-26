@@ -19,7 +19,8 @@ import pytest
 import sqlglot
 from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect
-from sqlglot.tokens import TokenType
+from sqlglot.expressions.core import Expression
+from sqlglot.tokenizer_core import TokenType
 
 from slayer.core.enums import DataType
 from slayer.core.errors import IllegalWindowInFilterError, QueryTypeError, UnevaluableEntityError
@@ -251,7 +252,7 @@ async def _emit(dialect: str, expression: str) -> str:
                       datasets=[scores_dataset(), ties_dataset()])
 
 
-def _orderings(sql: str, *, dialect: str, function: type[exp.Expression]) -> list[list[exp.Ordered]]:
+def _orderings(sql: str, *, dialect: str, function: type[Expression]) -> list[list[exp.Ordered]]:
     """The order keys of each ``function`` window in ``sql``."""
     windows = [w for w in sqlglot.parse_one(sql, dialect=dialect).find_all(exp.Window) if isinstance(w.this, function)]
     assert windows, sql
@@ -282,7 +283,7 @@ def _written_orderings(sql: str, *, dialect: str) -> list[list[str]]:
     return out
 
 
-def _same(a: exp.Expression, b: exp.Expression) -> bool:
+def _same(a: Expression, b: Expression) -> bool:
     if isinstance(a, exp.Column) and isinstance(b, exp.Column):
         return a.name.lower() == b.name.lower()
     return a == b
@@ -338,8 +339,9 @@ async def test_the_placement_is_written_as_a_null_key(dialect, suffix, descendin
 
 
 async def test_a_placement_the_database_cannot_give_is_refused_on_mysql():
+    expression = RANGE_SUM.format(nulls="")
     with pytest.raises(QueryTypeError) as exc:
-        await _emit("mysql", RANGE_SUM.format(nulls=""))
+        await _emit("mysql", expression)
     assert not isinstance(exc.value, (IllegalWindowInFilterError, UnevaluableEntityError))
     assert "scores.score" in str(exc.value)
     assert "mysql" in str(exc.value).lower()

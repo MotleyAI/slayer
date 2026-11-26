@@ -88,7 +88,7 @@ def plan_query(
         producer_registry=producer_registry,
     )
     prebound = elaborated.prebound
-    update = {k: v for k, v in (("granularity_conflicts", prebound.granularity_conflicts),
+    update: Dict[str, Any] = {k: v for k, v in (("granularity_conflicts", prebound.granularity_conflicts),
                                 ("whole_list_reads", prebound.whole_list_reads),
                                 ("date_only_notices", prebound.date_only_notices)) if v}
     if elaborated.bundle is not bundle:

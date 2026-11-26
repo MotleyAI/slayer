@@ -944,7 +944,7 @@ class IllegalScopeReferenceError(SlayerError, ValueError):
 
 
 class IllegalWindowInFilterError(SlayerError, ValueError):
-    """A filter, metric or portable field definition contains a raw ``OVER(...)`` window."""
+    """A window refused in a filter; kept public, no longer raised now that Mode B reads windows everywhere."""
 
     def __init__(
         self,

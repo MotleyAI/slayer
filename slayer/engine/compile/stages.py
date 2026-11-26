@@ -3700,7 +3700,8 @@ def _cells_are_the_carrier(
 def _reads_host_rows(c: ValueKey, *, context: _ProducerSynthesisContext) -> bool:
     """``c`` derives from the host's own rows alone, none dropped by an aggregate filter."""
     if is_transform(c) or (isinstance(c, AggregateKey) and is_reaggregation_key(c)):
-        inner = [i for o in (transform_operands(c) if is_transform(c) else (c.source,)) for i in operand_constituents(o)]
+        operands = (c.source,) if isinstance(c, AggregateKey) else transform_operands(c)
+        inner = [i for o in operands for i in operand_constituents(o)]
         return bool(inner) and all(_reads_host_rows(i, context=context) for i in inner)
     if not isinstance(c, AggregateKey) or c.filter is not None or _constituent_home_path(c, context=context):
         return False

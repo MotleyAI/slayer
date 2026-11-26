@@ -4,7 +4,7 @@ rather than by call site so one key can't render two ways. Field-like leaves anc
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -357,7 +357,8 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
             detail="a nested-aggregate source must desugar to a producer",
         )
     else:
-        assert not isinstance(key.source, TimePointCmpKey)  # lowered by the checker before planning
+        # Lowered before planning: a comparison by the checker, a row-level window to a windowed column.
+        assert not isinstance(key.source, (TimePointCmpKey, WindowKey))
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,
         )
@@ -450,8 +451,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return ctx.dialect.true_division(rendered) if op == "/" else rendered
 
     if isinstance(key, WindowKey):
-        return render_window(key, part=lambda a: render_value_key(key=a, ctx=ctx) if isinstance(a, _FrozenKey)
-                             else _literal(a, dialect=ctx.dialect), dialect=ctx.dialect)
+        return render_window(key, part=lambda a: render_value_key(key=cast(ValueKey, a), ctx=ctx), dialect=ctx.dialect)
 
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":

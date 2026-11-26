@@ -2615,7 +2615,8 @@ class SQLGenerator:
                 )
             src_cols.append(exp.Literal.number("1").as_("_w_value"))
         else:
-            assert not isinstance(key.source, (AggregateKey, TransformKey, TimePointCmpKey))  # sources are row-level here
+            # Sources are row-level here; a row-level window is a windowed column by now.
+            assert not isinstance(key.source, (AggregateKey, TransformKey, TimePointCmpKey, WindowKey))
             src_cols.append(src_scope.resolve(key.source).as_("_w_value"))
 
         # Reference-bearing parameters read per interval row (D4): each _w_p<i> is

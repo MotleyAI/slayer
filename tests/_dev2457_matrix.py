@@ -210,8 +210,9 @@ async def window_values(engine: SlayerQueryEngine, population: str, expression: 
 
 async def assert_typed_refusal(engine: SlayerQueryEngine, population: str, expression: str, *names: str) -> None:
     """``expression`` is refused by the type checker, the message matching each of ``names``."""
+    body = raw(population, expression)
     with pytest.raises(QueryTypeError) as info:
-        await run(engine, raw(population, expression))
+        await run(engine, body)
     assert not isinstance(info.value, (IllegalWindowInFilterError, UnevaluableEntityError)), repr(info.value)
     message = str(info.value)
     for name in names:

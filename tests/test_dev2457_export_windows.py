@@ -56,7 +56,8 @@ async def test_a_windowed_measure_exports_as_a_metric(tmp_path: Path) -> None:
         fields=[col("rn", expression=RN)], metrics=[DatasetMetric(name="revenue_rank", expression=REVENUE_RANK)]))
     orders = dataset(result.document, "orders")
     revenue_rank, rn = metric(orders, "revenue_rank"), field(orders, "rn")
-    assert revenue_rank is not None and rn is not None
+    assert revenue_rank is not None
+    assert rn is not None
     assert same_sql(revenue_rank["expression"]["sql"], REVENUE_RANK)
     assert same_sql(rn["expression"]["sql"], RN)
     assert not mentions(result, "revenue_rank", category="extension_only")

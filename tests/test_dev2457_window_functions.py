@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core import syntax
 from slayer.core.enums import DataType
@@ -130,7 +131,7 @@ async def test_a_frame_on_a_ranking_function_changes_nothing(engine):
     assert got == _per_order(1, 2, 3, 4, 5, 6, 7)
 
 
-def _is_lag(node: exp.Expression) -> bool:
+def _is_lag(node: Expression) -> bool:
     return isinstance(node, exp.Lag) or (isinstance(node, exp.Anonymous) and node.name.lower() == "laginframe")
 
 
@@ -179,8 +180,9 @@ async def test_a_frame_on_an_aggregate_window_is_kept(dialect):
     ("UPPER(orders.region) OVER ()", r"(?i)\bupper\b"),
 ], ids=["last", "collect", "upper"])
 async def test_a_function_ossie_does_not_window_is_refused(engine, expression, named):
+    body = grouped("orders", expression, "sum(orders.amount)")
     with pytest.raises(QueryTypeError, match=named) as exc:
-        await run(engine, grouped("orders", expression, "sum(orders.amount)"))
+        await run(engine, body)
     assert not isinstance(exc.value, IllegalWindowInFilterError)
 
 
@@ -197,8 +199,9 @@ async def test_a_function_ossie_does_not_window_is_refused(engine, expression, n
 ], ids=["argument_count", "over_a_column", "ntile_zero", "ntile_not_literal", "negative_lag_offset",
         "nth_value_zero", "frame_out_of_order", "range_offset_two_keys"])
 async def test_malformed_windows_are_refused(engine, expression, named):
+    body = grouped("orders", expression, "sum(orders.amount)")
     with pytest.raises(ValueError, match=named) as exc:
-        await run(engine, grouped("orders", expression, "sum(orders.amount)"), dry_run=True)
+        await run(engine, body, dry_run=True)
     assert not isinstance(exc.value, IllegalWindowInFilterError)
 
 
@@ -287,8 +290,9 @@ async def test_inline_equals_the_field(engine, backend):
 @pytest.mark.parametrize("expression", ["ROW_NUMBER() OVER ()", "ROW_NUMBER() OVER (ORDER BY time_spine.timestamp)"],
                          ids=["no_reference", "time_spine_only"])
 async def test_a_window_with_no_reference_is_refused(engine, expression):
+    body = grouped("orders", expression, "sum(orders.amount)")
     with pytest.raises(QueryTypeError, match=r"(?i)\bno\b.*\bdataset") as exc:
-        await run(engine, grouped("orders", expression, "sum(orders.amount)"))
+        await run(engine, body)
     assert not isinstance(exc.value, IllegalWindowInFilterError)
     assert "ROW_NUMBER" in str(exc.value).upper()
 
@@ -304,10 +308,12 @@ async def test_a_window_over_a_query_stage(engine):
 
 
 async def test_a_row_level_window_as_a_metric(engine):
+    rounded = grouped("orders", "orders.region", "round(orders.amount, 2)")
+    windowed = grouped("orders", "orders.region", "SUM(orders.amount) OVER (PARTITION BY orders.region)")
     with pytest.raises(PositionTypingError, match="amount") as reference:
-        await run(engine, grouped("orders", "orders.region", "round(orders.amount, 2)"))
+        await run(engine, rounded)
     with pytest.raises(PositionTypingError, match="amount") as exc:
-        await run(engine, grouped("orders", "orders.region", "SUM(orders.amount) OVER (PARTITION BY orders.region)"))
+        await run(engine, windowed)
     assert type(exc.value) is type(reference.value)
     assert not isinstance(exc.value, IllegalWindowInFilterError)
 

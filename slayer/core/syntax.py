@@ -1198,10 +1198,10 @@ def _check_frame(frame: WindowFrame, *, order: Tuple[OrderItem, ...]) -> None:
                        f"{frame.unit.upper()} BETWEEN … AND … FOLLOWING.")
     if end is not None:
         rank_start, rank_end = _BOUND_ORDER[start[0]], _BOUND_ORDER[end[0]]
-        offsets = (start[1], end[1])
+        first, last = start[1] or Decimal(0), end[1] or Decimal(0)
         backwards = (rank_start > rank_end or start[0] == "unbounded following" or end[0] == "unbounded preceding"
-                     or (rank_start == rank_end and start[0] == "preceding" and offsets[0] < offsets[1])
-                     or (rank_start == rank_end and start[0] == "following" and offsets[0] > offsets[1]))
+                     or (rank_start == rank_end and start[0] == "preceding" and first < last)
+                     or (rank_start == rank_end and start[0] == "following" and first > last))
         if backwards:
             raise _Problem("a window frame's bounds are out of order: its start comes after its end.")
     offset = any(b is not None and b[1] is not None for b in (start, end))

@@ -260,7 +260,7 @@ def _nth_value(key: WindowKey) -> ValueKey:
     """``NTH_VALUE(x, n)``: the partition's ``n``-th row, read once the frame holds ``n`` rows (running frames); within a
     one-row-each-side frame, the ``n``-th row of the rows around the current one."""
     x, n = key.args[0], key.args[1]
-    position = int(n.value) if isinstance(n, LiteralKey) else 0
+    position = int(n.value) if isinstance(n, LiteralKey) and isinstance(n.value, Decimal) else 0
     bare = key.model_copy(update={"frame": None, "args": ()})
 
     def window(function: str, *args: ValueKey, frame: WindowFrameSpec | None = None) -> WindowKey:

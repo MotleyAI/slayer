@@ -35,6 +35,7 @@ from typing import (
     get_args,
 )
 
+from typing_extensions import TypeIs
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from slayer.core.enums import (
@@ -843,7 +844,7 @@ WINDOW_OP = "window"
 TRANSFORM_KINDS = (TransformKey, WindowKey)
 
 
-def is_transform(key: object) -> bool:
+def is_transform(key: object) -> TypeIs["TransformKey | WindowKey"]:
     """Whether ``key`` is a transform: a ``TransformKey``, or a window over aggregate-valued operands."""
     return isinstance(key, TransformKey) or (isinstance(key, WindowKey) and not key.row_level)
 
@@ -1365,7 +1366,7 @@ def _operand_grain(
         return grain
     if isinstance(k, TransformKey):
         return transform_operand_grain(k.input, query_grain=query_grain, active_bucket=active_bucket)
-    if is_transform(k):
+    if isinstance(k, WindowKey) and is_transform(k):
         return window_operand_grain(k, query_grain=query_grain, active_bucket=active_bucket)
     if isinstance(k, (FieldKey, FieldSqlKey, TimeTruncKey)):
         return Grain.of([k]) if leaf_grain is None else leaf_grain
