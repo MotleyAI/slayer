@@ -492,6 +492,16 @@ def build_index(*, data_source: str, documents: list[tuple[str, str]], standalon
         except Exception as exc:  # noqa: BLE001 — one unloadable document never hides the others
             index.failures.append(StoredDocumentLoadError(kind="semantic_model", name=name, data_source=data_source,
                                                           cause=exc))
+    _quarantine(index, decomposed, standalone=standalone)
+    for doc in decomposed:
+        for ds in doc.datasets:
+            _admit_dataset(index, ds, gone=set(index.quarantined))
+    _admit_metrics(index, decomposed)
+    return index
+
+
+def _quarantine(index: DocumentIndex, decomposed: list[Decomposition], *, standalone: list[str]) -> None:
+    """Record each document dataset's owner, and quarantine every name two owners claim."""
     claims: dict[str, list[tuple[str, str]]] = {}
     for name in standalone:
         claims.setdefault(name.casefold(), []).append(("standalone dataset", name))
@@ -502,14 +512,9 @@ def build_index(*, data_source: str, documents: list[tuple[str, str]], standalon
     for folded, owners in claims.items():
         if len(owners) > 1:
             index.quarantined[folded] = " and ".join(f"{o} ({n!r})" for o, n in owners)
-            for owner, spelled in owners:
+            for _, spelled in owners:
                 index.failure(kind="dataset", name=spelled,
                               cause=f"{spelled!r} is declared by {index.quarantined[folded]}; rename one of them")
-    for doc in decomposed:
-        for ds in doc.datasets:
-            _admit_dataset(index, ds, gone=set(index.quarantined))
-    _admit_metrics(index, decomposed)
-    return index
 
 
 def _admit_dataset(index: DocumentIndex, ds: SlayerDataset, *, gone: set[str]) -> None:

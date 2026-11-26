@@ -21,6 +21,8 @@ from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.semantic_model import ossie_validity_errors
+from slayer.embeddings import client as embedding_client
+from slayer.embeddings.models import Embedding
 from slayer.live_schema.schema_drift import UntypedFinding
 from slayer.storage.base import StorageBackend
 from tests._cli_inprocess import run_cli_in_process
@@ -329,6 +331,44 @@ async def test_deleting_a_document_whose_metric_another_reads_is_refused(tmp_pat
     assert "per_head" in found
     assert "'heads'" in found
     assert await storage.list_semantic_models(DS) == [(DS, "heads"), (DS, "sales")]
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_deleting_a_documents_last_dataset_judges_the_documents_deletion(tmp_path: Path, kind: str) -> None:
+    storage = await sales_store(kind, tmp_path)
+    await store_document(storage, document_text(name="heads", datasets=[
+        dataset("staff", primary_key=["employee_id"], fields=[field("employee_id")])]))
+    await storage.edit_semantic_model("heads", data_source=DS, metrics=[{"name": "twice", "expression": f"{RPC} * 2"}])
+    await storage.edit_semantic_model("sales", data_source=DS, metrics=[{"name": "thrice", "expression": "twice + 1"}])
+    with raises_refusal(BREAK) as info:
+        await storage.delete_dataset("staff", data_source=DS)
+    assert "thrice" in refusal(info.value)
+    assert await storage.list_semantic_models(DS) == [(DS, "heads"), (DS, "sales")]
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_deleting_a_document_removes_its_unloadable_metrics_embeddings(tmp_path: Path, kind: str) -> None:
+    storage = await sales_store(kind, tmp_path, text=document_text(
+        datasets=[dataset("orders", primary_key=["order_id"], fields=[field("order_id")])],
+        metrics=[metric("ghost", "SUM(orders.nope)")]))
+    assert "ghost" in await metric_failures(storage)
+    model = embedding_client.current_model()
+    await storage.save_embeddings([Embedding(canonical_id=f"{DS}.ghost", embedding_model_name=model,
+                                             entity_kind="metric", content_hash="h", embedding=[1.0, 0.0])])
+    assert await storage.delete_semantic_model("sales", data_source=DS) is True
+    assert await storage.list_embeddings(embedding_model_name=model) == []
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_deleting_a_documents_last_dataset_removes_its_metrics_embeddings(tmp_path: Path, kind: str) -> None:
+    storage = await sales_store(kind, tmp_path)
+    await store_document(storage, HEADS)
+    model = embedding_client.current_model()
+    await storage.save_embeddings([Embedding(canonical_id=f"{DS}.heads", embedding_model_name=model,
+                                             entity_kind="metric", content_hash="h", embedding=[1.0, 0.0])])
+    assert await storage.delete_dataset("staff", data_source=DS) is True
+    assert await storage.list_semantic_models(DS) == [(DS, "sales")]
+    assert await storage.list_embeddings(embedding_model_name=model) == []
 
 
 @pytest.mark.parametrize("kind", STORAGES)

@@ -759,6 +759,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.delete(
         "/datasets/{name}",
         responses={
+            400: {"description": "The delete would break a stored dependent, or touches hidden content."},
             404: {"description": "Dataset not found."},
             409: {
                 "description": (

@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.models import SlayerDataset
+from slayer.core.names import name_taken
 from slayer.core.semantic_model import ModelScopedMetric
 
 
@@ -32,27 +33,25 @@ class DatasourceScope(BaseModel):
                       metrics: list[ModelScopedMetric] | None = None) -> DatasourceScope:
         """The scope with document ``name`` holding ``datasets`` and ``metrics`` (``None``: kept), or deleted when
         ``datasets`` is ``None``."""
-        held = {d.name.casefold() for d in self.documents.get(name, [])}
+        replaced = [d.name for d in [*self.documents.get(name, []), *(datasets or [])]]
         documents = {k: v for k, v in self.documents.items() if k != name}
         kept_metrics = {k: v for k, v in self.metrics.items() if k != name}
         if datasets is not None:
             documents[name] = datasets
             kept_metrics[name] = metrics if metrics is not None else self.metrics.get(name, [])
-        moved = {d.name.casefold() for d in datasets or []}
-        kept = [d for d in self.datasets if d.name.casefold() not in held | moved]
+        kept = [d for d in self.datasets if not name_taken(d.name, replaced)]
         return self.model_copy(update={"documents": documents, "metrics": kept_metrics,
                                        "datasets": [*kept, *(datasets or [])]})
 
     def with_dataset(self, name: str, dataset: SlayerDataset | None) -> DatasourceScope:
         """The scope with dataset ``name`` replaced by ``dataset`` (``None``: deleted), in its document too."""
         def swapped(items: list[SlayerDataset]) -> list[SlayerDataset]:
-            hit = any(d.name.casefold() == name.casefold() for d in items)
-            kept = [d for d in items if d.name.casefold() != name.casefold()]
-            return [*kept, dataset] if hit and dataset is not None else kept
+            kept = [d for d in items if not name_taken(d.name, [name])]
+            return [*kept, dataset] if len(kept) < len(items) and dataset is not None else kept
 
         documents = {k: swapped(v) for k, v in self.documents.items()}
         datasets = swapped(self.datasets)
-        if dataset is not None and not any(d.name.casefold() == name.casefold() for d in self.datasets):
+        if dataset is not None and not name_taken(name, [d.name for d in self.datasets]):
             datasets.append(dataset)
         return self.model_copy(update={"documents": documents, "datasets": datasets})
 
