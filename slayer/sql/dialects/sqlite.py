@@ -6,6 +6,7 @@ import math
 import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from decimal import ROUND_HALF_UP, Context, Decimal
 from functools import lru_cache
 from urllib.parse import unquote
@@ -26,6 +27,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.like_pattern import LikePattern, LikeWildcard, parse_like
 from slayer.core.regex_pattern import RegexGroupRef, RegexPattern, RegexReplacement, parse_replacement
 from slayer.core.time_points import parse_temporal_value
+from slayer.core.time_zones import from_zone
 from slayer.sql.dialects.base import (
     COMPARISON_NODES,
     FALSE_WORDS,
@@ -48,6 +50,7 @@ from slayer.sql.dialects.base import (
     iso_text,
     lit,
     slayer_type_of,
+    zone_name,
 )
 from slayer.sql.dialects.patterns import PYTHON, RegexFlavour, like_text
 from slayer.sql.dialects.reflection import (
@@ -421,6 +424,23 @@ def _slayer_timestamp_text(value) -> Optional[str]:
     return None if moment is None else moment.isoformat(sep=" ", timespec="microseconds")
 
 
+#: The zone-conversion function (queries/time-zones).
+CONVERT_TZ_FUNCTION = "slayer_convert_tz"
+
+
+def _slayer_convert_tz(value, source, target) -> Optional[str]:
+    """ISO text as ``target`` wall clock ``YYYY-MM-DD HH:MM:SS.ffffff``: offset text is an instant, naive text is
+    ``source`` wall clock (the Postgres DST rule); NULL on NULL or malformed input."""
+    if not isinstance(value, str) or not value or not isinstance(source, str) or not isinstance(target, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+        instant = moment if moment.tzinfo is not None else from_zone(moment, source)
+        return instant.astimezone(ZoneInfo(target)).replace(tzinfo=None).isoformat(sep=" ", timespec="microseconds")
+    except (ValueError, OverflowError, ZoneInfoNotFoundError):
+        return None
+
+
 def _slayer_date_add(ts, n, unit):
     """``ts`` moved by ``n`` ``unit``s, month-based moves clamped at month-end; NULL on NULL / malformed input."""
     moment = _parse_sqlite_temporal(ts)
@@ -667,6 +687,7 @@ _SCALAR_UDFS: tuple[tuple[str, int, Callable[..., Any], bool], ...] = (
     ("power", 2, _pow, False),
     ("slayer_date_add", 3, _slayer_date_add, False),
     ("slayer_timestamp_text", 1, _slayer_timestamp_text, True),
+    (CONVERT_TZ_FUNCTION, 3, _slayer_convert_tz, True),
     ("slayer_try_cast", 2, _slayer_try_cast, False),
     ("slayer_try_cast", 3, _slayer_try_integer, False),
     ("slayer_cast_decimal", 3, _slayer_cast_decimal, True),
@@ -815,8 +836,15 @@ class SqliteDialect(SqlDialect):
     url_scheme: str | None = "sqlite"
     result_census_rows: int | None = PROBE_SCAN_CAP + 1
 
-    # Structure comes from SQLite's own catalog, scoped to the table's schema (none is ``main``), never the Inspector.
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``slayer_convert_tz(v, S, Q)``; an instant's text carries its offset (UTC when it carries none)."""
+        return exp.Anonymous(this=CONVERT_TZ_FUNCTION,
+                             expressions=[value, zone_name(source or ZoneInfo("UTC")), zone_name(target)])
 
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Literal.string(f"{iso_text(value)}+00:00")
+
+    # Structure comes from SQLite's own catalog, scoped to the table's schema (none is ``main``), never the Inspector.
     def reflect_columns(
         self, *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         table: str, schema: str | None, catalog: str | None,  # NOSONAR(S1172) — hook signature

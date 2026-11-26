@@ -2144,7 +2144,7 @@ def _add_using_relationship_fields(
     if not any(join.args.get("using") for join in joins):
         return False
     args = scope.expression.args
-    from_expr = args.get("from_") or args.get("from")  # key renamed in sqlglot 30
+    from_expr = args.get("from_")
     operands = [from_expr.this] if from_expr else []
     cannot_verify = False
     for join in joins:

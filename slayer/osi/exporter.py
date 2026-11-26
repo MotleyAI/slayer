@@ -546,7 +546,7 @@ class _Exporter:
             osi_field["ai_context"] = meta["osi_ai_context"]
         payload = ext.FieldPayload(entity=field.name, field=ext.FieldContent(
             expression=field.expression, filter=field.filter, datatype=stored.datatype, hidden=stored.hidden,
-            format=stored.format, granularity=stored.granularity,
+            format=stored.format, granularity=stored.granularity, time_zone=stored.time_zone,
             allowed_aggregations=stored.allowed_aggregations, meta=_slayer_meta(stored.meta),
         ))
         self._extensions(osi_field, meta, payload=payload, dataset=ds.dataset.name,

@@ -61,10 +61,14 @@ class ReflectedColumn(BaseModel):
     type_name: str | None = None
     # SQLAlchemy's ``quoted_name`` flag on ``name`` (a lower-case Snowflake / Oracle name).
     quoted: bool = False
+    #: The dialect's type holds an instant (BigQuery ``TIMESTAMP``, MySQL ``TIMESTAMP``, ClickHouse zoned ``DateTime``).
+    instant: bool = False
 
     @property
     def narrowed_type(self) -> DataType:
         """``type`` narrowed by the database's type name (``Decimal``, ``DateTimeTz``)."""
+        if self.instant and self.type is DataType.DATETIME:
+            return DataType.DATETIME_TZ
         return finer_datatype(self.type, self.db_type or self.type_name)
 
 
@@ -318,6 +322,7 @@ def result_column_type_of_name(
 def column_from_type_string(
     *, name: str, data_type: str | None, comment: str | None = None, overrides: Mapping[str, DataType] | None = None,
     zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(),
+    instant: Callable[[str], bool] | None = None,
 ) -> ReflectedColumn:
     """A column read from a catalog type string; ``db_type`` kept where ``DataType`` is lossy (a list, exact
     numerics, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
@@ -334,6 +339,7 @@ def column_from_type_string(
     return ReflectedColumn(
         name=name, type=mapped, is_float=is_float, db_type=unwrapped if lossy else None,
         comment=clean_comment(comment), type_name=unwrapped or None,
+        instant=bool(unwrapped) and instant is not None and instant(unwrapped),
     )
 
 
@@ -492,6 +498,7 @@ def _sa_type_is_json(sa_type: sa.types.TypeEngine, *, json_types: frozenset[str]
 def column_from_sa_type(
     *, name: str, sa_type: sa.types.TypeEngine, comment: str | None = None,
     zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(), sa_dialect: Any = None,
+    instant: Callable[[str], bool] | None = None,
 ) -> ReflectedColumn:
     """A column read through the Inspector; ``db_type`` kept only where ``DataType`` is lossy (opaque, a list,
     exact NUMERIC/DECIMAL, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
@@ -506,9 +513,11 @@ def column_from_sa_type(
     lossy = data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) or _sa_type_is_json(
         sa_type, json_types=json_types,
     ) or type(sa_type).__name__.upper() in zoned_types
+    names = (type(_unwrap_clickhouse_wrappers(sa_type)).__name__, type_name or "")
     return ReflectedColumn(
         name=name, type=data_type, is_float=_sa_type_is_float(sa_type), db_type=type_name if lossy else None,
         comment=clean_comment(comment), type_name=type_name, quoted=getattr(name, "quote", None) is True,
+        instant=instant is not None and any(instant(n) for n in names if n),
     )
 
 

@@ -297,11 +297,15 @@ def render_cast(
     sized = text_length(to) is not None or decimal_parts(to) is not None
     if key.try_ and direct and not sized and isinstance(source, ScalarCallKey) and source.name == "json_value":
         value, path, native = json_operands(source, part=part, dialect=dialect)
-        return dialect.build_json_value_as(value, path, native, to, key.data_type)
-    value = part(source)
-    if key.try_:
-        value.meta[CONSTANT_INPUT] = reads_no_rows(source)
-    return dialect.build_author_cast(value, to, source=key.numeric_source, try_=key.try_)
+        cast = dialect.build_json_value_as(value, path, native, to, key.data_type)
+    else:
+        value = part(source)
+        if key.try_:
+            value.meta[CONSTANT_INPUT] = reads_no_rows(source)
+        cast = dialect.build_author_cast(value, to, source=key.numeric_source, try_=key.try_)
+    # Under a zone a zoned timestamp is its instant's wall clock there.
+    zoned = to.is_type(exp.DataType.Type.TIMESTAMPTZ, exp.DataType.Type.TIMESTAMPLTZ)
+    return dialect.zoned_cast(cast) if zoned else cast
 
 
 def render_temporal_comparison(
@@ -466,10 +470,8 @@ def render_date_call(
     *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, field_type: FieldTypeFn,
 ) -> Expression:
     """Render a date-function call through the dialect's typed hooks; ``args`` are the rendered arguments."""
-    if key.name == "now":
-        return dialect.build_current_timestamp()
-    if key.name == "current_date":
-        return dialect.build_current_date()
+    if key.name in CLOCK_FUNCTIONS:
+        return _render_clock(name=key.name, dialect=dialect)
     types = {pos: _operand_type(key, pos, field_type=field_type) for pos in DATE_OPERAND_ARGS[key.name]}
     if key.name == "date_part":
         return dialect.build_date_part(part=DatePart(unit_word(key.args[0])), expr=args[1], operand=types[1])
@@ -493,6 +495,17 @@ def render_date_call(
     return dialect.build_date_add(
         expr=args[0], count=count, unit=TimeGranularity(unit_word(key.args[2])), operand=types[0],
     )
+
+
+def _render_clock(*, name: str, dialect: SqlDialect) -> Expression:
+    """``now()`` / ``current_date()``: under a zone the stage's one clock reading in its wall clock, else the
+    database's clock."""
+    now = dialect.zone_now if dialect.time_zone is not None else None
+    if now is not None:
+        if name == "now":
+            return dialect.build_temporal_literal(value=now, dt=DataType.DATETIME)
+        return dialect.build_temporal_literal(value=now.date(), dt=DataType.DATE)
+    return dialect.build_current_timestamp() if name == "now" else dialect.build_current_date()
 
 
 def _operand_type(key: ScalarCallKey, pos: int, *, field_type: FieldTypeFn) -> DataType:

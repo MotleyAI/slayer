@@ -95,6 +95,10 @@ def _wrap_cast_for_type(
         return expr
     if isinstance(expr, exp.Column):
         return expr
+    if dt in (DataType.DATETIME, DataType.DATETIME_TZ):
+        zoned = dialect.zoned_timestamp_cast(expr)
+        if zoned is not None:
+            return zoned
     target = data_type_target(dt)
     if isinstance(expr, exp.Cast):
         existing = expr.args.get("to")

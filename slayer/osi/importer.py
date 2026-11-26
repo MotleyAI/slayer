@@ -17,6 +17,7 @@ from sqlglot import exp
 
 from slayer.core import slayer_extension as ext
 from slayer.core.document_text import edit_text, parse_document_text
+from slayer.core.enums import DataType
 from slayer.core.errors import UnreadableDocumentError
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.ossie_validity import columns, parse_ossie_sql
@@ -221,6 +222,7 @@ def _carried_fields(*, current: SlayerDataset, old: SlayerDataset) -> list[Datas
         fields.append(field.model_copy(update={
             "format": before.format, "hidden": before.hidden, "allowed_aggregations": before.allowed_aggregations,
             "granularity": before.granularity,
+            "time_zone": before.time_zone if field.datatype is DataType.DATETIME and field.is_base else None,
             "meta": {k: v for k, v in (before.meta or {}).items() if not k.startswith("osi_")} or None,
         }))
     return fields

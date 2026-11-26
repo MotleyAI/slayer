@@ -678,6 +678,7 @@ class InspectService:
                 "canonical_id": ds_name,
                 "entity_type": "datasource",
                 "description": trunc_desc,
+                **({"time_zone": cfg.time_zone} if cfg is not None and cfg.time_zone else {}),
                 "granularities": granularities,
                 "datasets": [
                     dataset_skeleton_fields(
@@ -691,6 +692,8 @@ class InspectService:
         md_lines: list[str] = [f"Datasource: {ds_name}"]
         if trunc_desc:
             md_lines.append(f"Description: {trunc_desc}")
+        if cfg is not None and cfg.time_zone:
+            md_lines.append(f"Time zone: {cfg.time_zone}")
         if granularities:
             md_lines.append("Custom granularities: " + ", ".join(
                 f"`{g['name']}` ({g['multiple']} × {g['base']} from {g['origin']})" for g in granularities
