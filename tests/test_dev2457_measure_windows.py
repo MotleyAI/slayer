@@ -13,9 +13,13 @@ from typing import Any
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
 from slayer.core.errors import IllegalWindowInFilterError, ModelMetricReferenceError, QueryTypeError, TimeAxisError
+from slayer.core.keys import AggregateKey, FieldKey, Grain, TimeTruncKey, TransformKey, WindowKey
 from slayer.core.models import DatasetMetric
+from slayer.engine.compile.stages import _producer_window_td
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.ir.prebound import PreboundQuery
 from tests._dev2243_fixtures import DS, dataset, document_engine, document_text, field, metric, relationship
 from tests._dev2457_fixtures import BACKENDS, CUSTOMERS, DAYS, ORDERS, by, day, grouped, ints, orders_dataset, run, window_engine
 
@@ -244,3 +248,16 @@ async def test_a_shifted_window_shifts_its_series_like_its_transform_twin(backen
                         {"metric": f"time_shift({twin}, -1)", "alias": "t"}]})
     got = {day(r["d"]): (r["w"], r["t"]) for r in resp.data}
     assert got == {"2024-01-02": (None, None), "2024-01-03": (2, 2)}
+
+
+_DAY_KEY = TimeTruncKey(source=FieldKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.DAY)
+_SUM = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum")
+
+
+@pytest.mark.parametrize("root", [
+    TransformKey(op="rank", input=_SUM),
+    WindowKey(function="rank", order=(_SUM,), descending=(True,), nulls_first=(False,)),
+], ids=["transform", "measure-window"])
+def test_a_transform_producer_keeps_the_bucket_its_grain_holds(root: TransformKey | WindowKey) -> None:
+    prebound = PreboundQuery.model_construct(main_time_key=_DAY_KEY)
+    assert _producer_window_td(prebound, windowed=False, root=root, pks=Grain.of([_DAY_KEY])) == _DAY_KEY

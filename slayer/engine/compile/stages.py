@@ -4215,7 +4215,7 @@ def _producer_window_td(
 ) -> Optional[TimeTruncKey]:
     """A windowed producer's active bucket; a transform producer keeps it too when its grain holds it."""
     td = prebound.main_time_key
-    return td if windowed or (isinstance(root, TransformKey) and td in pks) else None
+    return td if windowed or (is_transform(root) and td in pks) else None
 
 
 def _synthesize_local_regroup(
