@@ -7,7 +7,8 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from decimal import ROUND_HALF_UP, Context, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Context, Decimal
+from fractions import Fraction
 from functools import lru_cache
 from urllib.parse import unquote
 
@@ -232,18 +233,19 @@ class _PercentileContAgg:
 
 
 class _PercentileDiscAgg:
-    """2-arg PERCENTILE_DISC(value, p): smallest value v with cume_dist(v) >= p."""
+    """2-arg PERCENTILE_DISC(value, p) over any ordered type: smallest value v with cume_dist(v) >= p."""
 
     def __init__(self) -> None:
-        self._vals: list[float] = []
-        self._p: float | None = None
+        self._vals: list[Any] = []
+        self._p: Fraction | None = None
 
     def step(self, value, p) -> None:
         if p is not None:
-            p_float = float(p)
-            if not 0.0 <= p_float <= 1.0:
-                raise ValueError(f"percentile p must be in [0, 1], got {p_float}")
-            self._p = p_float
+            # Text keeps every digit of the literal (a SQLite REAL would round it); a Fraction multiplies exactly.
+            exact = Fraction(Decimal(p if isinstance(p, str) else str(p)))
+            if not 0 <= exact <= 1:
+                raise ValueError(f"percentile p must be in [0, 1], got {exact}")
+            self._p = exact
         if value is not None:
             self._vals.append(value)
 
@@ -252,7 +254,7 @@ class _PercentileDiscAgg:
             return None
         s = sorted(self._vals)
         n = len(s)
-        # Smallest k with cume_dist (k+1)/n >= p.
+        # Smallest k with cume_dist (k+1)/n >= p; exact, so p·n never rounds past an integer.
         k = max(0, math.ceil(self._p * n) - 1)
         return s[k]
 
@@ -518,6 +520,19 @@ def _round(x, digits):
     return _sqlite_number(_half_away(exact, int(digits)), integer=isinstance(x, int))
 
 
+def _trunc_digits(x, digits):
+    """``trunc(x, digits)``: toward zero; a negative ``digits`` truncates left of the decimal point."""
+    exact = _exact(x) if isinstance(x, (int, float)) else None
+    if exact is None or digits is None:
+        return None
+    exponent = -int(digits)
+    if exponent <= int(exact.as_tuple().exponent):
+        return x
+    context = Context(prec=max(exact.adjusted() - exponent + 2, 1))
+    truncated = exact.quantize(Decimal(1).scaleb(exponent), rounding=ROUND_DOWN, context=context)
+    return _sqlite_number(truncated, integer=isinstance(x, int))
+
+
 def _sqlite_number(value: Decimal, *, integer: bool):
     """``value`` as SQLite stores it: an INTEGER when wanted and in range, else a REAL."""
     return int(value) if integer and _INT64_MIN <= value <= _INT64_MAX else float(value)
@@ -584,6 +599,12 @@ def _regexp_like(value, pattern, flags):
     if value is None or pattern is None:
         return None
     return int(_compiled(pattern, flags or "").search(str(value)) is not None)
+
+
+def _regexp_count(value, pattern, flags):
+    if value is None or pattern is None:
+        return None
+    return sum(1 for _ in _compiled(pattern, flags or "").finditer(str(value)))
 
 
 def _regexp_extract(value, pattern, group):
@@ -663,6 +684,7 @@ _TEXT_UDFS: dict = {
     "slayer_regexp_like": (3, _regexp_like),
     "slayer_regexp_extract": (3, _regexp_extract),
     "slayer_regexp_replace": (4, _regexp_replace),
+    "slayer_regexp_count": (3, _regexp_count),
     # SQLAlchemy's pysqlite registers ``floor`` as ``math.floor``, which fails on NULL.
     "floor": (1, _nulls(lambda x: float(math.floor(x)) if isinstance(x, float) else math.floor(x))),
     "slayer_fmod": (2, _fmod),
@@ -670,7 +692,8 @@ _TEXT_UDFS: dict = {
     "slayer_pi": (0, lambda: math.pi),
     "slayer_cbrt": (1, _nulls(math.cbrt)),  # exact on perfect cubes, unlike abs(x) ** (1 / 3)
     "slayer_atan2": (2, _nulls(math.atan2)),
-    **{f"slayer_{name}": (1, _nulls(getattr(math, name))) for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
+    **{f"slayer_{name}": (1, _nulls(getattr(math, name)))
+       for name in ("sin", "cos", "tan", "asin", "acos", "atan", "radians", "degrees")},
 }
 
 #: Every scalar function SLayer registers on a connection: ``(name, narg, fn, deterministic)``.
@@ -692,6 +715,7 @@ _SCALAR_UDFS: tuple[tuple[str, int, Callable[..., Any], bool], ...] = (
     ("slayer_try_cast", 3, _slayer_try_integer, False),
     ("slayer_cast_decimal", 3, _slayer_cast_decimal, True),
     ("slayer_round", 2, _round, True),
+    ("slayer_trunc", 2, _trunc_digits, True),
 )
 
 #: Every aggregate SLayer registers, the statistical ones also under the names sqlglot rewrites them to on SQLite.
@@ -942,6 +966,12 @@ class SqliteDialect(SqlDialect):
         known = literal_int(digits)
         return None if known is not None and known >= 0 else anon("slayer_round", value, digits)
 
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:  # NOSONAR(S1172) — hook signature
+        return anon("slayer_trunc", value, digits)
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("slayer_regexp_count", value, self.regex_text(pattern), lit("i" if case_insensitive else ""))
+
     def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
         """Scalar ``MAX`` / ``MIN`` propagate NULL: each term coalesces to a present argument."""
         return self.coalesced_extremum(fn, args, spelling="min_max")
@@ -1135,6 +1165,10 @@ class SqliteDialect(SqlDialect):
             )), expression=exp.Literal.number(3))
         if part is DatePart.DAY_OF_WEEK:
             return exp.Add(this=exp.Paren(this=_days_since_monday(expr)), expression=exp.Literal.number(1))
+        if part is DatePart.MILLISECOND:
+            # ``YYYY-MM-DD HH:MM:SS.ffffff``: the first three fraction digits, truncated (``%f`` rounds).
+            digits = exp.Substring(this=_timestamp_text(expr), start=lit(21), length=lit(3))
+            return exp.Cast(this=digits, to=exp.DataType.build("INTEGER"))
         if part in (DatePart.WEEK, DatePart.ISO_YEAR):
             # Thursday of the ISO week: its year is the ISO year, its day-of-year fixes the week.
             thursday = exp.Anonymous(this="DATE", expressions=[expr, exp.DPipe(
@@ -1173,15 +1207,22 @@ class SqliteDialect(SqlDialect):
         """DATETIME-wrap: a bare-date text sorts before the same day's DATETIME frame bound."""
         return exp.Anonymous(this="DATETIME", expressions=[expr])
 
-    def build_median(self, inner: Expression) -> Expression:
+    def build_median(self, inner: Expression, *, input_type: Optional[DataType] = None) -> Expression:
         """SQLite: ``exp.Median``, emitted as the registered ``PERCENTILE_CONT(x, 0.5)`` UDF."""
         return exp.Median(this=inner.copy())
 
     def build_percentile(
-        self, p: Expression, col_expr: Expression,
+        self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,
     ) -> Expression:
         """SQLite: ``percentile_cont(value, p)`` — registered UDF."""
         return exp.PercentileCont(this=col_expr.copy(), expression=p.copy())
+
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """SQLite: ``percentile_disc(value, p)`` — registered UDF; a literal ``p`` passed as text, every digit kept."""
+        exact = exp.Literal.string(p.this) if isinstance(p, exp.Literal) and p.is_number else p.copy()
+        return exp.PercentileDisc(this=col_expr.copy(), expression=exact)
 
     def rewrite_parsed_ast(self, tree: Expression) -> Expression:
         """Emit JSON extraction in the ``json_extract(...)`` function-call form."""

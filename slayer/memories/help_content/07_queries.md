@@ -40,7 +40,8 @@ raises `DistinctDimensionValuesError`). Without a
 
 Conditions and expressions take one portable library with the same meaning on every
 database that translates it (others refuse the function at plan time): strings (`left`, `split_part`, `concat_ws`, ...), math (`div`, `atan2`, ...),
-regex (`regexp_like(x, 'p')`, `x ~ 'p'`, `regexp_extract`, `regexp_replace`), JSON
+regex (`regexp_like(x, 'p')`, `x ~ 'p'`, `regexp_extract`, `regexp_replace`, `regexp_count`), Ossie's spellings
+(`IF`, `NVL`, `NVL2`, `ZEROIFNULL`, `CHARINDEX`, `TO_DATE`, `EXTRACT(DAYOFWEEK FROM x)` = ISO day), JSON
 (`json_value(x, '$.a' RETURNING INT)`, `x ->> 'a'`), lists (`contains(tags, 'x')`,
 `contains_any(tags, ['x', 'y'])`, `contains_all(tags, ['x', 'y'])`, `length(tags)`; the
 aggregation `collect(x)` builds one per group); text compared with a number reads as

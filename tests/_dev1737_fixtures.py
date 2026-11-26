@@ -24,7 +24,7 @@ BACKENDS = ("sqlite", "duckdb")
 
 PARTS = (
     "year", "iso_year", "quarter", "month", "week", "day",
-    "day_of_week", "day_of_year", "hour", "minute", "second",
+    "day_of_week", "day_of_year", "hour", "minute", "second", "millisecond",
 )
 UNITS = ("second", "minute", "hour", "day", "week", "week_sunday", "month", "quarter", "year")
 
@@ -202,6 +202,8 @@ def oracle_part(part: str, v: date | datetime | None) -> Optional[int]:
     sub_day = {"hour": "hour", "minute": "minute", "second": "second"}
     if part in sub_day:
         return getattr(v, sub_day[part]) if isinstance(v, datetime) else 0
+    if part == "millisecond":
+        return v.microsecond // 1000 if isinstance(v, datetime) else 0
     return {
         "year": d.year, "iso_year": iso.year, "quarter": (d.month - 1) // 3 + 1,
         "month": d.month, "week": iso.week, "day": d.day,

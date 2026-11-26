@@ -54,6 +54,7 @@ from tests._dev2000_fixtures import (
 )
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
+from tests.integration import _dev2458_matrix as dev2458
 
 from slayer.async_utils import run_sync
 from slayer.core import errors as core_errors
@@ -99,6 +100,7 @@ from tests._dev2101_fixtures import (
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
+    REFUSED_FUNCTIONS,
     check_library,
     check_native_json,
     lib_dataset,
@@ -980,6 +982,37 @@ class TestMySQLMedianPercentile:
         assert by_status == pytest.approx({"completed": 150, "pending": 175, "cancelled": 75})
 
 
+@pytest.fixture(scope="module")
+def _mysql_dev2458_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in dev2458.statements(dialect="mysql"):
+                    cur.execute(stmt)
+            conn.commit()
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dev2458")))
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        for model in dev2458.datasets(data_source="testmysql"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+class TestMySQLDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles — the ordered-set split's discrete pick, executed."""
+
+    @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_exact],
+                             ids=lambda c: c.__name__)
+    async def test_matrix(self, _mysql_dev2458_storage, check) -> None:
+        await dev2458.run_check(check, storage=_mysql_dev2458_storage)
+
+
 # ---------------------------------------------------------------------------
 # Statistical aggregations (cross-dialect parity)
 # ---------------------------------------------------------------------------
@@ -1730,7 +1763,8 @@ def _mysql_dev2120_storage(mysql_container, tmp_path_factory):
 @pytest.mark.integration
 class TestMySQLPortableLibrary:
     async def test_library(self, _mysql_dev2120_storage) -> None:
-        await check_library(SlayerQueryEngine(storage=_mysql_dev2120_storage))
+        await check_library(SlayerQueryEngine(storage=_mysql_dev2120_storage), gated=REFUSED_FUNCTIONS["mysql"],
+                            refusal="MySQL")
 
     async def test_native_json_column(self, _mysql_dev2120_storage) -> None:
         await check_native_json(SlayerQueryEngine(storage=_mysql_dev2120_storage))

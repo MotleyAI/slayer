@@ -45,9 +45,11 @@ from slayer.core.enums import (
     LIST_AGGREGATIONS,
     NUMERIC_DATATYPES,
     NUMERIC_ONLY_AGGREGATIONS,
+    OBSERVED_VALUE_AGGREGATIONS,
     RANKED_AGGREGATIONS,
     RANK_FAMILY_TRANSFORMS,
     SUB_DAY_GRANULARITIES,
+    SUM_AGGREGATIONS,
     TEMPORAL_DATATYPES,
     TimeGranularity,
     TypeKind,
@@ -141,8 +143,11 @@ SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
     "ceil": _spec(1, 1, numeric=True, ossie=(1,)),
     "round": _spec(1, 2, numeric=True, ossie=(2,)), "ceiling": _spec(1, 1, numeric=True, ossie=(1,)),
     "sign": _spec(1, 1, numeric=True, ossie=(1,)),
-    "trunc": _spec(1, 1, numeric=True),  # 2-arg form silently drops digits on SQLite
+    "trunc": _library(1, 2, numeric=True, ossie=(2,)),
     "mod": _spec(2, 2, numeric=True, ossie=(2,)),
+    "zeroifnull": _library(1, 1, numeric=True, ossie=(1,)), "nullifzero": _library(1, 1, numeric=True, ossie=(1,)),
+    "radians": _library(1, 1, result=_DOUBLE, numeric=True, ossie=(1,)),
+    "degrees": _library(1, 1, result=_DOUBLE, numeric=True, ossie=(1,)),
     # Scalar min/max, NULLs ignored; min two args because 1-arg MAX/MIN parse as the aggregate on SQLite.
     "greatest": _library(2, None, ossie=(2,)), "least": _library(2, None, ossie=(2,)),
     "lower": _spec(1, 1, result=_TEXT, ossie=(1,)), "upper": _spec(1, 1, result=_TEXT, ossie=(1,)),
@@ -168,7 +173,8 @@ SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
     "cbrt": _library(1, 1, result=_DOUBLE, numeric=True),
     "regexp_like": _library(2, 3, result=_BOOL, ossie=(2,)),
     "regexp_extract": _library(2, 3, result=_TEXT, ossie=(2,)),
-    "regexp_replace": _library(3, 4, result=_TEXT, ossie=(3,)), "json_value": _library(2, 2, result=_TEXT),
+    "regexp_replace": _library(3, 4, result=_TEXT, ossie=(3,)),
+    "regexp_count": _library(2, 3, result=_INT, ossie=(2,)), "json_value": _library(2, 2, result=_TEXT),
     "like": _spec(2, 2, sql=False, result=_BOOL),  # emits the LIKE operator
     "ilike": _spec(2, 2, sql=False, result=_BOOL),  # case-insensitive LIKE on every dialect
     "iif": _spec(3, 3, sql=False),  # emits CASE WHEN
@@ -184,12 +190,37 @@ SCALAR_FUNCTIONS: frozenset[str] = frozenset(SCALAR_SPECS)
 # List functions: over a list first argument (``contains`` / ``length`` also take TEXT).
 LIST_FUNCTIONS: frozenset[str] = frozenset({"contains", "contains_any", "contains_all", "length"})
 LIST_ONLY_FUNCTIONS: frozenset[str] = frozenset({"contains_any", "contains_all"})
-# Names the parser rewrites into a library call or a time bucket; reserved like the functions.
-SCALAR_SPELLINGS: frozenset[str] = frozenset({
-    "strpos", "iff", "cardinality", "array_length", "array_contains", "datediff", "dateadd", "current_timestamp",
-    "date_trunc", "json_extract", "json_extract_scalar", "json_extract_path_text",
-    "jsonb_extract_path_text",
+#: A spelling's dispatch when a parser builder rebuilds the call (else it names the library function it renames).
+SPELLING_REWRITE = "rewrite"
+
+
+class ScalarSpelling(BaseModel, frozen=True):
+    """A callee the parser reads as a library node: the library function it renames, or ``SPELLING_REWRITE``; and the
+    argument counts at which Ossie Layer 1 defines it."""
+
+    dispatch: str
+    ossie_arg_counts: frozenset[int] = frozenset()
+
+
+def _spelling(dispatch: str, *ossie: int) -> ScalarSpelling:
+    return ScalarSpelling(dispatch=dispatch, ossie_arg_counts=frozenset(ossie))
+
+
+# The one registry of spellings (engine P2: each collapses to one node); reserved like the functions.
+SCALAR_SPELLING_REGISTRY: Mapping[str, ScalarSpelling] = MappingProxyType({
+    "strpos": _spelling("instr"), "cardinality": _spelling("length"), "array_length": _spelling("length"),
+    "array_contains": _spelling("contains"),
+    "iff": _spelling("iif", 3), "if": _spelling("iif", 3), "nvl": _spelling("ifnull", 2),
+    "startswith": _spelling("starts_with", 2), "endswith": _spelling("ends_with", 2),
+    "truncate": _spelling("trunc", 2),
+    "nvl2": _spelling(SPELLING_REWRITE, 3), "charindex": _spelling(SPELLING_REWRITE, 2),
+    "to_date": _spelling(SPELLING_REWRITE, 1), "to_timestamp": _spelling(SPELLING_REWRITE, 1),
+    "datediff": _spelling(SPELLING_REWRITE, 3), "dateadd": _spelling(SPELLING_REWRITE, 3),
+    "current_timestamp": _spelling(SPELLING_REWRITE, 0), "date_trunc": _spelling(SPELLING_REWRITE, 2),
+    **{name: _spelling(SPELLING_REWRITE) for name in (
+        "json_extract", "json_extract_scalar", "json_extract_path_text", "jsonb_extract_path_text")},
 })
+SCALAR_SPELLINGS: frozenset[str] = frozenset(SCALAR_SPELLING_REGISTRY)
 RESERVED_SCALAR_NAMES: frozenset[str] = SCALAR_FUNCTIONS | SCALAR_SPELLINGS
 TEXT_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.STRING)
 BOOLEAN_RESULT_SCALARS: frozenset[str] = frozenset(n for n, s in SCALAR_SPECS.items() if s.result is DataType.BOOLEAN)
@@ -202,6 +233,8 @@ SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
 SCALAR_PASSTHROUGH: frozenset[str] = frozenset(
     name for name, spec in SCALAR_SPECS.items() if spec.sql_passthrough
 )
+# Scalars whose second argument is a count of fractional digits.
+DIGITS_SCALARS: frozenset[str] = frozenset({"round", "trunc"})
 # Scalars whose value depends on when the query runs.
 CLOCK_FUNCTIONS: frozenset[str] = frozenset({"current_date", "now"})
 # Date scalars taking a closed unit word: (position of the unit argument, its vocabulary).
@@ -220,8 +253,8 @@ if not CLOCK_FUNCTIONS | set(DATE_UNIT_ARGS) <= SCALAR_FUNCTIONS:  # pragma: no 
     raise RuntimeError("derived scalar sets must be subsets of SCALAR_SPECS")
 
 
-def check_scalar_arity(*, name: str, argc: int) -> Optional[str]:
-    """Return an error message when ``name`` cannot take ``argc`` arguments."""
+def check_scalar_arity(*, name: str, argc: int, written: Optional[str] = None) -> Optional[str]:
+    """Return an error message when ``name`` (spelled ``written``) cannot take ``argc`` arguments."""
     bounds = SCALAR_FUNCTION_ARITY.get(name)
     if bounds is None:
         return None
@@ -236,7 +269,7 @@ def check_scalar_arity(*, name: str, argc: int) -> Optional[str]:
         expected = f"{low} to {high}"
     plural = "" if low == high == 1 else "s"
     return (
-        f"Scalar function {name!r} takes {expected} argument{plural}; "
+        f"Scalar function {(written or name).lower()!r} takes {expected} argument{plural}; "
         f"got {argc}."
     )
 
@@ -1525,8 +1558,6 @@ def _joined_known_types(a: DataType, b: DataType) -> Optional[DataType]:
 
 
 TEMPORAL_TYPES = TEMPORAL_DATATYPES
-# Aggregations whose value is one of their inputs, so they keep a temporal type.
-_TEMPORAL_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 # Scalars returning one of their value arguments: name → value-argument positions (None = all).
 _VALUE_ARG_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyType({
     "coalesce": None, "ifnull": None, "nullif": None, "greatest": None, "least": None,
@@ -1585,7 +1616,7 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
 def _derived_temporal_type(key: AggregateKey | TransformKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
     """An aggregate's or transform's type when it keeps its input's (``max``, ``lag``, …), else ``None``."""
     if isinstance(key, AggregateKey):
-        keeps = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
+        keeps = key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS
         return temporal_type(key.source, field_type=field_type) if keeps else None
     return temporal_type(key.input, field_type=field_type) if key.op in _VALUE_PRESERVING_TRANSFORMS else None
 
@@ -1620,8 +1651,6 @@ def _scalar_temporal_type(key: ScalarCallKey, *, field_type: FieldTypeFn) -> Opt
     return stamps.pop() if len(stamps) == 1 else DataType.DATETIME
 
 
-# Aggregations whose value is one of their (boolean) inputs.
-_BOOLEAN_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 # Scalars returning one of their arguments, keyed to the returnable positions (None = all).
 _BOOLEAN_BRANCH_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyType({
     "coalesce": None, "ifnull": None, "greatest": None, "least": None, "nullif": (0,), "iif": (1, 2),
@@ -1637,7 +1666,7 @@ def boolean_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     if is_boolean_shaped(cast("ValueKey", key)):
         return True
     if isinstance(key, AggregateKey):
-        return key.agg.lower() in _BOOLEAN_PRESERVING_AGGS and boolean_valued(key.source, field_type=field_type)
+        return key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS and boolean_valued(key.source, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type is DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
@@ -1658,7 +1687,8 @@ def _scalar_boolean_valued(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bo
 
 # Integer-preserving operators and scalars, for typing an expression built from booleans.
 _INT_OPS = frozenset({"+", "-", "*", "%"})
-_INT_SCALARS = frozenset({"abs", "sign", "round", "floor", "ceil", "ceiling", "trunc", "mod"})
+_INT_SCALARS = frozenset({"abs", "sign", "round", "floor", "ceil", "ceiling", "trunc", "mod", "zeroifnull",
+                          "nullifzero"})
 _ARITHMETIC_OPS = _INT_OPS | {"/"}
 _NULL_TEST_OPS = frozenset({"is", "is not"})
 
@@ -1699,7 +1729,7 @@ def numeric_valued(key: object, *, field_type: FieldTypeFn) -> bool:
         agg = key.agg.lower()
         if agg in INTEGER_AGGREGATIONS or agg in NUMERIC_ONLY_AGGREGATIONS:
             return True
-        return agg in _BOOLEAN_PRESERVING_AGGS and numeric_valued(key.source, field_type=field_type)
+        return agg in OBSERVED_VALUE_AGGREGATIONS and numeric_valued(key.source, field_type=field_type)
     if isinstance(key, TransformKey):
         return key.op in _NUMBER_RESULT_TRANSFORMS or numeric_valued(key.input, field_type=field_type)
     if isinstance(key, CastKey):
@@ -1715,9 +1745,6 @@ def _scalar_numeric_valued(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bo
     branches = [key.args[i] for i in value_arg_positions(key.name, len(key.args)) if not _is_null_arg(key.args[i])]
     numbers = [numeric_valued(a, field_type=field_type) for a in branches]
     return any(numbers) and all(n or boolean_valued(a, field_type=field_type) for a, n in zip(branches, numbers))
-
-
-_INTEGER_RESULT_AGGS = frozenset({"count", "count_distinct", "count_distinct_approx"})
 
 
 def integer_valued(key: object, *, field_type: FieldTypeFn) -> bool:
@@ -1767,8 +1794,9 @@ def _not_plain_digits(value: object) -> bool:
 
 def _aggregate_integer_valued(key: AggregateKey, *, field_type: FieldTypeFn) -> bool:
     agg = key.agg.lower()
-    return agg in _INTEGER_RESULT_AGGS or (
-        agg in ("sum", "min", "max", "first", "last") and integer_valued(key.source, field_type=field_type)
+    return agg in INTEGER_AGGREGATIONS or (
+        (agg in SUM_AGGREGATIONS or agg in OBSERVED_VALUE_AGGREGATIONS)
+        and integer_valued(key.source, field_type=field_type)
     )
 
 
@@ -1778,7 +1806,7 @@ def _scalar_integer_valued(key: ScalarCallKey, *, field_type: FieldTypeFn) -> bo
         return True
     if key.name not in _INT_SCALARS and key.name not in _VALUE_ARG_SCALARS:
         return False
-    if key.name == "round" and len(key.args) > 1:
+    if key.name in DIGITS_SCALARS and len(key.args) > 1:
         return False
     values = [a for a in key.args if not _is_null_arg(a)]
     return bool(values) and all(integer_valued(a, field_type=field_type) for a in values)
@@ -2135,16 +2163,16 @@ def _int_scalar_type(
 ) -> Optional[DataType]:
     """``abs`` / ``round`` / … from its operands' resolved types: ``mod`` as ``%``; otherwise a DECIMAL first operand
     keeps DECIMAL, integers (or booleans) stay INT unless ``round`` takes digits, any other number is DOUBLE;
-    all-NULL is ``None``."""
+    all-NULL is ``None``, but ``zeroifnull(NULL)`` is 0."""
     types = [value_type(a, field_type=field_type, aggregate_type=aggregate_type)
              for a in key.args if not _is_null_arg(a)]
     if not types:
-        return None
+        return DataType.INTEGER if key.name == "zeroifnull" else None
     if key.name == "mod":
         return _arithmetic_result_type("%", types)
     if types[0] is DataType.DECIMAL:
         return DataType.DECIMAL
-    digits = key.name == "round" and len(key.args) > 1
+    digits = key.name in DIGITS_SCALARS and len(key.args) > 1
     if not digits and all(t in (DataType.INTEGER, DataType.BOOLEAN) for t in types):
         return DataType.INTEGER
     return DataType.FLOAT

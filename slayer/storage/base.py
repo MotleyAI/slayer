@@ -53,8 +53,10 @@ from slayer.core.errors import (
     TimeSpineError,
     UnknownGranularityError,
 )
+from slayer.engine.definitions import check_portable_fields
 from slayer.engine.field_dependency import (
-    check_dataset_filters, check_evaluated_metrics, check_field_agg, validate_derived_fields, warn_broken_dependents,
+    check_dataset_filters, check_evaluated_metrics, check_field_agg, check_metric_fractions, validate_derived_fields,
+    warn_broken_dependents,
 )
 from slayer.core.relationship_walker import edges_between, unique_key_sets
 from slayer.core.names import folded_collisions
@@ -1048,8 +1050,11 @@ class StorageBackend(ABC):
         loaded, unloaded = await self.load_datasets(data_source=dataset.data_source, exclude=dataset.name)
         peers = {m.name: m for m in failures.skip((loaded, unloaded))}
         check_relationship_target_spellings(dataset, names=[n for ds, n in identities if ds == dataset.data_source], peers=peers)
+        if datasource is not None and not dataset.source_queries:
+            check_portable_fields(dataset, datasets=list(peers.values()), ds_type=datasource.type)
         await self._validate_mode_a_placeholders(dataset)
         check_field_agg(dataset)
+        check_metric_fractions(dataset=dataset, peers=peers)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_dataset_filters(dataset=dataset, reachable=peers,
                               dialect=ossie_token(datasource.type) if datasource is not None else None)
