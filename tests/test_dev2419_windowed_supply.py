@@ -20,6 +20,8 @@ from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.sql import generator as generator_module
+from slayer.sql.generator import SQLGenerator, _WindowRows
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._dev2212_fixtures import BACKENDS, HIDE_C3, kinds, with_policy
@@ -323,3 +325,15 @@ async def test_broadcast_keeps_the_coarse_windowed_supply(backend: str) -> None:
     warnings = kinds(resp, "broadcast")
     assert sorted(w.metric for w in warnings) == ["w", "ws"]
     assert all(w.partition_by == ["customers.signup_at"] for w in warnings)
+
+
+# --------------------------------------------------------------------------- #
+# Producer reuse keys on the window column mapping
+# --------------------------------------------------------------------------- #
+def test_window_producer_reuse_keys_on_the_column_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    # one producer, one stage relation, two grain-slot → stage-column mappings: no shared CTE
+    monkeypatch.setattr(generator_module, "regroup_producer_identity", lambda attach: "producer")
+    by_status = _WindowRows(relation="_stage", columns={"g0": "status"})
+    by_month = _WindowRows(relation="_stage", columns={"g0": "month"})
+    assert (SQLGenerator._producer_identity(None, window_rows=by_status)
+            != SQLGenerator._producer_identity(None, window_rows=by_month))

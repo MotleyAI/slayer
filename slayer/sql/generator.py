@@ -3298,19 +3298,20 @@ class SQLGenerator:
                 )]
                 for s in slots_by_id.values()
             }
-            grain_base = (
-                self._window_rows_base(window_rows, plan=plan, aliases_by_slot_id=aliases_by_slot_id)
-                if window_rows is not None else self._window_endpoints_base(
+            if window_rows is not None:
+                grain_base = self._window_rows_base(window_rows, plan=plan, aliases_by_slot_id=aliases_by_slot_id)
+            elif kernel.endpoints is not None:
+                grain_base = self._window_endpoints_base(
                     kernel=kernel, plan=plan, slots_by_id=slots_by_id,
                     aliases_by_slot_id=aliases_by_slot_id,
                 )
-                if kernel.endpoints is not None else self._build_windowed_grain_base(
+            else:
+                grain_base = self._build_windowed_grain_base(
                     planned_query=planned_query, plan=plan, slots_by_id=slots_by_id,
                     aliases_by_slot_id=aliases_by_slot_id, source_dataset=source_dataset,
                     source_relation=source_relation, bundle=bundle,
                     regroup_env=regroup_env, regroup_join_specs=regroup_join_specs,
                 )
-            )
             base_subq = exp.Subquery(
                 this=grain_base,
                 alias=exp.TableAlias(this=exp.to_identifier("_base")),
@@ -4368,10 +4369,12 @@ class SQLGenerator:
         """A windowed ``attach``'s cells: its stage's rows, its grain read through the join-back pairs."""
         if stage_rows is None or not isinstance(attach.kernel, TrailingWindowProducerKernel):
             return None
-        return _WindowRows(relation=stage_rows.relation, columns={
-            sid: col for key, sid in attach.join_pairs
-            if (col := stage_rows.columns.get(key) or stage_rows.columns.get(host_key_of(key))) is not None
-        })
+        columns = {}
+        for key, sid in attach.join_pairs:
+            col = stage_rows.columns.get(key) or stage_rows.columns.get(host_key_of(key))
+            if col is not None:
+                columns[sid] = col
+        return _WindowRows(relation=stage_rows.relation, columns=columns)
 
     def _row_supply_base(
         self, *, planned_query, base_select: exp.Select, aliases_by_slot_id: Dict[str, List[str]],
@@ -4811,7 +4814,9 @@ class SQLGenerator:
     def _producer_identity(attach, *, window_rows: Optional[_WindowRows]) -> Any:
         """A producer's reuse identity; one reading its stage's rows is that stage's own."""
         ident = regroup_producer_identity(attach)
-        return ident if window_rows is None else (ident, window_rows.relation)
+        if window_rows is None:
+            return ident
+        return ident, window_rows.relation, frozenset(window_rows.columns.items())
 
     def _record_reuse_edges(self, shared_cte: str) -> None:
         """A reuse under an active producer split: every enclosing"""

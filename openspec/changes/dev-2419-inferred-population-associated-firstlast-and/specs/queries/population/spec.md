@@ -6,8 +6,9 @@ A query omitting `population` SHALL list its **row supply**, before measure-type
 `order` and `limit`. An aggregate grouped by the query's dimensions whose home determines or
 associates each of them over a join path is **full-grain**; it supplies its cells — the dimension
 tuples its filtered home rows reach along the home's own null-extending paths, so a home row with
-no related row lands in the NULL tuple. Any other aggregate (an explicit `partition_by=`, an
-aggregate homed on an unrelated dataset, whose cell is the one empty tuple, or one that falls back
+no related row lands in the NULL tuple. Any other aggregate (an explicit `partition_by=`, a ranked
+aggregation whose grain drops its ranking key, an aggregate homed on an unrelated dataset, whose
+cell is the one empty tuple, or one that falls back
 to broadcast) has cells on a coarser grain; they SHALL extend to the cells of the dimension anchor
 agreeing with them there. A metric SHALL supply the union of its full-grain aggregate operands'
 cells, through combinations and transforms, and with none, the union of its operands' extended
@@ -15,7 +16,8 @@ cells. The rows SHALL be the NULL-safe union of every metric's supply; with no m
 dimension anchor's cells (the rows of the query anchored at that dataset); with no dimensions,
 exactly one row. The query's metrics SHALL define the row supply: an aggregate in a filter, an
 order entry or a computed dimension SHALL read the rows it defines — the dimension anchor's cells
-when there are no metrics — and SHALL add none. A windowed aggregate SHALL supply the same cells
+when there are no metrics — and SHALL add none. An unwindowed `first` / `last` SHALL supply the same
+cells as `sum` over the same home and dimensions. A windowed aggregate SHALL supply the same cells
 as the same aggregate without `window=` over the same home and dimensions; its value in every row
 SHALL depend only on that row's cell, never on the dataset hosting the query or on the sibling
 metrics. Each term SHALL attach to the rows on its own grain, a cell it lacks taking its
@@ -178,6 +180,20 @@ time lies in `[bucket_end − 60 days, bucket_end)`.
 - **WHEN** a query whose rows union several homes groups by a nullable decimal, a timestamp and a
   text dimension, one home supplying only NULL tuples
 - **THEN** it executes on every dialect with each key column of one type
+
+#### Scenario: An associated ranked metric supplies the tuples its home rows reach
+
+- **WHEN** over the association seed a query groups by `orders.status` and measures
+  `last(customers.credit, customers.signup_at)`, and another measures `sum(customers.credit)`
+- **THEN** the first's rows are open 50, paid 70 and NULL 25 — the NULL row from the customers
+  with no orders, Fay signing up latest — the same row set as the second's, on SQLite and DuckDB
+
+#### Scenario: A ranked metric adds no row its home rows do not reach
+
+- **WHEN** over the association seed a query groups by `products.category` and measures
+  `last(orders.amount)`, and another measures `sum(orders.amount)`
+- **THEN** the first's rows are food 30, toys 5 and NULL 60, with no `books` row, the same row
+  set as the second's, on SQLite and DuckDB
 
 #### Scenario: A windowed metric supplies the cells of its unwindowed twin
 
