@@ -18,6 +18,7 @@ from slayer.core.enums import (
     BOOLEAN_LOWERED_AGGREGATIONS,
     BOOLEAN_RESTORED_AGGREGATIONS,
     BUILTIN_AGGREGATIONS,
+    PERCENTILE_AGGREGATIONS,
     DataType,
     TypeKind,
     kind_of,
@@ -32,8 +33,8 @@ from slayer.sql.sql_template import SqlTemplateError, sql_template
 DISPATCH_SIMPLE = "simple"        # direct sqlglot node: COUNT/SUM/AVG/MIN/MAX
 DISPATCH_RANKED = "ranked"        # first/last — needs the ranked-subquery state
 DISPATCH_STAT = "stat"            # stddev/var/corr/covar — dialect UDF split
-DISPATCH_DIALECT_HOOK = "dialect_hook"  # percentile/median/approx-distinct
-DISPATCH_DISTINCT = "distinct"    # COUNT(DISTINCT ...)
+DISPATCH_DIALECT_HOOK = "dialect_hook"  # percentiles/median/approx-distinct
+DISPATCH_DISTINCT = "distinct"    # COUNT/SUM/AVG(DISTINCT ...)
 DISPATCH_EXPRESSION = "expression"     # {value}/{param} template substitution
 
 # Closed set of dispatch names (mirrors the DISPATCH_* constants above). An
@@ -70,10 +71,14 @@ AGG_REGISTRY: Dict[str, AggEntry] = {
         _entry(name="max", dispatch=DISPATCH_SIMPLE, node_class=exp.Max),
         _entry(name="count_distinct", dispatch=DISPATCH_DISTINCT, node_class=exp.Count),
         _entry(name="count_distinct_approx", dispatch=DISPATCH_DIALECT_HOOK),
+        _entry(name="sum_distinct", dispatch=DISPATCH_DISTINCT, node_class=exp.Sum),
+        _entry(name="avg_distinct", dispatch=DISPATCH_DISTINCT, node_class=exp.Avg),
         _entry(name="first", dispatch=DISPATCH_RANKED),
         _entry(name="last", dispatch=DISPATCH_RANKED),
         _entry(name="median", dispatch=DISPATCH_DIALECT_HOOK),
         _entry(name="percentile", dispatch=DISPATCH_DIALECT_HOOK),
+        _entry(name="percentile_disc", dispatch=DISPATCH_DIALECT_HOOK),
+        _entry(name="percentile_approx", dispatch=DISPATCH_DIALECT_HOOK),
         _entry(name="weighted_avg", dispatch=DISPATCH_EXPRESSION),
         _entry(name="stddev_samp", dispatch=DISPATCH_STAT),
         _entry(name="stddev_pop", dispatch=DISPATCH_STAT),
@@ -132,20 +137,35 @@ def aggregate_input(*, value: Expression, aggregation: str, input_type: Optional
 def apply_aggregate(
     *, entry: AggEntry, value: Expression, input_type: Optional[DataType], dialect: SqlDialect,
 ) -> Expression:
-    """``entry``'s direct-node aggregate over ``value`` (read via :func:`aggregate_input`); ``avg`` is fractional
+    """``entry``'s direct-node aggregate over ``value`` (read via :func:`aggregate_input`); an average is fractional
     on every dialect; a boolean ``min`` / ``max`` converts the result back to the dialect's boolean."""
     if entry.node_class is None:
         raise ValueError(f"Aggregation {entry.name!r} has no SQL node to render.")
-    if entry.dispatch == DISPATCH_DISTINCT:
-        keyed = dialect.build_list_key(value) if input_type is DataType.ARRAY else value
-        return entry.node_class(this=exp.Distinct(expressions=[keyed]))
+    if entry.dispatch == DISPATCH_DISTINCT and input_type is DataType.ARRAY:
+        return entry.node_class(this=exp.Distinct(expressions=[dialect.build_list_key(value)]))
     read = aggregate_input(value=value, aggregation=entry.name, input_type=input_type)
     # A DOUBLE input is already fractional (and may be an exact decimal whose precision is kept).
-    if entry.name == "avg" and dialect.integer_avg and kind_of(input_type) is not TypeKind.DOUBLE:
-        read = exp.Cast(this=read, to=exp.DataType.build("FLOAT"))
-    aggregate = entry.node_class(this=read)
+    fractional = entry.node_class is exp.Avg and dialect.integer_avg and kind_of(input_type) is not TypeKind.DOUBLE
+    # FLOAT would merge distinct integers past 2^53 before DISTINCT; an exact decimal keeps them apart.
+    exact = fractional and entry.dispatch == DISPATCH_DISTINCT and kind_of(input_type) in (TypeKind.INT,
+                                                                                           TypeKind.BOOLEAN)
+    if fractional:
+        read = exp.Cast(this=read, to=exp.DataType.build("DECIMAL(38, 10)" if exact else "FLOAT"))
+    if entry.dispatch == DISPATCH_DISTINCT:
+        read = exp.Distinct(expressions=[read])
+    aggregate: Expression = entry.node_class(this=read)
+    if exact:
+        aggregate = exp.Cast(this=aggregate, to=exp.DataType.build("FLOAT"))
+    return restore_boolean(aggregate, aggregation=entry.name, input_type=input_type, dialect=dialect)
+
+
+def restore_boolean(
+    aggregate: Expression, *, aggregation: str, input_type: Optional[DataType], dialect: SqlDialect,
+) -> Expression:
+    """``aggregate`` over a boolean input read as its integer, converted back to the dialect's boolean when the
+    aggregation returns one of its inputs."""
     restored = dialect.declared_cast_type(DataType.BOOLEAN)
-    if input_type is not DataType.BOOLEAN or entry.name not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
+    if input_type is not DataType.BOOLEAN or aggregation not in BOOLEAN_RESTORED_AGGREGATIONS or restored is None:
         return aggregate
     return exp.Cast(this=aggregate, to=data_type_target(restored))
 
@@ -164,7 +184,7 @@ class AggregateSpec(BaseModel):
     expression: Optional[str] = None
 
 
-def percentile_literal(p: Expression) -> Expression:
+def percentile_literal(p: Expression, *, aggregation: str = "percentile") -> Expression:
     """The numeric literal inside ``p`` (optionally signed / parenthesised), validated to [0, 1]."""
     node, negative = p, False
     while isinstance(node, (exp.Paren, exp.Neg)):
@@ -172,7 +192,7 @@ def percentile_literal(p: Expression) -> Expression:
         node = node.this
     if not isinstance(node, exp.Literal) or node.is_string:
         raise ValueError(
-            f"Aggregation 'percentile' parameter 'p' must be a numeric literal "
+            f"Aggregation '{aggregation}' parameter 'p' must be a numeric literal "
             f"in [0, 1]; got {p.sql()!r}."
         )
     try:
@@ -183,7 +203,7 @@ def percentile_literal(p: Expression) -> Expression:
         value = -value
     if not value.is_finite() or not 0 <= value <= 1:
         raise ValueError(
-            f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {p.sql()}."
+            f"Aggregation '{aggregation}' parameter 'p' must be in [0, 1]; got {p.sql()}."
         )
     return node.copy()
 
@@ -246,17 +266,27 @@ def render_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expression:
         if is_stat_agg1(agg_name):
             return dialect.build_stat_agg_1arg(agg_name=agg_name, col_expr=_read_value(spec))
         raise ValueError(f"Unknown statistical aggregation {agg_name!r}.")
-    if agg_name == "percentile":
-        p = percentile_literal(_param(spec, "p"))
-        return dialect.build_percentile(p=p, col_expr=_read_value(spec))
+    if agg_name in PERCENTILE_AGGREGATIONS:
+        return _percentile(spec, dialect=dialect)
     if agg_name == "collect":
         return dialect.build_collect(_value(spec), spec.element_type)
     if agg_name == "count_distinct_approx":
         return dialect.build_approx_count_distinct(col_expr=_value(spec))
     if agg_name == "median":
-        return dialect.build_median(inner=_read_value(spec))
+        return dialect.build_median(inner=_read_value(spec), input_type=spec.input_type)
     inner = exp.Star() if spec.value is None and agg_name == "count" else _value(spec)
     return apply_aggregate(entry=entry, value=inner, input_type=spec.input_type, dialect=dialect)
+
+
+def _percentile(spec: AggregateSpec, *, dialect: SqlDialect) -> Expression:
+    agg_name = spec.aggregation
+    p = percentile_literal(_param(spec, "p"), aggregation=agg_name)
+    if agg_name == "percentile_approx":
+        return dialect.build_percentile_approx(p=p, col_expr=_read_value(spec), input_type=spec.input_type)
+    if agg_name == "percentile":
+        return dialect.build_percentile(p=p, col_expr=_read_value(spec), input_type=spec.input_type)
+    discrete = dialect.build_percentile_disc(p=p, col_expr=_read_value(spec), input_type=spec.input_type)
+    return restore_boolean(discrete, aggregation=agg_name, input_type=spec.input_type, dialect=dialect)
 
 
 def _value(spec: AggregateSpec) -> Expression:

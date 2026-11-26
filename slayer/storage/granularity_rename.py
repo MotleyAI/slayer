@@ -32,9 +32,11 @@ OSSIE_FUNCTION_NAMES = frozenset({
     "if", "nvl", "nvl2", "startswith", "endswith", "charindex", "truncate", "to_date", "to_timestamp", "zeroifnull",
     "nullifzero", "radians", "degrees", "regexp_count",
 })
+#: Ossie Layer 1 aggregates, reserved at the same (unreleased) gate.
+OSSIE_AGGREGATE_NAMES = frozenset({"sum_distinct", "avg_distinct", "percentile_disc", "percentile_approx"})
 RENAME_GATES: dict[str, Mapping[str, int]] = {
-    **dict.fromkeys(set(reserved_granularity_names()) - OSSIE_FUNCTION_NAMES, _INITIAL_GATE),
-    **dict.fromkeys(OSSIE_FUNCTION_NAMES, _OSSIE_FUNCTIONS_GATE),
+    **dict.fromkeys(set(reserved_granularity_names()) - OSSIE_FUNCTION_NAMES - OSSIE_AGGREGATE_NAMES, _INITIAL_GATE),
+    **dict.fromkeys(OSSIE_FUNCTION_NAMES | OSSIE_AGGREGATE_NAMES, _OSSIE_FUNCTIONS_GATE),
 }
 
 _TOKEN = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|[A-Za-z_]\w*|\S")

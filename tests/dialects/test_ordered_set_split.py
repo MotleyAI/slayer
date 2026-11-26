@@ -10,8 +10,10 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
+from slayer.sql.dialects._ordered_set_split import RANKED
 from slayer.sql.dialects.bigquery import BigqueryDialect
 from slayer.sql.dialects.mysql import MysqlDialect
+from slayer.sql.dialects.snowflake import SnowflakeDialect
 from slayer.sql.dialects.trino import TrinoDialect
 from slayer.sql.dialects.tsql import TsqlDialect
 
@@ -70,6 +72,48 @@ def test_an_unqualified_grouping_column_is_read_from_the_rows(dialect, projectio
     split = dialect.rewrite_statement(_parsed(query))
     assert split.named_selects == ["k", "v", "n"]
     assert _rows(split.sql(dialect="duckdb")) == _rows(query)
+
+
+def _descending_disc(p: str) -> str:
+    return _percentile_query(p, grouped=True).replace("PERCENTILE_CONT", "PERCENTILE_DISC").replace(
+        "ORDER BY t.x)", "ORDER BY t.x DESC)")
+
+
+def _marked(sql: str) -> Expression:
+    tree = _parsed(sql)
+    for node in tree.find_all(exp.WithinGroup):
+        node.meta[RANKED] = True
+    return tree
+
+
+_DESCENDING_REWRITES = pytest.mark.parametrize("rewrite", [
+    lambda sql: MysqlDialect().rewrite_statement(_parsed(sql)),
+    lambda sql: TrinoDialect().rewrite_statement(_parsed(sql)),
+    lambda sql: BigqueryDialect().rewrite_statement(_parsed(sql)),
+    lambda sql: SnowflakeDialect().rewrite_statement(_marked(sql)),
+], ids=["mysql", "trino", "bigquery", "snowflake-ranked"])
+
+
+@pytest.mark.parametrize("p", ["0.25", "0.5", "1"])
+@_DESCENDING_REWRITES
+def test_a_descending_discrete_percentile_keeps_its_value(rewrite, p: str) -> None:
+    """``PERCENTILE_DISC`` descending picks no ascending fraction's value: ``10, 20, 30, 40`` at 0.5 is 30."""
+    query = _descending_disc(p)
+    split = rewrite(query)
+    assert not any(isinstance(n, exp.WithinGroup) for n in split.walk())
+    assert _rows(split.sql(dialect="duckdb")) == _rows(query)
+
+
+@_DESCENDING_REWRITES
+def test_a_descending_discrete_percentile_at_zero_is_the_largest(rewrite) -> None:
+    # DuckDB's native form answers the smallest here, against the definition's first value in descending order.
+    rows = _rows(rewrite(_descending_disc("0")).sql(dialect="duckdb"))
+    assert rows == {("a", 40.0, 4), ("b", 7.0, 3), ("c", None, 1), ("d", 9.0, 1)}
+
+
+def test_sql_server_keeps_a_descending_discrete_percentile_native() -> None:
+    sql = TsqlDialect().rewrite_statement(_parsed(_descending_disc("0.5"))).sql(dialect="tsql")
+    assert "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY t.x DESC) OVER (PARTITION BY t.k)" in sql
 
 
 def test_sql_server_reads_a_descending_percentile_as_its_literal_complement() -> None:

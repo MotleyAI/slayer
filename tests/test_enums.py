@@ -85,10 +85,10 @@ class TestDefaultAggregationsByType:
 
     def test_text_set_unchanged(self) -> None:
         # Mirror of the old STRING set, plus count_distinct_approx
-        # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE).
+        # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE) and percentile_disc.
         assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.STRING] == frozenset({
             "count", "count_distinct", "count_distinct_approx",
-            "first", "last", "min", "max", "collect",
+            "first", "last", "min", "max", "collect", "percentile_disc",
         })
 
     def test_no_pseudo_type_keys(self) -> None:

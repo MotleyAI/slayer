@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # skip these for built-ins. Custom aggs with non-empty ``params`` are
 # also skipped per rule 4 for the same reason.
 _PARAMETRIC_BUILTIN_AGGS: frozenset[str] = frozenset({
-    "weighted_avg", "percentile", "corr", "covar_samp", "covar_pop",
+    "weighted_avg", "percentile", "percentile_disc", "percentile_approx", "corr", "covar_samp", "covar_pop",
 })
 
 DEFAULT_BFS_DEPTH = 3
