@@ -205,7 +205,8 @@ def _resolved_field(
     if unquoted_identifier(form.text) is not None:
         return field.with_native(form.text)
     native = portable_native(form.text, field=field.name, dataset=dataset, datasets=datasets, ds_type=ds_type, live=live)
-    return field.with_native(native, windowed=holds_window(native, dialect=dialect_for_ds_type(ds_type).sqlglot_name))
+    return field.with_native(native, windowed=holds_window(native, dialect=dialect_for_ds_type(ds_type).sqlglot_name),
+                             states_nulls=True)
 
 
 def _metric_readers(dataset: SlayerDataset, *, live: ColumnTypes, ds_type: str | None) -> list[DatasetField]:

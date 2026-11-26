@@ -109,7 +109,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql._identifier_fit import fit_identifier, overlimit_tokens
 from slayer.sql import staged_plan
 from slayer.sql.dialects import SqlDialect, get_dialect
-from slayer.sql.dialects.base import COMPARISON_NODES, LIST_POSITION, bare_comparands
+from slayer.sql.dialects.base import COMPARISON_NODES, LIST_POSITION, bare_comparands, stating_nulls
 from slayer.sql.untrusted_projection import mark_untrusted, project_untrusted_hops
 from slayer.sql.naming import (
     OUTER_WRAP_ALIAS,
@@ -5896,6 +5896,8 @@ class SQLGenerator:
             window = frame.enter_expression(
                 f.definition_sql or f.name, location=f"definition of field {f.name!r} on dataset {dataset.name!r}",
             )
+            if f.states_nulls:
+                window = stating_nulls(window)
             rendered[f.name] = (window, _prefix_closed(frame.relationship_paths.as_list()))
         chains = {path: self._oriented_hop_chain(source_dataset=dataset, path=path, bundle=bundle)
                   for _, paths in rendered.values() for path in paths}

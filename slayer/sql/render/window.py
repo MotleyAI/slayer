@@ -4,7 +4,7 @@ argument."""
 
 from __future__ import annotations
 
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Sequence
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
@@ -73,27 +73,31 @@ def _spec(frame: WindowFrameSpec) -> exp.WindowSpec:
 
 
 def window_order_items(
-    key: WindowKey, *, values: List[Expression], dialect: SqlDialect,
+    key: WindowKey, *, values: List[Expression], dialect: SqlDialect, labels: Optional[Sequence[str]] = None,
 ) -> List[Expression]:
-    """``key``'s order items with their NULL placement stated through ``dialect``."""
+    """``key``'s order items with their NULL placement stated through ``dialect``; ``labels`` name them in errors."""
     range_offset = key.frame is not None and key.frame.unit == "range" and any(
         b is not None and b[1] is not None for b in (key.frame.start, key.frame.end))
     out: List[Expression] = []
-    for value, item, desc, nulls_first in zip(values, key.order, key.descending, key.nulls_first, strict=True):
+    names = list(labels) if labels is not None else [key_display(item) for item in key.order]
+    for value, name, desc, nulls_first in zip(values, names, key.descending, key.nulls_first, strict=True):
         out += dialect.window_order_item(value, descending=desc, nulls_first=nulls_first,
-                                         range_offset=range_offset, label=key_display(item))
+                                         range_offset=range_offset, label=name)
     return out
 
 
-def render_window(key: WindowKey, *, part: Callable[[Any], Expression], dialect: SqlDialect) -> Expression:
-    """``key`` as ``function(args) OVER (PARTITION BY … ORDER BY … frame)``; each operand rendered by ``part``."""
+def render_window(
+    key: WindowKey, *, part: Callable[[Any], Expression], dialect: SqlDialect, labels: Optional[Sequence[str]] = None,
+) -> Expression:
+    """``key`` as ``function(args) OVER (PARTITION BY … ORDER BY … frame)``; each operand rendered by ``part``,
+    ``labels`` naming its order items in errors."""
     args = [exp.Star() if isinstance(a, StarKey) and key.function == "count" else part(a) for a in key.args]
     if key.filter is not None:
         condition = part(key.filter)
         value = exp.Literal.number(1) if isinstance(args[0], exp.Star) else args[0]
         args[0] = exp.Case(ifs=[exp.If(this=condition, true=value)])
     call = dialect.window_call(key.function, args=args, build=_CALLS[key.function])
-    order = window_order_items(key, values=[part(o) for o in key.order], dialect=dialect)
+    order = window_order_items(key, values=[part(o) for o in key.order], dialect=dialect, labels=labels)
     return exp.Window(
         this=call,
         partition_by=[part(p) for p in key.partition] or None,

@@ -877,7 +877,7 @@ _ordered_sql = _SqlglotGenerator.ordered_sql
 
 
 def _explicit_ordered_sql(self: _SqlglotGenerator, expression: exp.Ordered) -> str:
-    if not expression.meta.get(EXPLICIT_NULLS):
+    if not expression.meta.get(EXPLICIT_NULLS) or self.NULL_ORDERING_SUPPORTED is None:
         return _ordered_sql(self, expression)
     desc = " DESC" if expression.args.get("desc") else " ASC"
     return f"{self.sql(expression, 'this')}{desc} NULLS {'FIRST' if expression.args.get('nulls_first') else 'LAST'}"
@@ -885,6 +885,16 @@ def _explicit_ordered_sql(self: _SqlglotGenerator, expression: exp.Ordered) -> s
 
 # sqlglot writes a placement only where it differs from its assumed default; a flagged item always states it.
 _SqlglotGenerator.ordered_sql = _explicit_ordered_sql  # type: ignore[method-assign]
+
+
+def stating_nulls(tree: Expression) -> Expression:
+    """``tree`` with every window order item flagged to write its NULL placement."""
+    for window in tree.find_all(exp.Window):
+        order = window.args.get("order")
+        for item in order.expressions if order is not None else ():
+            if isinstance(item, exp.Ordered):
+                item.meta[EXPLICIT_NULLS] = True
+    return tree
 
 
 class SqlDialect(BaseModel):

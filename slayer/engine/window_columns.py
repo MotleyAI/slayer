@@ -30,6 +30,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import dialect_for_ds_type, get_dialect
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.row_expr import render_row_expression
+from slayer.sql.render.window import render_window
 
 __all__ = ["WINDOW_FIELD_PREFIX", "lift_row_windows", "with_datasets", "with_window_columns"]
 
@@ -67,20 +68,22 @@ class _Lifter:
         assert anchor is not None  # the binder resolved every route
         anchor = self._dataset(anchor.name)
         local = reroot_value_key(window.model_copy(update={"anchor": ()}), target_path=route)
-        native = self._native(local, dataset=anchor)
+        labels = [key_display(o) if field_path_of(o) else f"{self.population.name}.{key_display(o)}"
+                  for o in window.order]
+        native = self._native(local, dataset=anchor, labels=labels)
         field = next((f for f in anchor.fields if f.windowed and f.definition_sql == native), None)
         if field is None:
             name = WINDOW_FIELD_PREFIX + hashlib.sha256(native.encode()).hexdigest()[:16]
             datatype = value_type(local, field_type=dataset_field_type(dataset=anchor, datasets_by_name=self.by_name))
             field = DatasetField.model_construct(name=name, hidden=True, datatype=datatype).with_native(
-                native, windowed=True)
+                native, windowed=True, states_nulls=True)
             anchor = anchor.model_copy(update={"fields": [*anchor.fields, field]})
             self.extended[anchor.name] = anchor
             self.by_name[anchor.name] = anchor
             register_window_display(name, key_display(window))
         return FieldSqlKey(path=route, dataset=anchor.name, field_name=field.name)
 
-    def _native(self, window: WindowKey, *, dataset: SlayerDataset) -> str:
+    def _native(self, window: WindowKey, *, dataset: SlayerDataset, labels: list[str]) -> str:
         """``window`` as the datasource's SQL over ``dataset``'s rows: a base field by its column, any other field by
         its dataset-qualified path (what a portable definition of the same text runs)."""
 
@@ -94,11 +97,14 @@ class _Lifter:
             names = dict(zip(("table", "db", "catalog"), reversed(quals)))
             return exp.column(last, **names)
 
-        rendered = render_row_expression(
-            key=window, dialect=self.dialect, resolve_field=resolve,
-            field_type=dataset_field_type(dataset=dataset, datasets_by_name=self.by_name),
-            field_element=dataset_field_element(dataset=dataset, datasets_by_name=self.by_name),
-        )
+        field_type = dataset_field_type(dataset=dataset, datasets_by_name=self.by_name)
+        field_element = dataset_field_element(dataset=dataset, datasets_by_name=self.by_name)
+
+        def part(k: ValueKey) -> Expression:
+            return render_row_expression(key=k, dialect=self.dialect, resolve_field=resolve, field_type=field_type,
+                                         field_element=field_element)
+
+        rendered = render_window(window, part=part, dialect=self.dialect, labels=labels)
         return rendered.sql(dialect=self.dialect.sqlglot_name)
 
 
@@ -107,6 +113,11 @@ def _filter(bf: BoundFilter, *, lift) -> BoundFilter:
     if key is bf.value_key:
         return bf
     return bf.model_copy(update={"value_key": key, "referenced_keys": _walk(key)})
+
+
+def field_path_of(key: ValueKey) -> Tuple[str, ...]:
+    """A field reference's path; ``()`` for any other key."""
+    return key.path if isinstance(key, (FieldKey, FieldSqlKey)) else ()
 
 
 def _walk(key: ValueKey) -> Tuple[ValueKey, ...]:

@@ -364,6 +364,9 @@ class DatasetField(DatasetPart):
     _resolved: bool = PrivateAttr(default=False)
     # Runtime-only: the native SQL holds a window function (a column of the dataset's materialised relation).
     _windowed: bool = PrivateAttr(default=False)
+    # Runtime-only: every window order item of the native SQL states its NULL placement (Mode B: Ossie's), which
+    # emission keeps written whatever the database's default.
+    _states_nulls: bool = PrivateAttr(default=False)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -431,17 +434,23 @@ class DatasetField(DatasetPart):
         """Whether this field carries the native SQL it runs on its datasource."""
         return self._resolved
 
-    def with_native(self, native: str | None, *, windowed: bool = False) -> "DatasetField":
-        """A copy running ``native`` (``None``: the source column of its name); ``windowed`` when it holds a window."""
+    def with_native(self, native: str | None, *, windowed: bool = False, states_nulls: bool = False) -> "DatasetField":
+        """A copy running ``native`` (``None``: the source column of its name); ``windowed`` when it holds a window,
+        ``states_nulls`` when its windows' NULL placement is Mode B's."""
         out = self.model_copy()
-        out._native, out._resolved, out._windowed = native, True, windowed
+        out._native, out._resolved, out._windowed, out._states_nulls = native, True, windowed, states_nulls
         return out
 
     def unresolved(self) -> "DatasetField":
         """A copy whose running SQL is resolved again from its forms."""
         out = self.model_copy()
-        out._native, out._resolved, out._windowed = None, False, False
+        out._native, out._resolved, out._windowed, out._states_nulls = None, False, False, False
         return out
+
+    @property
+    def states_nulls(self) -> bool:
+        """Whether every window order item of the definition states its NULL placement, kept as written."""
+        return self._states_nulls
 
     @property
     def windowed(self) -> bool:

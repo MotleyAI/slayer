@@ -58,7 +58,8 @@ def _reject_dsl_constructs(expression: str) -> None:
             f"put them in a query filter (`SlayerQuery.filter`) or in a "
             f"`DatasetMetric.expression`. The filter was: {expression!r}"
         )
-    tx_match = _DSL_TRANSFORM_CALL_RE.search(stripped)
+    tx_match = next((m for m in _DSL_TRANSFORM_CALL_RE.finditer(stripped) if not _windowed_call(stripped, m.end())),
+                    None)
     if tx_match is not None:
         raise ValueError(
             f"SQL-mode filter cannot contain SLayer transform calls "
@@ -66,6 +67,19 @@ def _reject_dsl_constructs(expression: str) -> None:
             f"put them in a query filter (`SlayerQuery.filter`) or in a "
             f"`DatasetMetric.expression`. The filter was: {expression!r}"
         )
+
+
+_OVER_RE = re.compile(r"\s*over\s*\(", re.IGNORECASE)
+
+
+def _windowed_call(text: str, opened: int) -> bool:
+    """Whether the call whose ``(`` ends at ``opened`` is followed by ``OVER (``: a SQL window, not a transform."""
+    depth = 1
+    for i in range(opened, len(text)):
+        depth += (text[i] == "(") - (text[i] == ")")
+        if depth == 0:
+            return _OVER_RE.match(text, i + 1) is not None
+    return False
 
 
 def _bare_field_refs(expression: str) -> list[str]:
