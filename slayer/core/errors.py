@@ -1652,7 +1652,7 @@ class OntologyMappingInvalidError(SlayerError):
             summary=f"Mapping {name!r} of datasource {data_source!r} is refused:\n{_listed(self.reasons)}"))
 
 
-class BrokenMapping(BaseModel):
+class BrokenDependent(BaseModel):
     """A stored mapping an explicit change would break: its problems and the ``concept_mappings`` entries they sit in
     (``None`` for the document level)."""
 
@@ -1662,10 +1662,10 @@ class BrokenMapping(BaseModel):
     entries: list[int | None]
 
 
-class OntologyMappingBreakError(SlayerError):
+class StoredDependentBreakError(SlayerError):
     """An explicit change refused because it would break stored mappings; ``reasons`` names each and its problems."""
 
-    def __init__(self, *, change: str, broken: Sequence[BrokenMapping], own: Sequence[str] = ()) -> None:
+    def __init__(self, *, change: str, broken: Sequence[BrokenDependent], own: Sequence[str] = ()) -> None:
         self.change = change
         self.broken = list(broken)
         self.reasons = [f"mapping {b.name!r} of datasource {b.data_source!r}: {p}" for b in self.broken

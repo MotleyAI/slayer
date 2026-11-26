@@ -149,10 +149,12 @@ from slayer.sql.sql_template import check_aggregation_definition
 from slayer.ontology.documents import (
     checked_mapping_shape, edited_mapping, edited_ontology, read_ontology, stored_name_reasons,
 )
-from slayer.ontology.scope import MappingScope, check_mapping
+from slayer.ontology.scope import check_mapping
+from slayer.core.datasource_scope import DatasourceScope
 from slayer.storage.ontology_documents import (
-    MAPPING_NAME, ONTOLOGY_NAME, StoredMapping, broken_mappings, report_broken, stored_data,
+    MAPPING_NAME, ONTOLOGY_NAME, StoredMapping, broken_mappings, stored_data,
 )
+from slayer.storage.dependents import report_broken
 from slayer.live_schema.type_refinement import (
     has_refineable_fields,
     has_sqlite_widenable_fields,
@@ -942,7 +944,7 @@ class StorageBackend(ABC):
             await self.validate_for_save(dataset, failures=failures)
             warn_library_shadows(dataset)
             saved = dataset
-            await self._guard_mappings(change=f"Saving dataset {dataset.name!r}", data_source=dataset.data_source,
+            await self._guard_dependents(change=f"Saving dataset {dataset.name!r}", data_source=dataset.data_source,
                                        changed=lambda scope: scope.with_dataset(saved.name, saved))
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
         moving = owner is None and dataset.semantic_model is not None
@@ -1314,7 +1316,7 @@ class StorageBackend(ABC):
         )
         if await self.list_ontology_mappings(data_source):
             datasets = await self._document_datasets(data_source=data_source, name=name, text=text)
-            await self._guard_mappings(change=f"Saving semantic model {name!r}", data_source=data_source,
+            await self._guard_dependents(change=f"Saving semantic model {name!r}", data_source=data_source,
                                        changed=lambda scope: scope.with_document(name, datasets))
         await self._save_semantic_model_text_impl(data_source=data_source, name=name, text=text)
 
@@ -1489,7 +1491,7 @@ class StorageBackend(ABC):
         index = await self._document_index(ds)
         members = [d.name for k, d in index.datasets.items() if index.owners.get(k) == name]
         metrics = [m.name for m in index.metrics.values() if m.semantic_model == name]
-        await self._guard_mappings(change=f"Deleting semantic model {name!r}", data_source=ds,
+        await self._guard_dependents(change=f"Deleting semantic model {name!r}", data_source=ds,
                                    changed=lambda scope: scope.with_document(name, None))
         if not await self._delete_semantic_model_row(data_source=ds, name=name):
             return False
@@ -1565,7 +1567,7 @@ class StorageBackend(ABC):
         data, reasons = read_ontology(text)
         reasons = reasons or stored_name_reasons(data, name=name)
         if isinstance(data, dict) and "ontology" in data:
-            await self._guard_mappings(change=f"Saving ontology {name!r}", own=reasons,
+            await self._guard_dependents(change=f"Saving ontology {name!r}", own=reasons,
                                        changed=lambda scope: scope.with_ontology(name, data))
         if reasons:
             raise OntologyDocumentInvalidError(name=name, reasons=reasons)
@@ -1577,7 +1579,7 @@ class StorageBackend(ABC):
         _validate_path_component(name, kind=ONTOLOGY_NAME)
         if await self._get_ontology_text_impl(name=name) is None:
             return False
-        await self._guard_mappings(change=f"Deleting ontology {name!r}",
+        await self._guard_dependents(change=f"Deleting ontology {name!r}",
                                    changed=lambda scope: scope.with_ontology(name, None))
         return await self._delete_ontology_row(name=name)
 
@@ -1609,7 +1611,7 @@ class StorageBackend(ABC):
         if await self.get_datasource(data_source) is None:
             raise ValueError(f"Datasource {data_source!r} not found; a mapping belongs to a stored datasource")
         data = checked_mapping_shape(text, name=name, data_source=data_source)
-        resolution = check_mapping(data, scope=await self._mapping_scope(data_source))
+        resolution = check_mapping(data, scope=await self._datasource_scope(data_source))
         if resolution.problems:
             raise OntologyMappingInvalidError(name=name, data_source=data_source,
                                               reasons=[str(p) for p in resolution.problems])
@@ -1640,25 +1642,25 @@ class StorageBackend(ABC):
         return await self._stored_mapping_problems(text, data_source=data_source, name=name)
 
     async def _stored_mapping_problems(self, text: str, *, data_source: str, name: str,
-                                       scope: MappingScope | None = None) -> list[str]:
+                                       scope: DatasourceScope | None = None) -> list[str]:
         try:
             data = checked_mapping_shape(text, name=name, data_source=data_source)
         except OntologyMappingInvalidError as exc:
             return exc.reasons
-        resolution = check_mapping(data, scope=scope or await self._mapping_scope(data_source))
+        resolution = check_mapping(data, scope=scope or await self._datasource_scope(data_source))
         return [str(p) for p in resolution.problems]
 
     async def load_ontology_mappings(self, *, data_source: str | None = None) -> Loaded[StoredMapping]:
         """Every stored mapping that resolves (of ``data_source`` when given), and the ones that do not."""
         loaded: list[StoredMapping] = []
         errors: list[StoredDocumentLoadError] = []
-        scopes: dict[str, MappingScope] = {}
+        scopes: dict[str, DatasourceScope] = {}
         for ds, name in await self.list_ontology_mappings(data_source):
             text = await self._get_ontology_mapping_text_impl(data_source=ds, name=name)
             if text is None:
                 continue
             if ds not in scopes:
-                scopes[ds] = await self._mapping_scope(ds)
+                scopes[ds] = await self._datasource_scope(ds)
             problems = await self._stored_mapping_problems(text, data_source=ds, name=name, scope=scopes[ds])
             if problems:
                 errors.append(StoredDocumentLoadError(kind="ontology_mapping", name=name, data_source=ds,
@@ -1667,7 +1669,7 @@ class StorageBackend(ABC):
                 loaded.append(StoredMapping(name=name, data_source=ds, text=text))
         return loaded, errors
 
-    async def _mapping_scope(self, data_source: str) -> MappingScope:
+    async def _datasource_scope(self, data_source: str) -> DatasourceScope:
         """What a mapping of ``data_source`` resolves against now."""
         ontologies: dict[str, dict[str, Any]] = {}
         for name in await self._list_ontology_names():
@@ -1681,9 +1683,9 @@ class StorageBackend(ABC):
         for key, dataset in index.datasets.items():
             documents.setdefault(index.owners[key], []).append(dataset)
         loaded, _ = await self.load_datasets(data_source=data_source)
-        return MappingScope(data_source=data_source, ontologies=ontologies, documents=documents, datasets=loaded)
+        return DatasourceScope(data_source=data_source, ontologies=ontologies, documents=documents, datasets=loaded)
 
-    async def _guard_mappings(self, *, change: str, changed: Callable[[MappingScope], MappingScope],
+    async def _guard_dependents(self, *, change: str, changed: Callable[[DatasourceScope], DatasourceScope],
                               data_source: str | None = None, own: list[str] | None = None) -> None:
         """Refuse ``change`` (``changed`` maps a scope to its state after it) when it breaks a stored mapping, of
         ``data_source`` when given, listing the changed document's ``own`` problems too; a database-driven change
@@ -1693,7 +1695,7 @@ class StorageBackend(ABC):
         for ds in sorted({ds for ds, _ in identities}):
             mappings = [(n, data) for d, n in identities if d == ds and isinstance(
                 data := stored_data(await self._get_ontology_mapping_text_impl(data_source=d, name=n)), dict)]
-            before = await self._mapping_scope(ds)
+            before = await self._datasource_scope(ds)
             broken += broken_mappings(mappings, before=before, after=changed(before))
         report_broken(change=change, broken=broken, own=own)
 
@@ -1865,7 +1867,7 @@ class StorageBackend(ABC):
         if target is None:
             return False
         resolved_data_source, resolved_name = target
-        await self._guard_mappings(change=f"Deleting dataset {resolved_name!r}", data_source=resolved_data_source,
+        await self._guard_dependents(change=f"Deleting dataset {resolved_name!r}", data_source=resolved_data_source,
                                    changed=lambda scope: scope.with_dataset(resolved_name, None))
         owner = await self._owner_of(resolved_name, data_source=resolved_data_source)
         if owner is not None:

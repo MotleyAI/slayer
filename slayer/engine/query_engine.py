@@ -240,7 +240,7 @@ from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend, one_upgrade_pass, with_canonical_spellings
 from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
-from slayer.storage.ontology_documents import database_driven
+from slayer.storage.dependents import database_driven
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
 from slayer.core.models import DatasetRelationship

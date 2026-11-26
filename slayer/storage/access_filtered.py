@@ -13,7 +13,7 @@ from slayer.core.errors import (
     AccessTagsEditError,
     HiddenContentConflictError,
     MemoryNotFoundError,
-    OntologyMappingBreakError,
+    StoredDependentBreakError,
     OssieDocumentInvalidError,
     StoredDocumentLoadError,
     UnknownRelationshipTargetError,
@@ -408,7 +408,7 @@ class AccessFilteredStorage(StorageBackend):
         """``call``; a break of a mapping entry the caller cannot see is a hidden-content conflict."""
         try:
             return await call
-        except OntologyMappingBreakError as exc:
+        except StoredDependentBreakError as exc:
             for broken in exc.broken:
                 data = stored_data(await self._inner.get_ontology_mapping_text(broken.name, broken.data_source))
                 if set(broken.entries) & await self._hidden_entries(data, data_source=broken.data_source):
@@ -538,7 +538,7 @@ class AccessFilteredStorage(StorageBackend):
             # Peers the full store cannot load lie outside the view: skipped unreported.
             await self._unbroken(self._inner.save_dataset(
                 merged, _validate=_validate, failures=DocumentLoadFailures(report=False)), kind="dataset", name=dataset.name)
-        except (HiddenContentConflictError, OntologyMappingBreakError):
+        except (HiddenContentConflictError, StoredDependentBreakError):
             raise
         except ValueError:  # valid in the view, so a full-store rejection stems from hidden parts
             raise HiddenContentConflictError(kind="dataset", name=dataset.name) from None
