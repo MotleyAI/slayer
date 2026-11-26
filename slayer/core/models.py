@@ -62,7 +62,6 @@ from slayer.core.field_expression import (
 )
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
-from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, in_stored_document, migrate as _migrate_schema, migrating_document
 
 if TYPE_CHECKING:
@@ -689,13 +688,6 @@ def check_metric_name(name: str, *, what: str) -> str:
     return name
 
 
-def check_metric_text(text: str, *, what: str) -> str:
-    """Reject raw ``OVER (...)`` window SQL — unparseable by the expression grammar."""
-    if has_window_function(text):
-        raise ValueError(f"{what} '{text}' {WINDOW_IN_FILTER_ERROR}")
-    return text
-
-
 class MetricBase(BaseModel):
     """A metric's substitution state: its text as written and the variables its binding reads."""
 
@@ -755,7 +747,7 @@ class DatasetMetric(MetricBase, DatasetPart):
         return check_metric_name(v, what="DatasetMetric name")
 
     @model_validator(mode="after")
-    def _reject_raw_window_function(self) -> "DatasetMetric":
+    def _require_portable_text(self) -> "DatasetMetric":
         if self.load_warning is not None:
             return self
         text = portable_text(self.expression)
@@ -763,7 +755,6 @@ class DatasetMetric(MetricBase, DatasetPart):
             carried = ", ".join(dialect_tokens(self.expression)) or "none"
             raise FieldExpressionError(owner=f"Metric {self.name!r}", reason=f"has no portable sql (dialects carried: "
                                        f"{carried}); only sql or an OSSIE_SQL_2026 entry is evaluated.")
-        check_metric_text(text, what="DatasetMetric expression")
         return self
 
     @property

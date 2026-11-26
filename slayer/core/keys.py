@@ -787,6 +787,56 @@ class ScalarCallKey(_FrozenKey, frozen=True):
         )
 
 
+class WindowFrameSpec(BaseModel, frozen=True):
+    """A window's ``ROWS`` / ``RANGE`` frame: each bound a kind (``unbounded preceding``, ``preceding``, ``current row``,
+    ``following``, ``unbounded following``) and its whole-number offset; no ``end`` for a single start bound."""
+
+    unit: str
+    start: Tuple[str, Optional[Decimal]]
+    end: Optional[Tuple[str, Optional[Decimal]]] = None
+
+
+class WindowKey(_FrozenKey, frozen=True):
+    """``function(args) [FILTER (WHERE filter)] OVER (PARTITION BY … ORDER BY … frame)``.
+
+    Row-level (phase ROW) when no operand is aggregate-valued: a windowed column of the dataset at ``anchor``, the route
+    from the reading dataset. Measure-level (phase POST) otherwise: a transform over its operand's cells. Each order
+    item carries its resolved NULL placement."""
+
+    function: str
+    args: Tuple["ValueKey", ...] = ()
+    filter: Optional["ValueKey"] = None
+    partition: Tuple["ValueKey", ...] = ()
+    order: Tuple["ValueKey", ...] = ()
+    descending: Tuple[bool, ...] = ()
+    nulls_first: Tuple[bool, ...] = ()
+    frame: Optional[WindowFrameSpec] = None
+    anchor: Tuple[str, ...] = ()
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW if all(c.phase is Phase.ROW for c in self.children()) else Phase.POST
+
+    @property
+    def row_level(self) -> bool:
+        return self.phase is Phase.ROW
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return (*self.args, *(() if self.filter is None else (self.filter,)), *self.partition, *self.order)
+
+    def map_children(
+        self, fn: Callable[["ValueKey"], "ValueKey"],
+    ) -> "WindowKey":
+        m = _ChildMapper(fn)
+        update = {
+            "args": tuple(m(a) for a in self.args),
+            "filter": None if self.filter is None else m(self.filter),
+            "partition": tuple(m(p) for p in self.partition),
+            "order": tuple(m(o) for o in self.order),
+        }
+        return self.model_copy(update=update) if m.changed else self
+
+
 _CAST_TYPE_TOKEN_RE = re.compile(r"\[\]|\(([^()]*)\)|[A-Z_][A-Z0-9_]*")
 
 
@@ -995,6 +1045,7 @@ ValueKey = Union[
     SqlFragmentKey,
     CastKey,
     ListSetKey,
+    WindowKey,
 ]
 
 
@@ -1103,6 +1154,7 @@ TimePointCmpKey.model_rebuild()
 InKey.model_rebuild()
 CastKey.model_rebuild()
 ListSetKey.model_rebuild()
+WindowKey.model_rebuild()
 TimeTruncKey.model_rebuild()
 # AggregateKey.source forward-references the expression composites.
 AggregateKey.model_rebuild()
@@ -1147,6 +1199,7 @@ KIND_POLICY: dict[type, KindPolicy] = {
     SqlFragmentKey: KindPolicy(),
     CastKey: KindPolicy(slot_composite=True, materialised_order=True),
     ListSetKey: KindPolicy(slot_composite=True, materialised_order=True),
+    WindowKey: KindPolicy(slottable=True, materialised_order=True),
 }
 SLOT_COMPOSITE_KINDS: Tuple[type, ...] = tuple(k for k, p in KIND_POLICY.items() if p.slot_composite)
 

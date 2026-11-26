@@ -22,7 +22,6 @@ import re
 
 from pydantic import BaseModel, Field
 
-from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 import slayer.core.enums
 
 
@@ -104,15 +103,12 @@ _SQL_KEYWORDS = frozenset({
 def parse_sql_predicate(expression: str) -> ParsedFilter:
     """Validate a SQL-mode predicate string and return a :class:`ParsedFilter`.
 
-    Pre-rejects DSL constructs (aggregation references, transform calls) and
-    raw ``OVER (...)`` window-function syntax. Does NOT invoke sqlglot —
+    Pre-rejects DSL constructs (aggregation references, transform calls). Does NOT invoke sqlglot —
     full dialect-aware SQL parsing happens at generation time.
 
     The ``ParsedFilter.sql`` field is the original ``expression`` unchanged;
     ``fields`` is a best-effort regex extraction of field-shaped
     identifiers, used only for validation (see :func:`_bare_field_refs`).
     """
-    if has_window_function(expression):
-        raise ValueError(f"Filter '{expression}' {WINDOW_IN_FILTER_ERROR}")
     _reject_dsl_constructs(expression)
     return ParsedFilter(sql=expression, fields=_bare_field_refs(expression))

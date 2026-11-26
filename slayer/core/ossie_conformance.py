@@ -136,7 +136,7 @@ def read_filter(text: str, *, variables: Mapping[str, Any] | None = None) -> Fil
         out.problem = f"the variables {unbound} are not bound; pass them as the run's variables"
         return out
     try:
-        tree = parse_bound_expr(text, variables, windows=True) if variables else parse_template(text, windows=True)
+        tree = parse_bound_expr(text, variables) if variables else parse_template(text)
     except ValueError as exc:
         out.problem = f"the filter does not parse: {exc}"
         return out
@@ -147,13 +147,13 @@ def read_filter(text: str, *, variables: Mapping[str, Any] | None = None) -> Fil
 
 
 def _text_problem(text: str) -> Optional[str]:
-    legacy = legacy_spans(text, windows=True)
+    legacy = legacy_spans(text)
     if legacy:
         return f"{legacy[0].written!r} is a deprecated SLayer spelling; write {legacy[0].twin!r}"
-    spellings = nonossie_spellings(text, windows=True)
+    spellings = nonossie_spellings(text)
     if spellings:
         return f"{spellings[0]} is SLayer syntax, not an Ossie expression"
-    for call in call_spans(text, windows=True):
+    for call in call_spans(text):
         name = call.name.lower()
         if name in REWRITTEN_AGGREGATES:
             return f"{call.callee}() is a SLayer function Ossie does not define"

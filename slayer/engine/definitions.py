@@ -27,7 +27,7 @@ from slayer.core.scope import DatasetScope
 from slayer.core.syntax import DottedRef, Ref, parse_expr, walk_parsed
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.sql.definitions import check_metric_forms, check_portable_window, with_converted_sql
+from slayer.sql.definitions import check_metric_forms, with_converted_sql
 from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.window_detect import holds_window
@@ -200,9 +200,8 @@ def _resolved_field(
         return field.with_native(form.text, windowed=holds_window(form.text, dialect=dialect_for_ds_type(ds_type).sqlglot_name))
     if unquoted_identifier(form.text) is not None:
         return field.with_native(form.text)
-    check_portable_window(form.text, field=field.name, dataset=dataset.name)
-    return field.with_native(portable_native(form.text, field=field.name, dataset=dataset, datasets=datasets,
-                                              ds_type=ds_type, live=live))
+    native = portable_native(form.text, field=field.name, dataset=dataset, datasets=datasets, ds_type=ds_type, live=live)
+    return field.with_native(native, windowed=holds_window(native, dialect=dialect_for_ds_type(ds_type).sqlglot_name))
 
 
 def _metric_readers(dataset: SlayerDataset, *, live: ColumnTypes, ds_type: str | None) -> list[DatasetField]:

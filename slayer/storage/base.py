@@ -1030,7 +1030,7 @@ class StorageBackend(ABC):
         datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
         stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
         if datasource is not None and not dataset.source_queries:
-            check_forms(dataset, ds_type=datasource.type, stored=stored)
+            check_forms(dataset, ds_type=datasource.type)
         if self._ids_collide_as_filenames:
             await self._check_dataset_identity_collision(dataset)
         await self._check_case_collisions(dataset)
