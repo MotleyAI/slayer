@@ -89,6 +89,22 @@ class TestTrunc:
         _close(by_id(resp, "t"), {1: 2.78})
         _close(by_id(resp, "r"), {1: 2.79})
 
+    @pytest.mark.parametrize(("expr", "expected"), [
+        ("trunc(2, CAST(2147483648 AS BIGINT))", 2), ("trunc(2, CAST(-2147483649 AS BIGINT))", 0),
+        ("round(2.5, CAST(2147483648 AS BIGINT))", 2.5), ("round(2.5, CAST(-2147483649 AS BIGINT))", 0),
+        ("trunc(2.5, 2147483648)", 2.5), ("round(2.5, -2147483649)", 0), ("trunc(2.5, 50)", 2.5),
+        ("trunc(2.5, -50)", 0), ("trunc(2.5, -38)", 0), ("trunc(2.5, 38)", 2.5),
+    ])
+    async def test_digits_past_int_range(self, engine: SlayerQueryEngine, expr: str, expected: float) -> None:
+        resp = await engine.execute(fn_query(expr, filter=["fn.id = 1"]))
+        assert by_id(resp) == {1: expected}
+
+    @pytest.mark.parametrize("name", ["round", "trunc"])
+    async def test_postgres_numeric_digits_kept(self, name: str) -> None:
+        # NUMERIC holds 16383 fractional digits.
+        sql = await emit_fn(fn_query(f"{name}(fn.x, 16383)"), dialect="postgres")
+        assert "16383" in sql, sql
+
     @pytest.mark.parametrize("dialect", ["trino", "presto", "duckdb"])
     async def test_integer_truncation_never_rounds(self, dialect: str) -> None:
         # ROUND / ABS overflow at an integer type's limits.

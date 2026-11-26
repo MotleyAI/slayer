@@ -1145,7 +1145,8 @@ class SqlDialect(BaseModel):
             return self.integer_trunc(value, digits)
         rounded = exp.Round(this=value.copy(), decimals=digits.copy())
         known = literal_int(digits)
-        unit = (exp.Literal.number(format(Decimal(1).scaleb(-known), "f")) if known is not None
+        # An exact literal within DECIMAL's 38 digits; past them the unit is 0 or infinite and ROUND alone answers.
+        unit = (exp.Literal.number(format(Decimal(1).scaleb(-known), "f")) if known is not None and -37 <= known <= 38
                 else exp.Pow(this=lit(10), expression=exp.Neg(this=operand_copy(digits))))
         back = exp.Sub(this=rounded.copy(), expression=exp.Mul(this=exp.Sign(this=value.copy()), expression=unit))
         away = exp.GT(this=exp.Abs(this=rounded.copy()), expression=exp.Abs(this=value.copy()))

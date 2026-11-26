@@ -1283,6 +1283,9 @@ class TestTrinoTruncation:
     @pytest.mark.parametrize(("expr", "expected"), [
         ("trunc(2147483647, -1)", 2147483640), ("trunc(-27, -1)", -20), ("trunc(orders.id * 1000 + 7, -1)", 1000),
         ("trunc(2.789, CAST(orders.id AS BIGINT))", 2.7), ("round(2.789, CAST(orders.id AS BIGINT))", 2.8),
+        ("trunc(2, CAST(2147483648 AS BIGINT))", 2), ("round(2.5, CAST(-2147483649 AS BIGINT))", 0),
+        ("trunc(2.5, 2147483648)", 2.5), ("trunc(2.5, 50)", 2.5), ("trunc(2.5, -50)", 0),
+        ("trunc(2.5, -38)", 0), ("trunc(2.5, 38)", 2.5),
     ])
     async def test_value(self, trino_dates: SlayerQueryEngine, expr: str, expected: float) -> None:
         assert await _order_value(trino_dates, expr, order_id=1) == pytest.approx(expected)
