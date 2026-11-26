@@ -472,7 +472,7 @@ def _lineups(walker: _Walker, *, mapping: str) -> list[LineUp]:
         source = edge.target.plain_fields()
         if source is None or edge.relationship.arity != 2:
             continue
-        for target in (t for t in targets if t.concept == edge.target.concept):
+        for target in (t for t in targets if walker.ontology.subtype_of(t.concept, edge.target.concept)):
             fields = target.plain_fields()
             if fields is None or len(fields[1]) != len(source[1]):
                 continue

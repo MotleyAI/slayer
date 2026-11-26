@@ -87,6 +87,20 @@ async def test_a_relationship_lines_up_in_either_orientation(tmp_path: Path) -> 
         "Flight.aircraft"]
 
 
+async def test_a_relationship_to_a_subtypes_dataset_lines_up(tmp_path: Path) -> None:
+    """Spec scenario: A relationship to a subtype's dataset lines up."""
+    storage = await flights_store("yaml", tmp_path, mapping=False,
+                                  model=flights_model(relationships=[FLIGHT_AIRCRAFT]))
+    await storage.save_ontology_text(name=FLIGHTS, text=edited(ONTOLOGY, lambda d: d["ontology"].append(
+        {"concept": "JetAircraft", "type": "EntityType", "extends": ["Aircraft"]})))
+    await storage.save_ontology_mapping_text(data_source=FLIGHTS_DS, name=FLIGHTS_MAPPING, warnings_out=[],
+                                             text=edited(MAPPING, lambda d: concept_mapping(d, "Aircraft").update(
+                                                 concept="JetAircraft")))
+    assert concepts_of((await dataset_payload(storage, "AIRCRAFT"))["own_concepts"]) == ["JetAircraft"]
+    [found] = lined_up(await dataset_payload(storage, "FLIGHT"), "AIRCRAFT")
+    assert (found["relationship"], found["multiplicity"]) == ("Flight.aircraft", "ManyToOne")
+
+
 async def test_hidden_datasets_annotate_nothing(tmp_path: Path) -> None:
     """Spec scenario: Hidden datasets annotate nothing."""
     storage = await flights_store("yaml", tmp_path, model=flights_model(relationships=[FLIGHT_AIRCRAFT]))

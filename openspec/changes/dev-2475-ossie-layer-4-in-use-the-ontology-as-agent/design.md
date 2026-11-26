@@ -78,6 +78,7 @@ Each entry: the decision, the options weighed, the one taken and why, and who to
     ```
 29. **Regenerated `landscape` diagram** in `architecture/system.arc42.md`: whatever `la-arch-diagrams` generates from decision 26, confined to its block. **(user)**
 30. **New capability `ontologies/ontology-use`** in the existing cross-cutting `ontologies` group. **(user)**
+31. **A relationship line-up's target side** is the object mapping of `E` or of a subtype of `E`, since a subtype's objects are objects of `E` (as decision 2 reads `requires`). **(user, following Ossie)**
 
 ## Risks / Trade-offs
 
