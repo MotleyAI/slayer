@@ -39,3 +39,23 @@ async def test_home_rows_are_preserved(case) -> None:
     over_rows = _total([row["m_rev"] for row in result.values()])
     law_assert(values_equal(over_rows, home.data[0]["t"]), law="home-row preservation",
                detail=f"result sums to {over_rows!r}, home rows to {home.data[0]['t']!r}", shape=shape)
+
+
+#: Windowed operand → its unwindowed twin.
+WINDOWED_TWINS = {"wcust": "cust", "wrev": "rev"}
+
+
+@pytest.fixture(params=rootless_params(lambda s: bool(set(s.metric_keys) & set(WINDOWED_TWINS))))
+async def windowed_case(request):
+    dialect, shape = request.param
+    async with seed_engine(dialect, orphan=True) as eng:
+        yield eng, shape
+
+
+async def test_a_windowed_operand_keeps_its_twins_home_rows(windowed_case) -> None:
+    eng, shape = windowed_case
+    for key in set(shape.metric_keys) & set(WINDOWED_TWINS):
+        windowed = rootless_rows(await eng.execute(rootless_query(shape, keys=[key])), shape=shape)
+        twin = rootless_rows(await eng.execute(rootless_query(shape, keys=[WINDOWED_TWINS[key]])), shape=shape)
+        law_assert(set(twin) <= set(windowed), law="home-row preservation",
+                   detail=f"{key!r} lacks its twin's rows {sorted(map(str, set(twin) - set(windowed)))}", shape=shape)

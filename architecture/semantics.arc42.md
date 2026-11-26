@@ -247,10 +247,11 @@ principles every layer obeys.
       supplies the union of its full-grain operands' cells, through combinations
       and transforms; with none, the union of its operands' extended cells.
     - **12.4 Inferred.** An omitted population is the **row supply**: the union
-      of every top-level measure's supply — `A`'s cells with no measures, the
-      unit with no dimensions. Field filters restrict each supply before it is
-      taken (Axiom 14) and never choose one; a query needing an undefined `A`
-      fails closed.
+      of the query's metrics' supplies — `A`'s cells with no metrics, the unit
+      with no dimensions; an aggregate in a filter, order key or computed
+      dimension reads those cells and supplies none. Field filters restrict each
+      supply before it is taken (Axiom 14) and never choose one; a query needing
+      an undefined `A` fails closed.
       [enforced: test:tests/test_dev2212_row_supply.py]
     - **12.5 Raw rows.** Raw-row mode lists one row per row of the population,
       else of `A` (never 12.4); every dimension must be provably determined — no
