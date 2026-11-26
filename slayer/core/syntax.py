@@ -309,6 +309,7 @@ _DISTINCT_ONLY = ("DISTINCT is supported only as count(distinct x), i.e. count_d
 _DISTINCT_CALLS = {"count": "count_distinct", "array_agg": "collect"}
 _NOT_IN = "not in"
 _IN_OPS = frozenset({"in", _NOT_IN})
+_IS_NOT = "is not"
 
 
 class _Problem(ValueError):
@@ -1313,7 +1314,7 @@ def _suffix(element: pp.ParserElement, build) -> pp.ParserElement:
 
 
 def _is_op(negate: bool) -> str:
-    return "is not" if negate else "is"
+    return _IS_NOT if negate else "is"
 
 
 def _negated(node: Any, negate: bool) -> Any:
@@ -2629,7 +2630,7 @@ def _nvl2(args: Tuple[Any, ...]) -> ParsedExpr:
     """Ossie ``NVL2(e, a, b)`` as ``iif(e IS NOT NULL, a, b)``."""
     if len(args) != 3:
         raise _Problem(f"NVL2 takes (expr, not_null_result, null_result); got {len(args)} arguments.")
-    return ScalarCall(name="iif", args=(Cmp(op="is not", left=args[0], right=Literal(value=None)), *args[1:]))
+    return ScalarCall(name="iif", args=(Cmp(op=_IS_NOT, left=args[0], right=Literal(value=None)), *args[1:]))
 
 
 def _charindex(args: Tuple[Any, ...]) -> ParsedExpr:
@@ -3203,7 +3204,7 @@ def _render(parsed: Any, *, style: _Style) -> str:  # NOSONAR(S3776) — flat pe
     if isinstance(parsed, (Arith, Cmp)):
         prec = _precedence(parsed)
         left = _operand_text(parsed.left, minimum=prec + 1 if isinstance(parsed, Cmp) else prec, style=style)
-        if style is not _Style.LEGACY and isinstance(parsed, Cmp) and parsed.op in ("is", "is not") and _is_null(parsed.right):
+        if style is not _Style.LEGACY and isinstance(parsed, Cmp) and parsed.op in ("is", _IS_NOT) and _is_null(parsed.right):
             return f"{left} {parsed.op.upper()} NULL"
         right = _operand_text(parsed.right, minimum=prec + 1, style=style)
         return f"{left} {parsed.op if style is _Style.LEGACY else _CANONICAL_OPS.get(parsed.op, parsed.op)} {right}"

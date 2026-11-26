@@ -59,6 +59,13 @@ class TestMillisecond:
     async def test_emits_on_every_dialect(self, dialect: str, column: str) -> None:
         await emit_fn(fn_query(f"EXTRACT(MILLISECOND FROM fn.{column})"), dialect=dialect)
 
+    @pytest.mark.parametrize("dialect", ["trino", "presto"])
+    async def test_presto_family_reads_its_millisecond_function(self, dialect: str) -> None:
+        # The Presto family's EXTRACT has no MICROSECOND field.
+        sql = await emit_fn(fn_query("EXTRACT(MILLISECOND FROM fn.created_at)"), dialect=dialect)
+        assert "MILLISECOND(" in sql.upper()
+        assert "MICROSECOND" not in sql.upper()
+
     async def test_millisecond_function_refused(self, engine: SlayerQueryEngine) -> None:
         error = await refusal(engine, fn_body("MILLISECOND(fn.created_at)"))
         for remedy in ("EXTRACT(MILLISECOND FROM x)", "date_part('millisecond', x)"):

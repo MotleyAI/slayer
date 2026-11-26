@@ -1216,7 +1216,7 @@ class TestTrinoStatementTimeout:
 # ---------------------------------------------------------------------------
 
 _DATE_CASES = matrix_cases()
-assert len(_DATE_CASES) == 116
+assert len(_DATE_CASES) == 118
 
 
 @pytest.fixture(scope="module")

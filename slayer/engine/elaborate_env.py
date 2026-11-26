@@ -1633,9 +1633,9 @@ def _coerce_in(key: InKey, *, text: Callable[[object], bool], number: Callable[[
     return key
 
 
-def _numeric_text_error(key: ScalarCallKey, arg: object) -> ScalarOperandTypeError:
+def _raise_numeric_text(key: ScalarCallKey, arg: object) -> NoReturn:
     display = _operand_display(arg)
-    return ScalarOperandTypeError(
+    raise ScalarOperandTypeError(
         summary=f"{key.name}() reads numbers, but `{display}` is TEXT.",
         suggestion=f"Convert numbers stored as text: {key.name}(TRY_CAST({display} AS DOUBLE)).",
     )
@@ -1648,7 +1648,7 @@ def _numeric_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool]) 
         if isinstance(arg, LiteralKey) and isinstance(arg.value, str):
             args[i] = LiteralKey(value=_number_literal(arg.value, beside=key))
         elif text(arg):
-            raise _numeric_text_error(key, arg)
+            _raise_numeric_text(key, arg)
     return args
 
 
@@ -1659,7 +1659,7 @@ def check_numeric_arguments(key: ValueKey, *, field_type: FieldTypeFn) -> None:
             bad = next((a for a in k.args if not isinstance(a, LiteralKey) and _text_valued(a, field_type=field_type)),
                        None)
             if bad is not None:
-                raise _numeric_text_error(k, bad)
+                _raise_numeric_text(k, bad)
 
 
 def _text_concat_args(

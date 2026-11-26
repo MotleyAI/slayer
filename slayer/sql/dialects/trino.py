@@ -191,6 +191,14 @@ class PrestoFamilyDialect(SqlDialect):
         DatePart.DAY_OF_YEAR: "DAY_OF_YEAR",
     }
 
+    def build_trunc(self, value: Expression, digits: Expression) -> Expression:
+        """``TRUNCATE(x, d)`` takes only a DECIMAL."""
+        return self.rounded_trunc(value, digits)
+
+    def millisecond_part(self, expr: Expression) -> Expression:
+        """``EXTRACT`` has no sub-second field; ``MILLISECOND`` truncates."""
+        return exp.Cast(this=anon("MILLISECOND", expr), to=exp.DataType.build("INT"))
+
     def _interval(self, amount: int, unit: exp.Var) -> exp.Interval:
         """The count is a quoted string: ``INTERVAL '1' DAY``."""
         return exp.Interval(this=exp.Literal.string(str(amount)), unit=unit)

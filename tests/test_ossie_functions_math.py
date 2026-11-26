@@ -60,6 +60,13 @@ class TestTrunc:
     async def test_integer_column_digits_emit(self, dialect: str) -> None:
         await emit_fn(fn_query("trunc(fn.x, fn.n)"), dialect=dialect)
 
+    @pytest.mark.parametrize("dialect", ["trino", "presto"])
+    async def test_presto_family_truncates_digits_by_rounding(self, dialect: str) -> None:
+        # The Presto family's TRUNCATE(x, d) takes only a DECIMAL.
+        sql = (await emit_fn(fn_query("trunc(fn.x, 1)"), dialect=dialect)).upper()
+        assert "ROUND(" in sql
+        assert "TRUNCATE(" not in sql
+
     async def test_truncate_is_trunc(self, engine: SlayerQueryEngine) -> None:
         await assert_twins(engine, "TRUNCATE(fn.x, 1)", "trunc(fn.x, 1)")
         await assert_twins(engine, "truncate(fn.x)", "trunc(fn.x)")
