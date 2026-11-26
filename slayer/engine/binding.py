@@ -575,7 +575,7 @@ def _bind_window(
     parsed: WindowCall, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> WindowKey:
     """``function(args) OVER (…)``: an Ossie ranking, offset or aggregation call, its keys and frame bound."""
-    function, args, condition = _window_function(parsed.function, sub=sub)
+    function, args, condition = _window_function(parsed.function, sub=sub, scope=scope, bundle=bundle)
     frame = parsed.frame
     key = WindowKey(
         function=function, args=args, filter=condition,
@@ -591,7 +591,7 @@ def _bind_window(
 
 
 def _window_function(
-    node: ParsedExpr, *, sub: Callable[[ParsedExpr], ValueKey],
+    node: ParsedExpr, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> Tuple[str, Tuple[ValueKey, ...], Optional[ValueKey]]:
     """``(function, args, filter)`` of the call under ``OVER``; any function Ossie does not window is refused."""
     if isinstance(node, ScalarCall) and node.name in WINDOW_FUNCTION_ARITIES:
@@ -606,7 +606,14 @@ def _window_function(
             suggestion="Use one of those functions, or a SLayer transform over a metric.",
         )
     assert isinstance(node, AggCall)
-    args = (sub(node.source), *(sub(a.value if isinstance(a, NamedArg) else a) for a in node.args))
+    source = node.source
+    if isinstance(source, StarSource):
+        value: ValueKey = _bare_star(scope=scope)
+    elif isinstance(source, DottedRef) and source.parts[-1] == "*":
+        value = _resolve_dotted_star(source.parts, scope=scope, bundle=bundle, quoted=dotted_quoting(source))
+    else:
+        value = sub(source)
+    args = (value, *(sub(a.value if isinstance(a, NamedArg) else a) for a in node.args))
     if agg == "percentile":
         agg = "percentile_cont"
     return agg, args, None if node.filter is None else sub(node.filter)

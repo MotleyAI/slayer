@@ -129,6 +129,12 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
         ("try_", attrgetter("try_")),
     )),
     ListSetKey: ("ListSetKey", (("source", attrgetter("source")),)),
+    WindowKey: ("WindowKey", (
+        ("function", attrgetter("function")), ("args", attrgetter("args")), ("filter", attrgetter("filter")),
+        ("partition", attrgetter("partition")), ("order", attrgetter("order")),
+        ("descending", attrgetter("descending")), ("nulls_first", attrgetter("nulls_first")),
+        ("frame", attrgetter("frame")), ("anchor", attrgetter("anchor")),
+    )),
 }
 
 
@@ -313,11 +319,26 @@ def _fragment_display(key: SqlFragmentKey) -> str:
     return text
 
 
+#: A query's windowed column by its minted field name: the window as written (``window_columns``).
+_WINDOW_DISPLAYS: dict[str, str] = {}
+
+
+def register_window_display(name: str, text: str) -> None:
+    """Show the windowed column ``name`` as the window ``text`` it computes."""
+    _WINDOW_DISPLAYS[name] = text
+
+
+def field_display(path: tuple[str, ...], leaf: str) -> str:
+    """A field reference as written: its path then its leaf, a query's windowed column as its window."""
+    window = _WINDOW_DISPLAYS.get(leaf)
+    return window if window is not None else ".".join((*map(display_token, path), leaf))
+
+
 def _leaf_display(key: ValueKey) -> str | None:
     if isinstance(key, FieldKey):
-        return ".".join((*map(display_token, key.path), key.leaf))
+        return field_display(key.path, key.leaf)
     if isinstance(key, FieldSqlKey):
-        return ".".join((*map(display_token, key.path), key.field_name))
+        return field_display(key.path, key.field_name)
     if isinstance(key, StarKey):
         return ".".join((*map(display_token, key.path), "*"))
     if isinstance(key, LiteralKey):
@@ -421,7 +442,8 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return _transform_key_canonical_str(value)
     if isinstance(value, SqlFragmentKey):
         return sql_fragment_digest(value)
-    if isinstance(value, (ScalarCallKey, ArithmeticKey, CastKey, InKey, TimeTruncKey, LiteralKey, ListSetKey)):
+    if isinstance(value, (ScalarCallKey, ArithmeticKey, CastKey, InKey, TimeTruncKey, LiteralKey, ListSetKey,
+                          WindowKey)):
         # A row-level expression parameter (a FILTER-masked one included).
         return auto_name_from_expression(key_display(value))
     raise TypeError(

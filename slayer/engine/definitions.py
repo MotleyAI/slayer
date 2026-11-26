@@ -6,6 +6,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+import hashlib
+
+import sqlglot
 from pydantic import BaseModel
 from sqlglot import exp
 from sqlglot.expressions.core import Expression as SqlExpression
@@ -31,6 +34,7 @@ from slayer.sql.definitions import check_metric_forms, with_converted_sql
 from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.window_detect import holds_window
+from slayer.engine.window_columns import WINDOW_FIELD_PREFIX
 
 __all__ = [
     "SOURCE_READER_PREFIX", "ColumnTypes", "check_metric_forms", "needs_live_types", "portable_columns",
@@ -226,4 +230,29 @@ def resolved_dataset(
     check_metric_forms(dataset, ds_type=ds_type)
     fields = [_resolved_field(c, dataset=dataset, datasets=datasets, ds_type=ds_type, live=live)
               for c in dataset.fields]
+    fields = _filter_windows(fields, dataset=dataset.name, dialect=dialect_for_ds_type(ds_type).sqlglot_name)
     return dataset.model_copy(update={"fields": [*fields, *_metric_readers(dataset, live=live, ds_type=ds_type)]})
+
+
+def _filter_windows(fields: list[DatasetField], *, dataset: str, dialect: str) -> list[DatasetField]:
+    """Each window in a field's ``filter`` read as a windowed column of ``dataset``: a hidden field running it as
+    written (the database's own NULL placement), the filter masking on that column."""
+    extra: dict[str, DatasetField] = {}
+    out: list[DatasetField] = []
+    for field in fields:
+        if not field.filter or not holds_window(field.filter, dialect=dialect):
+            out.append(field)
+            continue
+
+        def column(node: SqlExpression) -> SqlExpression:
+            if not isinstance(node, exp.Window):
+                return node
+            native = node.sql(dialect=dialect)
+            name = WINDOW_FIELD_PREFIX + hashlib.sha256(native.encode()).hexdigest()[:16]
+            extra.setdefault(name, DatasetField.model_construct(name=name, hidden=True).with_native(
+                native, windowed=True))
+            return exp.column(name, table=dataset)
+
+        masked = sqlglot.parse_one(field.filter, dialect=dialect).transform(column)
+        out.append(field.model_copy(update={"filter": masked.sql(dialect=dialect)}))
+    return [*out, *extra.values()]

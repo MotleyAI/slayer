@@ -27,6 +27,7 @@ from slayer.core.scope import (
     collect_stale_spellings,
     stale_spelling_stage,
 )
+from slayer.engine.window_columns import with_window_columns
 from slayer.engine.compile import compile_query
 from slayer.engine.definitions import resolved_dataset
 from slayer.engine.elaborate import elaborate_query
@@ -90,6 +91,8 @@ def plan_query(
     update = {k: v for k, v in (("granularity_conflicts", prebound.granularity_conflicts),
                                 ("whole_list_reads", prebound.whole_list_reads),
                                 ("date_only_notices", prebound.date_only_notices)) if v}
+    if elaborated.bundle is not bundle:
+        update["stage_bundle"] = elaborated.bundle  # extended by the query's windowed columns
     return planned.model_copy(update=update) if update else planned
 
 
@@ -409,6 +412,8 @@ class _StagePlanner:
             stamped = stamped.model_copy(update={"referenced_datasets": [
                 *stamped.referenced_datasets, *(self.bundle.query_backed[n] for n in raw),
             ]})
+        if planned.stage_bundle is not None:
+            stamped = with_window_columns(stamped, planned=planned.stage_bundle)
         update: Dict[str, Any] = {
             "stage_reads": sorted(reads, key=position.__getitem__),
             "stage_bundle": stamped.model_copy(update={

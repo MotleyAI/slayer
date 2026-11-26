@@ -54,10 +54,12 @@ from slayer.core.errors import (
     UnknownGranularityError,
     UnrelatedDatasetError,
     UnsafeRelationshipInputError,
+    WindowFunctionError,
 )
 from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
+    WindowKey,
     display_token,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
@@ -117,7 +119,7 @@ from slayer.core.deprecation import scheduled_notice
 from slayer.core.models import SlayerDataset
 from slayer.core.relationship_walker import walk_terminal
 from slayer.core.names import folded_collisions, match_name, match_path
-from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
+from slayer.core.refs import bucket_remedy, dotted_key_display, field_display, key_display
 from slayer.core.scope import peek_dataset_field
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.core.time_zones import check_bucketed_zones
@@ -204,7 +206,7 @@ def _key_display(k: ValueKey) -> str:
     if isinstance(k, TimeTruncKey):
         return _key_display(k.source) if isinstance(k.source, (FieldKey, FieldSqlKey)) else key_display(k.source)
     if isinstance(k, (FieldKey, FieldSqlKey)):
-        return ".".join((*map(display_token, k.path), field_leaf(k)))
+        return field_display(k.path, field_leaf(k))
     return type(k).__name__
 
 
@@ -244,6 +246,16 @@ def type_position_conjunct(
         f"field, and metric typing is unavailable because the query has no "
         f"metric position (distinct_dimension_values=False).",
     )
+
+
+def check_row_window(key: WindowKey) -> None:
+    """A row-level window names a dataset: a reference other than the time spine's (semantics Axiom 1)."""
+    if key.anchor is None:
+        raise WindowFunctionError(
+            summary=f"The window `{key_display(key)}` names no dataset, so no rows to run over: it reads no field, "
+            f"or only the time spine's.",
+            suggestion="Read a field of the dataset whose rows it numbers or aggregates, e.g. ORDER BY orders.id.",
+        )
 
 
 def check_metrics_at_query_grain(prebound: PreboundQuery) -> None:

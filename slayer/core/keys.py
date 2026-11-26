@@ -1616,6 +1616,22 @@ def _is_null_arg(arg: object) -> bool:
 FieldTypeFn = Callable[[Any], Optional[DataType]]
 
 
+#: Window functions whose value is an integer, a fraction, or one of their first argument's values.
+_WINDOW_INTEGER = frozenset({"row_number", "rank", "dense_rank", "ntile", "count", "count_distinct"})
+_WINDOW_FRACTION = frozenset({
+    "percent_rank", "cume_dist", "avg", "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp",
+    "median", "percentile_cont",
+})
+_WINDOW_ARGUMENT = frozenset({"lag", "lead", "first_value", "last_value", "nth_value", "min", "max", "sum"})
+
+
+def _window_argument(key: object) -> Optional["ValueKey"]:
+    """A window's first argument when its value is one of that argument's (or their sum), else ``None``."""
+    if isinstance(key, WindowKey) and key.function in _WINDOW_ARGUMENT and key.args:
+        return key.args[0]
+    return None
+
+
 def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     """DATE / TIMESTAMP when ``key`` is provably temporal, else ``None``; field leaves type via ``field_type``."""
     if isinstance(key, (FieldKey, FieldSqlKey)):
@@ -1628,6 +1644,9 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
         return _literal_temporal_type(key.value if isinstance(key, LiteralKey) else key)
     if isinstance(key, (AggregateKey, TransformKey)):
         return _derived_temporal_type(key, field_type=field_type)
+    if isinstance(key, WindowKey):
+        argument = _window_argument(key)
+        return None if argument is None or key.function == "sum" else temporal_type(argument, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         return _scalar_temporal_type(key, field_type=field_type)
     if isinstance(key, CastKey):
@@ -1691,6 +1710,9 @@ def boolean_valued(key: object, *, field_type: FieldTypeFn) -> bool:
         return True
     if isinstance(key, AggregateKey):
         return key.agg.lower() in _BOOLEAN_PRESERVING_AGGS and boolean_valued(key.source, field_type=field_type)
+    if isinstance(key, WindowKey):
+        argument = _window_argument(key)
+        return argument is not None and key.function != "sum" and boolean_valued(argument, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type is DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
@@ -1755,6 +1777,9 @@ def numeric_valued(key: object, *, field_type: FieldTypeFn) -> bool:
         return agg in _BOOLEAN_PRESERVING_AGGS and numeric_valued(key.source, field_type=field_type)
     if isinstance(key, TransformKey):
         return key.op in _NUMBER_RESULT_TRANSFORMS or numeric_valued(key.input, field_type=field_type)
+    if isinstance(key, WindowKey):
+        argument = _window_argument(key)
+        return argument is None or numeric_valued(argument, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type in _NUMERIC_TYPES
     if isinstance(key, ScalarCallKey):
@@ -1787,6 +1812,11 @@ def integer_valued(key: object, *, field_type: FieldTypeFn) -> bool:
         return _aggregate_integer_valued(key, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         return _scalar_integer_valued(key, field_type=field_type)
+    if isinstance(key, WindowKey):
+        argument = _window_argument(key)
+        if argument is None:
+            return key.function in _WINDOW_INTEGER
+        return integer_valued(argument, field_type=field_type)
     return False
 
 
@@ -2138,7 +2168,21 @@ def value_type(
         return _aggregate_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
     if isinstance(key, TransformKey):
         return _transform_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+    if isinstance(key, WindowKey):
+        return _window_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
     return _row_value_type(key, field_type=field_type, aggregate_type=aggregate_type)
+
+
+def _window_value_type(
+    key: WindowKey, *, field_type: FieldTypeFn, aggregate_type: Optional[AggregateTypeFn],
+) -> Optional[DataType]:
+    """An integer rank or count, a fraction, or the type of the argument it returns (or sums)."""
+    if key.function in _WINDOW_INTEGER:
+        return DataType.INTEGER
+    if key.function in _WINDOW_FRACTION:
+        return DataType.FLOAT
+    argument = _window_argument(key)
+    return None if argument is None else value_type(argument, field_type=field_type, aggregate_type=aggregate_type)
 
 
 def _row_value_type(
