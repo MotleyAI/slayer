@@ -5,7 +5,6 @@ Spec: models/save-validation › Saves judge what they add or change.
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import pytest
@@ -22,6 +21,7 @@ from tests._dev2243_fixtures import (
     dataset,
     document_engine,
     document_text,
+    error,
     field,
     metric,
     relationship,
@@ -117,19 +117,17 @@ class TestAuthoringRefused:
 
 
 class TestBrokenDependents:
-    async def test_renaming_a_referenced_field_warns_about_dependents(self) -> None:
+    async def test_renaming_a_referenced_field_is_refused_naming_dependents(self) -> None:
         """Spec: models/save-validation › Renaming a referenced field warns about dependents."""
         async with document_engine(documents=(READS_AMOUNT,)) as engine:
+            before = await _text(engine)
             orders = await engine.storage.get_dataset("orders", data_source=DS)
             assert orders is not None
             renamed = orders.model_copy(update={"fields": [
                 f.model_copy(update={"name": "net_amount"}) if f.name == "amount" else f for f in orders.fields]})
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
+            with pytest.raises(error("StoredDependentBreakError")) as info:
                 await engine.save_dataset(renamed)
-            saved = await engine.storage.get_dataset("orders", data_source=DS)
-        assert saved is not None
-        assert saved.get_field("net_amount") is not None
-        broken = [str(w.message) for w in caught if issubclass(w.category, UserWarning)
-                  and "amount_total" in str(w.message) and "amount" in str(w.message).replace("amount_total", "")]
-        assert broken, [str(w.message) for w in caught]
+            after = await _text(engine)
+        assert "amount_total" in str(info.value)
+        assert "orders.amount" in str(info.value)
+        assert after == before
