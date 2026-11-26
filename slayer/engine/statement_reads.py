@@ -56,17 +56,24 @@ def statement_reads(
     return reads
 
 
+def _time_of_day_key(key: ValueKey) -> str | None:
+    if isinstance(key, LiteralKey) and isinstance(key.value, time):
+        return f"TIME '{key.value.isoformat()}'"
+    if isinstance(key, ScalarCallKey) and key.name == "current_time":
+        return "current_time()"
+    if isinstance(key, CastKey) and DataType.TIME in (key.data_type, key.temporal_source):
+        return f"CAST(… AS {key.type_text})"
+    return None
+
+
 def time_of_day_construct(*, plans: list[PlannedQuery], bundle: ResolvedSourceBundle) -> str | None:
     """The first construct of ``plans`` that computes or reads a time of day, named for an error; ``None``: none does."""
-    for plan in plans:
-        for _, root_key in plan_value_keys_by_root(plan):
-            for key in walk_value_keys(root_key):
-                if isinstance(key, LiteralKey) and isinstance(key.value, time):
-                    return f"TIME '{key.value.isoformat()}'"
-                if isinstance(key, ScalarCallKey) and key.name == "current_time":
-                    return "current_time()"
-                if isinstance(key, CastKey) and DataType.TIME in (key.data_type, key.temporal_source):
-                    return f"CAST(… AS {key.type_text})"
+    keys = (key for plan in plans for _, root_key in plan_value_keys_by_root(plan) for key in walk_value_keys(root_key))
+    construct = next((found for found in map(_time_of_day_key, keys) if found is not None), None)
+    return construct if construct is not None else _time_field_read(plans=plans, bundle=bundle)
+
+
+def _time_field_read(*, plans: list[PlannedQuery], bundle: ResolvedSourceBundle) -> str | None:
     reads = statement_reads(plans=plans, bundle=bundle)
     datasets = {name: d for plan in plans for name, d in _universe(plan.stage_bundle or bundle).items()}
     for dataset_name, field_name in sorted(reads.fields):

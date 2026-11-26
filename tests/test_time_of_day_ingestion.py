@@ -18,7 +18,12 @@ from slayer.database.client import SlayerSQLClient
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.sql.dialects import base as dialects_base
 from slayer.sql.dialects import dialect_for_ds_type
-from slayer.sql.dialects.reflection import TableLocation, column_from_sa_type, column_from_type_string
+from slayer.sql.dialects.reflection import (
+    TableLocation,
+    column_from_sa_type,
+    column_from_type_string,
+    time_of_day_type,
+)
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import owned_query_engine
@@ -58,6 +63,18 @@ class TestTypeNames:
     @pytest.mark.parametrize(("name", "expected"), TYPE_NAMES, ids=[n for n, _ in TYPE_NAMES])
     def test_a_catalog_type_name(self, name: str, expected: DataType) -> None:
         assert column_from_type_string(name="c", data_type=name).narrowed_type is expected
+
+    @pytest.mark.parametrize("name", [
+        "TIMESTAMP", "TIME(x)", "TIME(3", "TIME ZONE", "TIMETZ WITH TIME ZONE", "TIME WITH ZONE", "INTERVAL",
+    ])
+    def test_a_name_that_is_no_time_of_day(self, name: str) -> None:
+        assert time_of_day_type(name) is None
+
+    @pytest.mark.parametrize(("name", "expected"), [
+        ("  time ( 3 )  WITHOUT  time zone ", TIME), ("Time64 WITH TIME ZONE", OPAQUE), ("timetz(6)", OPAQUE),
+    ])
+    def test_spacing_and_case_do_not_matter(self, name: str, expected: DataType) -> None:
+        assert time_of_day_type(name) is expected
 
     @pytest.mark.parametrize(("sa_type", "sa_dialect", "expected"), [
         pytest.param(sa.Time(), postgresql.dialect(), TIME, id="generic"),

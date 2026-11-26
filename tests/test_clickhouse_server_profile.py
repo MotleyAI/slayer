@@ -112,6 +112,30 @@ class TestCorrelatedProbeFailure:
         assert profile.readonly == 0
         assert profile.correlated_subqueries is None
 
+    def test_time_probe_still_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = FakeClickHouse(version="25.8.3.1", readonly=1, fail_correlated=True, time_types=True)
+        with fake_ch_engine(fake) as engine:
+            route_engine(monkeypatch, engine)
+            profile = _profile(_client())
+        assert profile.time_types is True
+        assert profile.correlated_subqueries is None
+
+    def test_sync_time_probe_still_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = FakeClickHouse(version="25.8.3.1", fail_correlated=True, time_types=True)
+        with fake_ch_engine(fake) as engine:
+            route_engine(monkeypatch, engine)
+            _client().execute_sync("SELECT 1")
+        assert fake.params_for(TIME_SQL) != []
+
+    def test_partial_profile_is_not_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = FakeClickHouse(version="25.8.3.1", fail_correlated=True)
+        with fake_ch_engine(fake) as engine:
+            route_engine(monkeypatch, engine)
+            client = _client()
+            for _ in range(2):
+                _profile(client)
+        assert fake.correlated_checks() == 2
+
 
 class TestBaseProbeFailure:
     def test_propagates_and_is_not_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:

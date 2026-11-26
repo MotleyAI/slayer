@@ -73,14 +73,16 @@ def cached_profile(
         if on_base is not None:
             on_base(profile)
         rows: dict[str, FirstRow] = {}
+        complete = True
         for name, probe in _setting_probes(dialect, profile):
             try:
                 rows[name] = first_row(probe.sql(dialect=dialect.sqlglot_name))
             except Exception as exc:  # the driver's own error types need not be DBAPI errors
                 _setting_probe_failed(exc)
-                return profile
-            profile = dialect.parse_server_profile(base_row=base_row, **rows)
-        _server_profiles[engine] = profile
+                complete = False
+        profile = dialect.parse_server_profile(base_row=base_row, **rows)
+        if complete:
+            _server_profiles[engine] = profile
         return profile
 
 
@@ -98,12 +100,14 @@ async def cached_profile_async(
         base_row = await first_row(profile_sql)
         profile = dialect.parse_server_profile(base_row=base_row)
         rows: dict[str, FirstRow] = {}
+        complete = True
         for name, probe in _setting_probes(dialect, profile):
             try:
                 rows[name] = await first_row(probe.sql(dialect=dialect.sqlglot_name))
             except Exception as exc:  # the driver's own error types need not be DBAPI errors
                 _setting_probe_failed(exc)
-                return profile
-            profile = dialect.parse_server_profile(base_row=base_row, **rows)
-        _server_profiles[engine] = profile
+                complete = False
+        profile = dialect.parse_server_profile(base_row=base_row, **rows)
+        if complete:
+            _server_profiles[engine] = profile
         return profile

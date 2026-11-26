@@ -255,18 +255,24 @@ def parse_info_schema_is_float(data_type_str: str) -> bool:
     return True
 
 
-_TIME_OF_DAY_NAME = re.compile(
-    r"TIME(?:64)?\s*(?:\(\s*\d+\s*\))?\s*(?:(?P<zone>WITH(?:OUT)?)\s+TIME\s+ZONE)?|(?P<tz>TIMETZ)\s*(?:\(\s*\d+\s*\))?",
-    re.I,
-)
+# Time-of-day base names and zone suffixes, each to whether it makes the type zoned.
+_TIME_OF_DAY_BASES = {"TIME": False, "TIME64": False, "TIMETZ": True}
+_TIME_ZONE_SUFFIXES = {"": False, "WITHOUT TIME ZONE": False, "WITH TIME ZONE": True}
 
 
 def time_of_day_type(name: str) -> DataType | None:
     """``Time`` for a time-of-day type name without a time zone, ``Opaque`` for a zoned one, else ``None``."""
-    m = _TIME_OF_DAY_NAME.fullmatch(name.strip())
-    if m is None:
+    head, paren, rest = name.strip().partition("(")
+    if paren:
+        precision, close, rest = rest.partition(")")
+        if not close or not precision.strip().isdigit():
+            return None
+        base, suffix = head.strip().upper(), " ".join(rest.upper().split())
+    else:
+        base, _, suffix = " ".join(head.upper().split()).partition(" ")
+    if base not in _TIME_OF_DAY_BASES or suffix not in _TIME_ZONE_SUFFIXES or (base == "TIMETZ" and suffix):
         return None
-    zoned = m.group("tz") is not None or (m.group("zone") or "").upper() == "WITH"
+    zoned = _TIME_OF_DAY_BASES[base] or _TIME_ZONE_SUFFIXES[suffix]
     return DataType.OPAQUE if zoned else DataType.TIME
 
 
@@ -299,15 +305,17 @@ def info_schema_type(
     mapped = _TYPE_NAME_MAP.get(base)
     if mapped is not None:
         return mapped, base in _FLOAT_LIKE_TYPE_NAMES
-    if "DOUBLE" in base or "FLOAT" in base or "REAL" in base:
-        return DataType.FLOAT, True
-    if "TIMESTAMP" in base or "DATETIME" in base:
-        return DataType.DATETIME, False
-    if "INTERVAL" in base:
-        return DataType.STRING, False
-    if "INT" in base:
-        return DataType.INTEGER, False
-    return DataType.STRING, False
+    return next(((datatype, is_float) for fragments, datatype, is_float in _TYPE_NAME_FRAGMENTS
+                 if any(fragment in base for fragment in fragments)), (DataType.STRING, False))
+
+
+# An unmapped base name's type by the first fragment it contains: ``(fragments, type, is_float)``.
+_TYPE_NAME_FRAGMENTS: tuple[tuple[tuple[str, ...], DataType, bool], ...] = (
+    (("DOUBLE", "FLOAT", "REAL"), DataType.FLOAT, True),
+    (("TIMESTAMP", "DATETIME"), DataType.DATETIME, False),
+    (("INTERVAL",), DataType.STRING, False),
+    (("INT",), DataType.INTEGER, False),
+)
 
 
 def info_schema_list_element(data_type_str: str | None) -> DataType | None:
@@ -434,8 +442,8 @@ def list_db_type(sa_type: sa.types.TypeEngine, *, sa_dialect: Any = None) -> str
     return f"{type(_unwrap_clickhouse_wrappers(item)).__name__.upper()}[]"
 
 
-def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
-    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+def _sa_class_type(sa_type: sa.types.TypeEngine) -> DataType | None:
+    """The type a SQLAlchemy type's class settles before its name is read, else ``None``."""
     if _sa_list_item(sa_type)[0]:
         return DataType.ARRAY
     # mssql.TIMESTAMP is rowversion (binary), and its name collides with sa.TIMESTAMP.
@@ -447,6 +455,14 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     if isinstance(sa_type, sa.Time):
         # SQLite's affinity reader passes a ``TIME(p)`` precision as ``timezone``.
         return DataType.OPAQUE if getattr(sa_type, "timezone", False) is True else DataType.TIME
+    return None
+
+
+def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    by_class = _sa_class_type(sa_type)
+    if by_class is not None:
+        return by_class
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
     if type_name in _CONTAINER_PREFIXES or _is_container_name(str(sa_type)):
@@ -458,10 +474,9 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         return DataType.OPAQUE
     if is_exact_numeric_db_type(type_name) or is_exact_numeric_db_type(type_str):
         return DataType.FLOAT if _sa_type_is_float(sa_type) else DataType.INTEGER
-    if type_name in _TYPE_NAME_MAP:
-        return _TYPE_NAME_MAP[type_name]
-    if type_str in _TYPE_NAME_MAP:
-        return _TYPE_NAME_MAP[type_str]
+    mapped = _TYPE_NAME_MAP.get(type_name, _TYPE_NAME_MAP.get(type_str))
+    if mapped is not None:
+        return mapped
     if type_name not in _logged_unmapped_sa_types:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(

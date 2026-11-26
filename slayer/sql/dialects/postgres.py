@@ -300,6 +300,7 @@ class PostgresDialect(SqlDialect):
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+        time_row: Sequence[Any] | None = None,
     ) -> ServerProfile:
         number = base_row[0] if base_row else None
         try:

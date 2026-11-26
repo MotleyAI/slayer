@@ -230,6 +230,7 @@ class MysqlDialect(SqlDialect):
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+        time_row: Sequence[Any] | None = None,
     ) -> ServerProfile:
         match = _VERSION.match(str(base_row[0])) if base_row and base_row[0] is not None else None
         if match is None:

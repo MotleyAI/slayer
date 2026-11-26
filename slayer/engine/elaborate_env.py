@@ -1308,31 +1308,53 @@ def _time_literal(text: object, *, beside: object) -> LiteralKey:
     return LiteralKey(value=moment)
 
 
+def _timed_point_cmp(key: TimePointCmpKey) -> ValueKey:
+    literal = _time_literal(key.point, beside=key.operand)
+    if key.op in _MEMBERSHIP_SQL:
+        return InKey(field=key.operand, values=(literal,), negated=key.op == _NOT_IN)
+    op = _arith_op(key.op)
+    if key.literal_on_left:
+        return ArithmeticKey(op=_MIRRORED[op], operands=(literal, key.operand))
+    return ArithmeticKey(op=op, operands=(key.operand, literal))
+
+
+def _timed_comparison(key: ArithmeticKey, *, timed: Callable[[object], bool]) -> ValueKey:
+    if key.op.lower() not in _COMPARISON_OPS or len(key.operands) != 2:
+        return key
+    left, right = key.operands
+    if _is_text_literal(right) and timed(left):
+        return key.model_copy(update={"operands": (left, _time_literal(right.value, beside=left))})
+    if _is_text_literal(left) and timed(right):
+        return key.model_copy(update={"operands": (_time_literal(left.value, beside=right), right)})
+    return key
+
+
+def _timed_in(key: InKey, *, timed: Callable[[object], bool]) -> ValueKey:
+    if not timed(key.field) or not any(_is_text_literal(v) for v in key.values):
+        return key
+    values = tuple(_time_literal(v.value, beside=key.field) if _is_text_literal(v) else v for v in key.values)
+    return key.model_copy(update={"values": values})
+
+
+def _timed_nullif(key: ScalarCallKey, *, timed: Callable[[object], bool]) -> ValueKey:
+    if key.name != "nullif" or len(key.args) != 2 or not _is_text_literal(key.args[1]) or not timed(key.args[0]):
+        return key
+    return key.model_copy(update={"args": (key.args[0], _time_literal(key.args[1].value, beside=key.args[0]))})
+
+
 def _type_time_of_day_strings(key: ValueKey, *, field_type: FieldTypeFn) -> ValueKey:
     """``key`` with a string in a comparison slot facing a time of day read as its ``TIME`` literal."""
     def timed(k: object) -> bool:
         return _is_time_of_day(k, field_type=field_type)
 
-    if isinstance(key, TimePointCmpKey) and timed(key.operand):
-        literal = _time_literal(key.point, beside=key.operand)
-        if key.op in _MEMBERSHIP_SQL:
-            return InKey(field=key.operand, values=(literal,), negated=key.op == _NOT_IN)
-        op = _arith_op(key.op)
-        if key.literal_on_left:
-            return ArithmeticKey(op=_MIRRORED[op], operands=(literal, key.operand))
-        return ArithmeticKey(op=op, operands=(key.operand, literal))
-    if isinstance(key, ArithmeticKey) and key.op.lower() in _COMPARISON_OPS and len(key.operands) == 2:
-        left, right = key.operands
-        if _is_text_literal(right) and timed(left):
-            return key.model_copy(update={"operands": (left, _time_literal(right.value, beside=left))})
-        if _is_text_literal(left) and timed(right):
-            return key.model_copy(update={"operands": (_time_literal(left.value, beside=right), right)})
-    if isinstance(key, InKey) and timed(key.field) and any(_is_text_literal(v) for v in key.values):
-        values = tuple(_time_literal(v.value, beside=key.field) if _is_text_literal(v) else v for v in key.values)
-        return key.model_copy(update={"values": values})
-    if (isinstance(key, ScalarCallKey) and key.name == "nullif" and len(key.args) == 2
-            and _is_text_literal(key.args[1]) and timed(key.args[0])):
-        return key.model_copy(update={"args": (key.args[0], _time_literal(key.args[1].value, beside=key.args[0]))})
+    if isinstance(key, TimePointCmpKey):
+        return _timed_point_cmp(key) if timed(key.operand) else key
+    if isinstance(key, ArithmeticKey):
+        return _timed_comparison(key, timed=timed)
+    if isinstance(key, InKey):
+        return _timed_in(key, timed=timed)
+    if isinstance(key, ScalarCallKey):
+        return _timed_nullif(key, timed=timed)
     return key
 
 
@@ -1353,21 +1375,34 @@ def _other_typed(operands: Sequence[object], *, field_type: FieldTypeFn) -> Opti
     return None
 
 
+def _checked_operands(key: object) -> Sequence[object]:
+    if isinstance(key, ArithmeticKey):
+        return key.operands
+    if isinstance(key, InKey):
+        return (key.field, *key.values)
+    return ()
+
+
+def _check_time_of_day_key(key: object, *, field_type: FieldTypeFn) -> None:
+    operands = _checked_operands(key)
+    timed = next((o for o in operands if _is_time_of_day(o, field_type=field_type)), None)
+    if timed is None:
+        return
+    if isinstance(key, ArithmeticKey):
+        if key.op in _COMPUTING_OPS:
+            _refuse_time_of_day(key, timed, why="computes with a time of day")
+        if key.op.lower() not in _COMPARISON_OPS:
+            return
+    other = _other_typed(operands, field_type=field_type)
+    if other is not None:
+        _refuse_time_of_day(key, timed, why=f"compares a time of day with a {other.value} value")
+
+
 def check_time_of_day_operands(*, roots: Sequence[ValueKey], field_type: FieldTypeFn) -> None:
     """A time of day takes no arithmetic and compares only with another time of day."""
-    for key in (k for root in roots for k in walk_value_keys(root)):
-        operands = (key.operands if isinstance(key, ArithmeticKey)
-                    else (key.field, *key.values) if isinstance(key, InKey) else ())
-        timed = next((o for o in operands if _is_time_of_day(o, field_type=field_type)), None)
-        if timed is None:
-            continue
-        if isinstance(key, ArithmeticKey) and key.op in _COMPUTING_OPS:
-            _refuse_time_of_day(key, timed, why="computes with a time of day")
-        if isinstance(key, ArithmeticKey) and key.op.lower() not in _COMPARISON_OPS:
-            continue
-        other = _other_typed(operands, field_type=field_type)
-        if other is not None:
-            _refuse_time_of_day(key, timed, why=f"compares a time of day with a {other.value} value")
+    for root in roots:
+        for key in walk_value_keys(root):
+            _check_time_of_day_key(key, field_type=field_type)
 
 
 def _field_parts(key: object) -> Optional[Tuple[str, ...]]:

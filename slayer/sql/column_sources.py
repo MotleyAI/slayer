@@ -37,16 +37,18 @@ def _scope_sources(scope: Scope) -> list[ColumnSource]:
     select = scope.expression
     if not isinstance(select, exp.Select):
         return []
-    out: list[ColumnSource] = []
-    for projection in select.expressions:
-        node = projection.unalias()
-        if isinstance(node, exp.Star) or (isinstance(node, exp.Column) and isinstance(node.this, exp.Star)):
-            qualifier = node.table if isinstance(node, exp.Column) else ""
-            for name in [qualifier] if qualifier else list(scope.selected_sources):
-                out.extend(_every_column(scope.sources.get(name)))
-        elif isinstance(node, exp.Column):
-            out.extend(_one_column(_source(scope, node), column=node.name, result=projection.alias_or_name))
-    return out
+    return [found for projection in select.expressions for found in _projection_sources(scope, projection)]
+
+
+def _projection_sources(scope: Scope, projection: Expr) -> list[ColumnSource]:
+    node = projection.unalias()
+    if isinstance(node, exp.Star) or (isinstance(node, exp.Column) and isinstance(node.this, exp.Star)):
+        qualifier = node.table if isinstance(node, exp.Column) else ""
+        names = [qualifier] if qualifier else list(scope.selected_sources)
+        return [found for name in names for found in _every_column(scope.sources.get(name))]
+    if isinstance(node, exp.Column):
+        return _one_column(_source(scope, node), column=node.name, result=projection.alias_or_name)
+    return []
 
 
 def _source(scope: Scope, column: exp.Column) -> object:

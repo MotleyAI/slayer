@@ -282,9 +282,10 @@ class TestNotATimeAxis:
         dataset = shifts_dataset().model_copy(update={"fields": [
             f for f in shifts_dataset().fields if f.name in ("id", "starts_at", "ends_at")]})
         spine = {"field": "time_spine.timestamp", "granularity": "month", "date_range": ["2024-01-01", "2024-02-29"]}
+        query = q(time_dimensions=[spine], metrics=[m("count(shifts.*)", "n")])
         async with shifts_engine(backend, dataset=dataset) as eng:
             with pytest.warns(UserWarning):
-                resp = await eng.execute(q(time_dimensions=[spine], metrics=[m("count(shifts.*)", "n")]))
+                resp = await eng.execute(query)
         assert [int(r["n"]) for r in resp.data] == [3, 3]
         assert "unrelated_dataset" in {w.kind for w in resp.warnings}
 
