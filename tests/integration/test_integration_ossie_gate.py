@@ -7,7 +7,6 @@ requires them. The in-process engines run the same checks in ``tests/test_ossie_
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Generator
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -21,7 +20,7 @@ from tests._ossie_gate_fixtures import wide_table_engines as open_wide_table_eng
 from tests._ossie_gate_suite import (
     MIXED_CASE_QUERY, MIXED_CASE_ROWS, ROOTED_QUERY, ROOTED_ROWS, case_state, cases, check_case_under_strict,
     check_layer1, check_layer1_value, check_row_case_under_the_default, check_rows, check_seeded, row_cases,
-    seeded_tables,
+    seeded_tables, WideCase,
 )
 from tests.integration._ossie_gate_servers import SQLSERVER_2025, ServerProvider, server_provider, sqlserver_provider
 
@@ -93,7 +92,7 @@ async def test_layer1_construct(request: pytest.FixtureRequest, provider: Server
 @MODULE_LOOP
 @pytest.mark.parametrize("case", cases(), ids=lambda c: c.name)
 async def test_wide_table_case_under_strict(request: pytest.FixtureRequest, provider: ServerProvider,
-                                            wide_table: dict[str, SlayerQueryEngine], case: Path) -> None:
+                                            wide_table: dict[str, SlayerQueryEngine], case: WideCase) -> None:
     mark_cell(request, case_state(case.name, provider.engine))
     await check_case_under_strict(wide_table, case, engine_name=provider.engine)
 
@@ -101,7 +100,7 @@ async def test_wide_table_case_under_strict(request: pytest.FixtureRequest, prov
 @MODULE_LOOP
 @pytest.mark.parametrize("case", row_cases(), ids=lambda c: c.name)
 async def test_wide_table_row_case_under_the_default(request: pytest.FixtureRequest, provider: ServerProvider,
-                                                     wide_table: dict[str, SlayerQueryEngine], case: Path) -> None:
+                                                     wide_table: dict[str, SlayerQueryEngine], case: WideCase) -> None:
     mark_cell(request, case_state(case.name, provider.engine))
     await check_row_case_under_the_default(wide_table, case, engine_name=provider.engine)
 

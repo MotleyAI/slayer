@@ -29,9 +29,9 @@
 
 ## 4. CI
 
-- [ ] 4.1 A composite action for per-engine setup (testcontainers extras, ODBC driver, credentials) used by the scheduled gate; verify with its `workflow_dispatch` run.
-- [ ] 4.2 PRs: the in-process gate modules run in the unit job; the per-engine integration workflows are unchanged; the server module is excluded from `ci.yml`'s integration job.
-- [ ] 4.3 Scheduled (`ossie-corpus-weekly.yml`, renamed `ossie-compliance.yml`): nightly, a matrix runs the server module per engine on the vendored snapshot; weekly, the same matrix plus the in-process modules run against the fetched corpus. An aggregation job fails unless every engine passed (a skip fails); the compliance-page check is excluded from the upstream run; Snowflake/BigQuery fail closed without secrets. Verify with a `workflow_dispatch` run.
+- [x] 4.1 A composite action for per-engine setup (testcontainers extras, ODBC driver, credentials) used by the scheduled gate; verify with its `workflow_dispatch` run.
+- [x] 4.2 PRs: the in-process gate modules run in the unit job; the per-engine integration workflows are unchanged; the server module is excluded from `ci.yml`'s integration job.
+- [x] 4.3 Scheduled (`ossie-corpus-weekly.yml`, renamed `ossie-compliance.yml`): nightly, a matrix runs the server module per engine on the vendored snapshot; weekly, the same matrix plus the in-process modules run against the fetched corpus. An aggregation job fails unless every engine passed (a skip fails); the compliance-page check is excluded from the upstream run; Snowflake/BigQuery fail closed without secrets. Verify with a `workflow_dispatch` run.
 
 ## 5. Docs
 

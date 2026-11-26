@@ -57,6 +57,7 @@ jobs:
     concurrency:
       group: ${{ matrix.engine == 'bigquery' && 'bigquery-shared-gcp-project' || format('ossie-gate-{0}-{1}', matrix.engine, github.run_id) }}
       cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@v4
         with:
