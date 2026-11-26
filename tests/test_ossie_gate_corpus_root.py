@@ -26,8 +26,8 @@ def sentinel_corpus(tmp_path_factory: pytest.TempPathFactory) -> Path:
     text = spec.read_text(encoding="utf-8")
     spec.write_text(text.replace("### Trigonometric (RECOMMENDED)", SENTINEL_SECTION + "### Trigonometric (RECOMMENDED)"),
                     encoding="utf-8")
-    cases = root / "compliance" / "wide_table" / "cases"
-    shutil.copytree(cases / "a01_shared_dimension", cases / "a99_sentinel")
+    cases = root / "compliance" / "wide_table"
+    shutil.copy(cases / "a01_shared_dimension.ost", cases / "a99_sentinel.ost")
     shutil.copy(next(iter(sorted((root / "harvested").glob("*.yaml")))), root / "harvested" / "zz_sentinel.yaml")
     rung = root / "compliance" / "portability" / "m0"
     shutil.copy(next(iter(sorted(rung.glob("*.ossie.yaml")))), rung / "zz_sentinel.ossie.yaml")

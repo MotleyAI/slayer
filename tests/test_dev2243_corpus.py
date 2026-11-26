@@ -23,6 +23,7 @@ from sqlglot.errors import ParseError
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.osi.exporter import export_osi
+from slayer.sql.ossie_dialects import reader_for
 from slayer.storage.base import StorageBackend
 from tests._dev2243_fixtures import STORAGES, error, importer_module, make_storage, semantic_model_module
 from tests._engine_helpers import owned_query_engine
@@ -77,7 +78,7 @@ def upstream_reports(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]
 # Which metrics SLayer cannot evaluate yet (windows; model-scoped metrics Ossie rejects at query time)
 # --------------------------------------------------------------------------- #
 def _expression_text(expression: dict[str, Any]) -> str | None:
-    """The first readable candidate: top-level ``sql``, then OSSIE_SQL_2026, ANSI_SQL, any other entry."""
+    """The first readable candidate: top-level ``sql``, then OSSIE_SQL_2026, ANSI_SQL, any SQL entry; else None."""
     if expression.get("sql"):
         return expression["sql"]
     entries = expression.get("dialects") or []
@@ -85,7 +86,7 @@ def _expression_text(expression: dict[str, Any]) -> str | None:
         for entry in entries:
             if entry.get("dialect") == wanted:
                 return entry["expression"]
-    return entries[0]["expression"] if entries else None
+    return next((e["expression"] for e in entries if reader_for(e.get("dialect") or "") is not None), None)
 
 
 def _parse(sql: str | None) -> exp.Expr | None:
@@ -183,17 +184,19 @@ def expected_outcomes(data: dict[str, Any]) -> dict[str, str]:
         windowed = {f["name"] for f in dataset.get("fields") or []
                     if (t := _parse(_expression_text(f.get("expression") or {}))) is not None and t.find(exp.Window)}
         for metric in dataset.get("metrics") or []:
-            tree = _parse(_expression_text(metric["expression"]))
-            unevaluable = tree is not None and (tree.find(exp.Window) is not None or _evaluates_source_measure(tree)
-                                                or any(not c.table and c.name in windowed
-                                                       for c in tree.find_all(exp.Column)))
+            text = _expression_text(metric["expression"])
+            tree = _parse(text)
+            unevaluable = text is None or tree is not None and (
+                tree.find(exp.Window) is not None or _evaluates_source_measure(tree)
+                or any(not c.table and c.name in windowed for c in tree.find_all(exp.Column)))
             outcomes[f"{dataset['name']}.{metric['name']}"] = "unevaluable" if unevaluable else "compiled"
     metric_names = {m["name"].casefold() for m in data.get("metrics") or []}
     trees: dict[str, exp.Expr | None] = {}
     for metric in data.get("metrics") or []:
-        tree = trees[metric["name"]] = _parse(_expression_text(metric["expression"]))
-        unevaluable = tree is not None and (tree.find(exp.Window) is not None
-                                            or _model_scoped_rejection(tree, metric_names=metric_names) is not None)
+        text = _expression_text(metric["expression"])
+        tree = trees[metric["name"]] = _parse(text)
+        unevaluable = text is None or tree is not None and (
+            tree.find(exp.Window) is not None or _model_scoped_rejection(tree, metric_names=metric_names) is not None)
         outcomes[metric["name"]] = "unevaluable" if unevaluable else "compiled"
     return _propagated(outcomes, trees)
 
