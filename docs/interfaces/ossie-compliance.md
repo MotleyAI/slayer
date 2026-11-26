@@ -39,7 +39,7 @@ cases are:
 | SQL Server | 154 | 7 | 43 |
 | Trino | 157 | 4 | 43 |
 | Snowflake | 157 | 4 | 43 |
-| BigQuery | 155 | 4 | 45 |
+| BigQuery | 157 | 4 | 43 |
 
 | Construct | Example | Status |
 |---|---|---|
@@ -59,8 +59,8 @@ cases are:
 | `DATE_PART(MILLISECOND)` | `DATE_PART('millisecond', orders.created_at)` | planned |
 | `TIMESTAMP_NTZ '2024-01-15 10:30:00'` | a `TIMESTAMP_NTZ` literal | planned |
 | `TIME '10:30:00'` | a time-of-day literal | planned |
-| `CAST('10:30:00' AS TIME)` | a cast to a time of day (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino and Snowflake) | planned |
-| `CAST AS TIME` | `CAST('10:30:00' AS TIME)` (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino and Snowflake) | planned |
+| `CAST('10:30:00' AS TIME)` | a cast to a time of day (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
+| `CAST AS TIME` | `CAST('10:30:00' AS TIME)` (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
 | `TO_DATE` | `TO_DATE('2024-01-15')` | planned |
 | `TO_TIMESTAMP` | `TO_TIMESTAMP('2024-01-15 10:30:00')` | planned |
 | `CHARINDEX` | `CHARINDEX('d', orders.status)` | planned |
