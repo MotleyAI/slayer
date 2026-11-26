@@ -155,14 +155,21 @@ def _model_scoped_rejection(tree: exp.Expr, *, metric_names: set[str]) -> str | 
 
 #: (document, metric) → the typed error its query raises: Ossie-schema-valid metrics no query can evaluate.
 REFUSED: dict[tuple[str, str], str] = {
-    ("harvested/216f1c025746.yaml", "revenue"): "UnknownReferenceError",
-    ("harvested/738601d2a838.yaml", "revenue"): "UnknownReferenceError",
-    ("harvested/ddeb8527e638.yaml", "revenue"): "UnknownReferenceError",
+    ("harvested/216f1c025746.yaml", "revenue"): "UnknownMetricError",
+    ("harvested/738601d2a838.yaml", "revenue"): "UnknownMetricError",
+    ("harvested/ddeb8527e638.yaml", "revenue"): "UnknownMetricError",
     ("harvested/3cdbe43998c6.yaml", "now_metric"): "NoRowSourceError",
     ("harvested/41093682a932.yaml", "revenue"): "NoRowSourceError",
     ("harvested/c82499fbddd2.yaml", "revenue"): "NoRowSourceError",
     ("harvested/fad5e6f81b85.yaml", "revenue"): "NoRowSourceError",
     ("compliance/wide_table/retail/retail_model.ossie.yaml", "order_less_return"): "UnsafeRelationshipInputError",
+}
+
+#: (document, metric) → the undeclared field it reads: Ossie-valid, but unloadable.
+UNRESOLVED: dict[tuple[str, str], str] = {
+    ("harvested/216f1c025746.yaml", "revenue"): "orders.amount",
+    ("harvested/738601d2a838.yaml", "revenue"): "orders.amount",
+    ("harvested/ddeb8527e638.yaml", "revenue"): "orders.opened_at",
 }
 
 #: (document, metric) whose runnable form SLayer's expression reader rejects: loaded not evaluable.
@@ -270,10 +277,14 @@ async def test_stores_and_loads_natively(path: Path, tmp_path: Path) -> None:
     async with _env("yaml", tmp_path) as (storage, engine):
         await _store(storage, text=text, data=data)
         datasets, failures = await storage.load_datasets(data_source=DS)
-        assert failures == []
+        doc_id = path.relative_to(ROOT).as_posix()
+        unresolved = {m: field for (d, m), field in UNRESOLVED.items() if d == doc_id}
+        assert sorted((f.kind, f.name) for f in failures) == sorted(("metric", m) for m in unresolved)
+        assert all(unresolved[f.name] in f.cause_text for f in failures)
         assert sorted(d.name for d in datasets) == sorted(d["name"] for d in data["datasets"])
         metrics = await storage.list_model_scoped_metrics(DS)
-        assert sorted(m.name for m in metrics) == sorted(m["name"] for m in data.get("metrics") or [])
+        assert sorted(m.name for m in metrics) == sorted(
+            m["name"] for m in data.get("metrics") or [] if m["name"] not in unresolved)
 
 
 @pytest.mark.parametrize("dialect", TIER1)

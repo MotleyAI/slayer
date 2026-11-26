@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Hashable
 from typing import Any, TypeVar
 
+from slayer.core.errors import BrokenDependent
 from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
@@ -72,6 +73,9 @@ class EngineStorage(StorageBackend):
 
     async def delete_dataset(self, name: str, data_source: str | None = None) -> bool:
         return await self._sourced(self._inner.delete_dataset(name, data_source=data_source))
+
+    async def guard_dataset_deletion(self, *, name: str, data_source: str) -> list[BrokenDependent]:
+        return await self._sourced(self._inner.guard_dataset_deletion(name=name, data_source=data_source))
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         await self._sourced(self._inner.save_datasource(datasource))

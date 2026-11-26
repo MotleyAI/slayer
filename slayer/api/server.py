@@ -694,6 +694,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/datasets/{name}",
         responses={
             404: {"description": "Dataset not found."},
+            400: {"description": "The delete would break a stored dependent."},
             409: {
                 "description": (
                     "Dataset name resolves to multiple datasources. Pass "
@@ -782,6 +783,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     f"or PUT /datasources/priority to disambiguate."
                 ),
             )
+        except ValueError as exc:  # a refusal: the delete would break a stored dependent
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
         return {"status": "deleted", "name": name}
@@ -819,9 +822,11 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "replaced", "name": name}
 
-    @app.delete("/semantic-models/{data_source}/{name}", responses={404: {"description": "Semantic model not found."}})
+    @app.delete("/semantic-models/{data_source}/{name}", responses={
+        404: {"description": "Semantic model not found."},
+        400: {"description": "The delete would break a stored dependent."}})
     async def delete_semantic_model(data_source: str, name: str) -> dict[str, Any]:
-        if not await storage.delete_semantic_model(name, data_source=data_source):
+        if not await _refused_as_400(storage.delete_semantic_model(name, data_source=data_source)):
             raise HTTPException(status_code=404, detail=f"Semantic model '{data_source}.{name}' not found")
         return {"status": "deleted", "name": name}
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
     AccessTagsEditError,
+    BrokenDependent,
     HiddenContentConflictError,
     MemoryNotFoundError,
     StoredDependentBreakError,
@@ -358,13 +359,14 @@ class AccessFilteredStorage(StorageBackend):
     async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
         if not self._bypass and dataset.name.casefold() in (await self._hidden_entities(dataset.data_source)).datasets:
             raise HiddenContentConflictError(kind="dataset", name=dataset.name)
-        await self._inner.save_dataset_extensions(dataset)
+        await self._unbroken(self._inner.save_dataset_extensions(dataset), kind="dataset", name=dataset.name)
 
     async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
         if not self._bypass:
             await self._refuse_hidden_in_document(data_source=data_source, document=name,
                                                   entities=_entities(text, name=name), datasets=replacing)
-        await self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing)
+        await self._unbroken(self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text,
+                                                              replacing=replacing), kind=_SEMANTIC_MODEL, name=name)
 
     async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
                                     datasets: list[str] | None = None) -> None:
@@ -372,7 +374,9 @@ class AccessFilteredStorage(StorageBackend):
             entities = _entities(content, name=name)
             await self._refuse_hidden_in_document(data_source=data_source, document=str(name or entities.get("name")),
                                                   entities=entities, datasets=datasets or [])
-        await self._inner.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets)
+        await self._unbroken(self._inner.create_semantic_model(data_source=data_source, name=name, content=content,
+                                                               datasets=datasets),
+                             kind=_SEMANTIC_MODEL, name=str(name or _entities(content, name=name).get("name")))
 
     async def edit_semantic_model(self, name: str, *, data_source: str, **edits: Any) -> None:
         if not self._bypass:
@@ -388,7 +392,8 @@ class AccessFilteredStorage(StorageBackend):
             await self._refuse_hidden_names(data_source=data_source, document=name, relationships=relationships,
                                             datasets=edits.get("add_datasets") or [], metrics=edits.get("metrics") or [],
                                             names=edits.get("remove_metrics") or [])
-        await self._inner.edit_semantic_model(name, data_source=data_source, **edits)
+        await self._unbroken(self._inner.edit_semantic_model(name, data_source=data_source, **edits),
+                             kind=_SEMANTIC_MODEL, name=name)
 
     # ---- ontologies (visible to every caller) and mappings (entries reading hidden datasets redacted) --------
 
@@ -405,15 +410,24 @@ class AccessFilteredStorage(StorageBackend):
                 if (reads := entry_reads(e)) is None or reads & hidden}
 
     async def _unbroken(self, call: Awaitable[_T], *, kind: str, name: str) -> _T:
-        """``call``; a break of a mapping entry the caller cannot see is a hidden-content conflict."""
+        """``call``; a break of a mapping entry or model-scoped metric the caller cannot see is a hidden-content
+        conflict."""
         try:
             return await call
         except StoredDependentBreakError as exc:
             for broken in exc.broken:
-                data = stored_data(await self._inner.get_ontology_mapping_text(broken.name, broken.data_source))
-                if set(broken.entries) & await self._hidden_entries(data, data_source=broken.data_source):
+                if await self._hidden_break(broken):
                     raise HiddenContentConflictError(kind=kind, name=name) from None
             raise
+
+    async def _hidden_break(self, broken: BrokenDependent) -> bool:
+        if self._bypass:
+            return False
+        if broken.kind == "metric":
+            hidden = await self._hidden_entities(broken.data_source)
+            return bool({broken.name.casefold(), *broken.reads} & (hidden.datasets | hidden.metrics))
+        data = stored_data(await self._inner.get_ontology_mapping_text(broken.name, broken.data_source))
+        return bool(set(broken.entries) & await self._hidden_entries(data, data_source=broken.data_source))
 
     async def list_ontologies(self) -> list[str]:
         return await self._inner.list_ontologies()
@@ -572,6 +586,10 @@ class AccessFilteredStorage(StorageBackend):
             return False
         return await self._unbroken(self._inner.delete_dataset(target[1], data_source=target[0]), kind="dataset",
                                     name=target[1])
+
+    async def guard_dataset_deletion(self, *, name: str, data_source: str) -> list[BrokenDependent]:
+        return await self._unbroken(self._inner.guard_dataset_deletion(name=name, data_source=data_source),
+                                    kind="dataset", name=name)
 
     async def _delete_dataset_row(self, *, data_source: str, name: str) -> bool:
         if not self._bypass and not await self._visible(data_source=data_source, name=name):

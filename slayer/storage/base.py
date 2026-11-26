@@ -30,6 +30,7 @@ from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_
 from slayer.core.errors import (
     AmbiguousDatasetError,
     AmbiguousReferenceError,
+    BrokenDependent,
     CaseCollisionError,
     ColonSpellingError,
     EnforcedKeyError,
@@ -137,13 +138,14 @@ from slayer.storage.extension_fields import holds_removed_forms, inline_extensio
 from slayer.storage.qualified_references import qualified_stages, stage_readings
 from slayer.storage.stored_datasource import memory_fallback_population, raw_entities, raw_memory_datasource
 from slayer.storage.stored_literals import LiteralGates, typed_stage
-from slayer.storage.document_mapping import as_expression, with_dataset, without_dataset
-from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle, warn_broken_model_metrics
+from slayer.storage.document_mapping import with_dataset, with_metrics_in_slayer, without_dataset
+from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle
 from slayer.storage.semantic_model_edits import UNSET, MetricSpec, edited_document, metric_spec, with_datasets
 from slayer.core.document_text import edit_text, parse_document_text
 from slayer.core.portable_sql import portable_expression
 from slayer.storage.semantic_models import (
-    DocumentIndex, build_index, checked_document, decompose, expression_datasets, metric_graph, unevaluable_targets,
+    Decomposition, DocumentIndex, build_index, checked_document, decompose, expression_datasets, metric_graph,
+    unevaluable_targets,
 )
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.ontology.documents import (
@@ -154,7 +156,7 @@ from slayer.core.datasource_scope import DatasourceScope
 from slayer.storage.ontology_documents import (
     MAPPING_NAME, ONTOLOGY_NAME, StoredMapping, broken_mappings, stored_data,
 )
-from slayer.storage.dependents import report_broken
+from slayer.storage.dependents import broken_model_metrics, report_broken
 from slayer.live_schema.type_refinement import (
     has_refineable_fields,
     has_sqlite_widenable_fields,
@@ -850,11 +852,6 @@ def _handed_out(dataset: SlayerDataset) -> SlayerDataset:
     return out
 
 
-def _reads(ossie: dict[str, Any]) -> set[str]:
-    """The case-folded datasets an Ossie metric expression reads."""
-    return expression_datasets(as_expression(ossie))[0] if ossie else set()
-
-
 _DOCUMENT_WRAPPERS = {"get_dataset": _documents_first, "_list_all_dataset_identities": _with_document_identities,
                       "update_field_sampled": _sampled_into_documents}
 
@@ -943,9 +940,9 @@ class StorageBackend(ABC):
             dataset = await self._without_repointed_enforced_keys(dataset)
             await self.validate_for_save(dataset, failures=failures)
             warn_library_shadows(dataset)
-            saved = dataset
-            await self._guard_dependents(change=f"Saving dataset {dataset.name!r}", data_source=dataset.data_source,
-                                       changed=lambda scope: scope.with_dataset(saved.name, saved))
+        saved = dataset
+        broken = await self._guard_dependents(change=f"Saving dataset {dataset.name!r}", data_source=dataset.data_source,
+                                              changed=lambda scope: scope.with_dataset(saved.name, saved))
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
         moving = owner is None and dataset.semantic_model is not None
         owner = owner or dataset.semantic_model
@@ -953,7 +950,7 @@ class StorageBackend(ABC):
             await self._save_dataset_impl(dataset)
         else:
             await self._write_document_dataset(data_source=dataset.data_source, document=owner, name=dataset.name,
-                                               mutate=lambda _old: dataset)
+                                               mutate=lambda _old: dataset, broken=broken)
             if moving:
                 await self._delete_dataset_row(data_source=dataset.data_source, name=dataset.name)
         self._forget_raw(data_source=dataset.data_source, name=dataset.name)
@@ -988,14 +985,19 @@ class StorageBackend(ABC):
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
         if owner is None:
             raise ValueError(f"Dataset {dataset.name!r} is not declared by a semantic model")
+        broken = await self._guard_dependents(
+            change=f"Saving the SLayer extensions of dataset {dataset.name!r}", data_source=dataset.data_source,
+            changed=lambda scope: scope.with_dataset(dataset.name, dataset))
         await self._write_document_dataset(data_source=dataset.data_source, document=owner, name=dataset.name,
-                                           mutate=lambda _old: dataset, core=False)
+                                           mutate=lambda _old: dataset, core=False, broken=broken)
 
     async def _write_document_dataset(self, *, data_source: str, document: str, name: str,
                                       mutate: Callable[[SlayerDataset | None], SlayerDataset | None],
-                                      core: bool = True) -> None:
+                                      core: bool = True, broken: Sequence[BrokenDependent] = ()) -> None:
         """Patch document ``document``: dataset ``name`` becomes ``mutate(current)`` (``None`` removes it), read and
-        written as one serialized step."""
+        written as one serialized step; each ``broken`` metric of it written in Ossie core moves to its ``SLAYER``
+        entry."""
+        moved = {b.name.casefold() for b in broken if b.kind == "metric" and b.semantic_model == document}
         datasource = await self.get_datasource(data_source)
         ds_type, granularities = (datasource.type, datasource.granularities) if datasource is not None else (None, [])
         reader = dialect_for_ds_type(ds_type).sqlglot_name
@@ -1009,8 +1011,9 @@ class StorageBackend(ABC):
             baseline = with_canonical_spellings(base)[0] if base is not None else None
 
             def edit(doc: dict[str, Any]) -> dict[str, Any]:
-                out = without_dataset(doc, name=name, reads=_reads) if new is None else with_dataset(
+                out = without_dataset(doc, name=name) if new is None else with_dataset(
                     doc, old=baseline, new=new, reader=reader, core=core)
+                out = with_metrics_in_slayer(out, names=moved)
                 reasons = ossie_validity_errors(out)
                 if reasons:
                     raise OssieDocumentInvalidError(name=document, reasons=reasons)
@@ -1054,8 +1057,6 @@ class StorageBackend(ABC):
         _validate_default_time_dimension(dataset)
         if failures.report:
             warn_broken_dependents(dataset=dataset, stored=stored, peers=peers)
-            warn_broken_model_metrics(dataset=dataset, stored=stored,
-                                      metrics=await self.list_model_scoped_metrics(dataset.data_source))
 
     async def _check_case_collisions(self, dataset: SlayerDataset) -> None:
         """Refuse a name that newly collides by case with another in its namespace (the datasource's dataset names
@@ -1314,11 +1315,15 @@ class StorageBackend(ABC):
             name=name, data_source=data_source, datasets=[d.name for d in doc.datasets],
             metrics=[m.name for m in doc.metrics or []],
         )
-        if await self.list_ontology_mappings(data_source):
-            datasets = await self._document_datasets(data_source=data_source, name=name, text=text)
-            await self._guard_dependents(change=f"Saving semantic model {name!r}", data_source=data_source,
-                                       changed=lambda scope: scope.with_document(name, datasets))
+        await self._guard_document(change=f"Saving semantic model {name!r}", data_source=data_source, name=name,
+                                   text=text)
         await self._save_semantic_model_text_impl(data_source=data_source, name=name, text=text)
+
+    async def _guard_document(self, *, change: str, data_source: str, name: str, text: str) -> None:
+        """Refuse storing ``text`` as document ``name`` when that breaks a stored dependent."""
+        decomposed = await self._decomposed_document(data_source=data_source, name=name, text=text)
+        await self._guard_dependents(change=change, data_source=data_source, changed=lambda scope: scope.with_document(
+            name, decomposed.datasets, decomposed.metrics))
 
     async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
         """Store document ``name`` in place of the standalone datasets ``replacing`` (same names, so references keep
@@ -1370,8 +1375,8 @@ class StorageBackend(ABC):
                                     ds_type=datasource.type if datasource else None,
                                     granularities=datasource.granularities if datasource else [])
                 taken.update({k: f"dataset {d.name!r} of semantic model {other!r}" for k, d in index.datasets.items()})
-                other_metrics.update({k: f"metric {m.name!r} of semantic model {other!r}"
-                                      for k, m in index.metrics.items()})
+                other_metrics.update({m.name.casefold(): f"metric {m.name!r} of semantic model {other!r}"
+                                      for m in index.stored_metrics.get(other, [])})
         for dataset in datasets:
             if dataset.casefold() in taken:
                 raise NamespaceCollisionError(name=dataset, owner=owner, existing=taken[dataset.casefold()],
@@ -1477,6 +1482,8 @@ class StorageBackend(ABC):
 
             return edit_text(stored, edit)
 
+        await self._guard_document(change=f"Editing semantic model {name!r}", data_source=data_source, name=name,
+                                   text=patch(text))
         await self._moving_standalone(data_source=data_source, datasets=moved, write=lambda: self._patch_semantic_model_text(
             data_source=data_source, name=name, patch=patch))
 
@@ -1683,27 +1690,35 @@ class StorageBackend(ABC):
         for key, dataset in index.datasets.items():
             documents.setdefault(index.owners[key], []).append(dataset)
         loaded, _ = await self.load_datasets(data_source=data_source)
-        return DatasourceScope(data_source=data_source, ontologies=ontologies, documents=documents, datasets=loaded)
+        return DatasourceScope(data_source=data_source, ontologies=ontologies, documents=documents, datasets=loaded,
+                               metrics={n: index.stored_metrics.get(n, []) for n in documents})
 
     async def _guard_dependents(self, *, change: str, changed: Callable[[DatasourceScope], DatasourceScope],
-                              data_source: str | None = None, own: list[str] | None = None) -> None:
+                                data_source: str | None = None, own: list[str] | None = None) -> list[BrokenDependent]:
         """Refuse ``change`` (``changed`` maps a scope to its state after it) when it breaks a stored mapping, of
-        ``data_source`` when given, listing the changed document's ``own`` problems too; a database-driven change
-        warns instead."""
+        ``data_source`` when given, or a model-scoped metric of ``data_source``, listing the changed document's ``own``
+        problems too; a database-driven change warns instead, and gets what it breaks."""
         identities = await self.list_ontology_mappings(data_source)
-        broken = []
-        for ds in sorted({ds for ds, _ in identities}):
+        sources = {ds for ds, _ in identities}
+        metric_source = data_source if data_source is not None and any(
+            (await self._document_index(data_source)).stored_metrics.values()) else None
+        broken: list[BrokenDependent] = []
+        for ds in sorted(sources | ({metric_source} if metric_source else set())):
             mappings = [(n, data) for d, n in identities if d == ds and isinstance(
                 data := stored_data(await self._get_ontology_mapping_text_impl(data_source=d, name=n)), dict)]
             before = await self._datasource_scope(ds)
-            broken += broken_mappings(mappings, before=before, after=changed(before))
+            after = changed(before)
+            broken += broken_mappings(mappings, before=before, after=after)
+            if ds == metric_source:
+                broken += broken_model_metrics(before=before, after=after)
         report_broken(change=change, broken=broken, own=own)
+        return broken
 
-    async def _document_datasets(self, *, data_source: str, name: str, text: str) -> list[SlayerDataset]:
+    async def _decomposed_document(self, *, data_source: str, name: str, text: str) -> Decomposition:
         datasource = await self.get_datasource(data_source)
-        return list(decompose(text=text, name=name, data_source=data_source,
-                              ds_type=datasource.type if datasource is not None else None,
-                              granularities=datasource.granularities if datasource is not None else []).datasets)
+        return decompose(text=text, name=name, data_source=data_source,
+                         ds_type=datasource.type if datasource is not None else None,
+                         granularities=datasource.granularities if datasource is not None else [])
 
     async def get_dataset_or_builtin(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         """``get_dataset``, falling back to a built-in dataset of the datasource (the only one when unnamed)."""
@@ -1867,12 +1882,11 @@ class StorageBackend(ABC):
         if target is None:
             return False
         resolved_data_source, resolved_name = target
-        await self._guard_dependents(change=f"Deleting dataset {resolved_name!r}", data_source=resolved_data_source,
-                                   changed=lambda scope: scope.with_dataset(resolved_name, None))
+        broken = await self.guard_dataset_deletion(name=resolved_name, data_source=resolved_data_source)
         owner = await self._owner_of(resolved_name, data_source=resolved_data_source)
         if owner is not None:
             deleted = await self._delete_document_dataset(data_source=resolved_data_source, document=owner,
-                                                          name=resolved_name)
+                                                          name=resolved_name, broken=broken)
         else:
             deleted = await self._delete_dataset_row(
                 data_source=resolved_data_source, name=resolved_name,
@@ -1897,23 +1911,22 @@ class StorageBackend(ABC):
             if len(kept) != len(peer.relationships):
                 await self.save_dataset(peer.model_copy(update={"relationships": kept}), _validate=False)
 
-    async def _delete_document_dataset(self, *, data_source: str, document: str, name: str) -> bool:
-        """Remove dataset ``name`` from ``document`` (the document itself with its last dataset), warning about each
-        model-scoped metric that read it."""
+    async def guard_dataset_deletion(self, *, name: str, data_source: str) -> list[BrokenDependent]:
+        """Refuse deleting dataset ``name`` of ``data_source`` when that breaks a stored dependent; under a
+        database-driven change, what it breaks."""
+        return await self._guard_dependents(change=f"Deleting dataset {name!r}", data_source=data_source,
+                                            changed=lambda scope: scope.with_dataset(name, None))
+
+    async def _delete_document_dataset(self, *, data_source: str, document: str, name: str,
+                                       broken: Sequence[BrokenDependent]) -> bool:
+        """Remove dataset ``name`` from ``document`` (the document itself with its last dataset)."""
         index = await self._document_index(data_source)
-        readers = [m.name for m in index.metrics.values()
-                   if name.casefold() in expression_datasets(m.expression)[0]]
         members = [d for k, d in index.owners.items() if d == document]
         if len(members) <= 1:
-            deleted = await self._delete_semantic_model_row(data_source=data_source, name=document)
-        else:
-            await self._write_document_dataset(data_source=data_source, document=document, name=name,
-                                               mutate=lambda _old: None)
-            deleted = True
-        for reader in readers:
-            warnings.warn(f"Model-scoped metric {reader!r} of semantic model {document!r} reads the deleted dataset "
-                          f"{name!r}; it no longer loads.", UserWarning, stacklevel=outside_stacklevel())
-        return deleted
+            return await self._delete_semantic_model_row(data_source=data_source, name=document)
+        await self._write_document_dataset(data_source=data_source, document=document, name=name,
+                                           mutate=lambda _old: None, broken=broken)
+        return True
 
     @abstractmethod
     async def _delete_dataset_row(

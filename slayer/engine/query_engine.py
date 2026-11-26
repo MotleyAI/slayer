@@ -3696,15 +3696,13 @@ class SlayerQueryEngine:
             prior = await self.storage.get_dataset(dataset.name, data_source=prior_data_source or dataset.data_source)
         except StoredDocumentLoadError:
             prior = None
+        moved_from = prior_data_source if prior_data_source not in (None, dataset.data_source) else None
+        if moved_from is not None:
+            await self.storage.guard_dataset_deletion(name=dataset.name, data_source=moved_from)
         await self.storage.save_dataset(dataset, failures=failures)
         # Clean up the stale entry if the dataset moved datasource.
-        if (
-            prior_data_source is not None
-            and prior_data_source != dataset.data_source
-        ):
-            await self.storage.delete_dataset(
-                dataset.name, data_source=prior_data_source
-            )
+        if moved_from is not None:
+            await self.storage.delete_dataset(dataset.name, data_source=moved_from)
         payloads = await self._narrowed_access(dataset=dataset, prior=prior)
         unique = list({n.message: n for n in notices}.values())
         if warnings_out is not None:

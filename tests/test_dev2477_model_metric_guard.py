@@ -106,7 +106,8 @@ def renamed_field(ds: SlayerDataset, old: str, new: str) -> SlayerDataset:
 
 
 def line_naming(text: str, name: str) -> str:
-    [found] = [ln for ln in text.splitlines() if f"'{name}'" in ln or f" {name} " in f" {ln} "]
+    """The one refusal line about model-scoped metric ``name``."""
+    [found] = {ln.strip().removeprefix("- ") for ln in text.splitlines() if f"metric '{name}'" in ln}
     return found
 
 
@@ -203,6 +204,20 @@ async def test_removing_a_dataset_metric_a_metric_evaluates_is_refused(
     found = refusal(info.value)
     assert RPC in found
     assert "orders.total_revenue" in found
+    assert await text_of(storage) == before
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_replacing_a_read_field_by_a_dataset_metric_is_refused(tmp_path: Path, kind: str) -> None:
+    """A field read inside an aggregate does not resolve to a dataset metric of the same name."""
+    storage = await sales_store(kind, tmp_path, text=AMOUNTS)
+    before = await text_of(storage)
+    orders = without_fields(await must_get(storage, "orders"), "amount")
+    replaced = SlayerDataset.model_validate({**orders.model_dump(), "metrics": [
+        *orders.model_dump()["metrics"], {"name": "amount", "expression": "SUM(discount)"}]})
+    with raises_refusal(BREAK) as info:
+        await storage.save_dataset(replaced)
+    assert "orders.amount" in refusal(info.value)
     assert await text_of(storage) == before
 
 
@@ -657,6 +672,15 @@ async def test_an_unloadable_metric_is_never_written_back_on_load(tmp_path: Path
     assert "orders.discount" in (await metric_failures(storage))["discounted"]
     assert "discounted" not in await loadable_metrics(storage)
     assert await text_of(storage) == text
+
+
+async def test_an_unloadable_metric_keeps_its_name(tmp_path: Path) -> None:
+    """Another document cannot reuse the name of a stored metric that does not load."""
+    storage = await _partly_unresolved("yaml", tmp_path)
+    await store_document(storage, HEADS)
+    with raises_refusal("NamespaceCollisionError"):
+        await storage.edit_semantic_model("heads", data_source=DS, metrics=[
+            {"name": "discounted", "expression": "SUM(staff.head_count)"}])
 
 
 async def test_an_untyped_finding_applies_beside_an_unresolved_metric(tmp_path: Path) -> None:

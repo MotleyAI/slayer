@@ -42,13 +42,15 @@ from slayer.storage.document_extensions import (
     Restored, apply_dataset_entry, apply_field_entry, digest as entry_digest, metric_entry, read_entry,
     relocate_metrics, restore_metrics, restored_relationship,
 )
+from slayer.storage.model_metric_rules import (
+    WINDOW_WARNING, chain_warning, document_names, unevaluable_chain, unresolved_metrics, unresolved_references,
+)
 
-__all__ = ["Decomposition", "DocumentIndex", "analyse_model_scoped", "build_index", "chain_warning", "checked_document",
-           "decompose", "expression_datasets", "load_problem", "metric_graph", "unevaluable_chain", "unevaluable_targets",
+__all__ = ["Decomposition", "DocumentIndex", "analyse_model_scoped", "build_index", "checked_document",
+           "decompose", "expression_datasets", "load_problem", "metric_graph", "unevaluable_targets",
            "warn_unevaluable_dependents"]
 
 _OSSIE_TYPES = {t.value: t for t in DataType if t is not DataType.ARRAY}
-WINDOW_WARNING = "uses a window function (OVER), which SLayer cannot evaluate yet"
 
 
 class Decomposition(BaseModel):
@@ -430,32 +432,6 @@ def metric_graph(metrics: list[ModelScopedMetric]) -> dict[str, tuple[str, set[s
     return {m.name.casefold(): (m.name, _metric_reads(m.expression)) for m in metrics}
 
 
-def unevaluable_chain(reads: set[str], *, targets: dict[str, tuple[str, str]],
-                      graph: dict[str, tuple[str, set[str]]]) -> tuple[list[str], str] | None:
-    """The shortest chain from ``reads`` through model-scoped metrics (``graph``: folded name → spelling, reads) to an
-    unevaluable target, and that target's warning; cycle-safe."""
-    frontier = [(name, []) for name in sorted(reads)]
-    seen: set[str] = set()
-    while frontier:
-        nxt = []
-        for name, path in frontier:
-            if name in seen:
-                continue
-            seen.add(name)
-            if name in targets:
-                spelling, warning = targets[name]
-                return [*path, spelling], warning
-            if name in graph:
-                spelling, further = graph[name]
-                nxt += [(n, [*path, spelling]) for n in sorted(further)]
-        frontier = nxt
-    return None
-
-
-def chain_warning(chain: list[str], warning: str) -> str:
-    return f"reads {' → '.join(chain)}, which {warning}"
-
-
 def warn_unevaluable_dependents(metrics: list[ModelScopedMetric], *, datasets: list[SlayerDataset]) -> set[str]:
     """Warn each model-scoped metric reaching an entity SLayer cannot evaluate, naming the chain; the warned names,
     case-folded."""
@@ -493,6 +469,8 @@ class DocumentIndex(BaseModel):
     #: Owning document of every document dataset (quarantined ones included) by case-folded name.
     owners: dict[str, str] = {}
     metrics: dict[str, ModelScopedMetric] = {}
+    #: Every model-scoped metric each document stores, loadable or not.
+    stored_metrics: dict[str, list[ModelScopedMetric]] = {}
     #: Case-folded names unloadable everywhere, standalone copies included.
     quarantined: dict[str, str] = {}
     failures: list[StoredDocumentLoadError] = []
@@ -527,18 +505,11 @@ def build_index(*, data_source: str, documents: list[tuple[str, str]], standalon
             for owner, spelled in owners:
                 index.failure(kind="dataset", name=spelled,
                               cause=f"{spelled!r} is declared by {index.quarantined[folded]}; rename one of them")
-    known = {n.casefold() for n in standalone} | set(claims)
     for doc in decomposed:
-        _admit(index, doc, known=known)
+        for ds in doc.datasets:
+            _admit_dataset(index, ds, gone=set(index.quarantined))
+    _admit_metrics(index, decomposed)
     return index
-
-
-def _admit(index: DocumentIndex, doc: Decomposition, *, known: set[str]) -> None:
-    """Admit ``doc``'s datasets and metrics, dropping each dependent of a quarantined dataset with a failure."""
-    gone = set(index.quarantined)
-    for ds in doc.datasets:
-        _admit_dataset(index, ds, gone=gone)
-    _admit_metrics(index, doc, gone=gone, known=known)
 
 
 def _admit_dataset(index: DocumentIndex, ds: SlayerDataset, *, gone: set[str]) -> None:
@@ -558,23 +529,25 @@ def _admit_dataset(index: DocumentIndex, ds: SlayerDataset, *, gone: set[str]) -
     index.datasets[ds.name.casefold()] = ds
 
 
-def _admit_metrics(index: DocumentIndex, doc: Decomposition, *, gone: set[str], known: set[str]) -> None:
-    pending = {m.name.casefold(): m for m in doc.metrics}
-    dropped: set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for folded, metric in list(pending.items()):
-            tables, bare = expression_datasets(metric.expression)
-            cause = next((t for t in sorted(tables) if t in gone), None) or next(
-                (b for b in sorted(bare) if b in dropped), None)
-            if cause is not None:
-                index.failure(kind="metric", name=metric.name, cause=f"it reads {cause!r}, which is unloadable")
-                dropped.add(folded)
-                del pending[folded]
-                changed = True
-    for metric in pending.values():
-        missing = sorted(t for t in expression_datasets(metric.expression)[0] if t not in known)
-        if missing and metric.load_warning is None:
-            metric.load_warning = f"reads {', '.join(repr(m) for m in missing)}, which no longer exist"
-    index.metrics.update(pending)
+def _admit_metrics(index: DocumentIndex, decomposed: list[Decomposition]) -> None:
+    """Admit every document's model-scoped metrics; one reading what is not there (an unloadable dataset too), or such
+    a metric through others, fails to load."""
+    metrics = [m for doc in decomposed for m in doc.metrics]
+    names = {m.name.casefold() for m in metrics}
+    direct = {}
+    for doc in decomposed:
+        index.stored_metrics[doc.name] = doc.metrics
+        fields, dataset_metrics = document_names(
+            [index.datasets[k] for d in doc.datasets if (k := d.name.casefold()) in index.datasets])
+        for metric in doc.metrics:
+            gone = sorted(t for t in expression_datasets(metric.expression)[0] if t in index.quarantined)
+            direct[metric.name.casefold()] = {gone[0]: (gone[0], "is unloadable")} if gone else unresolved_references(
+                metric.expression, fields=fields, dataset_metrics=dataset_metrics, metric_names=names,
+                document=doc.name, data_source=index.data_source)
+    failed = unresolved_metrics(direct, graph=metric_graph(metrics))
+    for metric in metrics:
+        why = failed.get(metric.name.casefold())
+        if why:
+            index.failure(kind="metric", name=metric.name, cause="; ".join(why))
+        else:
+            index.metrics[metric.name.casefold()] = metric
