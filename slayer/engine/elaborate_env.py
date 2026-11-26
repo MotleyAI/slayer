@@ -18,7 +18,6 @@ from typing import (
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import (
-    AXIS_COLLAPSING_TRANSFORMS,
     DataType,
     NUMERIC_DATATYPES,
     OBSERVED_VALUE_AGGREGATIONS,
@@ -76,7 +75,10 @@ from slayer.core.keys import (
     is_list_call,
     is_local_combined_regroup_ref,
     is_local_partitioned_agg,
+    is_ranked_over_cells,
     is_reaggregation_key,
+    explicit_ranking_key,
+    window_kwarg_of,
     boolean_valued,
     conditional_branch_conflict,
     elements_as_numbers,
@@ -749,7 +751,7 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
                 f"aggregates, e.g. {tk.op}(sum(orders.amount, partition_by=orders.city)).",
                 location=f"dimension {name!r}",
             )
-        ungrained = [a for a in inner_aggs if a.partition_keys is None]
+        ungrained = [a for a in inner_aggs if a.partition_keys is None and not is_ranked_over_cells(a)]
         if ungrained:
             raise ComputedDimensionError(
                 summary=f"The aggregate '{ungrained[0].agg}"
@@ -771,7 +773,8 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
             "aggregate from the dimension.",
         )
     for agg in aggs:
-        if agg.partition_keys is None:
+        # A first / last over an aggregate is typed by its operand (semantics Axiom 5).
+        if agg.partition_keys is None and not is_ranked_over_cells(agg):
             raise ComputedDimensionError(
                 summary="The aggregate inside the computed dimension must declare "
                 "the grain it aggregates over with partition_by=, e.g. "
@@ -798,49 +801,49 @@ def check_opaque_grouping_dim(
         )
 
 
-def _axis_suggestion(
-    tk: TransformKey, *, time_key: ValueKey, query_grain: Grain, active_bucket: Optional[ValueKey],
-) -> str:
-    """The remedy for ``tk``'s missing axis: the dropping first/last's operand, else ``partition_by=``."""
+def _axis_suggestion(operand: ValueKey, *, op: str, time_key: ValueKey) -> str:
+    """The remedy for a missing axis: the consuming nested first/last's operand, else ``partition_by=``."""
     axis = dotted_key_display(time_key)
-    kept = transform_operand_grain(
-        tk.input, query_grain=query_grain, active_bucket=active_bucket, collapse_axis=False,
-    )
-    collapser = next(
-        (k for k in walk_value_keys(tk.input)
-         if isinstance(k, TransformKey) and k.op in AXIS_COLLAPSING_TRANSFORMS and k.time_key == time_key),
+    consumer = next(
+        (k for k in walk_value_keys(operand) if is_ranked_over_cells(k) and explicit_ranking_key(k) == time_key),
         None,
     )
-    if collapser is not None and time_key in kept:
-        return (f"The nested {collapser.op}() removes the time axis '{axis}': apply {tk.op}() to "
-                f"the {collapser.op}()'s operand instead, or to another operand that keeps '{axis}'.")
+    if consumer is not None:
+        return (f"The nested {consumer.agg}() consumes the time bucket '{axis}': apply {op}() to "
+                f"the {consumer.agg}()'s operand instead, or to another operand that keeps '{axis}'.")
     return f"Include the time key '{axis}' in the inner aggregate's partition_by= so the operand varies along it."
+
+
+def _time_ordered(k: ValueKey) -> Optional[Tuple[str, str, ValueKey, ValueKey]]:
+    """``(kind, op, operand, time key)`` of a time-ordered term: a time-ordered transform, or a ``first`` / ``last``
+    over an aggregate ranked by a time bucket."""
+    if isinstance(k, TransformKey) and k.op in TIME_TRANSFORMS and k.time_key is not None:
+        return "transform", k.op, k.input, k.time_key
+    if not is_ranked_over_cells(k):
+        return None
+    rk = explicit_ranking_key(k)
+    return ("aggregation", k.agg, k.source, rk) if isinstance(rk, TimeTruncKey) else None
 
 
 def check_temporal_axis(
     declared_metrics, *, bound_filters=(), order_specs=(), query_grain: Grain = Grain.EMPTY,
     active_bucket: Optional[ValueKey] = None,
 ) -> None:
-    """Every time-ordered transform's operand grain contains its time axis, in every position (Axiom 11.3)."""
+    """Every time-ordered term's operand grain contains its time axis, in every position (Axioms 2.4, 11.3)."""
     roots = [dm.bound.value_key for dm in declared_metrics]
     roots += [bf.value_key for bf in bound_filters]
     roots += [sp.bound.value_key for sp in order_specs]
-    for tk in (k for root in roots for k in walk_value_keys(root)):
-        if not isinstance(tk, TransformKey) or tk.op not in TIME_TRANSFORMS:
+    for found in (_time_ordered(k) for root in roots for k in walk_value_keys(root)):
+        if found is None:
             continue
-        time_key = tk.time_key
-        if time_key is None:
-            continue
-        grain = transform_operand_grain(tk.input, query_grain=query_grain, active_bucket=active_bucket)
-        if time_key in grain:
+        kind, op, operand, time_key = found
+        if time_key in transform_operand_grain(operand, query_grain=query_grain, active_bucket=active_bucket):
             continue
         raise TimeAxisError(
-            summary=f"The operand of {tk.op}() is at a grain that does not contain the time axis "
+            summary=f"The operand of {op}() is at a grain that does not contain the time axis "
             f"'{dotted_key_display(time_key)}', so it does not vary along it.",
-            location=f"transform {tk.op!r}",
-            suggestion=_axis_suggestion(
-                tk, time_key=time_key, query_grain=query_grain, active_bucket=active_bucket,
-            ),
+            location=f"{kind} {op!r}",
+            suggestion=_axis_suggestion(operand, op=op, time_key=time_key),
         )
 
 
@@ -2066,13 +2069,17 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
     return []
 
 
-def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
+def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[Tuple[str, str]]:
+    """``(kind, name)`` of a time-ordered term left without its axis: a transform, or a ``first`` / ``last`` over an
+    aggregate with no ranking key."""
     if (
         isinstance(key, TransformKey)
         and key.op in TIME_TRANSFORMS
         and key.time_key is None
     ):
-        return key.op
+        return "transform", key.op
+    if is_ranked_over_cells(key) and not key.args and window_kwarg_of(key) is None:
+        return "aggregation", key.agg
     for child in _time_search_children(key):
         found = _find_unresolved_time_needing_op(child)
         if found:
@@ -2093,11 +2100,12 @@ def check_whole_periods_axis(*, has_time_dimension: bool, remedy: Optional[str])
 def check_time_transforms_resolved(*, roots, remedy: Optional[str] = None) -> None:
     """A time-needing transform still at ``time_key=None`` after attachment means no resolvable TD."""
     for vk in roots:
-        op = _find_unresolved_time_needing_op(vk)
-        if op is not None:
+        term = _find_unresolved_time_needing_op(vk)
+        if term is not None:
+            kind, name = term
             raise TimeAxisError(
-                summary="The transform requires an unambiguous time dimension.",
-                location=f"transform {op!r}",
+                summary=f"The {kind} requires an unambiguous time dimension.",
+                location=f"{kind} {name!r}",
                 suggestion=with_bucket_remedy(_AXIS_REMEDY, remedy),
             )
 
@@ -2434,6 +2442,23 @@ def check_parameter_determined(
     )
 
 
+
+
+def grain_display(grain: Grain) -> str:
+    """A grain's members, sorted, for an error message."""
+    return ", ".join(sorted(dotted_key_display(m) for m in grain)) or "the grand total"
+
+
+def check_ranking_key_determined(*, term: ValueKey, key: ValueKey, home: str, determined: bool) -> None:
+    """A ``first`` / ``last`` ranks by a field of its home dataset, rows or an aggregate's cells (Axiom 2.4)."""
+    if determined:
+        return
+    raise UnsafeRelationshipInputError(
+        summary=f"The ranking key {dotted_key_display(key)} is not determined by {home}; each ranked row needs "
+        f"one key value.",
+        location=f"aggregation {dotted_key_display(term)!r}",
+        suggestion="Rank by a field of the ranked dataset, or by an aggregate grained within it.",
+    )
 
 
 def check_reaggregation_no_window(*, alias: str, window_val) -> None:

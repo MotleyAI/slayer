@@ -14,8 +14,9 @@ position: metrics, filters, order, and computed dimensions.
 ordered type; or `PERCENTILE_DISC(…) WITHIN GROUP (…)`), `percentile_approx(x, p=0.95)` (or
 `APPROX_PERCENTILE(x, 0.95)`; exact where the database has no approximation), `weighted_avg(x, weight=w)`, `stddev_samp`, `stddev_pop`,
 `var_samp`, `var_pop`, `corr(x, other=y)`, `covar_samp(x, other=y)`,
-`covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
-latest record's value in each group), `collect(x)` (the distinct sorted values in each
+`covar_pop(x, other=y)`, `first(x[, key])` / `last(x[, key])` (the earliest /
+latest record's value in each group; over an aggregate, `last(sum(x))`, the latest time bucket's value, the bucket
+consumed from its grain), `collect(x)` (the distinct sorted values in each
 group, as a list), plus the dataset's custom aggregations
 (`inspect` the dataset to list them). Any field argument may be a row-level expression:
 `weighted_avg(x, weight=orders.qty * 2)`, `last(x, coalesce(orders.updated_at, orders.created_at))`.

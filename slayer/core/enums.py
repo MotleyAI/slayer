@@ -402,8 +402,6 @@ TIME_TRANSFORMS = {
     "change",
     "change_pct",
     "time_shift",
-    "first",
-    "last",
     "lag",
     "lead",
     "consecutive_periods",
@@ -417,11 +415,6 @@ ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 # Default partition is the whole result set, not the group-by dimensions;
 # ``partition_by=`` opts into per-partition ranking.
 RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
-
-# Time-ordered transforms that reduce along the axis: one value per partition
-# (Axiom 11.3b). As an aggregation-source constituent they collapse to an exact
-# per-partition pick.
-AXIS_COLLAPSING_TRANSFORMS = frozenset({"first", "last"})
 
 # ``classify_aggregation`` buckets each aggregation by result-vs-source relation;
 # slot type and display format both read the bucket, so the axes cannot drift.

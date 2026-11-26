@@ -38,7 +38,6 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from slayer.core.enums import (
-    AXIS_COLLAPSING_TRANSFORMS,
     AggregationValueClass,
     DataType,
     DatePart,
@@ -1224,7 +1223,7 @@ def effective_root_grain(
             return Grain.of([*projected_dim_keys, *projected_td_keys]), False
         # A transform over a window= inner gains the active bucket in its union grain.
         if (
-            not windowed and active_bucket is not None
+            not windowed and isinstance(agg, TransformKey) and active_bucket is not None
             and any(window_kwarg_of(k) is not None for k in walk_value_keys(agg))
         ):
             return grain | {active_bucket}, True
@@ -1259,29 +1258,25 @@ def constituent_grain(
 
 def transform_operand_grain(
     input: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
-    collapse_axis: bool = True,
 ) -> Grain:
-    """A transform input's operand grain (Axioms 11.1, 11.3b, 11.5), recursive.
-    Without an aggregate, row leaves sit at the query grain; ``collapse_axis=False``
-    keeps the axis a nested first/last drops."""
-    if any(isinstance(k, AggregateKey) for k in walk_value_keys(input)):
-        return _operand_grain(
-            input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=None,
-            collapse_axis=collapse_axis,
-        )
-    grain = _operand_grain(
-        input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=query_grain,
-        collapse_axis=collapse_axis,
-    )
-    # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1). An empty grain left by a
-    # first/last collapse stays empty.
+    """A transform input's operand grain (Axioms 11.1, 11.5), recursive.
+    Without an aggregate over rows, row leaves sit at the query grain."""
+    if any(isinstance(k, AggregateKey) and not is_reaggregation_key(k) for k in walk_value_keys(input)):
+        return _operand_grain(input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=None)
+    grain = _operand_grain(input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=query_grain)
+    # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1).
     grained = any(isinstance(k, (TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)) for k in walk_value_keys(input))
     return query_grain if grain.is_empty and not grained else grain
 
 
+def value_grain(k: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey]) -> Grain:
+    """The grain ``k``'s value varies at: an aggregate's (a windowed one's with the active bucket), a transform's
+    operand grain, a row leaf itself; a compound the union of its parts'."""
+    return _operand_grain(k, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=None)
+
+
 def _operand_grain(
-    k: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
-    leaf_grain: Optional[Grain], collapse_axis: bool,
+    k: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey], leaf_grain: Optional[Grain],
 ) -> Grain:
     if isinstance(k, AggregateKey):
         grain = query_grain if k.partition_keys is None else k.partition_keys
@@ -1289,21 +1284,12 @@ def _operand_grain(
             return grain | {active_bucket}
         return grain
     if isinstance(k, TransformKey):
-        grain = transform_operand_grain(
-            k.input, query_grain=query_grain, active_bucket=active_bucket,
-            collapse_axis=collapse_axis,
-        )
-        if collapse_axis and k.op in AXIS_COLLAPSING_TRANSFORMS and k.time_key is not None:
-            return grain - {k.time_key}
-        return grain
+        return transform_operand_grain(k.input, query_grain=query_grain, active_bucket=active_bucket)
     if isinstance(k, (FieldKey, FieldSqlKey, TimeTruncKey)):
         return Grain.of([k]) if leaf_grain is None else leaf_grain
     grain = Grain.EMPTY
     for c in k.children():
-        grain = grain | _operand_grain(
-            c, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=leaf_grain,
-            collapse_axis=collapse_axis,
-        )
+        grain = grain | _operand_grain(c, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=leaf_grain)
     return grain
 
 
@@ -1316,8 +1302,7 @@ def attached_parameter_grain(
     """The grain at which an attached aggregation parameter is typed (Axiom 11.4 /
     2.3) — ``None`` when it is determined by construction. An ``AggregateKey`` types
     at its ``partition_keys`` (``None`` = ungrained, at the enclosing grain and
-    determined — a lowered collapsing transform always carries
-    explicit keys). A ``TransformKey`` types at its result grain. Both home- and
+    determined). A ``TransformKey`` types at its result grain. Both home- and
     operand-determination checks resolve the parameter to this grain first, so
     neither predicate needs a transform arm (D5)."""
     if isinstance(key, AggregateKey):
@@ -1397,10 +1382,11 @@ def _unanchored_leaves(key: _RerootableT) -> _RerootableT:
 
 
 def interior_unanchored(key: AggregateKey) -> AggregateKey:
-    """``key`` with its interior's references keyed by their path from its frame alone."""
+    """``key`` with its interior's references keyed by their path from its frame alone; a pick over cells ranks by
+    a grain key, no interior one."""
     return key.model_copy(update={
         "source": _unanchored_leaves(key.source),
-        "args": tuple(_unanchored_leaves(a) for a in key.args),
+        "args": key.args if is_ranked_over_cells(key) else tuple(_unanchored_leaves(a) for a in key.args),
         "kwargs": tuple((k, _unanchored_leaves(v)) for k, v in key.kwargs),
         "filter": None if key.filter is None else _unanchored_leaves(key.filter),
     })
@@ -1412,7 +1398,7 @@ def framed_aggregate(key: AggregateKey, *, frame: str) -> AggregateKey:
     token = anchor_token(frame)
     return key.model_copy(update={
         "source": _framed_leaves(key.source, token=token),
-        "args": tuple(_framed_leaves(a, token=token) for a in key.args),
+        "args": key.args if is_ranked_over_cells(key) else tuple(_framed_leaves(a, token=token) for a in key.args),
         "kwargs": tuple((k, _framed_leaves(v, token=token)) for k, v in key.kwargs),
         "filter": None if key.filter is None else _framed_leaves(key.filter, token=token),
     })
@@ -1429,7 +1415,11 @@ def compose_frame(
         framed = framed_aggregate(key, frame=frame)
         return cast(_RerootableT, framed.model_copy(update={
             "source": _compose_nested(framed.source, frame=frame, host_path=host_path),
-            "args": tuple(_compose_nested(a, frame=frame, host_path=host_path) for a in framed.args),
+            # A pick over cells ranks by a grain key of its operand.
+            "args": tuple(
+                _composed_grain(a, frame=frame, host_path=host_path) if is_ranked_over_cells(key)
+                else _compose_nested(a, frame=frame, host_path=host_path) for a in framed.args
+            ),
             "kwargs": tuple((k, _compose_nested(v, frame=frame, host_path=host_path)) for k, v in framed.kwargs),
             "partition_keys": None if key.partition_keys is None else Grain.of(
                 _composed_grain(p, frame=frame, host_path=host_path) for p in key.partition_keys),
@@ -1646,8 +1636,6 @@ def boolean_valued(key: object, *, field_type: FieldTypeFn) -> bool:
         return True
     if isinstance(key, AggregateKey):
         return key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS and boolean_valued(key.source, field_type=field_type)
-    if isinstance(key, TransformKey):
-        return key.op in AXIS_COLLAPSING_TRANSFORMS and boolean_valued(key.input, field_type=field_type)
     if isinstance(key, CastKey):
         return key.data_type is DataType.BOOLEAN
     if isinstance(key, ScalarCallKey):
@@ -1914,7 +1902,7 @@ def aggregation_source_type(source: object, *, field_type: FieldTypeFn) -> Optio
 # The element type of a list-typed field leaf (``None`` when the leaf is not a list or unknown).
 FieldElementFn = Callable[[Any], Optional[DataType]]
 # Transforms whose value is one of their operand's values.
-_VALUE_PRESERVING_TRANSFORMS = frozenset({"lag", "lead", "time_shift", "first", "last"})
+_VALUE_PRESERVING_TRANSFORMS = frozenset({"lag", "lead", "time_shift"})
 
 
 def _returned_args(key: ScalarCallKey) -> List[object]:
@@ -2234,6 +2222,14 @@ def is_kernel_requiring(key: ValueKey) -> TypeGuard[AggregateKey]:
 def is_ranked(key: AggregateKey) -> bool:
     """A ``first`` / ``last`` pick with the built-in ranked semantics."""
     return key.builtin and key.agg in RANKED_AGGREGATIONS
+
+
+def explicit_ranking_key(key: AggregateKey) -> Optional[ValueKey]:
+    """A ranked aggregate's explicit ranking key (its first positional), or ``None``."""
+    if not is_ranked(key) or not key.args:
+        return None
+    arg = key.args[0]
+    return cast(ValueKey, arg) if isinstance(arg, VALUE_KEY_TYPES) else None
 
 
 def restricts_own_rows(key: ValueKey) -> TypeGuard[AggregateKey]:
@@ -2560,31 +2556,47 @@ def normalize_transform_constituents(
     return map_attached_inputs(key=rebuilt, fn=_grain)
 
 
-def lower_collapsing_constituents(key: ValueKey) -> ValueKey:
-    """Lower a top-level collapsing transform constituent (``first``/``last``,
-    Axiom 11.3b) to an exact per-partition pick: ``t`` becomes ``max(t,
-    partition_by=<operand grain − axis>)``, so the carrier, attributability and
-    the mode axis see the collapsed grain while ``t`` still evaluates with its axis
-    inside the nested producer. ``max`` is exact — the picked value is constant
-    along the axis within a partition. Post-order over source, args and kwargs (D2);
-    all positions."""
-    rebuilt = key.map_children(lower_collapsing_constituents)
-    if not isinstance(rebuilt, AggregateKey):
-        return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
+def is_ranked_over_cells(key: ValueKey) -> TypeGuard[AggregateKey]:
+    """A ``first`` / ``last`` over an aggregate: it ranks its operand's cells (semantics Axiom 2.4)."""
+    return isinstance(key, AggregateKey) and is_ranked(key) and is_attached_source(key.source)
 
-    def _lower(c: ValueKey) -> ValueKey:
-        if (
-            isinstance(c, TransformKey)
-            and c.op in AXIS_COLLAPSING_TRANSFORMS
-            and c.time_key is not None
-        ):
-            return AggregateKey(
-                source=c, agg="max",
-                partition_keys=regroup_root_grain(c) - {c.time_key},
-            )
-        return c
 
-    return map_attached_inputs(key=rebuilt, fn=_lower)
+def settle_ranked_grains(
+    key: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey],
+    row_default_key: Callable[["AggregateKey"], Optional[ValueKey]],
+) -> ValueKey:
+    """Each unwindowed ranked aggregation's grain drops its ranking key on an exact match (semantics Axiom 5): its
+    base is ``partition_by=``, else the query's dimensions over rows or the operand's grain over an aggregate. A
+    dropped row-form default key (``row_default_key`` of that aggregation, read for its home) becomes explicit.
+    Post-order: a nested pick settles first."""
+    rebuilt = cast(ValueKey, key.map_children(lambda c: settle_ranked_grains(
+        c, query_grain=query_grain, active_bucket=active_bucket, row_default_key=row_default_key,
+    )))
+    if not isinstance(rebuilt, AggregateKey) or not is_ranked(rebuilt) or window_kwarg_of(rebuilt) is not None:
+        return rebuilt
+    over_cells = is_attached_source(rebuilt.source)
+    if over_cells:
+        # The operand keeps the query's grain wherever the pick is consumed (Axiom 5; as a transform's, D4b).
+        rebuilt = map_attached_inputs(rebuilt, lambda c: _grained_at(c, query_grain=query_grain))
+    base = rebuilt.partition_keys
+    if base is None:
+        base = transform_operand_grain(
+            rebuilt.source, query_grain=query_grain, active_bucket=active_bucket,
+        ) if over_cells else query_grain
+    rk = explicit_ranking_key(rebuilt) or (None if over_cells else row_default_key(rebuilt))
+    if rk is None or rk not in base:
+        return rebuilt.model_copy(update={"partition_keys": base}) if over_cells else rebuilt
+    return rebuilt.model_copy(update={"args": (rk,), "partition_keys": base - {rk}})
+
+
+def _grained_at(c: ValueKey, *, query_grain: Grain) -> ValueKey:
+    """An ungrained, unwindowed local aggregate grained at ``query_grain``; any other constituent as is."""
+    if (
+        isinstance(c, AggregateKey) and c.partition_keys is None and window_kwarg_of(c) is None
+        and not source_anchor_path(c.source)
+    ):
+        return c.model_copy(update={"partition_keys": query_grain})
+    return c
 
 
 def attached_inputs(k: ValueKey) -> List[ValueKey]:

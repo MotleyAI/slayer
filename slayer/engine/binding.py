@@ -1826,8 +1826,8 @@ def _bind_agg_call(
         parsed, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
         dim_alias_map=dim_alias_map,
     )
-    if not isinstance(key, AggregateKey):
-        # A series transform over an attached value (``first(regions.metric)``) reads no rows of its own.
+    if not isinstance(key, AggregateKey) or is_attached_source(key.source):
+        # An aggregation over an attached value (``first(regions.metric)``) reads no rows of its own.
         return key if scope is query_scope else _bind_agg_call_in(
             parsed, scope=query_scope, bundle=query_bundle, alias_map=alias_map, metric_ctx=metric_ctx,
             dim_alias_map=dim_alias_map,
@@ -1844,8 +1844,8 @@ def _bind_agg_call_in(
     metric_ctx: Optional[MetricResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey | TransformKey | TimeTruncKey:
-    """Bind an ``AggCall`` (a granularity called like a function is refused); ``first`` / ``last`` dispatch by the bound operand's
-    type — attached → the series transform, row grain → the ranked aggregation."""
+    """Bind an ``AggCall`` (a granularity called like a function is refused); a built-in ``first`` / ``last`` over an
+    attached operand ranks the operand's cells (semantics Axiom 2.4)."""
     if parsed.agg.lower() in RESERVED_NAMES:
         raise ReservedFunctionNameError(name=parsed.agg, where=f"{canonical_metric_text(parsed)}")
     if parsed.filter is not None:
@@ -1870,10 +1870,8 @@ def _bind_agg_call_in(
         )
         owner, _leaf = _resolve_agg_owner(operand, bundle)
         if is_attached_source(operand) and builtin_semantics(aggregation_definition(owner=owner, agg=parsed.agg)):
-            return _bind_transform_params(
-                op=op, inp=operand, args=parsed.args, kwargs=parsed.kwargs,
-                scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-            )
+            return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+                            source=cast(AggregateSource, operand))
     return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
 
@@ -2051,8 +2049,11 @@ def _bind_agg(
     scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    source: Optional[AggregateSource] = None,
 ) -> AggregateKey:
-    source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+    """Bind an aggregation call; ``source`` is its already-bound operand, when given."""
+    if source is None:
+        source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).
@@ -2228,12 +2229,12 @@ def _check_ranking_positional(*, agg: str, source, bundle: ResolvedSourceBundle,
         )
     if len(args) != 1:
         raise ValueError(
-            f"Aggregation {agg!r} ranks by at most one field or row-level expression; got "
+            f"Aggregation {agg!r} ranks by at most one field or expression; got "
             f"{len(args)} positional value(s)."
         )
-    if not _is_row_level_ranking_key(args[0]):
+    if not _reads_a_field(args[0]):
         raise ValueError(
-            f"Aggregation {agg!r} ranks by a field or a row-level expression of fields; got "
+            f"Aggregation {agg!r} ranks by a field, or an expression of fields and aggregates; got "
             f"{key_display(args[0]) if isinstance(args[0], VALUE_KEY_TYPES) else repr(args[0])} "
             f"as its ranking key."
         )
@@ -2271,10 +2272,11 @@ def _fold_positional_agg_args(
     return (), tuple(folded)
 
 
-def _is_row_level_ranking_key(key: object) -> bool:
-    """A ranking key reads at least one field and no aggregate, transform or attached value."""
-    return isinstance(key, VALUE_KEY_TYPES) and not _carries_attached_value(cast(ValueKey, key)) and any(
-        isinstance(k, (FieldKey, FieldSqlKey)) for k in walk_value_keys(cast(ValueKey, key))
+def _reads_a_field(key: object) -> bool:
+    """A ranking key reads a field, directly or through an aggregate; whether its home determines it is judged at
+    plan time (semantics Axiom 2.4)."""
+    return isinstance(key, VALUE_KEY_TYPES) and not isinstance(key, SqlFragmentKey) and any(
+        isinstance(k, (FieldKey, FieldSqlKey, StarKey)) for k in walk_value_keys(cast(ValueKey, key))
     )
 
 

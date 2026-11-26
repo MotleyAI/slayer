@@ -71,9 +71,9 @@ class TestPositionalErrors:
         with pytest.raises(ValueError, match="takes no parameters"):
             await _rows(exec_engine, "sum(sales.amount, sum(sales.amount, partition_by=sales.region))")
 
-    async def test_ranked_rejects_aggregate_ranking_key(self, exec_engine):
+    async def test_ranked_over_an_aggregate_rejects_literal_ranking_key(self, exec_engine):
         with pytest.raises(ValueError, match="ranks by a field"):
-            await _rows(exec_engine, "last(sales.amount, sum(sales.amount, partition_by=sales.region))")
+            await _rows(exec_engine, "last(sum(sales.amount), 1)")
 
     async def test_ranked_rejects_literal_ranking_key(self, exec_engine):
         with pytest.raises(ValueError, match="ranks by a field"):

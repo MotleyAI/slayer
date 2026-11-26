@@ -50,7 +50,7 @@ from slayer.core.granularity import bucket_type as granularity_bucket_type
 from slayer.core.time_spine import TIME_SPINE_FIELD, is_spine
 from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_zones import CIVIL
-from slayer.core.keys import split_top_level_and, restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, display_token, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
+from slayer.core.keys import boolean_valued, split_top_level_and, restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, display_token, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.relationship_walker import (
     OrientedRelationship,
     aggregation_owner,
@@ -1435,7 +1435,7 @@ class SQLGenerator:
             for sub in attach.substitutions
             if (dt := temporal_type(sub.original_key, field_type=dataset_types) or (
                 DataType.ARRAY if list_valued(sub.original_key, field_type=dataset_types) else None
-            )) is not None
+            ) or (DataType.BOOLEAN if boolean_valued(sub.original_key, field_type=dataset_types) else None)) is not None
         }
         dataset_elements = dataset_field_element(dataset=source_dataset, datasets_by_name=bundle.datasets_by_name)
         elements = {
@@ -3419,26 +3419,36 @@ class SQLGenerator:
         picked_params = list(getattr(kernel, "picked_params", []) or [])
         picked_names = {pp.name for pp in picked_params}
         spec: Optional[AggRenderSpec] = None
+        ranking_key = getattr(kernel, "ranking_key", None)
+        value_type = aggregation_source_type(agg_slot.key.source, field_type=scope.field_type)
         if not is_star and getattr(kernel, "null_safe", False):
             # Re-aggregation: the per-cell value is the carrier's
             # attached composite; render it through the scope (its placeholders
             # resolve to the carrier columns) and pick it once per cell.
             value_expr = render_value_key(key=agg_slot.key.source, ctx=ctx)
-            expression = rendered_expression(agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
-                key=agg_slot.key, source_dataset=source_dataset, src_leaf=picked_alias,
-            ))
-            spec = AggRenderSpec(
-                name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
-                alias=agg_alias, dataset_name="_base", type=agg_slot.type,
-                expression=expression,
-                agg_kwargs=self._agg_param_exprs(
-                    key=agg_slot.key, expression=expression, scope=scope,
-                    skip=frozenset(picked_names),
-                ),
-                input_type=aggregation_source_type(agg_slot.key.source, field_type=scope.field_type),
-            )
+            if ranking_key is None:
+                expression = rendered_expression(agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
+                    key=agg_slot.key, source_dataset=source_dataset, src_leaf=picked_alias,
+                ))
+                spec = AggRenderSpec(
+                    name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
+                    alias=agg_alias, dataset_name="_base", type=agg_slot.type,
+                    expression=expression,
+                    agg_kwargs=self._agg_param_exprs(
+                        key=agg_slot.key, expression=expression, scope=scope,
+                        skip=frozenset(picked_names),
+                    ),
+                    input_type=value_type,
+                )
+            else:
+                # A first / last over an aggregate: each cell's ranking key, picked once beside its value.
+                inner_cols.append(exp.Alias(
+                    this=pick(render_value_key(key=ranking_key, ctx=ctx),
+                              input_type=aggregation_source_type(ranking_key, field_type=scope.field_type)),
+                    alias=exp.to_identifier(RANK_KEY_FIELD),
+                ))
             inner_cols.append(exp.Alias(
-                this=pick(value_expr.copy(), input_type=spec.input_type),
+                this=pick(value_expr.copy(), input_type=value_type),
                 alias=exp.to_identifier(picked_alias),
             ))
         elif not is_star:
@@ -3507,6 +3517,12 @@ class SQLGenerator:
         base_subq = exp.Subquery(
             this=inner, alias=exp.TableAlias(this=exp.to_identifier("_base")),
         )
+        grain_key_of = {alias: slot.key for slot, alias in zip(grain_slots, grain_aliases)}
+        if ranking_key is not None:
+            return self._ranked_pick_over_cells(
+                base=base_subq, grain_key_of=grain_key_of, agg_slot=agg_slot, agg_alias=agg_alias,
+                value_alias=picked_alias, value_type=value_type,
+            )
 
         def _base_col(alias: str, *, quoted: bool = True) -> exp.Column:
             return exp.Column(
@@ -3556,7 +3572,6 @@ class SQLGenerator:
             )
         agg_expr, _ = self._build_agg(level2_spec)
         agg_expr = _wrap_cast_for_type(dialect=self._dialect, expr=agg_expr, dt=self._slot_cast_type(agg_slot))
-        grain_key_of = {alias: slot.key for slot, alias in zip(grain_slots, grain_aliases)}
         outer_cols: List[Expr] = [
             self._grouped_display(_base_col(alias), key=grain_key_of[alias]).as_(exp.to_identifier(alias, quoted=True))
             for alias in grain_aliases
@@ -3565,6 +3580,42 @@ class SQLGenerator:
         outer = exp.Select().select(*outer_cols).from_(base_subq)
         for alias in grain_aliases:
             outer = outer.group_by(self._grain_key(_base_col(alias), key=grain_key_of[alias]))
+        return outer
+
+    def _ranked_pick_over_cells(
+        self, *, base: exp.Subquery, grain_key_of: Mapping[str, Any], agg_slot, agg_alias: str, value_alias: str,
+        value_type: Optional[DataType],
+    ) -> exp.Select:
+        """A ``first`` / ``last`` over an aggregate: the operand cells ranked per grain group by their key
+        (``ROW_NUMBER``, NULL keys last), the rank-1 cell's value picked."""
+        agg = agg_slot.key.agg
+
+        def col(alias: str) -> exp.Column:
+            return exp.column(alias, quoted=True)
+
+        ranked = exp.Select().select(
+            *(col(a) for a in grain_key_of), exp.column(value_alias), exp.column(RANK_KEY_FIELD),
+            build_rank_field(
+                native_nulls_first=self._dialect.native_nulls_first(descending=False),
+                partition_by=[self._grain_key(col(a), key=k) for a, k in grain_key_of.items()],
+                ranking_time=ranked_ordered(
+                    ranking_time=exp.column(RANK_KEY_FIELD), agg=agg,
+                    native_nulls_first=self._dialect.native_nulls_first(descending=agg == "last"),
+                ),
+            ),
+        ).from_(base)
+        pick = _wrap_cast_for_type(
+            dialect=self._dialect,
+            expr=build_ranked_pick(value_ref=exp.column(value_alias), input_type=value_type, dialect=self._dialect),
+            dt=_ranked_value_cast_type(self._slot_cast_type(agg_slot)),
+        )
+        outer = exp.Select().select(
+            *(self._grouped_display(col(a), key=k).as_(exp.to_identifier(a, quoted=True))
+              for a, k in grain_key_of.items()),
+            pick.as_(exp.to_identifier(agg_alias, quoted=True)),
+        ).from_(exp.Subquery(this=ranked, alias=exp.TableAlias(this=exp.to_identifier(RANKED_SOURCE_ALIAS))))
+        for a, k in grain_key_of.items():
+            outer = outer.group_by(self._grain_key(col(a), key=k))
         return outer
 
     def _window_endpoints_base(self, *, kernel, plan, slots_by_id, aliases_by_slot_id) -> exp.Select:
@@ -4435,6 +4486,9 @@ class SQLGenerator:
             .as_(name, quoted=True)
             for name, key in buckets
         )).distinct().from_(self._spine_relation(alias="_series"))
+        if not tuple_names:
+            # Every key is a spine bucket: the series is the whole supply.
+            return series
         return exp.Select().select(
             *(relation_column(n, relation="_tuples").as_(n, quoted=True) for n in tuple_names),
             *(relation_column(n, relation="_buckets").as_(n, quoted=True) for n, _ in buckets),
@@ -5180,7 +5234,7 @@ class SQLGenerator:
                 args["spec"] = spec
             return exp.Window(**args)
 
-        # A NULL time bucket has no position on the axis (Axiom 11.3): a series of its own, skipped by a pick.
+        # A NULL time bucket has no position on the axis (Axiom 11.3): a series of its own.
         null_bucket = (
             exp.Case(ifs=[exp.If(this=exp.Is(this=time_col.copy(), expression=exp.Null()),
                                  true=exp.Literal.number(1))], default=exp.Literal.number(0))
@@ -5193,12 +5247,6 @@ class SQLGenerator:
             if time_col is not None
             else None
         )
-        unbounded_frame = exp.WindowSpec(
-            kind="ROWS",
-            start="UNBOUNDED", start_side="PRECEDING",
-            end="UNBOUNDED", end_side="FOLLOWING",
-        )
-
         kwarg_map = dict(key.kwargs)
         op = key.op
 
@@ -5257,37 +5305,7 @@ class SQLGenerator:
                 fn=_RANK_WINDOW_FNS[op](), metric=metric, partition_by=partition_by,
                 descending=kwarg_map.get("direction") == "desc",
             )
-        # A pick never takes a NULL bucket's value: with no positioned candidate it reads NULL.
-        positioned = (
-            exp.Case(ifs=[exp.If(this=exp.Is(this=time_col.copy(), expression=exp.Null()), true=exp.Null())],
-                     default=metric)
-            if time_col is not None else metric
-        )
-        if op == "first":
-            assert null_bucket is not None and time_col is not None
-            return _over(
-                exp.FirstValue(this=positioned),
-                order=exp.Order(expressions=[self._window_ordered(null_bucket.copy()),
-                                             self._window_ordered(time_col.copy())]),
-                spec=unbounded_frame,
-            )
-        if op == "last":
-            if time_col is None:
-                raise ValueError(
-                    f"Transform 'last' requires an unambiguous time "
-                    f"dimension (binder/planner gap; slot id={slot.id!r}).",
-                )
-            # last is first over the reversed time axis, so it takes the descending order.
-            assert null_bucket is not None
-            return _over(
-                exp.FirstValue(this=positioned),
-                order=exp.Order(expressions=[
-                    self._window_ordered(null_bucket.copy()),
-                    self._window_ordered(time_col.copy(), descending=True),
-                ]),
-                spec=unbounded_frame,
-            )
-        # Total-dispatch backstop: the 9 window ops above exhaust the vocabulary
+        # Total-dispatch backstop: the 7 window ops above exhaust the vocabulary
         # minus the desugared change/change_pct and the two dedicated emitters.
         raise NotImplementedError(
             f"window-transform dispatch has no arm for op {op!r}.",
@@ -5462,11 +5480,6 @@ class SQLGenerator:
             for s in (*producer.row_slots, *producer.aggregate_slots,
                       *producer.combined_expression_slots)
         }
-        if attach.collapsed:
-            # A collapsing pick is constant along its axis: one row per remaining grain cell.
-            kept = [col_by_sid[sid] for sid in producer.projection if sid not in attach.collapsed]
-            body = exp.Select().select(*(exp.column(c, quoted=True) for c in kept)).distinct().from_(
-                exp.Subquery(this=body, alias=exp.TableAlias(this=exp.to_identifier("_picked"))))
         entries.append(Node(
             name=cte_name, phase="producer", query=body,
             depends_on=[*[h.name for h in hoisted], *self._reuse_deps_of(cte_name)],
