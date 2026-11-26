@@ -34,7 +34,7 @@
 
 - [x] 5.1 Add one dialect hook for a window's order items that always states the NULL placement: the clause where the database has it, the `CASE` key on MySQL and SQL Server, and the MySQL `RANGE`-offset typed error; verify the NULL-placement emission tests for the nine Tier-1 dialects pass.
 - [x] 5.2 Add the per-database rewrites of design.md decision 10 (SQL Server `NTH_VALUE` over the three Ossie frame forms, ClickHouse `LAG` / `LEAD` and defaults, `FILTER` under `OVER` as a `CASE` argument); verify the matrix tests pass locally where the database runs (SQLite, DuckDB, Postgres; MySQL, ClickHouse and Trino via testcontainers) and by emission elsewhere.
-- [ ] 5.3 Probe each Tier-1 database for `COUNT(DISTINCT)`, `MEDIAN` and `PERCENTILE_CONT` under `OVER` and for frames outside Ossie's three forms; where the database has no windowed form raise the typed refusal naming function or frame and database; record pass or refused per database in the gate manifest and `docs/database-support.md`; verify the holistic scenarios pass.
+- [x] 5.3 Probe each Tier-1 database for `COUNT(DISTINCT)`, `MEDIAN` and `PERCENTILE_CONT` under `OVER` and for frames outside Ossie's three forms; where the database has no windowed form raise the typed refusal naming function or frame and database; record pass or refused per database in `docs/database-support.md`; verify the holistic scenarios pass.
 
 ## 6. Storage, strict mode, import and export
 
