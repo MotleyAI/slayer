@@ -89,7 +89,8 @@ monotonicity), Law 8 (home-row preservation); `queries/attribution-modes` › "T
     alone. Rejected: the shifted producer reading the stage's rows (the query's rows become the domain, which Axiom
     11.6 forbids; values would follow siblings and a named population); fixing the crash alone and filing the rest
     (ships a visible wrong value, against Decision 2). Decision 3 is unchanged: it fixes where a windowed *value* is
-    evaluated for the query's rows; this fixes which cells form a transform's series. (user; codex)
+    evaluated for the query's rows; this fixes which cells form a transform's series. The `queries/transforms` delta's clause and two scenarios are
+    (user, approved wording). (user; codex)
 16. **A bucket only a sibling supplies stays a gap for a transform over a windowed aggregate**, as for a plain one
     (Axiom 11.3): its row shows the windowed value, `time_shift` from the next bucket reads NULL; a spine query fills
     it. (default)
