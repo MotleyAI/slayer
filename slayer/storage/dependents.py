@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import contextlib
 import warnings
-from collections.abc import Generator, Set as AbstractSet
+from collections.abc import Generator, Mapping, Set as AbstractSet
 from contextvars import ContextVar
 
 from slayer.core.datasource_scope import DatasourceScope
 from slayer.core.deprecation import outside_stacklevel
 from slayer.core.errors import BrokenDependent, StoredDependentBreakError
+from slayer.core.semantic_model import ModelScopedMetric
 from slayer.storage.model_metric_rules import (
-    Unresolved, document_names, metric_references, unresolved_metrics, unresolved_references,
+    Unresolved, chain_warning, document_names, metric_references, unresolved_references,
 )
 from slayer.storage.semantic_models import metric_graph
 
 _DATABASE_DRIVEN: ContextVar[bool] = ContextVar("_DATABASE_DRIVEN", default=False)
+
+#: Unresolved references a metric reaches, by reference: the metric spellings leading to one holding it, and
+#: ``(spelling, why)``.
+Reach = dict[str, tuple[list[str], tuple[str, str]]]
 
 
 class StoredDependentUnresolvedWarning(UserWarning):
@@ -79,19 +84,51 @@ def _reads(name: str, *, graph: dict[str, tuple[set[str], set[str]]]) -> list[st
     return sorted(datasets | (seen - {name}))
 
 
+def _reached(name: str, *, direct: Mapping[str, Unresolved], graph: Mapping[str, tuple[str, set[str]]]) -> Reach:
+    """Every unresolved reference metric ``name`` reaches, itself or through the metrics it reads (``graph``: folded
+    name → spelling, reads), each by its shortest chain; cycle-safe."""
+    out: Reach = {}
+    seen: set[str] = set()
+    frontier: list[tuple[str, list[str]]] = [(name, [])]
+    while frontier:
+        nxt: list[tuple[str, list[str]]] = []
+        for current, chain in frontier:
+            if current in seen:
+                continue
+            seen.add(current)
+            for key, found in sorted(direct.get(current, {}).items()):
+                out.setdefault(key, (chain, found))
+            nxt += [(n, [*chain, graph[n][0]]) for n in sorted(graph.get(current, ("", set()))[1]) if n in graph]
+        frontier = nxt
+    return out
+
+
+def _metrics(scope: DatasourceScope) -> list[ModelScopedMetric]:
+    return [m for metrics in scope.metrics.values() for m in metrics]
+
+
 def broken_model_metrics(*, before: DatasourceScope, after: DatasourceScope) -> list[BrokenDependent]:
-    """The stored model-scoped metrics with an unresolved reference in ``after`` they lack in ``before``, and those
-    reading such a metric; a metric ``after`` adds is not judged."""
+    """The stored model-scoped metrics reaching, in ``after``, an unresolved reference they do not reach in ``before``,
+    directly or through other metrics; a metric ``after`` adds is not judged."""
     held = _names(before)
     if not held:
         return []
-    was = _direct(before)
-    new = {k: {r: v for r, v in found.items() if r not in was.get(k, {})}
-           for k, found in _direct(after, gone=held - _names(after)).items()}
-    kept = [(document, m) for document, metrics in after.metrics.items() for m in metrics if m.name.casefold() in held]
-    every = [m for metrics in after.metrics.values() for m in metrics]
-    failed = unresolved_metrics({k: v for k, v in new.items() if k in held}, graph=metric_graph(every))
-    references = {m.name.casefold(): metric_references(m.expression) for m in every}
-    return [BrokenDependent(kind="metric", data_source=after.data_source, name=m.name, semantic_model=document,
-                            problems=failed[m.name.casefold()], reads=_reads(m.name.casefold(), graph=references))
-            for document, m in kept if m.name.casefold() in failed]
+    was_direct, was_graph = _direct(before), metric_graph(_metrics(before))
+    now_direct, now_graph = _direct(after, gone=held - _names(after)), metric_graph(_metrics(after))
+    references = {m.name.casefold(): metric_references(m.expression) for m in _metrics(after)}
+    out = []
+    for document, metrics in after.metrics.items():
+        for metric in metrics:
+            folded = metric.name.casefold()
+            if folded not in held:
+                continue
+            was = _reached(folded, direct=was_direct, graph=was_graph)
+            new = [(key, hit) for key, hit in _reached(folded, direct=now_direct, graph=now_graph).items()
+                   if key not in was]
+            problems = [chain_warning([*chain, spelling], why) for _, (chain, (spelling, why)) in
+                        sorted(new, key=lambda item: (len(item[1][0]), item[0]))]
+            if problems:
+                out.append(BrokenDependent(kind="metric", data_source=after.data_source, name=metric.name,
+                                           semantic_model=document, problems=list(dict.fromkeys(problems)),
+                                           reads=_reads(folded, graph=references)))
+    return out

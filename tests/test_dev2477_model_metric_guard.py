@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
+from slayer.core.field_expression import portable_text
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.semantic_model import ossie_validity_errors
 from slayer.embeddings import client as embedding_client
@@ -291,8 +292,21 @@ async def test_replacing_a_metric_another_metric_reads_applies(tmp_path: Path, k
     storage = await sales_store(kind, tmp_path, metrics=DOUBLED)
     await storage.edit_semantic_model("sales", data_source=DS, metrics=[
         {"name": RPC, "expression": "AGG(orders.total_revenue)"}])
+    [replaced] = [m for m in await storage.list_model_scoped_metrics(DS) if m.name == RPC]
+    assert portable_text(replaced.expression) == "AGG(orders.total_revenue)"
     assert await loadable_metrics(storage) == {RPC, "doubled"}
     assert await metric_failures(storage) == {}
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_removing_a_metric_read_inside_an_aggregate_is_refused(tmp_path: Path, kind: str) -> None:
+    storage = await sales_store(kind, tmp_path, text=AMOUNTS, metrics=[
+        {"name": "factor", "expression": "1.1"}, {"name": "scaled", "expression": "SUM(orders.amount * factor)"}])
+    before = await text_of(storage)
+    with raises_refusal(BREAK) as info:
+        await storage.edit_semantic_model("sales", data_source=DS, remove_metrics=["factor"])
+    assert "factor" in line_naming(refusal(info.value), "scaled")
+    assert await text_of(storage) == before
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -483,6 +497,33 @@ async def test_restoring_a_missing_dataset_without_a_read_field_applies(tmp_path
     await storage.save_dataset(without_fields(customers, "region"))
     assert (await must_get(storage, "customers")).get_field("region") is None
     assert "customers.region" in (await metric_failures(storage))["regions"]
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_making_a_metric_read_an_unresolved_metric_is_refused(tmp_path: Path, kind: str) -> None:
+    """Spec scenario: Making a metric read an unresolved metric is refused."""
+    storage = await _partly_unresolved(kind, tmp_path)
+    before = await text_of(storage)
+    with raises_refusal(BREAK) as info:
+        await storage.edit_semantic_model("sales", data_source=DS, metrics=[
+            {"name": "amount_total", "expression": "discounted * 2"}])
+    chain = line_naming(refusal(info.value), "amount_total")
+    assert "discounted → orders.discount" in chain
+    assert await text_of(storage) == before
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_switching_between_metrics_with_the_same_unresolved_reference_applies(
+        tmp_path: Path, kind: str) -> None:
+    storage = await sales_store(kind, tmp_path, text=AMOUNTS, metrics=[
+        *DISCOUNTED, {"name": "discount_total", "expression": "SUM(orders.discount)"},
+        {"name": "reader", "expression": "discounted * 2"}])
+    with caught(), database_driven():
+        await storage.save_dataset(without_fields(await must_get(storage, "orders"), "discount"))
+    await storage.edit_semantic_model("sales", data_source=DS, metrics=[
+        {"name": "reader", "expression": "discount_total * 2"}])
+    assert "reader" not in await loadable_metrics(storage)
+    assert "discount_total" in (await metric_failures(storage))["reader"]
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -717,11 +758,20 @@ async def test_a_database_driven_dataset_metric_removal_applies_with_a_warning(
 
 
 @pytest.mark.parametrize("kind", STORAGES)
-async def test_an_unloadable_metric_is_never_written_back_on_load(tmp_path: Path, kind: str) -> None:
+async def test_an_unloadable_metric_is_never_written_back_on_load(
+        tmp_path: Path, kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
     storage = await _partly_unresolved(kind, tmp_path)
     text = await text_of(storage)
+    writes: list[str] = []
+
+    async def spy(*_args: Any, **_kwargs: Any) -> None:
+        writes.append("write")
+
+    for hook in ("_save_semantic_model_text_impl", "_patch_semantic_model_text", "_delete_semantic_model_row"):
+        monkeypatch.setattr(storage, hook, spy)
     assert "orders.discount" in (await metric_failures(storage))["discounted"]
     assert "discounted" not in await loadable_metrics(storage)
+    assert writes == []
     assert await text_of(storage) == text
 
 
@@ -781,7 +831,8 @@ def _rest(storage: StorageBackend) -> TestClient:
 async def test_rest_reports_a_refused_delete(tmp_path: Path) -> None:
     """Spec scenario: REST reports a refused delete."""
     storage = await sales_store("yaml", tmp_path)
-    response = _rest(storage).delete("/datasets/customers", params={"data_source": DS})
+    with _rest(storage) as client:
+        response = client.delete("/datasets/customers", params={"data_source": DS})
     assert response.status_code == 400, response.text
     assert RPC in response.text
     await must_get(storage, "customers")
@@ -789,7 +840,8 @@ async def test_rest_reports_a_refused_delete(tmp_path: Path) -> None:
 
 async def test_rest_reports_a_refused_semantic_model_delete(tmp_path: Path) -> None:
     storage = await _cross_document("yaml", tmp_path)
-    response = _rest(storage).delete(f"/semantic-models/{DS}/heads")
+    with _rest(storage) as client:
+        response = client.delete(f"/semantic-models/{DS}/heads")
     assert response.status_code == 400, response.text
     assert "per_head" in response.text
     assert (DS, "heads") in await storage.list_semantic_models(DS)
@@ -797,9 +849,9 @@ async def test_rest_reports_a_refused_semantic_model_delete(tmp_path: Path) -> N
 
 async def test_rest_reports_a_mapping_break_on_delete(tmp_path: Path) -> None:
     storage = await flights_store("yaml", tmp_path)
-    client = _rest(storage)
-    dataset_delete = client.delete("/datasets/FLIGHT", params={"data_source": FLIGHTS_DS})
-    model_delete = client.delete(f"/semantic-models/{FLIGHTS_DS}/{FLIGHTS_MODEL}")
+    with _rest(storage) as client:
+        dataset_delete = client.delete("/datasets/FLIGHT", params={"data_source": FLIGHTS_DS})
+        model_delete = client.delete(f"/semantic-models/{FLIGHTS_DS}/{FLIGHTS_MODEL}")
     for response in (dataset_delete, model_delete):
         assert response.status_code == 400, response.text
         assert FLIGHTS_MAPPING in response.text
@@ -807,7 +859,8 @@ async def test_rest_reports_a_mapping_break_on_delete(tmp_path: Path) -> None:
 
 async def test_rest_reports_a_hidden_content_conflict_on_delete(tmp_path: Path) -> None:
     storage = await _hidden_payroll("yaml", tmp_path)
-    response = _rest(view(storage)).delete("/datasets/staff", params={"data_source": DS})
+    with _rest(view(storage)) as client:
+        response = client.delete("/datasets/staff", params={"data_source": DS})
     assert response.status_code == 400, response.text
     assert [n for n in HIDDEN_NAMES if n in response.text] == []
     await must_get(storage, "staff")

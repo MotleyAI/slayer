@@ -18,6 +18,7 @@
 
 - [x] 3.1 Generalise `without_dataset`'s metric move: a database-driven write moves the transitive closure of affected core metrics into the document's `SLAYER` entry; verify 1.3 passes, including Ossie validity of the stored text.
 - [x] 3.2 Make `_admit_metrics` use the resolver: unresolved metrics (and their transitive readers) are recorded as metric load failures, never written back; verify 1.3 load assertions and `tests/test_law_load_never_writes.py` pass.
+- [x] 3.3 Compare reachable unresolved references before and after a change (design decision 6); verify the "Making a metric read an unresolved metric is refused" scenario passes.
 
 ## 4. Access and surfaces (pr-implement)
 

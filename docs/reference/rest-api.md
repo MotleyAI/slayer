@@ -135,7 +135,7 @@ A query-backed dataset's `fields` are generated at save, so supplying them retur
 
 A dataset of a semantic model is updated and deleted inside its document.
 
-A delete that would break a stored model-scoped metric or ontology mapping returns 400 listing each one; see [Semantic models](../concepts/semantic-models.md#editing).
+A delete that would break a stored model-scoped metric or ontology mapping returns 400 listing each one, or, when one is hidden from the caller, a 400 hidden-content conflict naming none; see [Semantic models](../concepts/semantic-models.md#editing).
 
 ### Semantic models
 

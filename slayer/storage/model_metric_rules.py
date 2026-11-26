@@ -234,7 +234,7 @@ def _unresolved(column: exp.Column, *, fields: Mapping[str, AbstractSet[str]],
     """``(key, spelling, why)`` when ``column`` names what is not there."""
     table, leaf = column.table.casefold(), column.name.casefold()
     if not table:
-        if _aggregated(column) or _inside_agg(column) or leaf in metric_names or leaf not in gone_metrics:
+        if leaf in metric_names or leaf not in gone_metrics:
             return None  # any other bare name is an unqualified field, which Ossie rejects as such
         return leaf, column.name, f"is not a model-scoped metric of datasource {data_source!r}"
     if table not in fields:
