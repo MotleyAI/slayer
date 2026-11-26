@@ -207,7 +207,7 @@ If you want to use a specific time field (overriding the query's time dimension)
 
 This explicit time argument takes priority over everything — query-level `time_dimensions`, `main_time_dimension`, and the dataset's `default_time_dimension`.
 
-Don't confuse the `last` *aggregation* (`last(accounts.balance)`) with the `last()` *transform* (`last(sum(orders.revenue))`). The aggregation picks the latest record's value within each time bucket. The transform broadcasts the latest time bucket's aggregated value to every row. Different operations, different use cases.
+`last` is one aggregation over two kinds of operand. Over a field (`last(accounts.balance)`) it picks the latest record's value within each time bucket. Over an aggregate (`last(sum(orders.revenue))`) it picks the aggregate's value at the latest time bucket; that bucket is its ranking key, so it is consumed and the value repeats on every bucket's row.
 
 ## Percentiles
 

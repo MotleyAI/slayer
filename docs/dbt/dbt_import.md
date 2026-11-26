@@ -193,7 +193,7 @@ Constructs that cannot be expressed exactly are **failed cleanly** — never con
 | Conversion metrics (funnel) | Sequential-event SQL unsupported | Express the funnel as a multi-stage query |
 | Measure-less simple metric (`metric_aggregation_params`) | Unsupported shape | Define an explicit measure |
 | Cross-model filter on an unreachable model | No relationship from the source dataset | Add the required relationship, or filter locally |
-| Transform-name shadowing | A measure/metric named after a transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) would shadow it | Rename the dbt measure/metric |
+| Transform- or aggregation-name shadowing | A measure/metric named after a transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`) or a built-in aggregation (`sum`, `first`, `last`, …) would shadow it | Rename the dbt measure/metric |
 
 A percentile/median measure is dropped with a report when the target datasource's dialect cannot compute it (MySQL, T-SQL).
 

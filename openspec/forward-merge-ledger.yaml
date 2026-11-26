@@ -30,7 +30,7 @@
   one_x_hash: f0a4c287d9ab88aeaa6ab1422222825312b96ed6f116933dc2ed11a2fb0ec724
   reason: "main keeps its own wording: `slayer.ingest.datasets` counts ingested datasets, not models."
 - title: datasources create --ingest runs the idempotent ingest
-  one_x_hash: b187d3b691f0b7ca6699252e30846dacc585ebac304259b361c4c02157cb9b01
+  one_x_hash: 78adb7e762f709ac222cca9ec52a3d07269f392f67319e790f8ab09fa1097222
   reason: "main keeps its own wording: datasets where 1.x says models, and the printed sections include main's failed-key-read section."
 - title: The empty-ingest message needs an empty result
   one_x_hash: bb2356376e15674635f9e3804578351da2495bb37eec28a2ec750e22906c80c3
@@ -50,3 +50,12 @@
 - title: A column reference renders the same in every clause
   one_x_hash: 36aaf6f28ad5454ef9e9c9966fec899769797f4d30ca048ba0404c7cf6ee136a
   reason: "main keeps its own wording, added by the DEV-2469 change: fields, datasets and relationship paths where 1.x says columns, models and joins; adds the untrusted hop's distinct projection, semi-join, aggregate-argument and same-leaf scenarios."
+- title: CLI errors are one line on stderr
+  one_x_hash: 9b9e0f14bddece0a2c32eb4390a83ff1d548ef71ac4ed1bf64051d8f4983cace
+  reason: "main keeps its own wording: main's query syntax in the scenarios, a strict refusal prints as its own message, and an entry with no location prints as its reason alone."
+- title: Demo data is deterministic
+  one_x_hash: e0aa5dc451b6e05553012fcfbe7c9f3bab2a4055b2f71f1824bdcc6147eafc5a
+  reason: "main keeps its own wording: the CLI guide's count query uses main's `population` / `metrics` syntax."
+- title: A stale demo database is rebuilt
+  one_x_hash: fd5d12fdac0bb772cbe2128ab0515ab751aa60eb8f3442aa7dc78c447fd1ae31
+  reason: "main keeps its own wording: datasets where 1.x says models."

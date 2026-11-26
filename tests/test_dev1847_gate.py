@@ -8,7 +8,7 @@ import re
 import pytest
 
 from slayer.core.errors import SlayerError
-from slayer.core.keys import AggregateKey, TransformKey
+from slayer.core.keys import AggregateKey
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import _source_is_reaggregation, bind_expr
 from slayer.core.syntax import AggCall, parse_expr
@@ -163,11 +163,11 @@ def _bound(expression: str):
 
 class TestFirstLastDispatchUnchanged:
     @pytest.mark.parametrize("fn", ["first", "last"])
-    def test_first_last_over_aggregate_binds_as_transform(self, fn):
-        """first/last over an aggregated first arg is the transform."""
+    def test_first_last_over_aggregate_binds_as_ranked_aggregation(self, fn):
+        """first/last over an aggregated first arg ranks the operand's cells."""
         key = _bound(f"{fn}({INNER_CR})")
-        assert isinstance(key, TransformKey)
-        assert key.op == fn
+        assert isinstance(key, AggregateKey)
+        assert key.agg == fn
 
     def test_last_over_plain_column_is_aggregation(self):
         """The non-aggregated first argument still routes to the aggregation."""

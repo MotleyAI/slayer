@@ -54,8 +54,8 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
-| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
-| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo in the background (idempotent); tool calls wait for it. |
+| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion in the background, after the demo; tool calls wait for it. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 | `--always-load-query` | off | Mark the MCP `query` tool with Claude Code's `anthropic/alwaysLoad` flag so it is never deferred behind tool search. Also enabled by `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`. |
 
 ### `slayer pg-serve`
@@ -488,7 +488,7 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
 | `--no-views` | No | (with `--ingest`) Skip views and materialized views (ingested by default) |
 | `--surface-internals` | No | (with `--ingest`) Ingest recognised ELT/migration internals visible instead of hidden |
-| `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
+| `--years` | No | (demo only) Years of synthetic data (default: reuse the existing demo, else 2); differing from the existing demo's years rebuilds it |
 | `-y`, `--yes` | No | Overwrite an existing datasource without prompting |
 | `--storage` | No | Storage path |
 

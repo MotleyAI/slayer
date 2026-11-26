@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 import yaml
+from ruamel.yaml import YAML
 
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig
@@ -127,6 +128,11 @@ def refusal(result: Any, file_name: str) -> str:
     return "\n".join(hits[0].reasons)
 
 
+def merged_load(text: str) -> Any:
+    """``text`` with earlier merge sources winning; PyYAML 6.0.4's ``safe_load`` can let later ones win."""
+    return YAML(typ="safe", pure=True).load(text)
+
+
 def field_description(doc: dict[str, Any], name: str) -> str:
     [orders] = [d for d in doc["datasets"] if d["name"] == "orders"]
     return next(f for f in orders["fields"] if f["name"] == name)["description"]
@@ -137,8 +143,8 @@ def field_description(doc: dict[str, Any], name: str) -> str:
 # --------------------------------------------------------------------------- #
 def test_the_fixture_texts_are_what_they_claim() -> None:
     assert yaml.safe_load(flat(REPEATED_KEY))["datasets"][0]["source"] == "other"
-    assert field_description(yaml.safe_load(flat(MERGED)), "c") == "First"
-    assert yaml.safe_load(legacy(MERGED))["semantic_model"][0]["datasets"][0]["fields"][2]["description"] == "First"
+    assert field_description(merged_load(flat(MERGED)), "c") == "First"
+    assert merged_load(legacy(MERGED))["semantic_model"][0]["datasets"][0]["fields"][2]["description"] == "First"
 
 
 @pytest.mark.parametrize(("text", "needle"), BAD_TEXTS)
@@ -210,7 +216,7 @@ async def test_merge_keys_keep_their_precedence_on_a_legacy_import(tmp_path: Pat
         text = await engine.storage.get_semantic_model_text("sales", DS)
     assert result.stored == ["sales"], result.refused
     assert text is not None
-    assert field_description(yaml.safe_load(text), "c") == "First"
+    assert field_description(merged_load(text), "c") == "First"
 
 
 # --------------------------------------------------------------------------- #
