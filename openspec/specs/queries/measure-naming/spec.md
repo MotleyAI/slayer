@@ -107,9 +107,9 @@ formula text SHALL resolve to that measure's result column.
 
 ### Requirement: Measures may be named after transforms
 A metric's name or alias SHALL NOT be rejected for equalling a transform name (`cumsum`, `change`,
-`change_pct`, `time_shift`, `first`, `last`, `lag`, `lead`, `consecutive_periods`, `rank`,
-`percent_rank`, `dense_rank`, `ntile`) — for query metrics, refinement metrics, query-extension
-metrics and saved metrics. A transform name SHALL act as a transform only in call position;
+`change_pct`, `time_shift`, `lag`, `lead`, `consecutive_periods`, `rank`,
+`percent_rank`, `dense_rank`, `ntile`) or `first` / `last` — for query metrics, refinement metrics, query-extension
+metrics and saved metrics. A transform name SHALL act as a transform, and `first` / `last` as an aggregation, only in call position;
 as a bare name it SHALL resolve like any other alias, and a qualified saved metric so named like any other
 saved metric, and the entry's result key SHALL be its alias. Importers SHALL import such metrics like any
 other. Custom aggregation names keep their transform-name reservation.

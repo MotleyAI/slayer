@@ -1,4 +1,4 @@
-"""A grained transform (``rank``, ``cumsum``, ``last`` …) is a legal
+"""A grained transform (``rank``, ``cumsum`` …) is a legal
 aggregation parameter in every position and mode, typed at its result grain and
 failing closed exactly where an aggregate parameter would. Executed on SQLite +
 DuckDB (orders graph, sales graph).
@@ -195,7 +195,7 @@ class TestLocalRootSales:
 
 
 class TestCollapsingLast:
-    """Scenario: Collapsing transform parameter drops the axis."""
+    """Scenario: Ranked second-order parameter drops the axis."""
 
     async def test_broadcast_mode_broadcasts_over_months(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
@@ -519,11 +519,13 @@ class TestBindLevel:
         pos = bind_expr(parse_expr(positional), scope=scope, bundle=bundle)
         assert pos.value_key == kw.value_key
 
-    def test_transform_ranking_key_refused(self):
+    def test_determined_transform_ranking_key_binds(self):
         scope, bundle = _orders_scope_bundle()
-        parsed = parse_expr(LAST_RANK_KEY)
-        with pytest.raises(ValueError, match="ranks by a field"):
-            bind_expr(parsed, scope=scope, bundle=bundle)
+        key = bind_expr(parse_expr(LAST_RANK_KEY), scope=scope, bundle=bundle).value_key
+        assert isinstance(key, AggregateKey), key
+        assert key.agg == "last", key
+        assert len(key.args) == 1, key.args
+        assert isinstance(key.args[0], TransformKey), key.args
 
     def test_time_bucketed_partition_key_granularity_in_fragment(self):
         """A rank parameter partitioned by the same field at different
