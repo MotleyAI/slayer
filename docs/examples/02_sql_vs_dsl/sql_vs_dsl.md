@@ -4,7 +4,7 @@ Every semantic layer, by its very nature, defines a domain-specific language (DS
 
 However, these can never cover every possible eventuality that raw SQL can express, nor does it make sense to fully duplicate SQL in the DSL. 
 
-This leads to a challenge: how to combine the simplicity of custom transforms (such as `time_shift` or `last` for example) that are natural semantically, with the power that raw SQL can offer, without making a mess of the syntax? 
+This leads to a challenge: how to combine the simplicity of custom operations (such as `time_shift` or `last` for example) that are natural semantically, with the power that raw SQL can offer, without making a mess of the syntax? 
 
 Many semantic layers achieve that via some sort of escape syntax, such as {} or $, that allows to inject DSL expressions into the SQL used in defining fields. In a way, that option is almost the only one available if the only place for any nontrivial operations or expressions is in field definitions, and all queries do is retrieve these.
 

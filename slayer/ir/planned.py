@@ -454,6 +454,8 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
+    #: A ``first`` / ``last`` over an aggregate: level 2 picks the value of the cell with the least / greatest key.
+    ranking_key: Optional[ValueKey] = None
 
 
 ProducerKernel = Union[
@@ -519,8 +521,6 @@ class RegroupAttachPlan(BaseModel):
     degenerate_metric: Optional[str] = None
     degenerate_operand_grain: List[str] = Field(default_factory=list)
     degenerate_outer_grain: List[str] = Field(default_factory=list)
-    #: Producer grain slots the attach does not join on: a collapsing pick is constant along them (Axiom 11.3b).
-    collapsed: List[SlotId] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _shift_fields_only_on_shifted(self) -> "RegroupAttachPlan":

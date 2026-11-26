@@ -369,10 +369,10 @@ Beyond routing, planning SHALL assign every value the plan carries — row leaf,
 
 #### Scenario: A transform over a composite over a transform
 - **WHEN** a query projects `change(x)` and filters on `last(change(x))`
-- **THEN** `change(x)` is staged one level above its `time_shift`, `last(change(x))`
-  shares the composite's level (only transforms stratify; the composite renders inline),
-  and the query executes selecting the declining partition (pinned by the DEV-1859
-  last-over-change test)
+- **THEN** `change(x)` is staged one level above its `time_shift`, the second-order
+  `last(change(x))` reads it as its operand (only transforms stratify; the composite
+  renders inline), and the query executes selecting the declining partition (pinned by
+  the last-over-change test)
 
 #### Scenario: Staging is a function of the term alone
 - **WHEN** the same query filters on `last(change(x))` with and without also projecting
@@ -381,8 +381,8 @@ Beyond routing, planning SHALL assign every value the plan carries — row leaf,
   are identical
 
 #### Scenario: Deeper alternation of transforms and composites
-- **WHEN** a transform's operand is a composite over a transform over a transform (for
-  example `last(change(cumsum(x)))`)
+- **WHEN** a ranked aggregation's operand is a composite over a transform over a
+  transform (for example `last(change(cumsum(x)))`)
 - **THEN** each transform is staged one level above the deepest transform it reads and
   the query plans with no construction-inspecting refusal
 

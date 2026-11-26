@@ -33,7 +33,7 @@ from tests.test_law_guard_ratchet import DEFERRAL_CLASSIFIER
 import slayer.core.enums
 
 SHIFT_OPS = frozenset({"time_shift", "change", "change_pct"})
-NON_SHIFT_OPS = sorted(slayer.core.enums.ALL_TRANSFORMS - SHIFT_OPS - {"first", "last"})
+NON_SHIFT_OPS = sorted(slayer.core.enums.ALL_TRANSFORMS - SHIFT_OPS)
 
 #: input-shape id -> the expression body around the unprojected row leaf.
 SHAPES = {
@@ -83,7 +83,7 @@ class TestDerivedSet:
     def test_shift_family_exemption_is_exactly_three_ops(self):
         """A new transform op must default into the rejected set."""
         assert SHIFT_OPS <= slayer.core.enums.ALL_TRANSFORMS
-        assert {"first", "last"} <= slayer.core.enums.ALL_TRANSFORMS
+        assert not {"first", "last"} & slayer.core.enums.ALL_TRANSFORMS
         assert set(NON_SHIFT_OPS) <= slayer.core.enums.ALL_TRANSFORMS
         assert not set(NON_SHIFT_OPS) & SHIFT_OPS
 

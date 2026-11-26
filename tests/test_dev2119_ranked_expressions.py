@@ -135,12 +135,8 @@ class TestExpressionRankingKey:
         resp = await engine.execute(query)
         assert _by_region(resp) == _by_region(resp, "c") == {"EU": 50.0, "US": 60.0}
 
-    @pytest.mark.parametrize("formula", [
-        "last(orders.amount, coalesce(orders.created_at, max(orders.created_at, partition_by=orders.region)))",
-        "last(orders.amount, 1 + 1)",
-    ])
-    async def test_non_row_level_ranking_key_rejected(self, sqlite_engine: SlayerQueryEngine, formula: str) -> None:
-        query = q(metrics=[m(formula)])
+    async def test_literal_ranking_key_rejected(self, sqlite_engine: SlayerQueryEngine) -> None:
+        query = q(metrics=[m("last(orders.amount, 1 + 1)")])
         with pytest.raises(ValueError, match="ranks by a field"):
             await sqlite_engine.execute(query)
 
