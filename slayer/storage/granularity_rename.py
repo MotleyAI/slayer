@@ -26,7 +26,11 @@ Written = tuple[str, int | None]
 _INITIAL_GATE: Mapping[str, int] = MappingProxyType({"SlayerModel": 30, "SlayerQuery": 19, "Memory": 14})
 #: Reserved name → the dataset, query and memory versions current when the library reserved it. A later
 #: reservation adds its own entry, strictly above every earlier gate.
-RENAME_GATES: dict[str, Mapping[str, int]] = dict.fromkeys(reserved_granularity_names(), _INITIAL_GATE)
+RENAME_GATES: dict[str, Mapping[str, int]] = {
+    **dict.fromkeys(reserved_granularity_names(), _INITIAL_GATE),
+    **dict.fromkeys(("sum_distinct", "avg_distinct", "percentile_disc", "percentile_approx"),
+                    MappingProxyType({"SlayerModel": 32, "SlayerQuery": 20, "Memory": 15})),
+}
 
 _TOKEN = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|[A-Za-z_]\w*|\S")
 

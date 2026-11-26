@@ -13,7 +13,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, SlayerDataset
-from slayer.core.query import QueryMetric, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.sql.dialects import dialect_for_ds_type
 from tests._engine_helpers import _engine_generate
 
@@ -36,7 +36,8 @@ ORDERS = SlayerDataset(
 
 async def _sql(expression: str, *, dialect: str, dimensions: tuple[str, ...] = ()) -> str:
     """Whitespace-normalised SQL of one metric over ``ORDERS``."""
-    query = SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression)], dimensions=list(dimensions))
+    query = SlayerQuery.model_validate(
+        {"population": "orders", "metrics": [{"metric": expression}], "dimensions": list(dimensions)})
     sql = await _engine_generate(query=query, dataset=ORDERS, dialect=dialect)
     return " ".join(sql.split())
 
@@ -210,3 +211,9 @@ async def test_positional_p_equals_named(dialect: str, agg: str) -> None:
     """Discrete percentile › Positional p equals named."""
     positional = await _sql(f"{agg}(orders.amount, 0.9)", dialect=dialect)
     assert positional == await _sql(f"{agg}(orders.amount, p=0.9)", dialect=dialect)
+
+
+async def test_clickhouse_exact_percentile_reads_a_decimal_as_a_float() -> None:
+    """ClickHouse's ``quantileExactInclusive`` refuses a ``Decimal`` argument."""
+    sql = (await _sql("percentile(orders.price, 0.5)", dialect="clickhouse")).lower()
+    assert "quantileexactinclusive(0.5)(tofloat64(orders.price))" in sql

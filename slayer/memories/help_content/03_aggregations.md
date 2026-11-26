@@ -8,8 +8,11 @@ position: metrics, filters, order, and computed dimensions.
 ## Catalogue
 
 `count(<dataset>.*)`, `count(x)`, `count_distinct(x)` (or `count(distinct x)`),
-`count_distinct_approx(x)`, `sum`, `avg`, `min`, `max`, `median(x)`,
-`percentile(x, p=0.95)`, `weighted_avg(x, weight=w)`, `stddev_samp`, `stddev_pop`,
+`count_distinct_approx(x)`, `sum`, `avg`, `min`, `max`, `sum_distinct(x)` (or
+`sum(distinct x)`), `avg_distinct(x)`, `median(x)`, `percentile(x, p=0.95)` (or
+`PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY x)`), `percentile_disc(x, p=0.95)` (an observed value of any
+ordered type; or `PERCENTILE_DISC(…) WITHIN GROUP (…)`), `percentile_approx(x, p=0.95)` (or
+`APPROX_PERCENTILE(x, 0.95)`; exact where the database has no approximation), `weighted_avg(x, weight=w)`, `stddev_samp`, `stddev_pop`,
 `var_samp`, `var_pop`, `corr(x, other=y)`, `covar_samp(x, other=y)`,
 `covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
 latest record's value in each group), `collect(x)` (the distinct sorted values in each

@@ -232,10 +232,10 @@ class _PercentileContAgg:
 
 
 class _PercentileDiscAgg:
-    """2-arg PERCENTILE_DISC(value, p): smallest value v with cume_dist(v) >= p."""
+    """2-arg PERCENTILE_DISC(value, p) over any ordered type: smallest value v with cume_dist(v) >= p."""
 
     def __init__(self) -> None:
-        self._vals: list[float] = []
+        self._vals: list[Any] = []
         self._p: float | None = None
 
     def step(self, value, p) -> None:
@@ -252,8 +252,8 @@ class _PercentileDiscAgg:
             return None
         s = sorted(self._vals)
         n = len(s)
-        # Smallest k with cume_dist (k+1)/n >= p.
-        k = max(0, math.ceil(self._p * n) - 1)
+        # Smallest k with cume_dist (k+1)/n >= p; exact, so p·n never rounds past an integer.
+        k = max(0, math.ceil(Decimal(str(self._p)) * n) - 1)
         return s[k]
 
 
@@ -1173,15 +1173,21 @@ class SqliteDialect(SqlDialect):
         """DATETIME-wrap: a bare-date text sorts before the same day's DATETIME frame bound."""
         return exp.Anonymous(this="DATETIME", expressions=[expr])
 
-    def build_median(self, inner: Expression) -> Expression:
+    def build_median(self, inner: Expression, *, input_type: Optional[DataType] = None) -> Expression:
         """SQLite: ``exp.Median``, emitted as the registered ``PERCENTILE_CONT(x, 0.5)`` UDF."""
         return exp.Median(this=inner.copy())
 
     def build_percentile(
-        self, p: Expression, col_expr: Expression,
+        self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,
     ) -> Expression:
         """SQLite: ``percentile_cont(value, p)`` — registered UDF."""
         return exp.PercentileCont(this=col_expr.copy(), expression=p.copy())
+
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """SQLite: ``percentile_disc(value, p)`` — registered UDF."""
+        return exp.PercentileDisc(this=col_expr.copy(), expression=p.copy())
 
     def rewrite_parsed_ast(self, tree: Expression) -> Expression:
         """Emit JSON extraction in the ``json_extract(...)`` function-call form."""

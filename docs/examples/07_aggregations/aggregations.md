@@ -86,12 +86,15 @@ These are always available — no definition needed:
 | `<agg>(window='90d')` | any aggregation over the source rows in the trailing range ending at each output bucket |
 | `min` / `max` | MIN/MAX(expr) |
 | `count` | COUNT(expr), or COUNT(\*) with `*` |
-| `count_distinct` | COUNT(DISTINCT expr) |
+| `count_distinct` | COUNT(DISTINCT expr), also written `count(distinct expr)` |
+| `sum_distinct` / `avg_distinct` | SUM / AVG(DISTINCT expr), also written `sum(distinct expr)` / `avg(distinct expr)` |
 | `count_distinct_approx` | Database-native approximate distinct count; exact `COUNT(DISTINCT expr)` fallback — see database support below |
 | `first` / `last` | Value from the earliest/latest record per group (by time) |
 | `weighted_avg` | SUM(expr \* weight) / SUM(weight), a NULL `expr` skipping its weight |
 | `median` | PERCENTILE_CONT(0.5) — see database support below |
 | `percentile` | PERCENTILE_CONT(p) — specify `p` as an argument; see database support below |
+| `percentile_disc` | PERCENTILE_DISC(p): an observed value, over numbers, text, dates and booleans |
+| `percentile_approx` | APPROX_PERCENTILE(expr, p): the database's approximate percentile, else the exact one |
 | `stddev_samp` / `stddev_pop` | Sample / population standard deviation |
 | `var_samp` / `var_pop` | Sample / population variance |
 | `corr` | `corr(price, other=quantity)` — Pearson correlation between two fields |
@@ -99,13 +102,8 @@ These are always available — no definition needed:
 
 ### Database support for `median` / `percentile`
 
-| Engine | Supported? | How |
-|---|---|---|
-| Postgres | yes | Native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`. |
-| DuckDB | yes | sqlglot rewrites ordered-set percentiles to DuckDB's `QUANTILE_CONT(x, p ORDER BY x)` syntax. |
-| SQLite | yes | Python aggregate UDFs registered on every connection by SLayer. |
-| ClickHouse | yes | Native `median(x)` and parametric `quantile(p)(x)`. |
-| MySQL | **no** | No native function and no Python-UDF mechanism — SLayer raises `NotImplementedError`. Use MariaDB or compute client-side. |
+`median`, `percentile` and `percentile_disc` are exact on every Tier-1 database; see
+[Database support](../../database-support.md#aggregation-support) for how each database computes them.
 
 ### Database support for `count_distinct_approx`
 

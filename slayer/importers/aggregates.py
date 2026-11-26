@@ -29,6 +29,8 @@ from slayer.sql.dialects.base import ListFn
 
 _SENTINEL_PREFIX = "SLAYERTOKEN"
 _SIMPLE_AGG = {exp.Sum: "sum", exp.Avg: "avg", exp.Min: "min", exp.Max: "max"}
+#: ``F(DISTINCT x)`` → its aggregation (DISTINCT leaves an extreme unchanged).
+_DISTINCT_AGG = {"sum": "sum_distinct", "avg": "avg_distinct", "min": "min", "max": "max"}
 _STAT_AGG: dict[type[exp.Expr], str] = {
     exp.Stddev: "stddev_samp", exp.StddevSamp: "stddev_samp", exp.StddevPop: "stddev_pop",
     exp.Variance: "var_samp", exp.VariancePop: "var_pop",
@@ -86,6 +88,22 @@ def outermost_aggregates(tree: exp.Expr) -> list[exp.Expr]:
 
 class Unconvertible(Exception):
     """Control-flow signal carrying a clean-fail reason."""
+
+
+def _fraction(node: exp.Expr | None) -> str:
+    """A percentile fraction's literal text, refused unless a number in [0, 1]."""
+    if not (isinstance(node, exp.Literal) and node.is_number):
+        raise Unconvertible("percentile fraction must be a numeric literal")
+    if not 0.0 <= float(node.name) <= 1.0:
+        raise Unconvertible("percentile fraction must be between 0 and 1")
+    return node.name
+
+
+def _approx_percentile_calls(node: exp.Expr) -> exp.Expr:
+    """An unparsed ``APPROX_PERCENTILE(x, p)`` as its aggregate; any other argument count stays a function call."""
+    if isinstance(node, exp.Anonymous) and node.name.upper() == "APPROX_PERCENTILE" and len(node.expressions) == 2:
+        return exp.ApproxQuantile(this=node.expressions[0], quantile=node.expressions[1])
+    return node
 
 
 class _NotInline(Exception):
@@ -352,6 +370,9 @@ def dialect_refusal(name: str, *, dialect: SqlDialect | None) -> str | None:
     builders: dict[str, Callable[[SqlDialect], Expression]] = {
         "median": lambda d: d.build_median(inner=probe),
         "percentile": lambda d: d.build_percentile(p=exp.Literal.number("0.5"), col_expr=probe),
+        "percentile_disc": lambda d: d.build_percentile_disc(p=exp.Literal.number("0.5"), col_expr=probe,
+                                                             input_type=None),
+        "percentile_approx": lambda d: d.build_percentile_approx(p=exp.Literal.number("0.5"), col_expr=probe),
         "collect": lambda d: d.build_collect(probe, None),
         **{fn: (lambda d, fn=fn: d.build_list_call(fn, (probe, probe))) for fn in get_args(ListFn)},
     }
@@ -404,12 +425,9 @@ class _Translator:
         if isinstance(node, exp.WithinGroup):
             return self._percentile_ref(node, mask=mask)
         if type(node) in _SIMPLE_AGG:
-            agg = _SIMPLE_AGG[type(node)]
-            # SLayer supports DISTINCT only for COUNT.
-            if isinstance(node.this, exp.Distinct):
-                raise Unconvertible(f"{agg.upper()}(DISTINCT ...) is not supported")
-            self._refuse_list(node.this, agg.upper())
-            return functional_agg_text(source=self.policy.operand(node.this, mask=mask, agg=agg), suffix=agg)
+            return self._simple_ref(node, mask=mask)
+        if isinstance(node, exp.ApproxQuantile):
+            return self._approx_percentile_ref(node, mask=mask)
         if isinstance(node, exp.Count):
             return self._count_ref(node, mask=mask)
         if isinstance(node, exp.ArrayAgg):
@@ -427,6 +445,23 @@ class _Translator:
             return f"{agg}({value}, other={self.policy.param(node.expression, mask=mask, agg=agg)})"
         name = node.sql_name() if isinstance(node, exp.Func) else node.key
         raise Unconvertible(f"unsupported aggregation {name!r}")
+
+    def _simple_ref(self, node: exp.Expr, *, mask: exp.Expr | None) -> str:
+        agg, operand = _SIMPLE_AGG[type(node)], node.this
+        if isinstance(operand, exp.Distinct):
+            if len(operand.expressions) != 1:
+                raise Unconvertible(f"{agg.upper()}(DISTINCT ...) over several values is not supported")
+            agg, operand = _DISTINCT_AGG[agg], operand.expressions[0]
+        self._refuse_list(operand, agg.upper())
+        return functional_agg_text(source=self.policy.operand(operand, mask=mask, agg=agg), suffix=agg)
+
+    def _approx_percentile_ref(self, node: exp.ApproxQuantile, *, mask: exp.Expr | None) -> str:
+        if any(v is not None for k, v in node.args.items() if k not in ("this", "quantile")):
+            raise Unconvertible("APPROX_PERCENTILE with an accuracy or weight is not supported")
+        p = _fraction(node.args.get("quantile"))
+        self._refuse_list(node.this, "APPROX_PERCENTILE")
+        ref = self.policy.operand(node.this, mask=mask, agg="percentile_approx")
+        return functional_agg_text(source=ref, suffix=f"percentile_approx(p={p})")
 
     def _count_ref(self, node: exp.Count, *, mask: exp.Expr | None) -> str:
         inner = node.this
@@ -454,16 +489,9 @@ class _Translator:
 
     def _percentile_ref(self, node: exp.WithinGroup, *, mask: exp.Expr | None) -> str:
         inner = node.this
-        if isinstance(inner, exp.PercentileDisc):
-            raise Unconvertible("PERCENTILE_DISC picks an observed value, but SLayer's percentile interpolates")
-        if not isinstance(inner, exp.PercentileCont):
+        if not isinstance(inner, (exp.PercentileCont, exp.PercentileDisc)):
             raise Unconvertible("unsupported WITHIN GROUP aggregate")
-        p_node = inner.this
-        if not (isinstance(p_node, exp.Literal) and p_node.is_number):
-            raise Unconvertible("percentile fraction must be a numeric literal")
-        p_val = float(p_node.name)
-        if not 0.0 <= p_val <= 1.0:
-            raise Unconvertible("percentile fraction must be between 0 and 1")
+        p = _fraction(inner.this)
 
         order = node.args.get("expression")
         if not (isinstance(order, exp.Order) and order.expressions):
@@ -473,9 +501,13 @@ class _Translator:
         if not isinstance(col_node, exp.Column):
             raise Unconvertible("percentile ORDER BY must be a bare column")
         self._refuse_list(col_node, "PERCENTILE")
-        agg = "median" if math.isclose(p_val, 0.5) else "percentile"
-        ref = self.policy.operand(col_node, mask=mask, agg=agg)
-        return functional_agg_text(source=ref, suffix="median" if agg == "median" else f"percentile(p={p_node.name})")
+        if isinstance(inner, exp.PercentileDisc):
+            agg, suffix = "percentile_disc", f"percentile_disc(p={p})"
+        elif math.isclose(float(p), 0.5):
+            agg = suffix = "median"
+        else:
+            agg, suffix = "percentile", f"percentile(p={p})"
+        return functional_agg_text(source=self.policy.operand(col_node, mask=mask, agg=agg), suffix=suffix)
 
     # ---- residual validation ----
 
@@ -501,6 +533,7 @@ class _Translator:
     # ---- top-level ----
 
     def convert(self, tree: exp.Expr) -> ExprResult:
+        tree = tree.transform(_approx_percentile_calls)
         if tree.find(exp.Window):
             return self._fail("window functions are not expressible; use a transform")
         try:

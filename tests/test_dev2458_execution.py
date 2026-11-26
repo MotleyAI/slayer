@@ -84,7 +84,8 @@ async def test_over_no_rows_is_null(engine: SlayerQueryEngine) -> None:
 async def test_boolean_input(engine: SlayerQueryEngine) -> None:
     """Scenario: Boolean input."""
     row = await _single(engine, m("sum_distinct(orders.is_paid)"))
-    assert row["v"] == 1 and not isinstance(row["v"], bool)
+    assert row["v"] == 1
+    assert not isinstance(row["v"], bool)
     assert plan_type("sum_distinct(orders.is_paid)") == DataType.INTEGER
 
 
@@ -173,10 +174,12 @@ INVALID_P = [
 @pytest.mark.parametrize("text", INVALID_P)
 async def test_invalid_p_is_refused_at_save_and_at_query(engine: SlayerQueryEngine, text: str) -> None:
     """Scenario: Invalid p — the same typed error naming ``p`` at save time and at query time."""
+    dataset = orders_dataset(metrics=[DatasetMetric(name="bad", expression=text)])
+    query = q(metrics=[m(re.sub(r"\bamount\b", "orders.amount", text))])
     with pytest.raises(SlayerError, match=r"\bp\b") as saved:
-        await engine.storage.save_dataset(orders_dataset(metrics=[DatasetMetric(name="bad", expression=text)]))
+        await engine.storage.save_dataset(dataset)
     with pytest.raises(SlayerError, match=r"\bp\b") as queried:
-        await engine.execute(q(metrics=[m(re.sub(r"\bamount\b", "orders.amount", text))]))
+        await engine.execute(query)
     assert type(saved.value) is type(queried.value)
 
 
@@ -186,7 +189,9 @@ async def test_invalid_p_is_refused_at_save_and_at_query(engine: SlayerQueryEngi
 async def test_approx_within_tolerance(engine: SlayerQueryEngine) -> None:
     """Scenario: Within tolerance on every Tier-1 database (SQLite and DuckDB)."""
     row = await _single(engine, m("APPROX_PERCENTILE(orders.amount, 0.5)"))
-    assert abs(num(row["v"]) - 30) <= 1
+    value = num(row["v"])
+    assert value is not None
+    assert abs(value - 30) <= 1
 
 
 async def test_approx_is_exact_on_sqlite() -> None:
@@ -221,8 +226,9 @@ async def test_text_field_defaults(engine: SlayerQueryEngine) -> None:
     """Scenario: Text field defaults."""
     row = await _single(engine, m("percentile_disc(orders.status, 0.5)"))
     assert row["v"] == "pending"
+    query = q(metrics=["sum_distinct(orders.status)"])
     with pytest.raises(AggregationNotAllowedError) as refused:
-        await engine.execute(q(metrics=["sum_distinct(orders.status)"]))
+        await engine.execute(query)
     assert (refused.value.field.endswith("status"), refused.value.agg) == (True, "sum_distinct")
 
 
@@ -236,8 +242,9 @@ async def test_boolean_field_defaults(engine: SlayerQueryEngine) -> None:
 @pytest.mark.parametrize("agg", NEW_BUILTINS)
 async def test_a_sole_primary_key_admits_none(engine: SlayerQueryEngine, agg: str) -> None:
     args = ", 0.5" if agg.startswith("percentile") else ""
+    query = q(metrics=[f"{agg}(orders.id{args})"])
     with pytest.raises(AggregationNotAllowedError):
-        await engine.execute(q(metrics=[f"{agg}(orders.id{args})"]))
+        await engine.execute(query)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

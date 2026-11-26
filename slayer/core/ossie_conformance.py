@@ -44,16 +44,16 @@ OSSIE_DATE_TRUNC_UNITS = frozenset({"year", "quarter", "month", "week", "day", "
 OSSIE_AGGREGATE_SPELLINGS = frozenset({"sum", "count", "avg", "min", "max", "stddev", "stddev_pop", "stddev_samp",
                                        "variance", "var_pop", "var_samp", "median", "approx_count_distinct",
                                        "approx_percentile", "percentile_cont", "percentile_disc"})
-#: The names the parser gives Ossie's ``COUNT(DISTINCT …)`` and ``PERCENTILE_CONT(…) WITHIN GROUP (…)``; SLayer's own
-#: calls of these names are refused by their written callee.
-REWRITTEN_AGGREGATES = frozenset({"count_distinct", "percentile"})
+#: The names the parser gives Ossie's ``COUNT|SUM(DISTINCT …)`` and ``PERCENTILE_CONT|DISC(…) WITHIN GROUP (…)``;
+#: SLayer's own calls of these names are refused by their written callee.
+REWRITTEN_AGGREGATES = frozenset({"count_distinct", "sum_distinct", "percentile", "percentile_disc"})
 #: Ossie aggregates SLayer reads in no plain-call form, and why.
 OSSIE_UNREAD_CALLS = {
     "percentile_cont": "PERCENTILE_CONT is read only as PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)",
-    "percentile_disc": "PERCENTILE_DISC is an Ossie aggregate SLayer does not support yet",
+    "percentile_disc": "PERCENTILE_DISC is read only as PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)",
 }
 #: The named arguments the parser gives each rewritten aggregate; any other argument was written.
-REWRITTEN_ARGUMENTS = {"count_distinct": (), "percentile": ("p",)}
+REWRITTEN_ARGUMENTS = {"count_distinct": (), "sum_distinct": (), "percentile": ("p",), "percentile_disc": ("p",)}
 #: Arguments an Ossie aggregate takes after its value (one value otherwise).
 OSSIE_AGGREGATE_EXTRA_ARGS = {"approx_percentile": 1}
 #: ANSI order of a frame's bound kinds.
@@ -155,6 +155,8 @@ def _text_problem(text: str) -> Optional[str]:
         return f"{spellings[0]} is SLayer syntax, not an Ossie expression"
     for call in call_spans(text, windows=True):
         name = call.name.lower()
+        if name in OSSIE_UNREAD_CALLS:
+            return OSSIE_UNREAD_CALLS[name]
         if name in REWRITTEN_AGGREGATES:
             return f"{call.callee}() is a SLayer function Ossie does not define"
         spec = SCALAR_SPECS.get(name)
@@ -222,8 +224,6 @@ def _aggregate(node: AggCall, out: FilterReading) -> None:
 def _aggregate_call(node: AggCall, out: FilterReading) -> None:
     """An aggregate judged as Ossie writes it, windowed or not: an Ossie spelling of a SLayer built-in."""
     name = node.agg.lower()
-    if name in OSSIE_UNREAD_CALLS:
-        _refuse(out, OSSIE_UNREAD_CALLS[name])
     if name not in OSSIE_AGGREGATE_SPELLINGS | REWRITTEN_AGGREGATES:
         _refuse(out, f"{node.agg}() is not an Ossie function")
     elif normalize_aggregation_name(name) not in BUILTIN_AGGREGATIONS:

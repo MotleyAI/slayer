@@ -50,7 +50,8 @@ from slayer.core.errors import (
     UnknownGranularityError,
 )
 from slayer.engine.field_dependency import (
-    check_dataset_filters, check_evaluated_metrics, check_field_agg, validate_derived_fields, warn_broken_dependents,
+    check_dataset_filters, check_evaluated_metrics, check_field_agg, check_metric_fractions, validate_derived_fields,
+    warn_broken_dependents,
 )
 from slayer.core.relationship_walker import edges_between, unique_key_sets
 from slayer.core.names import folded_collisions
@@ -1028,6 +1029,7 @@ class StorageBackend(ABC):
         check_relationship_target_spellings(dataset, names=[n for ds, n in identities if ds == dataset.data_source], peers=peers)
         await self._validate_mode_a_placeholders(dataset)
         check_field_agg(dataset)
+        check_metric_fractions(dataset)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_dataset_filters(dataset=dataset, reachable=peers,
                               dialect=ossie_token(datasource.type) if datasource is not None else None)

@@ -18,7 +18,7 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
-from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind
+from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import ScalarCallKey
@@ -50,7 +50,12 @@ from slayer.sql.dialects.base import (
     _build_covar_decomposition,
     iso_text,
 )
-from slayer.sql.dialects._ordered_set_split import split_percentile_selects
+from slayer.sql.dialects._ordered_set_split import (
+    RANKED,
+    PercentileColumns,
+    discrete_percentile,
+    split_percentile_selects,
+)
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import ResultColumnType, info_schema_type, result_column_type_of_name
 
@@ -200,13 +205,26 @@ def _bit_value(predicate: Expr) -> Expression:
     return exp.Cast(this=case, to=exp.DataType.build("BIT", dialect="tsql"))
 
 
-def _windowed_percentile(p: Expr, value: Expr, partition: Sequence[Expr]):
-    """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs
-    are skipped, so they sort natively (one ORDER BY key is all it takes)."""
-    key = exp.Ordered(this=value.copy(), nulls_first=True)
-    window = exp.Window(this=exp.WithinGroup(this=exp.PercentileCont(this=p.copy()), expression=exp.Order(expressions=[key])),
-                        partition_by=[k.copy() for k in partition])
-    return [window], lambda reads: exp.Max(this=reads[0])
+def _windowed(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
+    """``F(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs are skipped,
+    so they sort natively (one ORDER BY key is all it takes)."""
+
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr]):
+        key = exp.Ordered(this=value.copy(), nulls_first=True)
+        window = exp.Window(this=exp.WithinGroup(this=function(this=p.copy()), expression=exp.Order(expressions=[key])),
+                            partition_by=[k.copy() for k in partition])
+        return [window], lambda reads: exp.Max(this=reads[0])
+
+    return columns
+
+
+def _percentile_columns(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    """The native windowed percentiles; a ``PERCENTILE_DISC`` over a non-numeric value from ranks."""
+    if isinstance(node.this, exp.PercentileCont):
+        return _windowed(exp.PercentileCont)
+    if isinstance(node.this, exp.PercentileDisc):
+        return discrete_percentile if node.meta.get(RANKED) else _windowed(exp.PercentileDisc)
+    return None
 
 
 #: Column-free yet per-row: such a GROUP BY key still splits groups.
@@ -626,10 +644,27 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             return node
         return tree.transform(_fix)
 
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """Native over a number; ranked otherwise (SQL Server's ``PERCENTILE_DISC`` orders numbers only)."""
+        node = super().build_percentile_disc(p=p, col_expr=col_expr, input_type=input_type)
+        if kind_of(input_type) not in (TypeKind.INT, TypeKind.DOUBLE):
+            node.meta[RANKED] = True
+        return node
+
+    def build_percentile_approx(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType] = None,
+    ) -> Expression:
+        """``APPROX_PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` (SQL Server 2022)."""
+        key = exp.Ordered(this=col_expr.copy(), nulls_first=True)
+        return exp.WithinGroup(this=exp.Anonymous(this="APPROX_PERCENTILE_CONT", expressions=[p.copy()]),
+                               expression=exp.Order(expressions=[key]))
+
     def rewrite_statement(self, statement: Expression) -> Expression:
         """T-SQL predicates are conditions only (one in a value position becomes its BIT value); ``PERCENTILE_CONT``
         is a window function only; GROUP BY keys read a column."""
-        statement = split_percentile_selects(statement.copy(), columns=_windowed_percentile)
+        statement = split_percentile_selects(statement.copy(), columns=_percentile_columns)
         for node in reversed(list(statement.dfs())):
             if _in_condition_position(node):
                 continue

@@ -289,10 +289,18 @@ _LITERAL_VALUES = "variables supply literal values"
 _OPTIONAL_BLOCKS = (
     "Optional blocks '{? ... ?}' are supported only on raw-SQL dataset surfaces, not in Mode-B expressions."
 )
-_DISTINCT_ONLY = ("DISTINCT is supported only as count(distinct x), i.e. count_distinct(x), and as array_agg(distinct x), "
-                  "i.e. collect(x)")
+_DISTINCT_ONLY = ("DISTINCT is supported only over one value other than *, as count(distinct x), sum(distinct x), "
+                  "avg(distinct x), min(distinct x), max(distinct x) and array_agg(distinct x), i.e. count_distinct(x), "
+                  "sum_distinct(x), avg_distinct(x), min(x), max(x) and collect(x)")
 #: Calls taking a leading DISTINCT, and the aggregation each spells.
-_DISTINCT_CALLS = {"count": "count_distinct", "array_agg": "collect"}
+_DISTINCT_CALLS = {"count": "count_distinct", "sum": "sum_distinct", "avg": "avg_distinct", "min": "min", "max": "max",
+                   "array_agg": "collect"}
+#: The DISTINCT calls Ossie Layer 1 defines.
+_OSSIE_DISTINCT_CALLS = frozenset({"count", "sum"})
+#: Ordered-set aggregates (``F(p) WITHIN GROUP (ORDER BY x)``), and the aggregation each spells.
+_ORDERED_SET_CALLS = {"percentile_cont": "percentile", "percentile_disc": "percentile_disc"}
+_ORDERED_SET_ONLY = ("WITHIN GROUP is supported only as PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x) and "
+                     "PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x), one fraction p, ascending order")
 _NOT_IN = "not in"
 _IN_OPS = frozenset({"in", _NOT_IN})
 
@@ -788,6 +796,8 @@ def _dispatch_pending(call: _PendingCall) -> Any:
         if (name.lower() not in _DISTINCT_CALLS or len(words) > 1 or len(values) != 1
                 or isinstance(args[0], (StarSource, NamedArg))):
             raise _Problem(f"{_DISTINCT_ONLY}.")
+        if name.lower() not in _OSSIE_DISTINCT_CALLS:
+            _spelled(f"{name.upper()}(DISTINCT …)")
         name = _DISTINCT_CALLS[name.lower()]
     if len(words) > 1:
         return _method_call(
@@ -1126,21 +1136,25 @@ class _WithinGroup:
 
 _WITHIN_GROUP = _on(
     pp.Suppress(_kw("within")) + pp.Suppress(_kw("group")) + LPAR + pp.Suppress(_kw("order")) + pp.Suppress(_kw("by"))
-    + _need(expr, "WITHIN GROUP (ORDER BY …) needs a value.") + pp.Optional(pp.Suppress(_kw("asc")))
-    + _need(RPAR, "WITHIN GROUP (ORDER BY <value>) is missing its ')'."),
+    + _need(expr, f"{_ORDERED_SET_ONLY}.") + pp.Optional(pp.Suppress(_kw("asc")))
+    + _need(RPAR, f"{_ORDERED_SET_ONLY}."),
     lambda toks: _WithinGroup(value=toks[0]),
 )
 _PRIMARY = _ATOM + pp.Optional(_WITHIN_GROUP) + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE))) + pp.Optional(_WINDOW)
 
 
 def _ordered_set(call: Any, within: _WithinGroup) -> AggCall:
-    """SQL ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` as ``percentile(x, p=p)``."""
-    if not isinstance(call, _PendingCall) or len(call.words) > 1 or call.words[0].name.lower() != "percentile_cont":
-        raise _Problem("WITHIN GROUP (ORDER BY …) applies only to PERCENTILE_CONT(p).")
-    args, _, distinct = _split_args(call.items, call="percentile_cont")
+    """SQL ``PERCENTILE_CONT|DISC(p) WITHIN GROUP (ORDER BY x)`` as ``percentile|percentile_disc(x, p=p)``."""
+    name = call.words[0].name.lower() if isinstance(call, _PendingCall) and len(call.words) == 1 else None
+    if name not in _ORDERED_SET_CALLS:
+        raise _Problem(f"{_ORDERED_SET_ONLY}.")
+    try:
+        args, _, distinct = _split_args(call.items, call=name)
+    except _Problem:
+        raise _Problem(f"{_ORDERED_SET_ONLY}.") from None
     if distinct or len(args) != 1 or isinstance(args[0], NamedArg):
-        raise _Problem("PERCENTILE_CONT takes one fraction: PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x).")
-    return AggCall(source=within.value, agg="percentile", args=(NamedArg(name="p", value=args[0]),))
+        raise _Problem(f"{_ORDERED_SET_ONLY}.")
+    return AggCall(source=within.value, agg=_ORDERED_SET_CALLS[name], args=(NamedArg(name="p", value=args[0]),))
 
 
 def _is_window_function(node: Any) -> bool:

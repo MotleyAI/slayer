@@ -166,6 +166,8 @@ Every legal dbt construct that reaches the importer is either represented exactl
 | --- | --- |
 | Measure `agg: sum/avg/min/max/count/count_distinct/median` | `DatasetMetric` `<agg>(col)` |
 | Measure `agg: percentile` (continuous) | `percentile(col, p=<value>)` |
+| Measure `agg: percentile` with `use_discrete_percentile` (with or without `use_approximate_percentile`) | `percentile_disc(col, p=<value>)` |
+| Measure `agg: percentile` with `use_approximate_percentile` | `percentile_approx(col, p=<value>)` |
 | Measure `agg: count_distinct_approx` | `count_distinct_approx(col)` (dialect-aware) |
 | Measure `agg: sum_boolean` | a field whose dialect entry is `CASE WHEN (<expr>) THEN 1 ELSE 0 END`, datatype `Integer`, `sum(col)` |
 | Metric-level / per-input `filter` | pushed down into a leaf `DatasetField.filter` (CASE-inside-aggregate) |
@@ -189,13 +191,12 @@ Constructs that cannot be expressed exactly are **failed cleanly** — never con
 | `offset_window` on a ratio/derived input | Multi-aggregate offset isn't exactly expressible | Restructure as a multi-stage `source_queries` dataset |
 | Non-standard granularity (e.g. `fortnight`) | Not a SLayer granularity | Use day/week/month/quarter/year |
 | `non_additive_dimension` (semi-additive) | Not exactly expressible | `last(balance, <time>)` / `first(...)`, or a multi-stage query |
-| Discrete / approximate percentile flags | Only continuous-exact `PERCENTILE_CONT` is supported | Drop `use_discrete_percentile` / `use_approximate_percentile` |
 | Conversion metrics (funnel) | Sequential-event SQL unsupported | Express the funnel as a multi-stage query |
 | Measure-less simple metric (`metric_aggregation_params`) | Unsupported shape | Define an explicit measure |
 | Cross-model filter on an unreachable model | No relationship from the source dataset | Add the required relationship, or filter locally |
 | Transform-name shadowing | A measure/metric named after a transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) would shadow it | Rename the dbt measure/metric |
 
-A percentile/median measure is dropped with a report when the target datasource's dialect cannot compute it (MySQL, T-SQL).
+A percentile/median measure is dropped with a report when the target datasource's dialect cannot compute it.
 
 #### Conversion report
 

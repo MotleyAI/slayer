@@ -107,7 +107,7 @@ from slayer.engine.population.anchors import (
 )
 from slayer.engine.key_metadata import bundle_dialect, scope_field_type
 from slayer.core.time_zones import check_bucketed_zones
-from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params
+from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params, check_percentile_fraction
 from slayer.core.query import TimeDimension
 from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
@@ -2061,6 +2061,8 @@ def _bind_agg(
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
     )
+    if aggregation_definition(owner=_resolve_agg_owner(source, bundle)[0], agg=effective_agg) is None:
+        check_percentile_fraction(agg=effective_agg, args=parsed.args, kwargs=parsed.kwargs)
     # Names first: no argument value binds before its name is accepted.
     folded = _declared_agg_param_names(agg=effective_agg, source=source, bundle=bundle)[:len(parsed.args)]
     _check_agg_kwarg_names(

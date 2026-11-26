@@ -21,6 +21,7 @@ from slayer.core.enums import (
     AXIS_COLLAPSING_TRANSFORMS,
     DataType,
     NUMERIC_DATATYPES,
+    OBSERVED_VALUE_AGGREGATIONS,
     RANK_FAMILY_TRANSFORMS,
     TEMPORAL_DATATYPES,
     TIME_TRANSFORMS,
@@ -1139,7 +1140,7 @@ def _leaf_count_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataTy
 
 def _count_type_operands(key: object) -> Sequence[object]:
     if isinstance(key, AggregateKey):
-        return [key.source] if key.agg.lower() in ("min", "max", "first", "last") else []
+        return [key.source] if key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS else []
     if isinstance(key, ArithmeticKey):
         return key.operands
     if isinstance(key, ScalarCallKey):
@@ -1500,7 +1501,6 @@ def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, Custom
 
 # Positions where TEXT beside a number reads as a number (spec: queries/mixed-type-coercion).
 _COERCED_OPS = frozenset({"==", "!=", "<", "<=", ">", ">=", *NULL_SAFE_COMPARISON_OPS, "+", "-", "*", "/", "%"})
-_TEXT_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 
 
 def _text_valued(key: object, *, field_type: FieldTypeFn) -> bool:
@@ -1512,7 +1512,7 @@ def _text_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     if isinstance(key, CastKey):
         return key.data_type is DataType.STRING
     if isinstance(key, AggregateKey):
-        return key.agg.lower() in _TEXT_PRESERVING_AGGS and _text_valued(key.source, field_type=field_type)
+        return key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS and _text_valued(key.source, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         spec = SCALAR_SPECS.get(key.name)
         if spec is not None and spec.result is not None:

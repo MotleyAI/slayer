@@ -69,7 +69,9 @@ metrics:
 - A calculated measure with SQL aggregates (`SUM({CUBE}.amount) FILTER (WHERE {CUBE}.status = 'paid') / COUNT(*)`)
   is translated: a bare operand aggregates its field, any other operand and a `FILTER` go to a hidden field
   holding Cube's SQL, and a window function, an undeclared member or an operand reading another cube drops
-  the measure with a report.
+  the measure with a report. `SUM`/`AVG(DISTINCT x)` become `sum_distinct` / `avg_distinct`, `MIN`/`MAX(DISTINCT x)`
+  `min` / `max`, `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)` `percentile_disc(x, p=p)` and `APPROX_PERCENTILE(x, p)`
+  `percentile_approx(x, p=p)`; a DISTINCT over several values or in another aggregate is dropped with a report.
 - `format` maps to `NumberFormat` (`percent`, `currency`, `number`).
 
 ### Dimensions → fields

@@ -31,27 +31,24 @@ cases are:
 
 | Database | Pass | Refused | Gap |
 |---|---|---|---|
-| SQLite | 155 | 4 | 45 |
-| DuckDB | 157 | 4 | 43 |
-| PostgreSQL | 157 | 4 | 43 |
-| MySQL | 157 | 4 | 43 |
-| ClickHouse | 155 | 4 | 45 |
-| SQL Server | 154 | 7 | 43 |
-| Trino | 157 | 4 | 43 |
-| Snowflake | 157 | 4 | 43 |
-| BigQuery | 155 | 4 | 45 |
+| SQLite | 158 | 3 | 43 |
+| DuckDB | 160 | 3 | 41 |
+| PostgreSQL | 160 | 3 | 41 |
+| MySQL | 160 | 3 | 41 |
+| ClickHouse | 158 | 3 | 43 |
+| SQL Server | 157 | 6 | 41 |
+| Trino | 160 | 3 | 41 |
+| Snowflake | 160 | 3 | 41 |
+| BigQuery | 158 | 3 | 43 |
 
 | Construct | Example | Status |
 |---|---|---|
-| `APPROX_PERCENTILE` | `APPROX_PERCENTILE(orders.amount, 0.5)` (RECOMMENDED) | refused |
 | `RADIANS` | `RADIANS(180)` (RECOMMENDED) | refused |
 | `DEGREES` | `DEGREES(0)` (RECOMMENDED) | refused |
 | `REGEXP_COUNT` | `REGEXP_COUNT(orders.status, 'n')` (RECOMMENDED) | refused |
 | `REGEXP_LIKE` | `REGEXP_LIKE(orders.status, '^pe')`, on SQL Server before 2025 | refused |
 | `REGEXP_EXTRACT` | `REGEXP_EXTRACT(orders.status, 'e.d')`, on SQL Server before 2025 | refused |
 | `REGEXP_REPLACE` | `REGEXP_REPLACE(orders.status, 'n', 'N')`, on SQL Server before 2025 | refused |
-| `PERCENTILE_DISC` | `PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY orders.amount)` | planned |
-| `DISTINCT MODIFIER` | `SUM(DISTINCT orders.qty)` (only `COUNT(DISTINCT …)` is supported) | planned |
 | `CURRENT_TIME` | `CURRENT_TIME`, `CURRENT_TIME()` | planned |
 | `EXTRACT(DAYOFWEEK)` | `EXTRACT(DAYOFWEEK FROM orders.created_at)` | planned |
 | `DATE_PART(DAYOFWEEK)` | `DATE_PART('dayofweek', orders.created_at)` | planned |

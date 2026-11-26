@@ -129,6 +129,7 @@ class DuckdbDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = 256  # safe documented ceiling
     approx_count_distinct_native: bool = True
+    approx_percentile_native: bool = True
     url_scheme: str | None = "duckdb"
     catalog_qualified_schema_tokens: bool = True
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2

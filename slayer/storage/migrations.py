@@ -22,10 +22,10 @@ from slayer.core.vocabulary import extension_dataset, is_extension_object
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 31,
-    "SlayerQuery": 19,
+    "SlayerModel": 32,
+    "SlayerQuery": 20,
     "DatasourceConfig": 4,
-    "Memory": 14,
+    "Memory": 15,
     "Embedding": 2,
 }
 
@@ -207,6 +207,26 @@ register_migration(entity="SlayerQuery", source_version=12, stored_only=True)(ho
 @register_migration(entity="SlayerQuery", source_version=17, stored_only=True)
 def _query_v17_to_v18(data: dict) -> dict:
     """v18: ``population_inferred`` (default ``false``), stamp only."""
+    return data
+
+
+@register_migration(entity="SlayerModel", source_version=31, stored_only=True)
+def _dataset_v31_to_v32(data: dict) -> dict:
+    """v32: stamp only; reserves ``sum_distinct``, ``avg_distinct``, ``percentile_disc`` and ``percentile_approx``."""
+    return data
+
+
+@register_migration(entity="SlayerQuery", source_version=19, stored_only=True)
+def _query_v19_to_v20(data: dict) -> dict:
+    """v20: stamp only (the v32 reservation)."""
+    return data
+
+
+@register_migration(entity="Memory", source_version=14, stored_only=True)
+def _memory_v14_to_v15(data: dict) -> dict:
+    """v15: stamp only (the v32 reservation); the bundled query is stored."""
+    if isinstance(data.get("query"), dict):
+        data["query"] = stamp_stored(data["query"])
     return data
 
 

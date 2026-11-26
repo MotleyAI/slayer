@@ -45,9 +45,12 @@ from slayer.core.relationship_search import unreachable_target
 from slayer.core.relationship_walker import OrientedRelationship, provably_to_one, walk, walk_miss, walk_terminal
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.deprecation import outside_stacklevel
-from slayer.core.syntax import DottedRef, Ref, drop_root_hop, parse_template, walk_parsed
+from slayer.core.enums import normalize_aggregation_name
+from slayer.core.models import aggregation_definition
+from slayer.core.syntax import AggCall, DottedRef, Ref, drop_root_hop, parse_template, walk_parsed
 from slayer.engine.elaborate_env import validate_dataset_filter
 from slayer.engine.cardinality.relationship_safety import provably_fans
+from slayer.engine.param_binding import check_percentile_fraction
 from slayer.sql.definitions import qualified_siblings, sibling_names
 from slayer.sql.field_expansion import (
     is_trivial_base,
@@ -745,6 +748,19 @@ def check_field_agg(dataset: SlayerDataset) -> None:
         text = portable_text(field.expression)
         if text is not None and calls_agg(text):
             raise AggInFieldError(field=field.name)
+
+
+def check_metric_fractions(dataset: SlayerDataset) -> None:
+    """Refuse a metric calling a built-in percentile with an invalid ``p`` (``AggregationArgumentError``)."""
+    for metric in dataset.metrics:
+        text = portable_text(metric.expression)
+        try:
+            parsed = parse_template(text) if text is not None else None
+        except Exception:  # noqa: BLE001 — binding reports an unparseable metric
+            continue
+        for node in walk_parsed(parsed) if parsed is not None else ():
+            if isinstance(node, AggCall) and aggregation_definition(owner=dataset, agg=node.agg) is None:
+                check_percentile_fraction(agg=normalize_aggregation_name(node.agg), args=node.args, kwargs=node.kwargs)
 
 
 def check_evaluated_metrics(
