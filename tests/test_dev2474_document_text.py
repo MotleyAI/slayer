@@ -3,7 +3,9 @@ Ossie schemas are the vendored ones."""
 
 from __future__ import annotations
 
+import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -58,6 +60,15 @@ def _deep(depth: int) -> str:
                       "  fields:", "  - name: id", "    expression:", "      sql: id"]) + "\n"
 
 
+@pytest.fixture(autouse=True)
+def _default_recursion_limit() -> Iterator[None]:
+    """Python's default limit, which the depths below are chosen against; an imported library may raise it."""
+    before = sys.getrecursionlimit()
+    sys.setrecursionlimit(1000)
+    yield
+    sys.setrecursionlimit(before)
+
+
 @pytest.mark.parametrize("depth", [300, 400])
 def test_a_deeply_nested_document_saved_unchanged_keeps_its_text(depth: int) -> None:
     text = _deep(depth)
@@ -86,8 +97,29 @@ def test_an_edit_too_deep_for_yaml_that_json_cannot_hold_is_refused() -> None:
         edit_text(text, lambda _doc: desired)
 
 
-def test_an_edit_too_deep_for_any_emitter_is_refused() -> None:
-    text = _deep(300)
+@pytest.mark.parametrize("depth", [10, 300])
+def test_an_edit_too_deep_for_any_emitter_is_refused(depth: int) -> None:
+    text = _deep(depth)
+    nest: dict = {"leaf": "x"}
+    for _ in range(sys.getrecursionlimit() * 2):
+        nest = {"a": nest}
+    desired = {**parse_document_text(text), "ai_context": nest}
+    with pytest.raises(UnreadableDocumentError, match="too deeply nested"):
+        edit_text(text, lambda _doc: desired)
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_an_edit_deeper_than_the_round_trip_holds_reads_back_as_edited(as_json: bool) -> None:
+    text = _deep(10)
+    held = parse_document_text(text)
+    if as_json:
+        text = json.dumps(held, indent=2) + "\n"
+    desired = {**held, "ai_context": parse_document_text(_deep(400))["ai_context"]}
+    assert parse_document_text(edit_text(text, lambda _doc: desired)) == desired
+
+
+def test_a_json_edit_too_deep_for_json_is_refused() -> None:
+    text = json.dumps(parse_document_text(_deep(10)), indent=2) + "\n"
     nest: dict = {"leaf": "x"}
     for _ in range(sys.getrecursionlimit() * 2):
         nest = {"a": nest}

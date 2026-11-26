@@ -349,16 +349,25 @@ def edit_text(text: str, edit: Callable[[dict[str, Any]], dict[str, Any]]) -> st
         indent = found.group(1) if found else None
         newline = "\n" if text.endswith("\n") else ""
         base = json.dumps(data, indent=indent, ensure_ascii=False) + newline
-        _apply(data, edit(json.loads(text)))
-        return _faithful(ours=text, base=base, theirs=json.dumps(data, indent=indent, ensure_ascii=False) + newline)
+        desired = edit(json.loads(text))
+        try:
+            _apply(data, desired)
+            theirs = json.dumps(data, indent=indent, ensure_ascii=False) + newline
+        except RecursionError:
+            return _as_json(desired, indent=indent) + newline
+        return _faithful(ours=text, base=base, theirs=theirs)
     loaded = _round_trip(text)
     if loaded is None:
         desired = edit(parse_document_text(text))
         return text if desired == parse_document_text(text) else _re_emitted(desired)
     rt, tree, base = loaded
-    _apply(tree, edit(plain(tree)))
-    theirs = io.StringIO()
-    rt.dump(tree, theirs)
+    desired = edit(plain(tree))
+    try:
+        _apply(tree, desired)
+        theirs = io.StringIO()
+        rt.dump(tree, theirs)
+    except RecursionError:
+        return _re_emitted(desired)
     return _faithful(ours=text, base=base, theirs=theirs.getvalue())
 
 
@@ -379,9 +388,13 @@ def _re_emitted(data: Any) -> str:
     try:
         return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=1 << 16)
     except RecursionError:
-        pass
+        return _as_json(data, indent="  ") + "\n"
+
+
+def _as_json(data: Any, *, indent: str | None) -> str:
+    """``data`` as JSON; ``UnreadableDocumentError`` when JSON cannot hold it exactly."""
     try:
-        text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+        text = json.dumps(data, indent=indent, ensure_ascii=False)
     except (TypeError, ValueError, RecursionError):
         text = None
     if text is None or parse_document_text(text) != data:
