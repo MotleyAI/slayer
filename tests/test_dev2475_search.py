@@ -5,13 +5,16 @@ Spec: ontologies/ontology-use › Search reads concepts.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from slayer.api.server import create_app
+from slayer.client import slayer_client as slayer_client_module
 from slayer.client.slayer_client import SlayerClient
 from slayer.embeddings import client as embedding_client
 from slayer.search.retrievers.tantivy import TantivyRetriever
@@ -240,6 +243,31 @@ async def test_embeddings_are_refreshed_on_every_surface(tmp_path: Path, embedde
     assert [t for t in embedded.take("dep_delay") if "NrMinutes" in t]
     await _write_through(surface, storage, tmp_path, kind="ontology", content=RENAMED_ONTOLOGY)
     assert [t for t in embedded.take("dep_delay") if "Elapsed clock minutes" in t]
+
+
+@pytest.mark.parametrize("remote", [False, True])
+async def test_the_python_client_logs_refresh_notes_it_cannot_return(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, remote: bool) -> None:
+    storage = await flights_store("yaml", tmp_path)
+
+    async def refreshed(self: SearchService, data_source: str | None = None) -> list[str]:
+        return ["retriever 'stub' refresh_concepts raised: boom"]
+
+    monkeypatch.setattr(SearchService, "refresh_after_concept_change", refreshed)
+    if remote:
+        app = create_app(storage=storage)
+        monkeypatch.setattr(slayer_client_module.httpx, "AsyncClient",
+                            lambda **_: AsyncClient(transport=ASGITransport(app=app), base_url="http://test"))
+    client = SlayerClient(url="http://test") if remote else SlayerClient(storage=storage)
+    calls = [lambda: client.replace_ontology(FLIGHTS, content=RENAMED_ONTOLOGY, warnings_out=[]),
+             lambda: client.delete_ontology_mapping(FLIGHTS_MAPPING, data_source=FLIGHTS_DS),
+             lambda: client.delete_ontology(FLIGHTS),
+             lambda: client.create_ontology(content=RENAMED_ONTOLOGY, warnings_out=[])]
+    with caplog.at_level(logging.WARNING, logger="slayer.client.slayer_client"):
+        for call in calls:
+            caplog.clear()
+            await call()
+            assert len([r for r in caplog.records if "boom" in r.getMessage()]) == 1
 
 
 async def test_unchanged_text_is_not_re_embedded(tmp_path: Path, embedded: _Recorder) -> None:

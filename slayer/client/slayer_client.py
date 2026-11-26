@@ -94,6 +94,12 @@ def _raise_for_status(resp: Any) -> None:
 _WARNINGS = TypeAdapter(list[AnySlayerWarning])
 
 
+def _logged_notes(notes: Any) -> None:
+    """Log the search-refresh notes a call has no return channel for."""
+    for note in notes if isinstance(notes, list) else []:
+        logger.warning("%s", note)
+
+
 def _received(warnings_out: list[SlayerWarning] | None, body: Any) -> None:
     """A REST save response's ``warnings``, typed, into ``warnings_out``."""
     if warnings_out is not None and isinstance(body, dict):
@@ -551,9 +557,10 @@ class SlayerClient:
             text = content_text(content)
             name = document_name(text)
             await self._storage.save_ontology_text(name=name, text=text, warnings_out=warnings_out)
-            await self._refresh_concepts()
+            _logged_notes(await self._refresh_concepts())
             return name
         found = await self._request(method="POST", path="/ontologies", json={"content": content})
+        _logged_notes(found.get("notes"))
         _received(warnings_out, found)
         return found["name"]
 
@@ -561,18 +568,22 @@ class SlayerClient:
         """Replace ontology ``name``'s text; its mappings' mismatches go to ``warnings_out``."""
         if self._storage is not None:
             await self._storage.save_ontology_text(name=name, text=content_text(content), warnings_out=warnings_out)
-            await self._refresh_concepts()
+            _logged_notes(await self._refresh_concepts())
             return
-        _received(warnings_out, await self._request(method="PUT", path=_ontology_path(name), json={"content": content}))
+        found = await self._request(method="PUT", path=_ontology_path(name), json={"content": content})
+        _received(warnings_out, found)
+        _logged_notes(found.get("notes"))
 
     async def delete_ontology(self, name: str) -> bool:
         """Delete an ontology; ``False`` when absent."""
         if self._storage is not None:
             deleted = await self._storage.delete_ontology(name)
             if deleted:
-                await self._refresh_concepts()
+                _logged_notes(await self._refresh_concepts())
             return deleted
-        return await self._request_or_none(method="DELETE", path=_ontology_path(name)) is not None
+        found = await self._request_or_none(method="DELETE", path=_ontology_path(name))
+        _logged_notes(found.get("notes") if isinstance(found, dict) else None)
+        return found is not None
 
     async def list_ontology_mappings(self, data_source: str | None = None) -> list[dict[str, str]]:
         """Every stored mapping as ``{data_source, name}``."""
@@ -621,10 +632,11 @@ class SlayerClient:
         if self._storage is not None:
             deleted = await self._storage.delete_ontology_mapping(name, data_source)
             if deleted:
-                await self._refresh_concepts(data_source)
+                _logged_notes(await self._refresh_concepts(data_source))
             return deleted
-        return await self._request_or_none(method="DELETE",
-                                           path=_mapping_path(data_source=data_source, name=name)) is not None
+        found = await self._request_or_none(method="DELETE", path=_mapping_path(data_source=data_source, name=name))
+        _logged_notes(found.get("notes") if isinstance(found, dict) else None)
+        return found is not None
 
     def list_ontologies_sync(self) -> list[dict[str, str]]:
         return self._run_sync(self.list_ontologies())
