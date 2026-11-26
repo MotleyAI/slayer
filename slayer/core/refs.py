@@ -245,8 +245,8 @@ def _call_display(name: str, args: list[str]) -> str:
 def _aggregate_display(key: AggregateKey) -> str:
     args = [key_display(key.source), *(_arg_display(a) for a in key.args)]
     args.extend(f"{k}={_arg_display(v)}" for k, v in key.kwargs)
-    if key.partition_keys is not None:
-        args.append(f"partition_by={_grain_display_list(key.partition_keys)}")
+    if (grain := key.written_grain) is not None:
+        args.append(f"partition_by={_grain_display_list(grain)}")
     text = _call_display(key.agg, args)
     return text if key.filter is None else f"{text} FILTER (WHERE {key_display(key.filter)})"
 
@@ -416,11 +416,11 @@ def _agg_key_canonical_str(value: AggregateKey) -> str:
         f"arg{i}_{agg_kwarg_canonical_str(a)}" for i, a in enumerate(value.args)
     )
     parts.extend(f"{k}_{agg_kwarg_canonical_str(v)}" for k, v in value.kwargs)
-    if value.partition_keys is not None:
+    if (grain := value.written_grain) is not None:
         pks = sorted(
             agg_kwarg_canonical_str(p)
             if isinstance(p, (FieldKey, FieldSqlKey)) else str(p)
-            for p in value.partition_keys
+            for p in grain
         )
         if pks:
             parts.append("by_" + "_".join(pks))

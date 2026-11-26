@@ -547,7 +547,7 @@ def _partition_free_identity(agg: ValueKey) -> ValueKey:
     """``agg`` without its ``partition_by=`` grain."""
     if not isinstance(agg, AggregateKey):
         return agg
-    return agg.model_copy(update={"partition_keys": None})
+    return agg.ungrained()
 
 
 def _cross_dataset_input_paths(
@@ -2339,7 +2339,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     # dimensions.
     if agg.partition_keys is not None:
         requested = _regroup_partition_order(agg.partition_keys)
-        explicit = True
+        explicit = agg.written_grain is not None
     else:
         # A member the rest of the grain determines is redundant to group by: it neither associates nor broadcasts.
         kept = _prune_functionally_determined_grain(Grain.of([*projected_dim_keys, *projected_td_keys]))
@@ -2840,7 +2840,7 @@ def _param_is_determined(
     parameter types at the query grain, which the operand grain always refines; a
     grained transform parameter resolves to its result grain, every member of which
     must be determined."""
-    if isinstance(value, AggregateKey) and value.partition_keys is None:
+    if isinstance(value, AggregateKey) and value.written_grain is None:
         return True
     members = [value]
     if isinstance(value, TransformKey):
@@ -2890,7 +2890,10 @@ def _check_param_partition_keys(*, agg: AggregateKey, alias: str, context: "_Pro
         return
     host, bundle = context.host_dataset, context.bundle
     for value in _param_constituents(agg):
-        if not isinstance(value, AggregateKey) or value.partition_keys is None or value not in context.homes.by_key:
+        if not isinstance(value, AggregateKey) or value not in context.homes.by_key:
+            continue
+        written = value.written_grain
+        if written is None:
             continue
         target_path = context.home_of(value)
         home = walk_key_path(dataset=host, path=target_path, bundle=bundle)
@@ -2900,7 +2903,7 @@ def _check_param_partition_keys(*, agg: AggregateKey, alias: str, context: "_Pro
         check_partition_keys_attributable(
             alias=alias, root_name=home.name, explicit=True,
             unattributable=_unattributable_param_keys(
-                partition_keys=value.partition_keys, target_path=target_path, home=home, context=context,
+                partition_keys=written, target_path=target_path, home=home, context=context,
             ),
         )
 
@@ -3314,7 +3317,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     unattributable = list(witness_of)
 
     # An explicit outer key is judged here only — never against the query root.
-    if root.partition_keys is not None:
+    if root.written_grain is not None:
         check_reaggregation_outer_keys_determined(
             alias=alias, policy=policy,
             undetermined_keys=[context.dim_display(g) for g in unattributable],
@@ -4829,7 +4832,7 @@ def _strip_redundant_partitions(env: ElaboratedStage) -> Tuple[PreboundQuery, Ag
         prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle, homes=homes,
     ))
     strip: Dict[ValueKey, ValueKey] = {
-        r: r.model_copy(update={"partition_keys": None})
+        r: r.ungrained()
         for r in roots
         if isinstance(r, AggregateKey) and is_row_attach_root(r)
         and not homes.target_rooted(r) and window_kwarg_of(r) is None
