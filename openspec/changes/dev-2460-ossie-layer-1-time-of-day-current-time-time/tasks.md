@@ -20,7 +20,7 @@
 - [ ] 2.2 Parse `TIME '…'` as the temporal-literal kind and bind it with the typed time-literal error; verify the literal tests of 1.1 pass
 - [ ] 2.3 Add `current_time` to the scalar library and the clock functions, with the bare keyword and the call spelling; mark its queries uncacheable as `now()`; verify the clock tests of 1.1 pass
 - [ ] 2.4 Type checking: comparisons, conditionals, aggregations, the three parts, the refusals, the string-as-time-literal rule in every slot; verify 1.3 and 1.4 pass
-- [ ] 2.5 Step the dataset, query and memory versions to 32 / 20 / 15 with no document change, and add the `current_time` rename gate at those versions; verify `tests/test_library_growth.py` passes
+- [ ] 2.5 Add `current_time` to the names reserved at the existing Ossie Layer 1 rename gate (dataset 32, query 20, memory 15); verify `tests/test_library_growth.py` passes
 - [ ] 2.6 Refuse a non-temporal stored `default_time_dimension` used as the time-spine axis with `DefaultTimeDimensionTypeError` before rendering; verify 1.13 passes
 
 ## 3. Casts and rendering

@@ -14,7 +14,7 @@ Ossie Layer 1 requires `CURRENT_TIME`, the `TIME '…'` literal and `CAST(… AS
 - **BREAKING**: bare `current_time` is a keyword; a field of that name must be written quoted.
 - **BREAKING**: a `Time` field, and a cast to `TIME`, return a time of day in place of the driver's raw value; typed outputs carry a time type in place of text.
 - **BREAKING**: a re-ingest re-types a stored `DateTime` or `String` field over a database time-of-day column to `Time`.
-- **BREAKING**: a stored custom granularity named `current_time` is renamed `current_time_granularity` on upgrade; the dataset, query and memory format versions step.
+- **BREAKING**: a stored custom granularity named `current_time` is renamed `current_time_granularity` on upgrade.
 
 ## Capabilities
 
@@ -29,7 +29,7 @@ Ossie Layer 1 requires `CURRENT_TIME`, the `TIME '…'` literal and `CAST(… AS
 
 ## Impact
 
-- Code: `slayer/core` (type kinds, grammar, keys, strict-mode tables, result codec), `slayer/engine` (binding, typing, result normalisation, server-profile use), `slayer/sql` (dialects, rendering, reflection), `slayer/database` (result reading), `slayer/flight`, `slayer/pg_facade`, `slayer/facade`, `slayer/live_schema`, `slayer/storage` (versions, rename gate).
+- Code: `slayer/core` (type kinds, grammar, keys, strict-mode tables, result codec), `slayer/engine` (binding, typing, result normalisation, server-profile use), `slayer/sql` (dialects, rendering, reflection), `slayer/database` (result reading), `slayer/flight`, `slayer/pg_facade`, `slayer/facade`, `slayer/live_schema`, `slayer/storage` (rename gate).
 - Tests: the required-constructs manifest and the compliance-gap list lose their time-of-day gaps; the Ossie gate's ClickHouse container moves to 25.12.
 - Docs: datasets, references, time, expressions, database support, Ossie compliance, Ossie Layer 3, the 2.0 upgrade guide, MCP help topics.
 - Spec attachment: `queries/time-of-day` sits under the existing cross-cutting `queries` group (`architecture/index.yaml`); no arc42 or model edit.
