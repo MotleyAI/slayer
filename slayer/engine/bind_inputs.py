@@ -853,19 +853,22 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     settled_dims = [_settle(dm.bound.value_key) for dm in declared_metrics[:n_grain]]
     renamed = {dm.bound.value_key: s for dm, s in zip(declared_metrics, settled_dims) if s != dm.bound.value_key}
     _query_grain = Grain.of(settled_dims)
+    if renamed:
+        declared_metrics, bound_filters, order_specs = _map_bound_keys(
+            lambda vk: substitute_value_keys(key=vk, mapping=renamed),
+            declared_metrics=declared_metrics,
+            bound_filters=bound_filters,
+            order_specs=order_specs,
+            skip_dimensions=True,
+        )
     _written = written_grained_aggregates([
         *settled_dims, *(dm.bound.value_key for dm in declared_metrics[n_grain:]),
         *(bf.value_key for bf in bound_filters), *(sp.bound.value_key for sp in order_specs),
     ])
-
-    def _default_then_settle(vk: ValueKey) -> ValueKey:
-        vk = substitute_value_keys(key=vk, mapping=renamed) if renamed else vk
-        return _settle(default_nested_grains(
-            vk, query_grain=_query_grain, active_bucket=active_td_key, written=_written,
-        ))
-
     declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        _default_then_settle,
+        lambda vk: _settle(default_nested_grains(
+            vk, query_grain=_query_grain, active_bucket=active_td_key, written=_written,
+        )),
         declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,

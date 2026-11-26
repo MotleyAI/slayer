@@ -633,7 +633,7 @@ def test_rewrites_keep_the_marker() -> None:
     assert [k.grain_defaulted for k in walk_value_keys(substituted) if isinstance(k, AggregateKey)] == [True]
 
 
-def _elaborated(*metrics: str, dimensions: tuple[str, ...] = RC) -> ElaboratedStage:
+def _elaborated(*metrics: str, dimensions: tuple[Any, ...] = RC) -> ElaboratedStage:
     query = SlayerQuery.model_validate({
         "population": "orders", "dimensions": list(dimensions),
         "metrics": [_mt(expr, f"m{i}") for i, expr in enumerate(metrics)]})
@@ -678,6 +678,17 @@ def test_a_grain_the_query_also_writes_is_pinned_without_the_marker() -> None:
         inners = _unpartitioned_sums(_elaborated(*metrics))
         assert [k.partition_keys for k in inners] == [Grain.of([REGION, CITY])] * 2
         assert not any(k.grain_defaulted for k in inners)
+
+
+def test_a_written_grain_naming_a_settled_dimension_is_pinned_without_the_marker() -> None:
+    # the pick's grain drops its ranking key when it settles, so the dimension's key changes after binding
+    pick = f"last({A}, orders.ordered_at, partition_by=[{R}, orders.ordered_at])"
+    written = f"max(rank(sum({A}, partition_by=[{R}, {pick}]), direction='desc'))"
+    elab = _elaborated(DEFAULTED_RANK, written, dimensions=(R, {"field": pick, "alias": "p"}))
+    inners = [k for k in _metric_aggregates(elab) if k.agg == "sum"]
+    assert len(inners) == 2
+    assert inners[0].partition_keys == inners[1].partition_keys
+    assert not any(k.grain_defaulted for k in inners)
 
 
 def test_stripping_a_grain_clears_the_marker() -> None:
