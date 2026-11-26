@@ -2332,6 +2332,13 @@ def _print_ingest_drift_and_errors(
     )
 
 
+def print_ingest_result(result, *, file: TextIO | None = None, data_source: str | None = None) -> None:
+    """The one renderer of an ingest result: ``Created:`` / ``Updated:`` lines, then every report section."""
+    for addition in result.additions:
+        _print_ingest_addition(addition, file=file)
+    _print_ingest_drift_and_errors(result, file=file, data_source=data_source)
+
+
 # --- Boot-time orchestrator ---
 
 
@@ -2411,9 +2418,7 @@ async def ingest_all_datasources_idempotent(
             print(f"Datasource '{name}': failed — {friendly}", file=out)
             continue
 
-        for addition in result.additions:
-            _print_ingest_addition(addition, file=out)
-        _print_ingest_drift_and_errors(result, file=out, data_source=name)
+        print_ingest_result(result, file=out, data_source=name)
         summary.succeeded.append(name)
         summary.drift_pending.extend(result.to_delete)
         print(f"Datasource '{name}': ingested", file=out)
