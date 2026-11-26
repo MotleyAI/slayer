@@ -25,7 +25,7 @@ INVALID = "OntologyMappingInvalidError"
 FLIGHT = 8  # index of the Flight concept mapping in flights.mapping.yaml
 
 
-async def refused(storage: StorageBackend, text: str, *, data_source: str, name: str = "m") -> str:
+async def refused(storage: StorageBackend, text: str, *, data_source: str, name: str = "shop_mapping") -> str:
     """Save mapping ``text``; return the refusal and check nothing was stored."""
     with raises_refusal(INVALID) as info:
         await storage.save_ontology_mapping_text(data_source=data_source, name=name, text=text)
@@ -348,7 +348,7 @@ async def test_type_families(tmp_path: Path, built_in: str, datatype: str, fits:
                                                                   "expression": "orders.value"}}]}]},
         semantic_model="shop_model")
     if fits:
-        assert await storage.save_ontology_mapping_text(data_source="shop", name="m", text=text) == []
+        assert await storage.save_ontology_mapping_text(data_source="shop", name="shop_mapping", text=text) == []
     else:
         found = await refused(storage, text, data_source="shop")
         assert datatype in found

@@ -5,7 +5,7 @@ SLayer imports, checks, stores and exports [Ossie](https://github.com/apache/oss
 ## What SLayer does with them
 
 - **Import and export.** `slayer import-osi` recognises an ontology by its root `ontology` key and a mapping by its root `concept_mappings`, `ontology_ref` and `semantic_model_ref` keys; `slayer export-osi --ontology` / `--mapping` writes one back ([Importing](../osi/osi_import.md), [Exporting](../osi/osi_export.md)).
-- **Storage.** Ontologies are stored once per store, by name; mappings per datasource, by name. Each is stored as the text it was saved with and exports byte-identical, comments, `prefixes`, `iri` values and `annotations` included. Deleting a datasource deletes its mappings.
+- **Storage.** Ontologies are stored once per store, by name; mappings per datasource, by name. A document's name is the `name` it declares, so saving it under another name is refused. Each is stored as the text it was saved with and exports byte-identical, comments, `prefixes`, `iri` values and `annotations` included. Deleting a datasource deletes its mappings.
 - **Checks.** Every save is refused, with every problem listed, when the document fails the upstream schema, any check upstream Ossie's validator makes, or SLayer's own rules below.
 - **Surfaces.** Ontologies and mappings are listed, read, created, replaced and deleted through the Python storage API and client, REST, the CLI (`slayer ontologies …`, `slayer ontology-mappings …`) and MCP, where `inspect` shows them as the entity types `ontology` and `ontology_mapping`.
 

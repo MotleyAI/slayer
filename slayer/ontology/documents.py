@@ -88,10 +88,18 @@ def checked_ontology(text: str, *, name: str) -> dict[str, Any]:
     return data
 
 
+def stored_name_reasons(data: Any, *, name: str) -> list[str]:
+    """Why document ``data`` cannot be stored as ``name``: it declares another name."""
+    declared = data.get("name") if isinstance(data, dict) else None
+    if declared is None or declared == name:
+        return []
+    return [f"its name {declared!r} differs from the name it is stored under ({name!r})"]
+
+
 def checked_mapping_shape(text: str, *, name: str, data_source: str) -> dict[str, Any]:
     """``text`` read as a schema-valid mapping document; raises ``OntologyMappingInvalidError`` with every reason."""
     data, reasons = _read(text)
-    reasons = reasons or mapping_shape_reasons(data)
+    reasons = reasons or mapping_shape_reasons(data) or stored_name_reasons(data, name=name)
     if reasons:
         raise OntologyMappingInvalidError(name=name, data_source=data_source, reasons=reasons)
     return data

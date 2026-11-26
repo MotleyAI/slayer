@@ -246,6 +246,20 @@ async def test_a_refused_embedded_part_refuses_the_whole_document(tmp_path: Path
     assert await storage.list_ontology_mappings() == []
 
 
+async def test_a_rolled_back_embedded_document_reports_nothing_stored(tmp_path: Path,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    offline(monkeypatch)
+    storage = await empty_store("yaml", tmp_path, FLIGHTS_DS)
+    await run_import(storage, folder(tmp_path / "first", {n: example(n) for n in FLIGHTS_TRIO}), data_source=FLIGHTS_DS)
+    refused = edited(example("flights.yaml"),
+                     lambda d: d["ontology_mappings"][0]["concept_mappings"][0].update(concept="Ordr"))
+    result = await run_import(storage, write(tmp_path / "flights.yaml", refused), data_source=FLIGHTS_DS)
+    assert refusal_text(result, "flights.yaml")
+    assert (result.ontologies, result.stored, result.mappings) == ([], [], [])
+    assert [e for e in result.entries if e.kind in ("replaced", "upgraded")] == []
+    assert await storage.get_ontology_text(FLIGHTS) == example("flights.ontology.yaml")
+
+
 async def test_sap_semantic_model_imports_under_its_own_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     offline(monkeypatch)
     storage = await empty_store("yaml", tmp_path, SAP_DS)

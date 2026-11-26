@@ -829,7 +829,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def list_ontologies() -> list[dict[str, str]]:
         return [{"name": n} for n in await storage.list_ontologies()]
 
-    @app.get("/ontologies/{name}", responses={404: {"description": "Ontology not found."}})
+    @app.get("/ontologies/{name}", responses={404: {"description": "Ontology not found."},
+                                              400: {"description": "The name is not a valid ontology name."}})
     async def get_ontology(name: str) -> dict[str, str]:
         text = await _refused_as_400(storage.get_ontology_text(name))
         if text is None:
@@ -859,7 +860,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def list_ontology_mappings(data_source: str | None = None) -> list[dict[str, str]]:
         return [{"data_source": ds, "name": n} for ds, n in await storage.list_ontology_mappings(data_source)]
 
-    @app.get("/ontology-mappings/{data_source}/{name}", responses={404: {"description": "Mapping not found."}})
+    @app.get("/ontology-mappings/{data_source}/{name}", responses={
+        404: {"description": "Mapping not found."}, 400: {"description": "The name is not a valid mapping name."}})
     async def get_ontology_mapping(data_source: str, name: str) -> dict[str, str]:
         text = await _refused_as_400(storage.get_ontology_mapping_text(name, data_source))
         if text is None:
@@ -880,7 +882,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                                                                          text=content_text(body.content)))
         return {"status": "replaced", "name": name, "notes": notes}
 
-    @app.delete("/ontology-mappings/{data_source}/{name}", responses={404: {"description": "Mapping not found."}})
+    @app.delete("/ontology-mappings/{data_source}/{name}", responses={
+        404: {"description": "Mapping not found."}, 400: {"description": "The deletion was refused."}})
     async def delete_ontology_mapping(data_source: str, name: str) -> dict[str, Any]:
         if not await _refused_as_400(storage.delete_ontology_mapping(name, data_source)):
             raise HTTPException(status_code=404, detail=f"Mapping '{data_source}.{name}' not found")

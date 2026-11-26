@@ -17,7 +17,7 @@ from slayer.ontology.ontology import BUILT_INS, Ontology, Relationship
 
 _NUMERIC = frozenset({"Integer", "Decimal", "Float"})
 _FITS = {"Boolean": frozenset({"Boolean"}), "String": frozenset({"String"}), "Date": frozenset({"Date"}),
-         "DateTime": frozenset({"DateTime", "DateTimeTz", "Date"}), **{n: _NUMERIC for n in _NUMERIC}}
+         "DateTime": frozenset({"DateTime", "DateTimeTz", "Date"}), **dict.fromkeys(_NUMERIC, _NUMERIC)}
 _BOOLEAN_CALLS = frozenset({"like", "ilike", "not_like", "not_ilike", "regexp_like", "starts_with", "ends_with",
                             "contains", "isnan", "is_nan"})
 _STRING_CALLS = frozenset({"concat", "lower", "upper", "trim", "ltrim", "rtrim", "substr", "substring", "replace"})
@@ -103,6 +103,18 @@ def entry_reads(entry: Any) -> set[str] | None:
         elif isinstance(node, list):
             pending.extend(node)
     return out
+
+
+def _constant_type(node: Literal | TemporalLiteral | Cast) -> str | None:
+    if isinstance(node, TemporalLiteral):
+        return "Date" if node.kind == "date" else "DateTime"
+    if isinstance(node, Cast):
+        return _CAST_TYPES.get(node.type_text.split("(")[0].strip().upper())
+    if node.value is None:
+        return None
+    if isinstance(node.value, bool):
+        return "Boolean"
+    return "String" if isinstance(node.value, str) else "Decimal"
 
 
 class _Resolver:
@@ -216,7 +228,9 @@ class _Resolver:
         if relationship is not None and relationship.arity != level:
             self.problem(path, f"relationship '{node.get('relationship')}' has arity {relationship.arity} but is named "
                                f"at level {level}")
-        expected = concept if level == 1 else (relationship.last_role if relationship is not None else None)
+        expected = concept
+        if level != 1:
+            expected = relationship.last_role if relationship is not None else None
         if "object_mapping" in node:
             self.object_mapping(node["object_mapping"], expected=expected, path=f"{path} -> object_mapping")
         for c, child in enumerate(_items(node.get("children"))):
@@ -260,26 +274,22 @@ class _Resolver:
         return True
 
     def type_of(self, node: Any) -> str | None:
-        if isinstance(node, DottedRef) and self.model is not None:
-            dataset = self.model.datasets.get(identifier_key(node.parts[0], quoted=node.quoted_at(0)))
-            field = dataset[1].get(identifier_key(node.parts[1], quoted=node.quoted_at(1))) if dataset else None
-            return field[1] if field else None
-        if isinstance(node, Literal):
-            value = node.value
-            return None if value is None else "Boolean" if isinstance(value, bool) else \
-                "String" if isinstance(value, str) else "Decimal"
-        if isinstance(node, TemporalLiteral):
-            return "Date" if node.kind == "date" else "DateTime"
-        if isinstance(node, Cast):
-            return _CAST_TYPES.get(node.type_text.split("(")[0].strip().upper())
-        if isinstance(node, ScalarCall) and node.name in _STRING_CALLS:
-            return "String"
+        if isinstance(node, DottedRef):
+            return self.field_type(node)
         if isinstance(node, Arith):
-            sides = {self.type_of(node.left), self.type_of(node.right)}
-            return "Decimal" if sides <= _NUMERIC else None
+            return "Decimal" if {self.type_of(node.left), self.type_of(node.right)} <= _NUMERIC else None
         if isinstance(node, UnaryOp) and node.op != "not":
             return self.type_of(node.operand)
+        if isinstance(node, (Literal, TemporalLiteral, Cast)):
+            return _constant_type(node)
+        if isinstance(node, ScalarCall) and node.name in _STRING_CALLS:
+            return "String"
         return "Boolean" if self.boolean(node) else None
+
+    def field_type(self, node: DottedRef) -> str | None:
+        dataset = self.model.datasets.get(identifier_key(node.parts[0], quoted=node.quoted_at(0))) if self.model else None
+        field = dataset[1].get(identifier_key(node.parts[1], quoted=node.quoted_at(1))) if dataset else None
+        return field[1] if field else None
 
     def boolean(self, node: Any) -> bool:
         if isinstance(node, (Cmp, BoolOp)) or (isinstance(node, UnaryOp) and node.op == "not"):

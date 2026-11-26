@@ -102,11 +102,15 @@ An expression's type SHALL be compatible with the built-in its expected concept 
 - **THEN** it is accepted, and one informational entry lists the expressions whose type is unknown
 
 ### Requirement: Ontologies and mappings are stored verbatim
-Ontologies SHALL be stored once per store, by name; mappings SHALL be stored per datasource, by name. Each SHALL be stored as the text it was saved with, and read and exported as that text. Saving a document under a stored name SHALL replace it. Deleting a datasource SHALL delete its mappings.
+Ontologies SHALL be stored once per store, by name; mappings SHALL be stored per datasource, by name. A document's name SHALL be the `name` it declares, its identity in Ossie (a reference's `name` must equal the referenced document's own `name`); saving it under any other name SHALL be refused, naming both names. Each SHALL be stored as the text it was saved with, and read and exported as that text. Saving a document under a stored name SHALL replace it. Deleting a datasource SHALL delete its mappings.
 
 #### Scenario: Byte round trip
 - **WHEN** `foaf_owl_import.yaml`, with its comments, `prefixes`, `iri` values and `annotations`, is saved and exported
 - **THEN** the export is byte-identical to the file
+
+#### Scenario: Saved under another name
+- **WHEN** `flights.ontology.yaml`, which declares `name: Flights`, is saved as ontology `Airlines`, or `flights.mapping.yaml` is saved as mapping `other_mapping`
+- **THEN** the save is refused naming the declared and the requested name, and nothing is stored
 
 #### Scenario: Datasource delete
 - **WHEN** datasource `flights` holding mapping `flights_mapping` is deleted

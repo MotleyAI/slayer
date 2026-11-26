@@ -39,13 +39,18 @@ def ontology_document_view(*, kind: str, name: str, data_source: str | None, tex
         return json.dumps(payload)
     title = f"# Mapping `{name}` (datasource `{data_source}`)" if mapping else f"# Ontology `{name}`"
     lines = [title, *([str(payload["description"])] if payload["description"] else []), ""]
-    if mapping:
-        lines.append(f"Ontology: `{payload['ontology']}`; semantic model: `{payload['semantic_model']}`")
-        lines.append("Concept mappings: " + (", ".join(f"`{n}`" for n in names) or "_(none)_"))
-        lines.append("Resolves." if not problems else "Unresolved:")
-        lines += [f"- {p}" for p in problems or []]
-    else:
-        lines.append("Concepts: " + (", ".join(f"`{n}`" for n in names) or "_(none)_"))
+    lines += _mapping_lines(payload, names=names, problems=problems or []) if mapping else [
+        "Concepts: " + _listed(names)]
     if not compact:
         lines += ["", "```yaml", text.rstrip("\n"), "```"]
     return "\n".join(lines)
+
+
+def _listed(names: list[str]) -> str:
+    return ", ".join(f"`{n}`" for n in names) or "_(none)_"
+
+
+def _mapping_lines(payload: dict[str, Any], *, names: list[str], problems: list[str]) -> list[str]:
+    return [f"Ontology: `{payload['ontology']}`; semantic model: `{payload['semantic_model']}`",
+            "Concept mappings: " + _listed(names), "Unresolved:" if problems else "Resolves.",
+            *(f"- {p}" for p in problems)]

@@ -15,6 +15,7 @@ from slayer.core.errors import (
     MemoryNotFoundError,
     OntologyMappingBreakError,
     OssieDocumentInvalidError,
+    StoredDocumentLoadError,
     UnknownRelationshipTargetError,
     UnreadableDocumentError,
 )
@@ -470,16 +471,29 @@ class AccessFilteredStorage(StorageBackend):
         problems = await self._inner.ontology_mapping_problems(name, data_source)
         stored = stored_data(await self._inner.get_ontology_mapping_text(name, data_source))
         hidden = await self._hidden_entries(stored, data_source=data_source)
-        return [p for p in problems if not any(p.startswith(f"concept_mappings -> {i} ") or
-                                               p.startswith(f"concept_mappings -> {i}:") for i in hidden)]
+        prefixes = tuple(f"concept_mappings -> {i}{end}" for i in hidden for end in (" ", ":"))
+        return [p for p in problems if not p.startswith(prefixes)] if prefixes else problems
 
     async def load_ontology_mappings(self, *, data_source: str | None = None) -> Loaded[StoredMapping]:
+        """The inner load as the caller sees it: hidden entries and their problems redacted."""
         loaded, errors = await self._inner.load_ontology_mappings(data_source=data_source)
+        if self._bypass:
+            return loaded, errors
+        identities = [(m.data_source, m.name) for m in loaded]
+        visible_errors: list[StoredDocumentLoadError] = []
+        for error in errors:
+            ds = error.data_source or ""
+            if problems := await self.ontology_mapping_problems(error.name, ds):
+                visible_errors.append(StoredDocumentLoadError(kind=error.kind, name=error.name, data_source=ds,
+                                                              cause=ValueError("; ".join(problems))))
+            else:
+                identities.append((ds, error.name))
         visible = []
-        for mapping in loaded:
-            text = await self.get_ontology_mapping_text(mapping.name, mapping.data_source)
-            visible.append(mapping.model_copy(update={"text": text or mapping.text}))
-        return visible, errors
+        for ds, name in sorted(identities):
+            text = await self.get_ontology_mapping_text(name, ds)
+            if text is not None:
+                visible.append(StoredMapping(name=name, data_source=ds, text=text))
+        return visible, visible_errors
 
     async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
         metrics = await self._inner.list_model_scoped_metrics(data_source)

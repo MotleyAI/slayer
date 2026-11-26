@@ -158,12 +158,12 @@ curl -X POST http://localhost:5143/semantic-models \
 GET    /ontologies                                # List: [{"name"}]
 GET    /ontologies/{name}                         # {"name", "text"}: the stored text
 POST   /ontologies                                # Create, under the document's own name
-PUT    /ontologies/{name}                         # Replace
+PUT    /ontologies/{name}                         # Replace; the document must declare {name}
 DELETE /ontologies/{name}                         # Delete; 400 while a mapping resolves against it
 GET    /ontology-mappings                         # List: [{"data_source", "name"}]; ?data_source= filters
 GET    /ontology-mappings/{data_source}/{name}    # {"data_source", "name", "text"}
 POST   /ontology-mappings                         # Create: {"data_source", "content"}
-PUT    /ontology-mappings/{data_source}/{name}    # Replace: {"content"}
+PUT    /ontology-mappings/{data_source}/{name}    # Replace: {"content"}, declaring {name}
 DELETE /ontology-mappings/{data_source}/{name}    # Delete
 ```
 

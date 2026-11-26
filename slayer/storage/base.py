@@ -145,7 +145,9 @@ from slayer.storage.semantic_models import (
     DocumentIndex, build_index, checked_document, decompose, expression_datasets, metric_graph, unevaluable_targets,
 )
 from slayer.sql.sql_template import check_aggregation_definition
-from slayer.ontology.documents import checked_mapping_shape, edited_mapping, edited_ontology, read_ontology
+from slayer.ontology.documents import (
+    checked_mapping_shape, edited_mapping, edited_ontology, read_ontology, stored_name_reasons,
+)
 from slayer.ontology.scope import MappingScope, check_mapping
 from slayer.storage.ontology_documents import (
     MAPPING_NAME, ONTOLOGY_NAME, StoredMapping, broken_mappings, report_broken, stored_data,
@@ -1560,6 +1562,7 @@ class StorageBackend(ABC):
         _validate_path_component(name, kind=ONTOLOGY_NAME)
         self._require_ontologies()
         data, reasons = read_ontology(text)
+        reasons = reasons or stored_name_reasons(data, name=name)
         if isinstance(data, dict) and "ontology" in data:
             await self._guard_mappings(change=f"Saving ontology {name!r}", own=reasons,
                                        changed=lambda scope: scope.with_ontology(name, data))

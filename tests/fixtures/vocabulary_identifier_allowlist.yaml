@@ -650,11 +650,23 @@ carve_outs:
   - {name: delete_semantic_model, file: slayer/mcp/server.py, reason: "Ossie's semantic model (the document)"}
   - {name: edit_semantic_model, file: slayer/mcp/server.py, reason: "Ossie's semantic model (the document)"}
   - {name: semantic_model, file: slayer/mcp/server.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model_ref, file: slayer/mcp/server.py, reason: "Ossie's own wire name"}
+  - {name: _inline_model_problems, file: slayer/ontology/documents.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model, file: slayer/ontology/documents.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model_ref, file: slayer/ontology/documents.py, reason: "Ossie's own wire name"}
+  - {name: ModelFields, file: slayer/ontology/mapping.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model, file: slayer/ontology/mapping.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model_name, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model_of, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
   - {name: _declare_columns, file: slayer/osi/importer.py, reason: "physical database or result-set column"}
   - {name: column, file: slayer/osi/importer.py, reason: "physical database or result-set column"}
   - {name: model, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_metrics, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}
   - {name: models, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _semantic_model, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model_name, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}
   - {name: render_model_scoped_metric_text, file: slayer/search/render.py, reason: "Ossie's semantic model (the document)"}
   - {name: render_semantic_model_text, file: slayer/search/render.py, reason: "Ossie's semantic model (the document)"}
   - {name: adopt_semantic_model, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}

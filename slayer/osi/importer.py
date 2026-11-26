@@ -587,6 +587,7 @@ class _Importer:
             raise _Refused(*reasons)
         entries = [e for e in data.get("ontology_mappings") or [] if isinstance(e, dict)]
         undo = _Undo(storage=self.storage, data_source=self.data_source)
+        reported = self.result.model_copy(deep=True)
         await undo.ontology(name)
         await self._store_ontology(name=name, text=edit_text(text, lambda doc: {
             k: v for k, v in doc.items() if k != "ontology_mappings"}))
@@ -604,6 +605,7 @@ class _Importer:
                 await self._store_mapping(name=str(entry.get("name")), text=dump_yaml(mapping))
         except _Refused:
             await undo.run()
+            self.result = reported
             raise
         self.entry("upgraded", f"{file.name}: the deprecated embedded `ontology_mappings` stored as the standalone "
                    f"mapping(s) {', '.join(repr(e.get('name')) for e in entries)}", document=name)

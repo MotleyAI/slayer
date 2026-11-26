@@ -94,6 +94,8 @@ from slayer.otel import control as otel_control
 
 _DATASOURCE_NAME_HELP = "Datasource name"
 _FORMAT_HELP = "Output format (default: text)."
+_ABORTED = "Aborted; storage unchanged."
+_JSON_SUFFIX = ".json"
 _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
     "(default: $SLAYER_STORAGE, else the platform data directory)"
@@ -2376,7 +2378,7 @@ async def _apply_force_clean(
         f"\nApply {' and '.join(changes)} to storage?",
         assume_yes=bool(getattr(args, "yes", False)),
     ):
-        print("Aborted; storage unchanged.")
+        print(_ABORTED)
         return
 
     type_errors = await engine.apply_untyped_findings(untyped)
@@ -2643,7 +2645,7 @@ def _export_document(args: _ExportOsiArgs) -> None:
         _fail(str(exc).splitlines()[0])
     finally:
         engine.close()
-    if args.out.endswith(".json"):
+    if args.out.endswith(_JSON_SUFFIX):
         text = json.dumps(parse_document_text(text), indent=2, ensure_ascii=False) + "\n"
     # The output path is an intended, user-specified CLI location.
     with open(args.out, "w", encoding="utf-8", newline="") as fh:  # NOSONAR(S8707)
@@ -2663,7 +2665,7 @@ def _run_export_osi(args: _ExportOsiArgs):
                                             extensions=not args.no_extensions))
     except OsiExportError as exc:
         _fail(str(exc))
-    if args.out.endswith(".json"):
+    if args.out.endswith(_JSON_SUFFIX):
         text = json.dumps(result.document, indent=2, ensure_ascii=False) + "\n"
     else:
         text = result.text or dump_yaml(result.document)
@@ -2705,7 +2707,7 @@ def _run_ossie_roundtrip(args) -> None:
             text = engine.run_sync(_roundtrip(engine, source=args.input, scratch=scratch))
         finally:
             engine.close()
-    if args.output.endswith(".json"):
+    if args.output.endswith(_JSON_SUFFIX):
         text = json.dumps(parse_document_text(text), indent=2, ensure_ascii=False) + "\n"
     # The output path is an intended, user-specified CLI location.
     with open(args.output, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
@@ -2808,7 +2810,7 @@ def _semantic_models_show(storage: StorageBackend, args) -> None:
 
 def _semantic_models_delete(storage: StorageBackend, args) -> None:
     if not _confirm(f"Delete semantic model '{args.name}' and its datasets?", assume_yes=args.yes):
-        print("Aborted; storage unchanged.")
+        print(_ABORTED)
         return
     if not run_sync(storage.delete_semantic_model(args.name, data_source=args.datasource)):
         _fail(f"Semantic model '{args.name}' not found.")
@@ -2872,7 +2874,7 @@ def _ontologies_save(storage: StorageBackend, args) -> None:
 
 def _ontologies_delete(storage: StorageBackend, args) -> None:
     if not _confirm(f"Delete ontology '{args.name}'?", assume_yes=args.yes):
-        print("Aborted; storage unchanged.")
+        print(_ABORTED)
         return
     if not _refused(storage.delete_ontology(args.name)):
         _fail(f"Ontology '{args.name}' not found.")
@@ -2906,7 +2908,7 @@ def _mappings_save(storage: StorageBackend, args) -> None:
 
 def _mappings_delete(storage: StorageBackend, args) -> None:
     if not _confirm(f"Delete mapping '{args.name}' of datasource '{args.datasource}'?", assume_yes=args.yes):
-        print("Aborted; storage unchanged.")
+        print(_ABORTED)
         return
     if not _refused(storage.delete_ontology_mapping(args.name, args.datasource)):
         _fail(f"Mapping '{args.name}' not found in datasource '{args.datasource}'.")

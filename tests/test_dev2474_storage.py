@@ -67,6 +67,23 @@ async def test_saving_under_a_stored_name_replaces(tmp_path: Path, kind: str) ->
 
 
 @pytest.mark.parametrize("kind", STORAGES)
+async def test_saved_under_another_name(tmp_path: Path, kind: str) -> None:
+    """Spec scenario: Saved under another name."""
+    storage = await flights_store(kind, tmp_path, mapping=False)
+    with raises_refusal("OntologyDocumentInvalidError") as info:
+        await storage.save_ontology_text(name="Airlines", text=example("flights.ontology.yaml"))
+    assert "'Flights'" in refusal(info.value)
+    assert "'Airlines'" in refusal(info.value)
+    with raises_refusal("OntologyMappingInvalidError") as info:
+        await storage.save_ontology_mapping_text(data_source=FLIGHTS_DS, name="other_mapping",
+                                                 text=example("flights.mapping.yaml"))
+    assert f"'{FLIGHTS_MAPPING}'" in refusal(info.value)
+    assert "'other_mapping'" in refusal(info.value)
+    assert await storage.list_ontologies() == [FLIGHTS]
+    assert await storage.list_ontology_mappings() == []
+
+
+@pytest.mark.parametrize("kind", STORAGES)
 async def test_ontologies_are_global_and_mappings_per_datasource(tmp_path: Path, kind: str) -> None:
     storage = await flights_store(kind, tmp_path)
     await storage.save_datasource(DatasourceConfig(name="other", type="duckdb", database=str(tmp_path / "x.duckdb")))
@@ -195,7 +212,8 @@ async def test_dataset_edit_is_refused(tmp_path: Path) -> None:
 async def test_a_refusal_lists_every_broken_mapping(tmp_path: Path) -> None:
     storage = await flights_store("yaml", tmp_path)
     await storage.save_ontology_mapping_text(data_source=FLIGHTS_DS, name="second_mapping",
-                                             text=example("flights.mapping.yaml"))
+                                             text=edited(example("flights.mapping.yaml"),
+                                                         lambda d: d.update(name="second_mapping")))
     with raises_refusal(BREAK) as info:
         await storage.delete_ontology(FLIGHTS)
     found = refusal(info.value)

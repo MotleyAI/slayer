@@ -33,6 +33,7 @@
 - [x] 5.1 Backend hooks defaulting to unsupported; YAML (`ontologies/<name>.yaml`, `ontology_mappings/<datasource>/<name>.yaml`) and SQLite (`ontologies`, `ontology_mappings` tables) implementations; `graph_fingerprint` changes; verify 2.6 (storage part) and 2.10.
 - [x] 5.2 Integrity: re-check affected mappings on every explicit ontology, semantic-model, dataset and field change and refuse with every broken mapping and path; database-driven changes warn and leave mappings unresolved; unresolved mappings reported in list/inspect and as unloadable on load; datasource delete deletes its mappings; verify 2.6.
 - [x] 5.3 Access-filtered storage: redaction from parsed expressions' dataset references, hidden-content conflicts, hidden entries re-inserted on save; verify 2.7.
+- [x] 5.4 Refuse saving an ontology or mapping under a name other than the `name` it declares (the semantic-model reason wording); verify the "Saved under another name" scenario on both backends, and align the tests that saved fixtures under other names.
 
 ## 6. Import and export
 

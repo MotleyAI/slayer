@@ -123,6 +123,28 @@ async def test_every_read_of_an_entry_counts(tmp_path: Path, concept: str, chang
     assert "AIRCRAFT" not in refusal(info.value)
 
 
+def _break(document: dict[str, Any], concept: str, expression: str) -> None:
+    concept_mapping(document, concept)["object_mappings"][0]["expression"] = expression
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_a_hidden_entrys_problem_is_redacted_from_a_load(tmp_path: Path, kind: str) -> None:
+    storage = await hidden_aircraft(kind, tmp_path)
+    broken = edited(example("flights.mapping.yaml"), lambda d: _break(d, "Manufacturer", "AIRCRAFT.no_such_field"))
+    await storage._save_ontology_mapping_text_impl(data_source=FLIGHTS_DS, name=FLIGHTS_MAPPING, text=broken)
+    loaded, errors = await view(storage).load_ontology_mappings(data_source=FLIGHTS_DS)
+    assert errors == []
+    assert [concepts(m.text) for m in loaded] == [[c for c in ALL if c not in HIDDEN]]
+
+    also_visible = edited(broken, lambda d: _break(d, "Market", "AIRPORT.no_such_market"))
+    await storage._save_ontology_mapping_text_impl(data_source=FLIGHTS_DS, name=FLIGHTS_MAPPING, text=also_visible)
+    loaded, errors = await view(storage).load_ontology_mappings(data_source=FLIGHTS_DS)
+    assert loaded == []
+    assert [e.name for e in errors] == [FLIGHTS_MAPPING]
+    assert "no_such_market" in str(errors[0])
+    assert "AIRCRAFT" not in str(errors[0])
+
+
 @pytest.mark.parametrize("kind", STORAGES)
 async def test_ontologies_are_visible_to_every_caller(tmp_path: Path, kind: str) -> None:
     storage = await hidden_aircraft(kind, tmp_path)
