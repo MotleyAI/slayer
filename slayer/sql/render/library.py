@@ -9,9 +9,10 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.json_path import JsonPath, parse_json_path
+from slayer.core.errors import ScalarArgumentError
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.like_pattern import parse_like
-from slayer.core.regex_pattern import parse_regex, parse_replacement
+from slayer.core.regex_pattern import RegexPattern, matches_empty, parse_regex, parse_replacement
 from slayer.sql.dialects.base import (
     LIBRARY_FUNCTIONS,
     REGEX_LIBRARY,
@@ -105,8 +106,21 @@ def _render_regex(*, name: str, args: List[Expression], dialect: SqlDialect) -> 
         return dialect.build_regexp_extract(args[0], pattern, _int(args[2]) if len(args) > 2 else 0, False)
     if name == "regexp_like":
         return dialect.build_regexp_like(args[0], pattern, len(args) > 2)
+    if name == "regexp_count":
+        return dialect.build_regexp_count(args[0], _countable(pattern, dialect=dialect), len(args) > 2)
     replacement = parse_replacement(_text(args[2]), groups=pattern.groups)
     return dialect.build_regexp_replace(args[0], pattern, replacement, len(args) > 3)
+
+
+def _countable(pattern: RegexPattern, *, dialect: SqlDialect) -> RegexPattern:
+    """``pattern``, refused where its empty matches would not count as PostgreSQL counts them."""
+    if matches_empty(pattern) and not dialect.regexp_count_empty_match:
+        raise ScalarArgumentError(
+            summary=f"regexp_count() of a pattern that can match the empty string is not supported on "
+                    f"{dialect.database_name}.",
+            suggestion="Count a pattern that matches at least one character, e.g. 'x+' for 'x*'.",
+        )
+    return pattern
 
 
 __all__ = ["LIBRARY_FUNCTIONS", "check_library_support", "json_input", "json_operands", "render_library_call"]

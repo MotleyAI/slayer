@@ -173,6 +173,13 @@ class DuckdbDialect(SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement), lit("g"))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("LEN", anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive)))
+
+    def build_trunc(self, value: Expression, digits: Expression) -> Expression:
+        """``TRUNC(x, d)`` arrived in DuckDB 1.5."""
+        return self.rounded_trunc(value, digits)
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         text = lit(path.text)
         scalar = exp.Not(this=exp.In(this=anon("JSON_TYPE", value, text),

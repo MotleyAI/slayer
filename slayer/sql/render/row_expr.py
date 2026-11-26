@@ -340,6 +340,12 @@ def render_scalar_call(
         rounded = dialect.build_round(args[0], args[1])
         if rounded is not None:
             return rounded
+    if name == "trunc" and len(args) == 2:
+        return dialect.build_trunc(args[0], args[1])
+    if name == "zeroifnull":
+        return exp.Coalesce(this=args[0], expressions=[exp.Literal.number(0)])
+    if name == "nullifzero":
+        return exp.Nullif(this=args[0], expression=exp.Literal.number(0))
     if name == "log" and len(args) == 1:
         # Postgres's one-argument log is base 10; elsewhere bare LOG is often ln.
         return passthrough_call(name="log10", args=args, dialect=dialect)

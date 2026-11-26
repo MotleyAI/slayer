@@ -45,7 +45,6 @@ from slayer.core.errors import (
 )
 from slayer.core.enums import (
     ALL_TRANSFORMS,
-    AMBIGUOUS_WEEKDAY_NAMES,
     BUILTIN_AGGREGATIONS,
     BUILTIN_AGGREGATION_PARAM_ORDER,
     DATE_PART_ALIASES,
@@ -58,7 +57,6 @@ from slayer.core.enums import (
     RANKED_AGGREGATIONS,
     RESERVED_NAMES,
     TEMPORAL_DATATYPES,
-    ambiguous_weekday_message,
     normalize_aggregation_name,
 )
 from slayer.core.direction import rank_direction, with_direction_kwarg
@@ -66,7 +64,7 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
-from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
+from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, DIGITS_SCALARS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, integer_valued, list_valued, numeric_valued
 from slayer.core.relationship_walker import (
     canonical_token,
     observe_read,
@@ -143,6 +141,7 @@ from slayer.core.syntax import (
     drop_root_qualifier,
     keyword_spelling,
     map_refs,
+    unknown_call_hint,
     parse_bound_expr,
     parse_expr,
     placeholder_names,
@@ -520,6 +519,14 @@ def _bind(
         metric_ctx=metric_ctx, dim_alias_map=dim_alias_map,
     )
     if isinstance(parsed, Cast):
+        reading = aggregation_reading(parsed)
+        if reading is not None and _owner_definition(
+            reading, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+        ) is not None:
+            return _bind_agg_call(
+                reading, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+                dim_alias_map=dim_alias_map,
+            )
         return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
     if isinstance(parsed, DateTrunc):
         return _bind_date_trunc(parsed, source=sub(parsed.value), scope=scope, bundle=bundle)
@@ -2284,14 +2291,11 @@ def _unknown_function_error(name: str, *, aggregations, bundle: ResolvedSourceBu
     callable_names = [*aggregations, *SCALAR_FUNCTIONS, *DATE_PART_ALIASES, *ALL_TRANSFORMS, *granularities]
     match = difflib.get_close_matches(word=name, possibilities=sorted(set(callable_names)), n=1)
     hint = f" Did you mean '{match[0]}'?" if match else ""
-    if name.lower() in AMBIGUOUS_WEEKDAY_NAMES:
-        suggestion = ambiguous_weekday_message(name)
-    else:
-        suggestion = (
-            f"Known: aggregations {sorted(aggregations)}, scalar functions "
-            f"{sorted(SCALAR_FUNCTIONS)}, transforms {sorted(ALL_TRANSFORMS)}, time "
-            f"granularities {granularities}."
-        )
+    suggestion = unknown_call_hint(name) or (
+        f"Known: aggregations {sorted(aggregations)}, scalar functions "
+        f"{sorted(SCALAR_FUNCTIONS)}, transforms {sorted(ALL_TRANSFORMS)}, time "
+        f"granularities {granularities}."
+    )
     return UnknownFunctionError(
         name=name, location=None, summary=f"Unknown function '{name}'.{hint}", suggestion=suggestion,
     )
@@ -2689,6 +2693,8 @@ def _bind_scalar(
         raise _with_hint(e, hint=positional_hint(e.name)) from e
     if parsed.name == "date_add":
         _check_literal_count(args[DATE_ADD_COUNT_ARG])
+    if parsed.name in DIGITS_SCALARS and len(args) == 2:
+        args = (args[0], _whole_digits(parsed, digits=args[1], field_type=scope_field_type(scope=scope, bundle=bundle)))
     if parsed.name == "json_value":
         args = (_json_input(args[0], scope=scope, bundle=bundle), *args[1:])
     return ScalarCallKey(name=parsed.name, args=args)
@@ -2709,7 +2715,7 @@ def _check_scalar_call(parsed: ScalarCall, *, spelled: list[str], bundle: Resolv
     # Check arity for every allowlisted scalar: sqlglot's handling is
     # inconsistent (silent arg-drop / DB-rejected SQL), so error clearly here.
     arity_error = check_scalar_arity(
-        name=parsed.name, argc=len(parsed.args),
+        name=parsed.name, argc=len(parsed.args), written=parsed.written,
     )
     if arity_error is not None and spelled:
         raise ValueError(f"{arity_error} Note: {positional_hint(spelled[0])}")
@@ -2720,11 +2726,9 @@ def _check_scalar_call(parsed: ScalarCall, *, spelled: list[str], bundle: Resolv
                 f"(value, pattern); got {len(parsed.args)}."
             )
         raise ValueError(arity_error)
-    if parsed.name == "round" and len(parsed.args) == 2 and not _is_integer_literal(parsed.args[1]):
-        raise ValueError(
-            "'round' ndigits (2nd argument) must be an integer literal; got "
-            f"{canonical_metric_text(parsed.args[1])!r}."
-        )
+    if parsed.name in DIGITS_SCALARS and len(parsed.args) == 2 and keyword_spelling(parsed.args[1]) is not None:
+        name = (parsed.written or parsed.name).lower()
+        raise ValueError(f"the digits argument of {name}() is positional. Note: {positional_hint(spelled[-1])}")
     _check_library_literals(parsed, bundle=bundle)
 
 
@@ -2793,14 +2797,24 @@ def _json_db_type(arg: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceB
     return native_json_type(col.db_type, dialect=bundle.dialect)
 
 
-def _is_integer_literal(parsed: ParsedExpr) -> bool:
-    """An integer literal, signed or not (``2``, ``-2``)."""
-    if isinstance(parsed, UnaryOp) and parsed.op == "-":
-        parsed = parsed.operand
-    return (
-        isinstance(parsed, Literal) and isinstance(parsed.value, Decimal)
-        and parsed.value == parsed.value.to_integral_value()
-    )
+def _whole_digits(parsed: ScalarCall, *, digits: ValueKey, field_type: FieldTypeFn) -> ValueKey:
+    """``round`` / ``trunc`` digits: a whole-number literal (as an integer literal), NULL, or an integer value."""
+    if isinstance(digits, LiteralKey):
+        value = digits.value
+        if value is None:
+            return digits
+        if isinstance(value, Decimal) and value == value.to_integral_value():
+            return LiteralKey(value=value.to_integral_value())
+        whole = False
+    else:
+        whole = integer_valued(digits, field_type=field_type)
+    if not whole:
+        name = (parsed.written or parsed.name).lower()
+        raise ScalarArgumentError(
+            summary=f"the digits argument of {name}() must be a whole number; got `{key_display(digits)}`.",
+            suggestion=f"Write whole digits, e.g. {name}(x, 2), or an INT value.",
+        )
+    return digits
 
 
 def _check_literal_count(count: ValueKey) -> None:

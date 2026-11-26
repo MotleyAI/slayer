@@ -16,10 +16,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import (
-    AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, Conformance, normalize_aggregation_name,
+    AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, PART_ONLY_WORDS, Conformance,
+    normalize_aggregation_name,
 )
 from slayer.core.errors import UnknownConformanceError
-from slayer.core.keys import SCALAR_SPECS, SCALAR_SPELLINGS
+from slayer.core.keys import SCALAR_SPECS, SCALAR_SPELLING_REGISTRY, SCALAR_SPELLINGS
 from slayer.core.syntax import (
     WINDOW_FUNCTION_ARITIES, AggCall, ArrayLit, Arith, BoolOp, BoundVariable, Cast, Cmp, DateTrunc, DottedRef, Literal,
     NamedArg, Placeholder, Ref, ScalarCall, StarSource, TemporalLiteral, TransformCall, TupleLit, UnaryOp, WindowCall,
@@ -35,9 +36,11 @@ OSSIE_COMPARISONS = frozenset({"==", "!=", "<", "<=", ">", ">=", "in", "not in",
 OSSIE_ARITHMETIC = frozenset({"+", "-", "*", "/", "%"})
 OSSIE_BOOLEAN = frozenset({"and", "or"})
 OSSIE_UNARY = frozenset({"-", "not"})
+#: Date-part functions Ossie defines, as the date-part aliases read them.
+OSSIE_PART_FUNCTIONS = frozenset({"year", "quarter", "month", "day", "dayofyear", "hour", "minute", "second"})
 #: Rewritten callee spellings Ossie defines with the meaning the rewrite gives them.
-OSSIE_CALL_SPELLINGS = frozenset({"iff", "datediff", "dateadd", "current_timestamp", "date_trunc", "year", "quarter",
-                                  "month", "day", "dayofyear", "hour", "minute", "second"})
+OSSIE_CALL_SPELLINGS = frozenset(
+    n for n, s in SCALAR_SPELLING_REGISTRY.items() if s.ossie_arg_counts) | OSSIE_PART_FUNCTIONS
 #: ``DATE_TRUNC`` units Ossie defines.
 OSSIE_DATE_TRUNC_UNITS = frozenset({"year", "quarter", "month", "week", "day", "hour", "minute", "second"})
 #: Aggregate functions Ossie defines, as written.
@@ -162,8 +165,11 @@ def _text_problem(text: str) -> Optional[str]:
             return f"{call.callee}() is a SLayer function Ossie does not define"
         if spec is not None and not spec.ossie_admits(call.arguments):
             return f"{call.callee}() with {call.arguments} arguments is not an Ossie call"
-        if spec is None and name in (SCALAR_SPELLINGS | set(DATE_PART_ALIASES) | AMBIGUOUS_WEEKDAY_NAMES) \
-                and name not in OSSIE_CALL_SPELLINGS:
+        spelling = SCALAR_SPELLING_REGISTRY.get(name)
+        if spelling is not None and spelling.ossie_arg_counts and call.arguments not in spelling.ossie_arg_counts:
+            return f"{call.callee}() with {call.arguments} arguments is not an Ossie call"
+        if spec is None and name in (SCALAR_SPELLINGS | set(DATE_PART_ALIASES) | AMBIGUOUS_WEEKDAY_NAMES
+                                     | set(PART_ONLY_WORDS)) and name not in OSSIE_CALL_SPELLINGS:
             return f"{call.callee}() is a SLayer function Ossie does not define"
     return None
 

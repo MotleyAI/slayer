@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import date, datetime
+from decimal import Decimal
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Optional, Self, TypeGuard, get_args
@@ -92,7 +93,7 @@ _INTERVAL_UNITS: dict[TimeGranularity, tuple[str, int]] = {
     TimeGranularity.YEAR: ("YEAR", 1),
 }
 _UNIT_SECONDS = {TimeGranularity.MINUTE: 60, TimeGranularity.HOUR: 3600}
-SUB_DAY_PARTS = frozenset({DatePart.HOUR, DatePart.MINUTE, DatePart.SECOND})
+SUB_DAY_PARTS = frozenset({DatePart.HOUR, DatePart.MINUTE, DatePart.SECOND, DatePart.MILLISECOND})
 
 
 def literal_int(node: Expression) -> Optional[int]:
@@ -124,8 +125,9 @@ TextFn = Literal[
     "chr", "ascii", "trim", "ltrim", "rtrim", "strpos", "instr", "replace",
 ]
 TrimFn = Literal["trim", "ltrim", "rtrim"]
-MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt"]
+MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt", "radians", "degrees"]
 ExtremumFn = Literal["greatest", "least"]
+AngleFn = Literal["radians", "degrees"]
 
 
 #: Functions a database may declare native (``native_functions``), spelled as named.
@@ -150,9 +152,9 @@ def is_extremum_fn(name: str) -> TypeGuard[ExtremumFn]:
 #: Scalars rendered through a dialect hook.
 LIBRARY_FUNCTIONS = frozenset({
     *get_args(TextFn), *get_args(MathFn), *get_args(ExtremumFn), "split_part", "like", "ilike", "json_value",
-    "regexp_like", "regexp_extract", "regexp_replace",
+    "regexp_like", "regexp_extract", "regexp_replace", "regexp_count",
 })
-REGEX_LIBRARY = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
+REGEX_LIBRARY = frozenset({"regexp_like", "regexp_extract", "regexp_replace", "regexp_count"})
 #: Every library function plus ``TRY_CAST``: what a dialect translating the whole library declares.
 PORTABLE_LIBRARY = LIBRARY_FUNCTIONS | {"try_cast"}
 
@@ -1131,6 +1133,20 @@ class SqlDialect(BaseModel):
         """Two-argument ``round``; ``None``: the database's own ``ROUND`` has the reference meaning."""
         return None
 
+    def build_trunc(self, value: Expression, digits: Expression) -> Expression:
+        """``value`` truncated toward zero to ``digits`` fractional digits (negative: left of the point)."""
+        return self.rewrite_target_ast(exp.Trunc(this=value.copy(), decimals=digits.copy()))
+
+    def rounded_trunc(self, value: Expression, digits: Expression) -> Expression:
+        """``trunc(value, digits)`` from ``ROUND``: a rounding away from zero steps one unit back toward it."""
+        rounded = exp.Round(this=value.copy(), decimals=digits.copy())
+        known = literal_int(digits)
+        unit = (exp.Literal.number(format(Decimal(1).scaleb(-known), "f")) if known is not None
+                else exp.Pow(this=lit(10), expression=exp.Neg(this=operand_copy(digits))))
+        back = exp.Sub(this=rounded.copy(), expression=exp.Mul(this=exp.Sign(this=value.copy()), expression=unit))
+        away = exp.GT(this=exp.Abs(this=rounded.copy()), expression=exp.Abs(this=value.copy()))
+        return case((away, exp.Round(this=back, decimals=digits.copy())), default=rounded)
+
     def round_half_away(self, value: Expression, digits: int) -> Expression:
         """``value`` rounded to ``digits`` fractional digits, an exact tie away from zero."""
         return exp.Round(this=value.copy(), decimals=lit(digits))
@@ -1399,7 +1415,13 @@ class SqlDialect(BaseModel):
             return case((inside, self.rewrite_target_ast(func(fn.upper(), args[0]))))
         if fn == "cbrt":
             return self.cube_root(args[0])
+        if fn in ("radians", "degrees"):
+            return self.angle(fn, args[0])
         return self.rewrite_target_ast(func(fn.upper(), *args))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """Degrees to radians, or radians to degrees, as a DOUBLE."""
+        return self.rewrite_target_ast(func(fn.upper(), value))
 
     def cube_root(self, value: Expression) -> Expression:
         return self.native("CBRT", value)
@@ -1473,6 +1495,15 @@ class SqlDialect(BaseModel):
     ) -> Expression:
         """``value`` with every match replaced."""
         self.refuse("regexp_replace")
+
+    #: Whether ``regexp_count`` counts a pattern that can match the empty string as PostgreSQL does.
+    regexp_count_empty_match: ClassVar[bool] = False
+
+    def build_regexp_count(
+        self, value: Expression, pattern: RegexPattern, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """The number of non-overlapping matches of ``pattern`` in ``value``, scanning left to right."""
+        self.refuse("regexp_count")
 
     # LIKE
 
@@ -1864,8 +1895,21 @@ class SqlDialect(BaseModel):
         DatePart.HOUR: "HOUR", DatePart.MINUTE: "MINUTE", DatePart.SECOND: "SECOND",
     }
 
+    #: The ``EXTRACT`` field the ``millisecond`` part reads, and its units per millisecond.
+    _SUBSECOND_FIELD: ClassVar[tuple[str, int]] = ("MICROSECOND", 1000)
+
+    def millisecond_part(self, expr: Expression) -> Expression:
+        """The millisecond component of a timestamp, truncated: 0 … 999 (the field may include the whole seconds)."""
+        field, per_millisecond = self._SUBSECOND_FIELD
+        units = exp.Extract(this=exp.var(field), expression=expr)
+        whole = exp.Cast(this=exp.Floor(this=exp.Div(this=units, expression=lit(per_millisecond))),
+                         to=exp.DataType.build("BIGINT"))
+        return exp.Cast(this=exp.Mod(this=whole, expression=lit(1000)), to=exp.DataType.build("INT"))
+
     def _date_part(self, part: DatePart, expr: Expression) -> Expression:
         """``part`` of ``expr`` (owned by the caller); timestamp parts only for a timestamp."""
+        if part is DatePart.MILLISECOND:
+            return self.millisecond_part(expr)
         node: Expression = exp.Extract(this=exp.var(self._EXTRACT_FIELDS[part]), expression=expr)
         if part is DatePart.SECOND:
             node = exp.Floor(this=node)

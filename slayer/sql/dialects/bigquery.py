@@ -25,6 +25,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
+    AngleFn,
     DEFAULT_DECIMAL_PRECISION,
     NativeFn,
     COMPARISON_NODES,
@@ -331,6 +332,19 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        """``REGEXP_EXTRACT_ALL`` takes at most one capturing group: every group becomes non-capturing."""
+        matches = anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive,
+                                                                     capture=0))
+        return case((exp.Not(this=any_null(value)), anon("ARRAY_LENGTH", matches)))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """No ``RADIANS`` / ``DEGREES``: scaled by π (``ACOS(-1)``)."""
+        pi = anon("ACOS", lit(-1))
+        if fn == "radians":
+            return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=pi)), expression=lit(180))
+        return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=lit(180))), expression=pi)
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_VALUE", _json_document(value, native=native), lit(path.text))

@@ -31,48 +31,29 @@ cases are:
 
 | Database | Pass | Refused | Gap |
 |---|---|---|---|
-| SQLite | 155 | 4 | 45 |
-| DuckDB | 157 | 4 | 43 |
-| PostgreSQL | 157 | 4 | 43 |
-| MySQL | 157 | 4 | 43 |
-| ClickHouse | 155 | 4 | 45 |
-| SQL Server | 154 | 7 | 43 |
-| Trino | 157 | 4 | 43 |
-| Snowflake | 157 | 4 | 43 |
-| BigQuery | 155 | 4 | 45 |
+| SQLite | 175 | 1 | 28 |
+| DuckDB | 177 | 1 | 26 |
+| PostgreSQL | 177 | 1 | 26 |
+| MySQL | 176 | 2 | 26 |
+| ClickHouse | 175 | 1 | 28 |
+| SQL Server | 173 | 5 | 26 |
+| Trino | 177 | 1 | 26 |
+| Snowflake | 177 | 1 | 26 |
+| BigQuery | 175 | 1 | 28 |
 
 | Construct | Example | Status |
 |---|---|---|
 | `APPROX_PERCENTILE` | `APPROX_PERCENTILE(orders.amount, 0.5)` (RECOMMENDED) | refused |
-| `RADIANS` | `RADIANS(180)` (RECOMMENDED) | refused |
-| `DEGREES` | `DEGREES(0)` (RECOMMENDED) | refused |
-| `REGEXP_COUNT` | `REGEXP_COUNT(orders.status, 'n')` (RECOMMENDED) | refused |
+| `REGEXP_COUNT` | `REGEXP_COUNT(orders.status, 'n')` (RECOMMENDED), on MySQL and on SQL Server before 2025 | refused |
 | `REGEXP_LIKE` | `REGEXP_LIKE(orders.status, '^pe')`, on SQL Server before 2025 | refused |
 | `REGEXP_EXTRACT` | `REGEXP_EXTRACT(orders.status, 'e.d')`, on SQL Server before 2025 | refused |
 | `REGEXP_REPLACE` | `REGEXP_REPLACE(orders.status, 'n', 'N')`, on SQL Server before 2025 | refused |
 | `PERCENTILE_DISC` | `PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY orders.amount)` | planned |
 | `DISTINCT MODIFIER` | `SUM(DISTINCT orders.qty)` (only `COUNT(DISTINCT …)` is supported) | planned |
 | `CURRENT_TIME` | `CURRENT_TIME`, `CURRENT_TIME()` | planned |
-| `EXTRACT(DAYOFWEEK)` | `EXTRACT(DAYOFWEEK FROM orders.created_at)` | planned |
-| `DATE_PART(DAYOFWEEK)` | `DATE_PART('dayofweek', orders.created_at)` | planned |
-| `EXTRACT(MILLISECOND)` | `EXTRACT(MILLISECOND FROM orders.created_at)` | planned |
-| `DATE_PART(MILLISECOND)` | `DATE_PART('millisecond', orders.created_at)` | planned |
-| `TIMESTAMP_NTZ '2024-01-15 10:30:00'` | a `TIMESTAMP_NTZ` literal | planned |
 | `TIME '10:30:00'` | a time-of-day literal | planned |
 | `CAST('10:30:00' AS TIME)` | a cast to a time of day (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino and Snowflake) | planned |
 | `CAST AS TIME` | `CAST('10:30:00' AS TIME)` (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino and Snowflake) | planned |
-| `TO_DATE` | `TO_DATE('2024-01-15')` | planned |
-| `TO_TIMESTAMP` | `TO_TIMESTAMP('2024-01-15 10:30:00')` | planned |
-| `CHARINDEX` | `CHARINDEX('d', orders.status)` | planned |
-| `STARTSWITH` | `STARTSWITH(orders.status, 'pe')` | planned |
-| `ENDSWITH` | `ENDSWITH(orders.status, 'ing')` | planned |
-| `TRUNC` | `TRUNC(2.789, 1)` (the one-argument form is SLayer's) | planned |
-| `TRUNCATE` | `TRUNCATE(2.789, 1)` | planned |
-| `IF` | `IF(orders.amount > 20, 1, 0)` (`IFF` is supported) | planned |
-| `NVL` | `NVL(orders.note, 'x')` (`COALESCE` and `IFNULL` are supported) | planned |
-| `NVL2` | `NVL2(orders.status, 'y', 'n')` | planned |
-| `ZEROIFNULL` | `ZEROIFNULL(orders.amount)` | planned |
-| `NULLIFZERO` | `NULLIFZERO(orders.amount)` | planned |
 | `ROW_NUMBER` | `ROW_NUMBER() OVER (ORDER BY orders.amount)` in a query dimension | planned |
 | `RANK` | `RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
 | `DENSE_RANK` | `DENSE_RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
@@ -99,7 +80,10 @@ Ossie's window functions are refused in a query's dimensions; a dataset field's 
 [Datasets](../concepts/datasets.md#window-functions-in-a-fields-expression)), and SLayer's own query language
 computes ranks, offsets and running totals with its transforms (see
 [Expressions](../concepts/expressions.md#transform-functions)). Ossie does not fix `DAYOFWEEK`'s numbering or
-`MILLISECOND`'s meaning; SLayer's own `date_part('day_of_week', x)` is ISO (Monday 1, Sunday 7).
+`MILLISECOND`'s meaning, so SLayer rules them: `EXTRACT(DAYOFWEEK FROM x)` is ISO (Monday 1, Sunday 7), as
+`date_part('day_of_week', x)` is, and `EXTRACT(MILLISECOND FROM x)` is the millisecond component (0 to 999, truncated).
+Both are parts only: `DAYOFWEEK(x)` and `MILLISECOND(x)` are refused, as those function names mean other numberings
+on several databases.
 
 ## Layer 2: SQL queries
 

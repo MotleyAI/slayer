@@ -16,10 +16,10 @@ from slayer.core.regex_pattern import (
     parse_replacement,
 )
 
-REGEX_FUNCTIONS = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
+REGEX_FUNCTIONS = frozenset({"regexp_like", "regexp_extract", "regexp_replace", "regexp_count"})
 #: Argument positions that take only a string literal or a ``{variable}`` holding the text.
 STRING_SLOTS: Mapping[str, Tuple[int, ...]] = MappingProxyType({
-    "regexp_like": (1,), "regexp_extract": (1,), "regexp_replace": (1, 2), "json_value": (1,),
+    "regexp_like": (1,), "regexp_extract": (1,), "regexp_count": (1,), "regexp_replace": (1, 2), "json_value": (1,),
 })
 _SLOT_NAMES = {(1, "json_value"): "path", (2, "regexp_replace"): "replacement"}
 #: The real domain of the inverse sines and cosines.
