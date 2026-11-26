@@ -384,11 +384,14 @@ def _round_trip(text: str) -> tuple[YAML, Any, str] | None:
 
 
 def _re_emitted(data: Any) -> str:
-    """``data`` as block YAML, or as JSON (also YAML) when too deep for the YAML emitter and JSON holds it exactly."""
+    """``data`` as block YAML, or as JSON (also YAML) when too deep for the YAML emitter and JSON holds it exactly;
+    ``UnreadableDocumentError`` when the text would not read back."""
     try:
-        return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=1 << 16)
+        text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=1 << 16)
     except RecursionError:
         return _as_json(data, indent="  ") + "\n"
+    parse_document_text(text)
+    return text
 
 
 def _as_json(data: Any, *, indent: str | None) -> str:
@@ -403,10 +406,12 @@ def _as_json(data: Any, *, indent: str | None) -> str:
 
 
 def _faithful(*, ours: str, base: str, theirs: str) -> str:
-    """``_splice``'s text when it reads as ``theirs`` does, else ``theirs`` itself."""
+    """``_splice``'s text when it reads as ``theirs`` does, else ``theirs`` itself; ``UnreadableDocumentError`` when
+    ``theirs`` does not read back."""
+    wanted = parse_document_text(theirs)
     spliced = _splice(ours=ours, base=base, theirs=theirs)
     try:
-        if parse_document_text(spliced) == parse_document_text(theirs):
+        if parse_document_text(spliced) == wanted:
             return spliced
     except UnreadableDocumentError:
         pass

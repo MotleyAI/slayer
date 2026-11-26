@@ -118,10 +118,11 @@ def test_an_edit_deeper_than_the_round_trip_holds_reads_back_as_edited(as_json: 
     assert parse_document_text(edit_text(text, lambda _doc: desired)) == desired
 
 
-def test_a_json_edit_too_deep_for_json_is_refused() -> None:
+@pytest.mark.parametrize("depth", [800, 2000])
+def test_a_json_edit_too_deep_to_read_back_is_refused(depth: int) -> None:
     text = json.dumps(parse_document_text(_deep(10)), indent=2) + "\n"
     nest: dict = {"leaf": "x"}
-    for _ in range(sys.getrecursionlimit() * 2):
+    for _ in range(depth):
         nest = {"a": nest}
     desired = {**parse_document_text(text), "ai_context": nest}
     with pytest.raises(UnreadableDocumentError, match="too deeply nested"):
