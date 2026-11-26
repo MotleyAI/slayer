@@ -139,6 +139,7 @@ class MysqlDialect(SqlDialect):
         exp.DataType.Type.UBIGINT, exp.DataType.Type.UDECIMAL,
     })
     database_name: ClassVar[str] = "MySQL"
+    nulls_clause: bool = False
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     sa_backend_names: frozenset[str] = frozenset({"mysql"})

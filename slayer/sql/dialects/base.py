@@ -19,6 +19,7 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
+from sqlglot.generator import Generator as _SqlglotGenerator
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.errors import (
@@ -28,6 +29,7 @@ from slayer.core.errors import (
     ServerVersionError,
     TimeZoneError,
     UnsupportedServerFunctionError,
+    WindowFunctionError,
 )
 from slayer.core.granularity import CustomGranularity, Granularity, bucket_type, granularity_parts, nests_into
 from slayer.core.json_path import JsonPath
@@ -868,6 +870,23 @@ class DriverFacts(BaseModel):
         return parsed.set(drivername=f"{backend}+{self.default_driver}").render_as_string(hide_password=False)
 
 
+#: Meta flag on an ``exp.Ordered`` whose ``NULLS FIRST`` / ``NULLS LAST`` is always written, whatever the dialect's
+#: assumed default: a session can change that default.
+EXPLICIT_NULLS = "slayer_explicit_nulls"
+_ordered_sql = _SqlglotGenerator.ordered_sql
+
+
+def _explicit_ordered_sql(self: _SqlglotGenerator, expression: exp.Ordered) -> str:
+    if not expression.meta.get(EXPLICIT_NULLS):
+        return _ordered_sql(self, expression)
+    desc = " DESC" if expression.args.get("desc") else " ASC"
+    return f"{self.sql(expression, 'this')}{desc} NULLS {'FIRST' if expression.args.get('nulls_first') else 'LAST'}"
+
+
+# sqlglot writes a placement only where it differs from its assumed default; a flagged item always states it.
+_SqlglotGenerator.ordered_sql = _explicit_ordered_sql  # type: ignore[method-assign]
+
+
 class SqlDialect(BaseModel):
     """One database's quirks: neutral AST defaults, a typed refusal where a database's own SQL is needed."""
 
@@ -878,6 +897,9 @@ class SqlDialect(BaseModel):
     explain_prefix: str | None = "EXPLAIN"
     log10_native: bool = False
     log2_native: bool = False
+
+    #: An ORDER BY item can state ``NULLS FIRST`` / ``NULLS LAST`` (else NULL sorts lowest).
+    nulls_clause: bool = True
 
     # Whether NUMERIC/DECIMAL is stored exactly (False: SQLite's numeric affinity).
     exact_decimal_native: bool = True
@@ -1591,6 +1613,36 @@ class SqlDialect(BaseModel):
 
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
         self.refuse("contains_all")
+
+    def window_order_item(
+        self, value: Expression, *, descending: bool, nulls_first: bool, range_offset: bool, label: str,
+    ) -> list[Expression]:
+        """One window order item with its NULL placement stated: the ``NULLS`` clause, or, with no clause (NULL sorting
+        lowest), a ``CASE`` key on the item's NULL-ness before it where the placement differs; a ``RANGE`` offset
+        frame cannot take that key."""
+        if self.nulls_clause:
+            stated = exp.Ordered(this=value, desc=descending, nulls_first=nulls_first)
+            stated.meta[EXPLICIT_NULLS] = True
+            return [stated]
+        item = exp.Ordered(this=value, desc=descending, nulls_first=not descending)
+        if nulls_first is not descending:
+            return [item]
+        if range_offset:
+            raise WindowFunctionError(
+                summary=f"The window order item `{label}` needs NULL sorted "
+                f"{'first' if nulls_first else 'last'}, which {self.database_name} gives only through a second order "
+                f"key, and a RANGE frame with an offset orders by exactly one.",
+                suggestion=f"State NULLS {'LAST' if nulls_first else 'FIRST'} on the item, or use a ROWS frame.",
+            )
+        null_key = exp.Case(ifs=[exp.If(this=exp.Is(this=value.copy(), expression=exp.Null()),
+                                        true=exp.Literal.number(1))], default=exp.Literal.number(0))
+        return [exp.Ordered(this=null_key, desc=nulls_first, nulls_first=not nulls_first), item]
+
+    def window_call(
+        self, function: str, *, args: list[Expression], build: Callable[[list[Expression]], Expression],
+    ) -> Expression:
+        """The call under ``OVER``: ``build(args)`` where the database windows it."""
+        return build(args)
 
     def row_number(self) -> Expression:
         """An arbitrary distinct number per row of the enclosing relation."""

@@ -256,6 +256,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     decimal_text_exponent: ClassVar[bool] = False
     native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "SQL Server"
+    nulls_clause: bool = False
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({

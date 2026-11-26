@@ -2173,6 +2173,10 @@ def walk_parsed_refs(
     if isinstance(parsed, BoolOp):
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
+        return
+    if isinstance(parsed, WindowCall):
+        for node in (parsed.function, *parsed.partition, *(item.value for item in parsed.order)):
+            yield from walk_parsed_refs(node)
 
 
 # ---------------------------------------------------------------------------

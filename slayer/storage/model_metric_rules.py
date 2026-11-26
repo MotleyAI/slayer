@@ -22,7 +22,7 @@ from slayer.core.keys import RESERVED_SCALAR_NAMES
 from slayer.core.ossie_validity import agg_calls, columns, is_agg_call, parse_ossie_sql
 from slayer.core.models import SlayerDataset
 from slayer.core.semantic_model import ModelScopedMetric
-from slayer.storage.semantic_models import WINDOW_WARNING, chain_warning, unevaluable_chain
+from slayer.storage.semantic_models import chain_warning, unevaluable_chain
 
 __all__ = ["DocumentScope", "check_model_metric", "metric_cycle", "metric_references", "visible_model_metrics",
            "warn_broken_model_metrics"]
@@ -132,8 +132,6 @@ def check_model_metric(*, name: str, text: str, scope: DocumentScope) -> bool:
     tree, problem = parse_ossie_sql(text, _OSSIE_SQL)
     if tree is None:
         raise ModelMetricReferenceError(metric=name, reference=text, reason=f"it does not parse ({problem})")
-    if tree.find(exp.Window) is not None:
-        raise UnevaluableEntityError(entity=f"Metric {name!r}", reason=WINDOW_WARNING)
     for call, args in agg_calls(tree):
         _check_agg(call, args, text=text, scope=scope)
     reads = {(f"{c.table}.{c.name}" if c.table else c.name).casefold() for c in tree.find_all(exp.Column)}

@@ -48,7 +48,8 @@ __all__ = ["Decomposition", "DocumentIndex", "analyse_model_scoped", "build_inde
            "warn_unevaluable_dependents"]
 
 _OSSIE_TYPES = {t.value: t for t in DataType if t is not DataType.ARRAY}
-WINDOW_WARNING = "uses a window function (OVER), which SLayer cannot evaluate yet"
+#: Why Ossie defers a model-scoped metric holding a window (``E_DEFERRED_WINDOWED_METRIC``).
+DEFERRED_WINDOW = "uses a window function (OVER), which Ossie defers in a model-scoped metric"
 
 
 class Decomposition(BaseModel):
@@ -75,16 +76,6 @@ def checked_document(*, text: str, name: str) -> SemanticModelDocument:
     if reasons:
         raise OssieDocumentInvalidError(name=name, reasons=reasons)
     return SemanticModelDocument.model_validate(data)
-
-
-def _windowed(expression: OssieExpression) -> bool:
-    texts = [(OSSIE_SQL, expression.sql)] if expression.sql else []
-    texts += [(d.dialect, d.expression) for d in expression.dialects or []]
-    for dialect, text in texts:
-        tree, _ = parse_ossie_sql(text, dialect if token(dialect) != ANSI_SQL else ANSI_SQL)
-        if tree is not None and tree.find(exp.Window) is not None:
-            return True
-    return False
 
 
 def _unparseable(text: str | None) -> str | None:
@@ -185,9 +176,8 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: l
     entry = read_entry(field.nonportable_extensions, kind="field", entity=field.name,
                        ossie=entry_digest(field.expression), label=label, notes=notes)
     built = apply_field_entry(built, entry, notes=notes, label=label, target=target)
-    warning = None  # a restored expression replaces the document form, so only its own readability counts
-    if built.expression == expression:
-        warning = WINDOW_WARNING if _windowed(field.expression) else problem
+    # A restored expression replaces the document form, so only its own readability counts.
+    warning = problem if built.expression == expression else None
     warning = warning or _unparseable_field(built.expression, target=target, owner=f"Field {field.name!r}")
     return built.model_copy(update={"meta": with_ossie_meta(built.meta, field), "load_warning": warning})
 
@@ -204,23 +194,13 @@ def with_ossie_meta(meta: dict[str, Any] | None, entity: Any) -> dict[str, Any] 
     return out or None
 
 
-def _metric(metric: Any, *, target: str, windowed_fields: set[str]) -> DatasetMetric:
+def _metric(metric: Any, *, target: str) -> DatasetMetric:
     expression, problem = _runnable_metric(metric.expression, target=target)
     warning = problem or _unparseable(portable_text(expression))
-    if _windowed(metric.expression):
-        warning = WINDOW_WARNING
-    elif windowed_fields and _reads(metric.expression, windowed_fields):
-        warning = "reads a windowed field, which SLayer cannot evaluate yet"
-    elif reads_source_measure(_portable(metric.expression)):
+    if reads_source_measure(_portable(metric.expression)):
         warning = SOURCE_MEASURE_REASON
     return DatasetMetric(name=metric.name, expression=expression, description=metric.description,
                          datatype=_OSSIE_TYPES[metric.datatype] if metric.datatype else None, load_warning=warning)
-
-
-def _reads(expression: OssieExpression, names: set[str]) -> bool:
-    text = _portable(expression)
-    tree, _ = parse_ossie_sql(text, OSSIE_SQL) if text else (None, None)
-    return tree is not None and any(not c.table and c.name.casefold() in names for c in tree.find_all(exp.Column))
 
 
 def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: str, document: str,
@@ -230,13 +210,12 @@ def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: st
     notes: list[ExtensionNote] = []
     fields = [_field(f, keys=(primary, unique), target=target, notes=notes, dataset=dataset.name)
               for f in dataset.fields or []]
-    windowed = {f.name.casefold() for f in fields if f.load_warning == WINDOW_WARNING}
     metrics = []
     for raw in dataset.metrics or []:
         label = f"metric {raw.name!r} of {dataset.name!r}"
         entry = read_entry(raw.nonportable_extensions, kind="metric", entity=raw.name,
                            ossie=entry_digest(raw.expression), label=label, notes=notes)
-        core = _metric(raw, target=target, windowed_fields=windowed)
+        core = _metric(raw, target=target)
         metric, restoration = metric_entry(core, entry, home=dataset.name, members=members, notes=notes,
                                            label=label)
         if restoration is not None:
@@ -280,8 +259,7 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None,
             name=m.name, semantic_model=doc.name, data_source=data_source, expression=expression,
             description=m.description, ai_context=m.ai_context,
             datatype=_OSSIE_TYPES[m.datatype] if m.datatype else None,
-            load_warning=WINDOW_WARNING if _windowed(m.expression) else problem or _unparseable(
-                portable_text(expression)),
+            load_warning=problem or _unparseable(portable_text(expression)),
         ))
     notes: list[ExtensionNote] = []
     entry = read_entry(doc.nonportable_extensions, kind="semantic_model", entity=doc.name, ossie=doc.name,
@@ -350,7 +328,7 @@ def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> M
         if home is not None:
             homes[home] = None
     if tree.find(exp.Window) is not None:
-        problems.append(MetricProblem(code=OssieErrorCode.E_DEFERRED_WINDOWED_METRIC, reason=WINDOW_WARNING))
+        problems.append(MetricProblem(code=OssieErrorCode.E_DEFERRED_WINDOWED_METRIC, reason=DEFERRED_WINDOW))
     return ModelScopedAnalysis(homes=list(homes), metrics=list(names), problems=problems)
 
 

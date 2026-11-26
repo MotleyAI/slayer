@@ -501,7 +501,7 @@ class LiteralKey(_LeafKey, frozen=True):
 AggregateSource = Union[
     FieldKey, FieldSqlKey, StarKey, TimeTruncKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
-    "InKey", "TimePointCmpKey", "CastKey", "ListSetKey",
+    "InKey", "TimePointCmpKey", "CastKey", "ListSetKey", "WindowKey",
 ]
 # Positional and kwarg arg values share one union: `last(amount, created_at)` binds a
 # ranking field, `weighted_avg(weight=qty * 2)` a row-level expression,
@@ -510,7 +510,7 @@ AggregateSource = Union[
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
     FieldKey, FieldSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
-    "ScalarCallKey", "ArithmeticKey", "CastKey", "InKey", TimeTruncKey, "LiteralKey",
+    "ScalarCallKey", "ArithmeticKey", "CastKey", "InKey", TimeTruncKey, "LiteralKey", "WindowKey",
     Decimal, str, bool, None,
 ]
 _AggregateKwargValue = _AggregateArgValue
