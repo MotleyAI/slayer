@@ -32,7 +32,7 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.render.window import render_window
 
-__all__ = ["WINDOW_FIELD_PREFIX", "lift_row_windows", "with_datasets", "with_window_columns"]
+__all__ = ["WINDOW_FIELD_PREFIX", "lift_row_windows", "with_datasets", "with_window_fields"]
 
 #: Name prefix of a query's windowed column (reserved ``__slayer_`` space).
 WINDOW_FIELD_PREFIX = "__slayer_window_"
@@ -56,14 +56,14 @@ class _Lifter:
             if isinstance(mapped, WindowKey) and mapped.row_level:
                 check_row_window(mapped)
                 rewritten = self.dialect.rewrite_window_key(mapped)
-                mapped = self._column(mapped) if rewritten is mapped else self.lift(rewritten)
+                mapped = self._windowed_field(mapped) if rewritten is mapped else self.lift(rewritten)
             self.memo[key] = mapped
         return self.memo[key]
 
     def _dataset(self, name: str) -> SlayerDataset:
         return self.extended.get(name) or self.by_name[name]
 
-    def _column(self, window: WindowKey) -> FieldSqlKey:
+    def _windowed_field(self, window: WindowKey) -> FieldSqlKey:
         check_row_window(window)
         route = window.anchor or ()
         anchor = terminal_dataset(root=self._dataset(self.population.name), path=route, datasets_by_name=self.by_name)
@@ -177,7 +177,7 @@ def with_datasets(bundle: ResolvedSourceBundle, datasets: Dict[str, SlayerDatase
     })
 
 
-def with_window_columns(bundle: ResolvedSourceBundle, *, planned: ResolvedSourceBundle) -> ResolvedSourceBundle:
+def with_window_fields(bundle: ResolvedSourceBundle, *, planned: ResolvedSourceBundle) -> ResolvedSourceBundle:
     """``bundle`` with each dataset ``planned`` extended by a query's windowed columns."""
     extended = {d.name: d for d in planned.datasets_by_name.values()
                 if any(f.name.startswith(WINDOW_FIELD_PREFIX) for f in d.fields)}

@@ -67,7 +67,7 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
-from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued, WindowFrameSpec, WindowKey
+from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued, WindowFrameSpec, WindowKey, SPINE_TOKEN
 from slayer.core.relationship_walker import (
     canonical_token,
     observe_read,
@@ -590,7 +590,7 @@ def _bind_window(
     )
     if not key.row_level:
         return key
-    return key.model_copy(update={"anchor": _window_anchor(parsed, scope=scope, bundle=bundle)})
+    return key.model_copy(update={"anchor": _window_anchor(key, parsed=parsed, scope=scope, bundle=bundle)})
 
 
 def _window_function(
@@ -614,22 +614,20 @@ def _window_function(
     return agg, args, None if node.filter is None else sub(node.filter)
 
 
-def _window_anchor(parsed: WindowCall, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Optional[Tuple[str, ...]]:
+def _window_anchor(
+    key: WindowKey, *, parsed: WindowCall, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[str, ...]]:
     """The route from the reading dataset to the one a row-level window's references meet at: the common prefix of
-    each reference's route to its anchor; ``None`` when it names no dataset (a time-spine reference names none)."""
+    each bound reference's route to its anchor (an alias's is its definition's; a dotted star's is its spelling's,
+    which its key does not keep); ``None`` when it names no dataset (a time-spine reference names none)."""
     reader = scope.population
     if reader is None:
         return None
-    routes: List[Tuple[str, ...]] = []
-    for node in walk_parsed(parsed):
-        if isinstance(node, Ref):
-            routes.append(())
-        elif isinstance(node, StarSource):
-            routes.append(())
-        elif isinstance(node, DottedRef):
-            route = _anchor_route(node, reader=reader, scope=scope, bundle=bundle)
-            if route is not None:
-                routes.append(route)
+    routes = [route for leaf in walk_value_keys(key)
+              if isinstance(leaf, (FieldKey, FieldSqlKey)) or (isinstance(leaf, StarKey) and not leaf.path)
+              for route in (_anchor_route(leaf),) if route is not None]
+    routes += [route for node in walk_parsed(parsed) if isinstance(node, DottedRef) and node.parts[-1] == "*"
+               for route in (_star_anchor_route(node, reader=reader, scope=scope, bundle=bundle),) if route is not None]
     if not routes:
         return None
     prefix = routes[0]
@@ -641,10 +639,21 @@ def _window_anchor(parsed: WindowCall, *, scope: DatasetScope, bundle: ResolvedS
     return prefix
 
 
-def _anchor_route(
+def _anchor_route(leaf: FieldKey | FieldSqlKey | StarKey) -> Optional[Tuple[str, ...]]:
+    """The route from the reader to the dataset ``leaf`` is anchored at; ``None`` for a time-spine reference."""
+    path = tuple(leaf.path or ())
+    if path and path[0] in (TIME_SPINE_DATASET, SPINE_TOKEN):
+        return None
+    anchor = getattr(leaf, "anchor", None)
+    if anchor is None:
+        return ()
+    return path[:max(0, len(path) - (len(anchor) - 1))]
+
+
+def _star_anchor_route(
     node: DottedRef, *, reader: SlayerDataset, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> Optional[Tuple[str, ...]]:
-    """The route from ``reader`` to the dataset ``node`` is anchored at; ``None`` for a time-spine reference."""
+    """The route from ``reader`` to the dataset a dotted star is anchored at; ``None`` for the time spine."""
     quoted = dotted_quoting(node)
     anchor = find_anchor(node.parts[0], quoted=bool(quoted) and quoted[0], reader=reader,
                          datasets_by_name=bundle.datasets_by_name)
@@ -652,8 +661,7 @@ def _anchor_route(
         return ()
     if is_spine(anchor):
         return None
-    key = _resolve_dotted(node.parts, scope=scope, bundle=bundle, quoted=quoted)
-    path = key.path if isinstance(key, (FieldKey, FieldSqlKey, StarKey)) else ()
+    path = _resolve_dotted_star(node.parts, scope=scope, bundle=bundle, quoted=quoted).path
     return tuple(path[:max(0, len(path) - (len(node.parts) - 2))])
 
 

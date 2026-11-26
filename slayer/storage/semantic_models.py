@@ -317,7 +317,7 @@ def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> M
         if not _aggregated(column) and not column.table and name in metric_names:
             names[name] = None
             continue
-        if _measure_window_key(column):
+        if _aggregate_window_key(column):
             continue  # a grain member of the window's cells, judged when queried
         problem = _reference_problem(column)
         if problem is not None:
@@ -334,7 +334,7 @@ def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> M
     return ModelScopedAnalysis(homes=list(homes), metrics=list(names), problems=problems)
 
 
-def _measure_window_key(column: exp.Column) -> bool:
+def _aggregate_window_key(column: exp.Column) -> bool:
     """Whether ``column`` is a partition or order key of a window over an aggregate."""
     node: exp.Expr = column
     while node.parent is not None:

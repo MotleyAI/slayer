@@ -27,7 +27,7 @@ from slayer.core.scope import (
     collect_stale_spellings,
     stale_spelling_stage,
 )
-from slayer.engine.window_columns import with_window_columns
+from slayer.engine.window_columns import with_window_fields
 from slayer.engine.compile import compile_query
 from slayer.engine.definitions import resolved_dataset
 from slayer.engine.elaborate import elaborate_query
@@ -413,7 +413,7 @@ class _StagePlanner:
                 *stamped.referenced_datasets, *(self.bundle.query_backed[n] for n in raw),
             ]})
         if planned.stage_bundle is not None:
-            stamped = with_window_columns(stamped, planned=planned.stage_bundle)
+            stamped = with_window_fields(stamped, planned=planned.stage_bundle)
         update: Dict[str, Any] = {
             "stage_reads": sorted(reads, key=position.__getitem__),
             "stage_bundle": stamped.model_copy(update={

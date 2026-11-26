@@ -1238,10 +1238,10 @@ def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
             f"the value-key path visitor has no case for {type(key).__name__!r}: "
             f"only value keys and scalars are mappable."
         )
-    return cast(
-        _RerootableT,
-        key.map_children(lambda c: _map_value_key(c, map_path=map_path)),
-    )
+    mapped = key.map_children(lambda c: _map_value_key(c, map_path=map_path))
+    if isinstance(mapped, WindowKey) and mapped.row_level and mapped.anchor is not None:
+        mapped = mapped.model_copy(update={"anchor": tuple(map_path(mapped.anchor))})
+    return cast(_RerootableT, mapped)
 
 
 def walk_value_keys(key: ValueKey):

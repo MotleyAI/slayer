@@ -557,7 +557,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          "spine's." + SUGGEST + "Read a field of the dataset whose rows it numbers or aggregates, e.g. ORDER BY "
          "orders.id.",
          category="checker", family="windows", user=True, owner="checker"),
-    _row(module=_EE, function="check_window_keys_in_operand_grain", exc="WindowFunctionError",
+    _row(module=_EE, function="_check_window_operands", exc="WindowFunctionError",
          message="The window `…` reads `…` per cell, but it is neither aggregate-valued nor a member of the "
          "window's operand grain." + SUGGEST + "Add `…` as a dimension, or aggregate it.",
          category="checker", family="windows", user=True, owner="checker"),

@@ -272,6 +272,20 @@ async def test_the_anchor_decides_whose_rows_are_numbered(engine):
     assert floats(by(resp, value="v1")) == _per_order(4, 4, 3, 3, 2, 2, 4)
 
 
+@pytest.mark.parametrize("rank_of", ["cid", "customers.id"])
+async def test_an_alias_anchors_as_the_field_it_names(engine, rank_of):
+    body = raw("orders", "customers.id", filter=[f"RANK() OVER (ORDER BY {rank_of} DESC) = 2"])
+    body["dimensions"][1]["alias"] = "cid"
+    resp = await run(engine, body)
+    assert sorted(int(r["id"]) for r in resp.data) == [5, 6]
+
+
+async def test_a_dotted_star_anchors_as_spelled(engine):
+    resp = await run(engine, raw("orders", "COUNT(customers.*) OVER ()", "COUNT(orders.customers.*) OVER ()"))
+    assert ints(by(resp)) == {i: 4 for i in range(1, 8)}
+    assert ints(by(resp, value="v1")) == {i: 7 for i in range(1, 8)}
+
+
 async def test_a_window_reading_a_to_one_joined_field(engine):
     got = await _values(engine, "ROW_NUMBER() OVER (PARTITION BY orders.customers.tier ORDER BY orders.id)")
     assert got == _per_order(1, 2, 1, 2, 3, 4, 5)
