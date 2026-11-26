@@ -283,7 +283,7 @@ class _OneVarWelford:
         self._n -= 1
         delta = value - self._mean
         self._mean -= delta / self._n
-        self._m2 -= delta * (value - self._mean)
+        self._m2 = max(0.0, self._m2 - delta * (value - self._mean))  # round-off can cross below zero
 
     def finalize(self) -> float | None:
         """Each statistic's result; the state alone has none."""

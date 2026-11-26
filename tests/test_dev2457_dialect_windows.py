@@ -11,6 +11,7 @@ from sqlglot import exp
 
 from slayer.core.errors import QueryTypeError
 from slayer.core.query import SlayerQuery
+from slayer.sql.dialects.sqlite import _StddevPopAgg
 from tests._dev2101_fixtures import emit
 from tests._dev2457_fixtures import raw, window_datasets
 
@@ -59,3 +60,14 @@ async def test_sql_server_nth_value_over_another_frame_is_refused() -> None:
     expression = "NTH_VALUE(orders.amount, 2) OVER (ORDER BY orders.id ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)"
     with pytest.raises(QueryTypeError, match="SQL Server"):
         await _windows("tsql", expression)
+
+
+def test_sqlite_sliding_deviation_survives_round_off() -> None:
+    """Removing rows from a frame of near-equal large values must not drive the variance state below zero."""
+    agg = _StddevPopAgg()
+    values = [1e12, 1e12 + 0.0002, 1e12, 1e12 + 0.0001, 1e12 + 0.0001]
+    for value in values:
+        agg.step(value)
+    for value in values[:3]:
+        agg.inverse(value)
+    assert agg.value() is not None
