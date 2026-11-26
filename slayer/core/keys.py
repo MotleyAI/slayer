@@ -2492,13 +2492,11 @@ def source_anchor_path(source: ValueKey) -> Tuple[str, ...]:
     return prefix
 
 
-def default_nested_grains(
-    key: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey], written: Collection[ValueKey],
-) -> ValueKey:
+def default_nested_grains(key: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey]) -> ValueKey:
     """Give every nested aggregate with no ``partition_by=`` the query grain, marked as defaulted, where its
     enclosing layer's grain may differ (semantics Axioms 5, 11.1): under a transform inside an aggregation's
     source or parameters, under a transform whose operand grain differs from the query grain, and in the operand
-    of a ``first`` / ``last`` over an aggregate. An aggregate ``written`` at that grain is pinned unmarked."""
+    of a ``first`` / ``last`` over an aggregate."""
 
     def _visit(node: ValueKey, *, pinned: bool, in_aggregate: bool) -> ValueKey:
         if isinstance(node, TransformKey):
@@ -2522,10 +2520,18 @@ def default_nested_grains(
         })
         if not pinned or over_cells or rebuilt.partition_keys is not None:
             return rebuilt
-        grained = rebuilt.model_copy(update={"partition_keys": query_grain})
-        return grained.model_copy(update={"grain_defaulted": grained not in written})
+        return rebuilt.model_copy(update={"partition_keys": query_grain, "grain_defaulted": True})
 
     return _visit(key, pinned=False, in_aggregate=False)
+
+
+def unmark_written_grains(key: ValueKey, *, written: Collection[ValueKey]) -> ValueKey:
+    """Clear the defaulted marker of every aggregate the query also ``written`` at that grain, so equal keys
+    carry one marker."""
+    rebuilt = cast("ValueKey", key.map_children(lambda c: unmark_written_grains(c, written=written)))
+    if isinstance(rebuilt, AggregateKey) and rebuilt.grain_defaulted and rebuilt in written:
+        return rebuilt.model_copy(update={"grain_defaulted": False})
+    return rebuilt
 
 
 def written_grained_aggregates(roots: Iterable[ValueKey]) -> FrozenSet[ValueKey]:

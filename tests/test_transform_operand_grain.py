@@ -680,6 +680,17 @@ def test_a_grain_the_query_also_writes_is_pinned_without_the_marker() -> None:
         assert not any(k.grain_defaulted for k in inners)
 
 
+@pytest.mark.parametrize("inner", [f"max(sum({A}){{}})", f"weighted_avg({A}, weight=sum({A}){{}})"])
+@pytest.mark.parametrize("written_first", [False, True])
+def test_a_written_grain_over_a_nested_aggregate_is_pinned_without_the_marker(inner: str, written_first: bool) -> None:
+    defaulted, written = (f"max(rank({inner.format(g)}, direction='desc'))" for g in ("", f", partition_by=[{R}, {C}]"))
+    elab = _elaborated(*((written, defaulted) if written_first else (defaulted, written)))
+    outers = [k for k in _metric_aggregates(elab) if k.agg != "sum" and k.partition_keys is not None]
+    assert len(outers) == 2
+    assert outers[0] == outers[1]
+    assert not any(k.grain_defaulted for k in outers)
+
+
 def test_a_written_grain_naming_a_settled_dimension_is_pinned_without_the_marker() -> None:
     # the pick's grain drops its ranking key when it settles, so the dimension's key changes after binding
     pick = f"last({A}, orders.ordered_at, partition_by=[{R}, orders.ordered_at])"

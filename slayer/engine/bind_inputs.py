@@ -46,6 +46,7 @@ from slayer.core.keys import (
     rewrite_rank_partition_keys,
     operand_constituents,
     settle_ranked_grains,
+    unmark_written_grains,
     written_grained_aggregates,
     source_anchor_path,
     substitute_value_keys,
@@ -861,14 +862,20 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             order_specs=order_specs,
             skip_dimensions=True,
         )
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: default_nested_grains(vk, query_grain=_query_grain, active_bucket=active_td_key),
+        declared_metrics=declared_metrics,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+        skip_dimensions=True,
+    )
+    # collected after the defaulting, so a written aggregate compares with its nested grains defaulted too
     _written = written_grained_aggregates([
         *settled_dims, *(dm.bound.value_key for dm in declared_metrics[n_grain:]),
         *(bf.value_key for bf in bound_filters), *(sp.bound.value_key for sp in order_specs),
     ])
     declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lambda vk: _settle(default_nested_grains(
-            vk, query_grain=_query_grain, active_bucket=active_td_key, written=_written,
-        )),
+        lambda vk: _settle(unmark_written_grains(vk, written=_written)),
         declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
