@@ -373,6 +373,31 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`, so `engine.execute(..., explain=True)` raises
   `ExplainUnsupportedError` (a `ValueError`); use `dry_run=True` to see the SQL.
 
+## Window functions
+
+Every Tier 1 database runs Ossie's [window functions](concepts/expressions.md#sql-window-functions-over) — the
+ranking and offset functions and the windowed `SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, `STDDEV` / `VARIANCE` family —
+with no frame or Ossie's frame forms; where a database lacks one, SLayer writes an exact equivalent:
+
+- **NULL placement** is stated on every order item: `NULLS FIRST` / `NULLS LAST` where the database has the clause,
+  a `CASE WHEN x IS NULL THEN 1 ELSE 0 END` key before the item on MySQL and SQL Server where Ossie's placement differs
+  from theirs. A `RANGE` frame with an offset takes only one order key, so there such an item is refused unless its
+  stated placement is the database's own.
+- **SQL Server** has no `NTH_VALUE`: SLayer rewrites it over the default frame, `ROWS` / `RANGE BETWEEN UNBOUNDED
+  PRECEDING AND CURRENT ROW` and `ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING`, and refuses it over any other frame.
+- **ClickHouse** has no `CUME_DIST` (written as two counts); its `LAG` / `LEAD` read the whole partition, a sample
+  statistic over one row is NULL rather than NaN, and `COUNT(x)` sums non-NULL flags.
+- **SQLite** runs the statistics through its window-capable SLayer functions.
+
+`COUNT(DISTINCT …)`, `MEDIAN` and `PERCENTILE_CONT` under `OVER` run where the database windows them and are refused
+with a `WindowFunctionError` elsewhere:
+
+| Engine | `COUNT(DISTINCT …) OVER` | `MEDIAN(…) OVER` | `PERCENTILE_CONT(…) OVER` |
+|---|---|---|---|
+| DuckDB | yes | yes | yes (as `quantile_cont`) |
+| Snowflake | yes | yes | yes |
+| SQLite, Postgres, MySQL, ClickHouse, SQL Server, Trino, BigQuery | refused | refused | refused |
+
 ## Adding a new dialect
 
 1. Subclass `SqlDialect` (`slayer/sql/dialects/base.py`), setting `sqlglot_name` and

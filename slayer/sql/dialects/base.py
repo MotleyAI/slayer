@@ -33,7 +33,7 @@ from slayer.core.errors import (
 )
 from slayer.core.granularity import CustomGranularity, Granularity, bucket_type, granularity_parts, nests_into
 from slayer.core.json_path import JsonPath
-from slayer.core.keys import CastTypeParts, cast_type_parts
+from slayer.core.keys import CastTypeParts, ValueKey, WindowKey, cast_type_parts
 from slayer.core.like_pattern import LikePattern
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.patterns import RegexFlavour, emit_regex, emit_replacement, like_expression, like_text
@@ -897,6 +897,36 @@ def stating_nulls(tree: Expression) -> Expression:
     return tree
 
 
+#: The call a window applies, by its function (statistics through ``build_stat_agg_1arg``).
+_WINDOW_CALLS: dict[str, Callable[[list[Expression]], Expression]] = {
+    "row_number": lambda a: exp.RowNumber(),
+    "rank": lambda a: exp.Rank(),
+    "dense_rank": lambda a: exp.DenseRank(),
+    "percent_rank": lambda a: exp.PercentRank(),
+    "cume_dist": lambda a: exp.CumeDist(),
+    "ntile": lambda a: exp.Ntile(this=a[0]),
+    "lag": lambda a: exp.Lag(this=a[0], offset=a[1] if len(a) > 1 else None, default=a[2] if len(a) > 2 else None),
+    "lead": lambda a: exp.Lead(this=a[0], offset=a[1] if len(a) > 1 else None, default=a[2] if len(a) > 2 else None),
+    "first_value": lambda a: exp.FirstValue(this=a[0]),
+    "last_value": lambda a: exp.LastValue(this=a[0]),
+    "nth_value": lambda a: exp.NthValue(this=a[0], offset=a[1]),
+    "sum": lambda a: exp.Sum(this=a[0]),
+    "count": lambda a: exp.Count(this=a[0]),
+    "count_distinct": lambda a: exp.Count(this=exp.Distinct(expressions=[a[0]])),
+    "avg": lambda a: exp.Avg(this=a[0]),
+    "min": lambda a: exp.Min(this=a[0]),
+    "max": lambda a: exp.Max(this=a[0]),
+    "median": lambda a: exp.Median(this=a[0]),
+    "percentile_cont": lambda a: exp.WithinGroup(
+        this=exp.PercentileCont(this=a[1]), expression=exp.Order(expressions=[exp.Ordered(this=a[0])])),
+}
+#: Statistical aggregates, by the name the dialect's stat builder spells.
+_WINDOW_STATS: dict[str, StatAgg1Name] = {"stddev": "stddev_samp", "stddev_samp": "stddev_samp", "stddev_pop": "stddev_pop", "variance": "var_samp",
+          "var_samp": "var_samp", "var_pop": "var_pop"}
+#: Holistic aggregates a database may not window, by how a refusal names them.
+_HOLISTIC_WINDOWS = {"count_distinct": "COUNT(DISTINCT …)", "median": "MEDIAN", "percentile_cont": "PERCENTILE_CONT"}
+
+
 class SqlDialect(BaseModel):
     """One database's quirks: neutral AST defaults, a typed refusal where a database's own SQL is needed."""
 
@@ -910,6 +940,9 @@ class SqlDialect(BaseModel):
 
     #: An ORDER BY item can state ``NULLS FIRST`` / ``NULLS LAST`` (else NULL sorts lowest).
     nulls_clause: bool = True
+    #: The holistic aggregates the database evaluates under ``OVER`` (``count_distinct``, ``median``,
+    #: ``percentile_cont``).
+    windowed_holistic: ClassVar[frozenset[str]] = frozenset()
 
     # Whether NUMERIC/DECIMAL is stored exactly (False: SQLite's numeric affinity).
     exact_decimal_native: bool = True
@@ -1648,11 +1681,32 @@ class SqlDialect(BaseModel):
                                         true=exp.Literal.number(1))], default=exp.Literal.number(0))
         return [exp.Ordered(this=null_key, desc=nulls_first, nulls_first=not nulls_first), item]
 
-    def window_call(
-        self, function: str, *, args: list[Expression], build: Callable[[list[Expression]], Expression],
-    ) -> Expression:
-        """The call under ``OVER``: ``build(args)`` where the database windows it."""
-        return build(args)
+    def rewrite_window_key(self, key: WindowKey) -> ValueKey:
+        """A row-level window the database lacks, as an exact composite of windows it has (nested windows each become
+        a column of their own); ``key`` itself where it has the window."""
+        return key
+
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:
+        """``window`` as the database computes ``key`` exactly (a rewrite where it lacks the native form)."""
+        return window
+
+    def true_division(self, quotient: Expression) -> Expression:
+        """A Mode B ``/`` (true division), as the database divides exactly."""
+        return quotient
+
+    def window_call(self, key: WindowKey, args: list[Expression]) -> Expression:
+        """The call under ``OVER`` over ``args``; a holistic aggregate the database does not window is refused."""
+        function = key.function
+        if function in _HOLISTIC_WINDOWS and function not in self.windowed_holistic:
+            raise WindowFunctionError(
+                summary=f"{_HOLISTIC_WINDOWS[function]} cannot run under OVER on {self.database_name}, which does not "
+                f"evaluate it as a window function.",
+                suggestion="Compute it in an earlier stage and read the result, or run the query on a database that "
+                "windows it.",
+            )
+        if function in _WINDOW_STATS:
+            return self.build_stat_agg_1arg(_WINDOW_STATS[function], args[0])
+        return _WINDOW_CALLS[function](args)
 
     def row_number(self) -> Expression:
         """An arbitrary distinct number per row of the enclosing relation."""

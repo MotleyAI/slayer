@@ -837,6 +837,22 @@ class WindowKey(_FrozenKey, frozen=True):
         return self.model_copy(update=update) if m.changed else self
 
 
+#: The ``TransformLayer`` op of a measure-level window.
+WINDOW_OP = "window"
+#: The transform kinds: SLayer's transforms and a measure-level window, each a value over its operand's cells.
+TRANSFORM_KINDS = (TransformKey, WindowKey)
+
+
+def is_transform(key: object) -> bool:
+    """Whether ``key`` is a transform: a ``TransformKey``, or a window over aggregate-valued operands."""
+    return isinstance(key, TransformKey) or (isinstance(key, WindowKey) and not key.row_level)
+
+
+def transform_operands(key: "TransformKey | WindowKey") -> Tuple["ValueKey", ...]:
+    """The values a transform reads in its cells: a transform's input, a window's arguments, filter and keys."""
+    return (key.input,) if isinstance(key, TransformKey) else key.children()
+
+
 _CAST_TYPE_TOKEN_RE = re.compile(r"\[\]|\(([^()]*)\)|[A-Z_][A-Z0-9_]*")
 
 
@@ -1250,6 +1266,8 @@ def regroup_root_grain(root: ValueKey) -> Grain:
     of its inner aggregates' partition grains; a bare aggregate at its own grain."""
     if isinstance(root, TransformKey):
         return _inner_partition_grain(root.input)
+    if is_transform(root):
+        return _inner_partition_grain(root)
     return Grain.of(getattr(root, "partition_keys", None) or frozenset())
 
 
@@ -1266,15 +1284,15 @@ def effective_root_grain(
     windowed / first-last root takes the FULL projected grain (a windowed root's
     bucket enters via ``window_td_key``, so it is excluded here)."""
     windowed = window_kwarg_of(agg) is not None
-    if getattr(agg, "partition_keys", None) is not None:
+    if getattr(agg, "partition_keys", None) is not None or is_transform(agg):
         grain = regroup_root_grain(agg)
         # A transform with no grained inner (e.g. rank(region, direction='desc')) is the degenerate
         # query-grain identity (Axiom 11.1); its operand cells are the query grain.
-        if isinstance(agg, TransformKey) and grain.is_empty:
+        if is_transform(agg) and grain.is_empty:
             return Grain.of([*projected_dim_keys, *projected_td_keys]), False
         # A transform over a window= inner gains the active bucket in its union grain.
         if (
-            not windowed and isinstance(agg, TransformKey) and active_bucket is not None
+            not windowed and is_transform(agg) and active_bucket is not None
             and any(window_kwarg_of(k) is not None for k in walk_value_keys(agg))
         ):
             return grain | {active_bucket}, True
@@ -1316,8 +1334,19 @@ def transform_operand_grain(
         return _operand_grain(input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=None)
     grain = _operand_grain(input, query_grain=query_grain, active_bucket=active_bucket, leaf_grain=query_grain)
     # Literal-only: nothing grained, so the query-grain identity (Axiom 11.1).
-    grained = any(isinstance(k, (TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)) for k in walk_value_keys(input))
+    grained = any(isinstance(k, (TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)) or is_transform(k)
+                  for k in walk_value_keys(input))
     return query_grain if grain.is_empty and not grained else grain
+
+
+def window_operand_grain(key: "WindowKey", *, query_grain: Grain, active_bucket: Optional[ValueKey]) -> Grain:
+    """A measure-level window's operand grain: that of its aggregate-valued operands (the query grain else)."""
+    grains = [transform_operand_grain(c, query_grain=query_grain, active_bucket=active_bucket)
+              for c in key.children() if c.phase is not Phase.ROW]
+    out = grains[0] if grains else query_grain
+    for g in grains[1:]:
+        out = out | g
+    return out
 
 
 def value_grain(k: ValueKey, *, query_grain: Grain, active_bucket: Optional[ValueKey]) -> Grain:
@@ -1336,6 +1365,8 @@ def _operand_grain(
         return grain
     if isinstance(k, TransformKey):
         return transform_operand_grain(k.input, query_grain=query_grain, active_bucket=active_bucket)
+    if is_transform(k):
+        return window_operand_grain(k, query_grain=query_grain, active_bucket=active_bucket)
     if isinstance(k, (FieldKey, FieldSqlKey, TimeTruncKey)):
         return Grain.of([k]) if leaf_grain is None else leaf_grain
     grain = Grain.EMPTY
@@ -1358,7 +1389,7 @@ def attached_parameter_grain(
     neither predicate needs a transform arm (D5)."""
     if isinstance(key, AggregateKey):
         return key.partition_keys
-    if isinstance(key, TransformKey):
+    if is_transform(key):
         return constituent_grain(
             c=key, projected_dim_keys=projected_dim_keys,
             projected_td_keys=projected_td_keys, active_bucket=active_bucket,
@@ -1415,7 +1446,7 @@ def is_framed_path(path: Tuple[str, ...]) -> bool:
 
 def _framed_leaves(key: _RerootableT, *, token: str) -> _RerootableT:
     """``key``'s row leaves prefixed with ``token`` (an already-framed one kept); attached values are opaque."""
-    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)):
+    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)) or is_transform(key):
         return key
     if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
         return key if is_framed_path(key.path) else cast(_RerootableT, key.model_copy(update={"path": (token, *key.path)}))
@@ -1425,7 +1456,7 @@ def _framed_leaves(key: _RerootableT, *, token: str) -> _RerootableT:
 def _unanchored_leaves(key: _RerootableT) -> _RerootableT:
     """``key``'s row leaves without their anchored spelling (read from one frame, their path is their identity);
     attached values are opaque."""
-    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)):
+    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)) or is_transform(key):
         return key
     if isinstance(key, (FieldKey, FieldSqlKey)):
         return key if key.anchor is None else cast(_RerootableT, key.model_copy(update={"anchor": None}))
@@ -1490,7 +1521,7 @@ def _compose_nested(key: _RerootableT, *, frame: str, host_path: Callable[[], Tu
     """Inside a framed interior: a nested attached value is composed in turn; row leaves are already framed."""
     if not isinstance(key, _FrozenKey) or isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
         return key
-    if isinstance(key, (AggregateKey, TransformKey)):
+    if isinstance(key, (AggregateKey, TransformKey)) or is_transform(key):
         return compose_frame(key, frame=frame, host_path=host_path)
     return cast(_RerootableT, key.map_children(lambda c: _compose_nested(c, frame=frame, host_path=host_path)))
 
@@ -1503,7 +1534,7 @@ def _composed_grain(key: _RerootableT, *, frame: str, host_path: Callable[[], Tu
             return k.model_copy(update={"path": (*host_path(), *k.path), "anchor": anchor})
         if isinstance(k, StarKey):
             return k.model_copy(update={"path": (*host_path(), *k.path)})
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             return compose_frame(k, frame=frame, host_path=host_path)
         return k.map_children(leaf)
 
@@ -1823,7 +1854,7 @@ def integer_valued(key: object, *, field_type: FieldTypeFn) -> bool:
 def reads_no_rows(key: ValueKey) -> bool:
     """A constant: every leaf a literal or a call on literals only (``pi()``), no aggregate or transform."""
     return all(
-        not isinstance(k, (AggregateKey, TransformKey))
+        not isinstance(k, (AggregateKey, TransformKey)) and not is_transform(k)
         and (bool(k.children()) or isinstance(k, (LiteralKey, ScalarCallKey)))
         for k in walk_value_keys(key)
     )
@@ -2509,7 +2540,7 @@ def operand_constituents(source: ValueKey) -> List[ValueKey]:
     out: List[ValueKey] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             if k not in out:
                 out.append(k)
             return
@@ -2527,7 +2558,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
     out: List[ValueKey] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             return
         if isinstance(k, (FieldKey, FieldSqlKey, StarKey)):
             out.append(k)
@@ -2542,7 +2573,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
 def parameter_row_leaves(value) -> List[ValueKey]:
     """The row-level field leaves of an aggregation parameter value; a scalar, a
     marker string or an attached value (aggregate / transform) has none."""
-    if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey)):
+    if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey)) or is_transform(value):
         return []
     return source_row_leaves(cast(ValueKey, value))
 
@@ -2556,7 +2587,7 @@ def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
     out: List[Tuple[str, ...]] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             return
         if isinstance(k, (FieldKey, FieldSqlKey, StarKey)):
             out.append(k.path)
@@ -2587,8 +2618,8 @@ def source_anchor_path(source: ValueKey) -> Tuple[str, ...]:
 
 
 def _grain_transform_inner_aggregates(
-    t: TransformKey, *, query_grain: Grain,
-) -> TransformKey:
+    t: "TransformKey | WindowKey", *, query_grain: Grain,
+) -> "TransformKey | WindowKey":
     """Grain every ungrained, non-windowed, LOCAL aggregate under ``t.input`` at
     ``query_grain`` — a cross-dataset or windowed or already-explicit inner is left
     untouched. Post-order over ``map_children``."""
@@ -2603,6 +2634,8 @@ def _grain_transform_inner_aggregates(
             return rebuilt.model_copy(update={"partition_keys": query_grain})
         return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
 
+    if isinstance(t, WindowKey):
+        return t.map_children(_grain)
     new_input = _grain(t.input)
     return t if new_input is t.input else t.model_copy(update={"input": new_input})
 
@@ -2650,7 +2683,7 @@ def normalize_transform_constituents(
         return cast("ValueKey", rebuilt)  # map_children preserves ValueKey-ness
 
     def _grain(c: ValueKey) -> ValueKey:
-        if isinstance(c, TransformKey):
+        if is_transform(c):
             return _grain_transform_inner_aggregates(t=c, query_grain=query_grain)
         return c
 
@@ -2748,7 +2781,7 @@ def attached_operand_keys(vks: Sequence[ValueKey]) -> FrozenSet[ValueKey]:
             for r in (k.source, *k.args, *(v for _, v in k.kwargs)):
                 if isinstance(r, _FrozenKey):
                     out.update(c for c in walk_value_keys(r)
-                               if isinstance(c, (AggregateKey, TransformKey)))
+                               if isinstance(c, (AggregateKey, TransformKey)) or is_transform(c))
             return
         for c in k.children():
             _scan(c)

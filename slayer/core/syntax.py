@@ -272,6 +272,24 @@ WINDOW_FUNCTION_ARITIES: Mapping[str, Tuple[int, int]] = MappingProxyType({
     "ntile": (1, 1), "lag": (1, 3), "lead": (1, 3), "first_value": (1, 1), "last_value": (1, 1),
     "nth_value": (2, 2),
 })
+#: The aggregations Ossie windows, by their SQL spelling under ``OVER``.
+WINDOW_AGGREGATES = frozenset({
+    "sum", "count", "count_distinct", "avg", "min", "max", "stddev", "stddev_pop", "stddev_samp", "variance",
+    "var_pop", "var_samp", "median", "percentile",
+})
+
+
+def unwindowable_function(window: "WindowCall") -> Optional[str]:
+    """The function ``window`` applies when Ossie does not window it, else ``None``."""
+    call = window.function
+    if isinstance(call, ScalarCall) and call.name in WINDOW_FUNCTION_ARITIES:
+        return None
+    if isinstance(call, AggCall):
+        agg = call.agg.lower()
+        if agg in WINDOW_AGGREGATES and not call.kwargs and (agg == "percentile" or not call.args):
+            return None
+        return call.agg
+    return getattr(call, "name", type(call).__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -3181,7 +3199,46 @@ def _render(parsed: Any, *, style: _Style) -> str:  # NOSONAR(S3776) — flat pe
     if isinstance(parsed, BoolOp):
         prec = _precedence(parsed)
         return f" {parsed.op} ".join(_operand_text(o, minimum=prec + 1, style=style) for o in parsed.operands)
+    if isinstance(parsed, WindowCall):
+        return _window_text(parsed, style=style)
     return str(parsed)
+
+
+def _window_text(parsed: WindowCall, *, style: _Style) -> str:
+    """``function OVER (PARTITION BY … ORDER BY … frame)``, each order item's NULL placement stated."""
+    call = parsed.function
+    if isinstance(call, AggCall) and call.agg == "percentile":
+        p = call.args[0].value if isinstance(call.args[0], NamedArg) else call.args[0]
+        head = (f"PERCENTILE_CONT({_render(p, style=style)}) WITHIN GROUP "
+                f"(ORDER BY {_render(call.source, style=style)})")
+    elif isinstance(call, AggCall) and call.agg == "count_distinct":
+        head = f"COUNT(DISTINCT {_render(call.source, style=style)})"
+        if call.filter is not None:
+            head += f" FILTER (WHERE {_render(call.filter, style=style)})"
+    elif isinstance(call, AggCall):
+        head = _canonical_agg_text(call, style=_Style.CANONICAL if style is _Style.LEGACY else style)
+    else:
+        head = _render(call, style=style)
+    spec: List[str] = []
+    if parsed.partition:
+        spec.append("PARTITION BY " + ", ".join(_render(v, style=style) for v in parsed.partition))
+    if parsed.order:
+        spec.append("ORDER BY " + ", ".join(
+            f"{_render(i.value, style=style)}{' DESC' if i.descending else ''} NULLS {i.nulls.upper()}"
+            for i in parsed.order))
+    if parsed.frame is not None:
+        spec.append(_frame_text(parsed.frame))
+    return f"{head} OVER ({' '.join(spec)})"
+
+
+def _frame_text(frame: WindowFrame) -> str:
+    def bound(b: Tuple[str, Optional[Decimal]]) -> str:
+        kind, offset = b
+        return kind.upper() if offset is None else f"{offset} {kind.upper()}"
+
+    if frame.end is None:
+        return f"{frame.unit.upper()} {bound(frame.start)}"
+    return f"{frame.unit.upper()} BETWEEN {bound(frame.start)} AND {bound(frame.end)}"
 
 
 def _canonical_agg_text(parsed: AggCall, *, style: _Style) -> str:

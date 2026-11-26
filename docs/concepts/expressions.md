@@ -468,7 +468,30 @@ Multiple partition fields: `partition_by=[orders.region, orders.channel]`. Joine
 
 The rank family's `partition_by=` may name a computed dimension, as an aggregation's can (one that itself wraps an aggregation is for now accepted only in filters and order). Each key must be a member of the transform's operand grain — the union of its inner aggregates' grains (an ungrained inner contributes the query's dimensions) — so `rank(sum(orders.revenue, partition_by=[orders.city, orders.region]), partition_by=orders.product, direction='desc')` is an error naming the remedy.
 
-> **Note:** SLayer's expression grammar rejects raw `OVER (...)` SQL in `DatasetMetric.expression` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it as a field's dialect entry (e.g., `{"name": "rn", "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "row_number() over (order by mass desc)"}]}, "datatype": "Integer"}`) and filter on the field — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
+### SQL window functions (`OVER`)
+
+Every Mode B position reads Ossie's window syntax: `function(args) OVER ([PARTITION BY …] [ORDER BY … [ASC|DESC] [NULLS FIRST|LAST]] [ROWS|RANGE frame])`. The function is a ranking function (`ROW_NUMBER`, `RANK`, `DENSE_RANK`, `PERCENT_RANK`, `CUME_DIST`, `NTILE(n)`), an offset function (`LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`) or an Ossie aggregation (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, `STDDEV`, `VARIANCE`, …, with or without `FILTER (WHERE …)`); `first`, `last`, `collect` and custom aggregations are refused under `OVER`.
+
+A window whose arguments and keys hold no aggregate is **row-level**: a column of the dataset its references are anchored at, computed over that dataset's filtered rows before any join, query filter or aggregation, exactly as a field declared with the same text. So a query's filters do not change it:
+
+```json
+{
+  "population": "orders",
+  "distinct_dimension_values": false,
+  "dimensions": ["orders.id", {"field": "ROW_NUMBER() OVER (PARTITION BY orders.region ORDER BY orders.ordered_at)", "alias": "rn"}],
+  "filter": ["orders.id > 1"]
+}
+```
+
+returns each order's number among all orders of its region, the filtered-out order 1 included. Filter on the window (`ROW_NUMBER() OVER (…) = 1`) to keep the first rows.
+
+A window with an aggregate among its arguments or keys is **measure-level**: a transform over its operand's cells, with SQL's meaning. Its keys are aggregates or query dimensions; dimensions it does not name do not partition it, and measure filters apply afterwards:
+
+```json
+{"dimensions": ["orders.ordered_at"], "metrics": ["SUM(SUM(orders.amount)) OVER (ORDER BY orders.ordered_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"]}
+```
+
+An order item without `NULLS FIRST|LAST` sorts NULL as the largest value — last ascending, first descending — on every database; a window in a field's dialect entry or `filter` keeps the database's own placement. `COUNT(DISTINCT …)`, `MEDIAN` and `PERCENTILE_CONT` under `OVER` run only where the database windows them ([database support](../database-support.md#window-functions)).
 
 ### First and last over an aggregate
 

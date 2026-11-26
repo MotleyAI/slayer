@@ -50,7 +50,7 @@ from slayer.core.granularity import bucket_type as granularity_bucket_type
 from slayer.core.time_spine import TIME_SPINE_FIELD, is_spine
 from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_zones import CIVIL
-from slayer.core.keys import boolean_valued, split_top_level_and, restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, display_token, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
+from slayer.core.keys import boolean_valued, split_top_level_and, restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, TRANSFORM_KINDS, ValueKey, WindowKey, aggregation_source_type, display_token, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.relationship_walker import (
     OrientedRelationship,
     aggregation_owner,
@@ -554,7 +554,7 @@ def _classify_order_scope(
         ):
             return OrderScope.WINDOWED_CTE
         return OrderScope.CROSS_DATASET_CTE
-    if isinstance(slot.key, TransformKey):
+    if isinstance(slot.key, TRANSFORM_KINDS):
         return OrderScope.TRANSFORM_STEP
     if slot.id in outer_composite_ids:
         return OrderScope.OUTER_COMPOSITE
@@ -3025,7 +3025,7 @@ class SQLGenerator:
                     f"{member.host_slot_id!r}, which this plan does not carry.",
                 )
             if isinstance(
-                member.ranked_key, (*SLOT_COMPOSITE_KINDS, TransformKey),
+                member.ranked_key, (*SLOT_COMPOSITE_KINDS, *TRANSFORM_KINDS),
             ) or (
                 isinstance(member.ranked_key, FieldKey)
                 and member.ranked_key.leaf.startswith(REGROUP_LEAF_PREFIX)
@@ -5166,6 +5166,10 @@ class SQLGenerator:
         """Render one window-transform slot as an ``OVER()`` expression."""
 
         key = slot.key
+        if isinstance(key, WindowKey):
+            # Its operands and keys are the cells' columns below; the window runs over them as written.
+            return render_value_key(key=key, ctx=self._alias_render_ctx(
+                slot_id_by_key=slot_id_by_key, available_alias_by_slot_id=available_alias_by_slot_id))
         if not isinstance(key, TransformKey):
             raise ValueError(
                 f"_render_window_transform_sql expected TransformKey, "
@@ -7608,7 +7612,7 @@ _PREFILTER_MARGIN = timedelta(days=2)
 def _framing_fields(planned) -> FrozenSet[ValueKey]:
     """The time fields whose bounds frame a window or transform of ``planned`` (none when it has neither)."""
     frames = any(
-        isinstance(k, TransformKey) or (isinstance(k, AggregateKey) and any(name == "window" for name, _ in k.kwargs))
+        isinstance(k, TRANSFORM_KINDS) or (isinstance(k, AggregateKey) and any(name == "window" for name, _ in k.kwargs))
         for root in plan_value_keys(planned) for k in walk_value_keys(root)
     )
     return frozenset(planned.frame_bound_fields) if frames else frozenset()

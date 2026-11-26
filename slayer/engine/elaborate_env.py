@@ -59,7 +59,11 @@ from slayer.core.errors import (
 from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
+    Phase,
     WindowKey,
+    window_operand_grain,
+    is_transform,
+    transform_operands,
     display_token,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
@@ -158,7 +162,7 @@ def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey
 
     def _walk(k: ValueKey) -> None:
         nonlocal attached
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             # A row-attach root (partitioned aggregate or transform root of a
             # computed dimension) resolves row-side; its subtree is its own scope.
             if k in row_agg_set:
@@ -188,6 +192,8 @@ def row_refs_off_grain(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
         if isinstance(k, TransformKey):
             _walk(k.input)  # partition/time keys are transform machinery, not refs
             return
+        if is_transform(k):
+            return  # its keys and operands are judged against its operand grain
         for c in k.children():
             _walk(c)
 
@@ -203,6 +209,8 @@ def _key_display(k: ValueKey) -> str:
         return f"{name} (partition_by)" if k.partition_keys is not None else name
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
+    if isinstance(k, WindowKey):
+        return key_display(k)
     if isinstance(k, TimeTruncKey):
         return _key_display(k.source) if isinstance(k.source, (FieldKey, FieldSqlKey)) else key_display(k.source)
     if isinstance(k, (FieldKey, FieldSqlKey)):
@@ -332,8 +340,8 @@ def is_partitioned_consumer(k: ValueKey) -> TypeGuard[AggregateKey]:
 
 def is_dimension_transform_root(k: ValueKey) -> bool:
     """A transform over a grained aggregate — in a dimension, it owns its input."""
-    return isinstance(k, TransformKey) and any(
-        is_grained_aggregate(g) for g in opaque_keys(k.input)
+    return is_transform(k) and any(
+        is_grained_aggregate(g) for o in transform_operands(k) for g in opaque_keys(o)
     )
 
 
@@ -1060,7 +1068,7 @@ def check_time_dimension_field(
 
 def check_time_dimension_row_level(*, name: str, source: ValueKey) -> None:
     """A time dimension's expression is row-level: no aggregate, transform or attached value."""
-    if any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)):
+    if any(isinstance(k, (AggregateKey, TransformKey)) or is_transform(k) for k in walk_value_keys(source)):
         raise TimeDimensionFieldError(
             summary="A time dimension is row-level; its expression reads an aggregate or transform.",
             location=f"time dimension {name!r}",
@@ -1123,7 +1131,7 @@ def _operand_display(k: object) -> str:
         if len(k.operands) == 1:
             return f"{k.op}{_operand_display(k.operands[0])}"
         return f" {k.op} ".join(_operand_display(o) for o in k.operands)
-    if isinstance(k, (AggregateKey, TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)):
+    if isinstance(k, (AggregateKey, TransformKey, WindowKey, FieldKey, FieldSqlKey, TimeTruncKey)):
         return _key_display(k)
     if isinstance(k, ArrayLiteralKey):
         return f"[{', '.join(_operand_display(v) for v in k.values)}]"
@@ -2242,6 +2250,30 @@ def check_transform_partition_keys_in_operand_grain(
                     location=f"transform {k.op!r}",
                     suggestion=f"Add it to the inner aggregate's partition_by=, or "
                     f"partition by one of: {members or '(none)'}.",
+                )
+
+
+def check_window_keys_in_operand_grain(
+    *, roots, query_grain: Grain, active_bucket: Optional[ValueKey], root: Optional[str],
+) -> None:
+    """Each row-level operand of a measure-level window is a member of its operand grain (semantics Axiom 11.7)."""
+    for top in roots:
+        for k in walk_value_keys(top):
+            if not isinstance(k, WindowKey) or k.row_level:
+                continue
+            grain = window_operand_grain(k, query_grain=query_grain, active_bucket=active_bucket)
+            for c in k.children():
+                if c.phase is not Phase.ROW or c in grain or isinstance(c, (LiteralKey, StarKey)):
+                    continue
+                shown = dotted_key_display(c)
+                if isinstance(c, (FieldKey, FieldSqlKey)) and c.anchor is not None:
+                    shown = ".".join((*c.anchor, field_leaf(c)))
+                elif root is not None and isinstance(c, (FieldKey, FieldSqlKey)) and not c.path:
+                    shown = f"{root}.{shown}"
+                raise WindowFunctionError(
+                    summary=f"The window `{key_display(k)}` reads `{shown}` per cell, but it is neither "
+                    f"aggregate-valued nor a member of the window's operand grain.",
+                    suggestion=f"Add `{shown}` as a dimension, or aggregate it.",
                 )
 
 

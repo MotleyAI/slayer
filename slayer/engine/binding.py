@@ -138,6 +138,7 @@ from slayer.core.syntax import (
     UnaryOp,
     WINDOW_FUNCTION_ARITIES,
     WindowCall,
+    unwindowable_function,
     aggregation_reading,
     canonical_metric_text,
     classify_arguments,
@@ -564,17 +565,19 @@ def _bind(
     )
 
 
-#: The aggregations Ossie windows, by their SQL spelling under ``OVER``.
-_WINDOW_AGGREGATES = frozenset({
-    "sum", "count", "count_distinct", "avg", "min", "max", "stddev", "stddev_pop", "stddev_samp", "variance",
-    "var_pop", "var_samp", "median", "percentile",
-})
-
 
 def _bind_window(
     parsed: WindowCall, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> WindowKey:
     """``function(args) OVER (…)``: an Ossie ranking, offset or aggregation call, its keys and frame bound."""
+    refused = unwindowable_function(parsed)
+    if refused is not None:
+        raise WindowFunctionError(
+            summary=f"`{refused}` cannot run under OVER: a window applies a ranking or offset function "
+            f"(ROW_NUMBER, RANK, LAG, …) or an Ossie aggregation (SUM, COUNT, AVG, MIN, MAX, …).",
+            location=f"`{canonical_metric_text(parsed.function)}`",
+            suggestion="Use one of those functions, or a SLayer transform over a metric.",
+        )
     function, args, condition = _window_function(parsed.function, sub=sub, scope=scope, bundle=bundle)
     frame = parsed.frame
     key = WindowKey(
@@ -593,19 +596,11 @@ def _bind_window(
 def _window_function(
     node: ParsedExpr, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> Tuple[str, Tuple[ValueKey, ...], Optional[ValueKey]]:
-    """``(function, args, filter)`` of the call under ``OVER``; any function Ossie does not window is refused."""
+    """``(function, args, filter)`` of an Ossie call under ``OVER``."""
     if isinstance(node, ScalarCall) and node.name in WINDOW_FUNCTION_ARITIES:
         return node.name, tuple(sub(a) for a in node.args), None
-    agg = node.agg.lower() if isinstance(node, AggCall) else None
-    if agg not in _WINDOW_AGGREGATES or node.kwargs or (agg != "percentile" and node.args):
-        name = node.agg if isinstance(node, AggCall) else getattr(node, "name", type(node).__name__)
-        raise WindowFunctionError(
-            summary=f"`{name}` cannot run under OVER: a window applies a ranking or offset function "
-            f"(ROW_NUMBER, RANK, LAG, …) or an Ossie aggregation (SUM, COUNT, AVG, MIN, MAX, …).",
-            location=f"`{canonical_metric_text(node)}`",
-            suggestion="Use one of those functions, or a SLayer transform over a metric.",
-        )
     assert isinstance(node, AggCall)
+    agg = node.agg.lower()
     source = node.source
     if isinstance(source, StarSource):
         value: ValueKey = _bare_star(scope=scope)

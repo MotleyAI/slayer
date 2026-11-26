@@ -273,6 +273,26 @@ class _OneVarWelford:
         self._mean += delta / self._n
         self._m2 += delta * (value - self._mean)
 
+    def inverse(self, value) -> None:
+        """Remove ``value`` from the state: the row leaving a window frame."""
+        if value is None:
+            return
+        if self._n <= 1:
+            self._n, self._mean, self._m2 = 0, 0.0, 0.0
+            return
+        self._n -= 1
+        delta = value - self._mean
+        self._mean -= delta / self._n
+        self._m2 -= delta * (value - self._mean)
+
+    def finalize(self) -> float | None:
+        """Each statistic's result; the state alone has none."""
+        return None
+
+    def value(self) -> float | None:
+        """The current frame's result, as a window function."""
+        return self.finalize()
+
 
 class _StddevSampAgg(_OneVarWelford):
     """Sample standard deviation. NULL when N <= 1."""
@@ -723,7 +743,10 @@ def register_sqlite_udfs(dbapi_connection) -> None:
         else:
             dbapi_connection.create_function(name, narg, fn)
     for name, narg, cls in _AGGREGATE_UDFS:
-        dbapi_connection.create_aggregate(name, narg, cls)
+        if issubclass(cls, _OneVarWelford):
+            dbapi_connection.create_window_function(name, narg, cls)  # also usable under OVER
+        else:
+            dbapi_connection.create_aggregate(name, narg, cls)
 
 
 def _like_source(pattern: LikePattern) -> str:

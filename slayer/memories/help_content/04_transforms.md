@@ -42,8 +42,10 @@ non-NULL and non-zero); a false or missing bucket resets the run to 0.
 `rank` and `dense_rank` require `direction='desc'` (highest is 1) or `'asc'`.
 `partition_by=` ranks within groups; its keys must be query dimensions. A NULL value
 ranks NULL, so a rank filter drops it. Top N per group is a filter:
-`rank(sum(orders.amount), partition_by=stores.region, direction='desc') <= 3`. Never write raw
-`OVER (...)` SQL.
+`rank(sum(orders.amount), partition_by=stores.region, direction='desc') <= 3`. Ossie's SQL windows
+also work: `RANK() OVER (PARTITION BY stores.region ORDER BY SUM(orders.amount) DESC)` ranks cells, and a window
+with no aggregate inside (`ROW_NUMBER() OVER (PARTITION BY orders.region ORDER BY orders.ordered_at)`) is a column of
+its dataset, computed before the query's filters. An unstated NULL placement sorts NULL largest.
 
 ## Limits
 

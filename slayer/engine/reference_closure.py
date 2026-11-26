@@ -33,7 +33,9 @@ from slayer.core.keys import (
     StarKey,
     TimePointCmpKey,
     TimeTruncKey,
+    TRANSFORM_KINDS,
     TransformKey,
+    WindowKey,
     ValueKey,
     source_row_leaves,
 )
@@ -272,6 +274,8 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
         return [node.source, *node.args, *(v for _name, v in node.kwargs), *([node.filter] if node.filter else [])]
     if isinstance(node, TransformKey):
         return [node.input, *sorted(node.partition_keys, key=repr), node.time_key]
+    if isinstance(node, WindowKey):
+        return list(node.children())
     if isinstance(node, ArithmeticKey):
         return list(node.operands)
     if isinstance(node, ScalarCallKey):
@@ -483,7 +487,7 @@ def _refs_closure(
     for ref in refs:
         c = _closure(
             ref, anchor_dataset=anchor_dataset, anchor_relation=anchor_relation,
-            bundle=bundle, cache=None, opaque=(AggregateKey, TransformKey),
+            bundle=bundle, cache=None, opaque=(AggregateKey, *TRANSFORM_KINDS),
         )
         if c is None:
             return None

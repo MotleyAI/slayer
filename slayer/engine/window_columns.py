@@ -54,7 +54,9 @@ class _Lifter:
         if key not in self.memo:
             mapped = key.map_children(self.lift)
             if isinstance(mapped, WindowKey) and mapped.row_level:
-                mapped = self._column(mapped)
+                check_row_window(mapped)
+                rewritten = self.dialect.rewrite_window_key(mapped)
+                mapped = self._column(mapped) if rewritten is mapped else self.lift(rewritten)
             self.memo[key] = mapped
         return self.memo[key]
 

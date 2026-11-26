@@ -292,3 +292,33 @@ def test_mysql_native_null_placement_is_left_alone() -> None:
         exp.Ordered(this=exp.column("a", quoted=True), desc=True, nulls_first=False),
     )
     assert MysqlDialect().rewrite_statement(statement).sql(dialect="mysql").endswith("ORDER BY `a` DESC")
+
+
+# A Mode B division is true division: MySQL's ``/`` keeps only ``div_precision_increment`` extra digits.
+
+
+def test_mysql_true_division_reads_the_dividend_as_a_double() -> None:
+    quotient = exp.Div(this=exp.Div(this=exp.column("a"), expression=exp.column("b")), expression=exp.column("c"))
+    sql = MysqlDialect().true_division(quotient).sql(dialect="mysql")
+    assert sql == "CAST(a AS DOUBLE) / b / c"
+
+
+def test_mysql_true_division_keeps_a_double_dividend() -> None:
+    quotient = exp.Div(this=exp.Cast(this=exp.column("a"), to=exp.DataType.build("DOUBLE")), expression=exp.column("b"))
+    assert MysqlDialect().true_division(quotient).sql(dialect="mysql") == "CAST(a AS DOUBLE) / b"
+
+
+async def test_mysql_query_division_is_true_division() -> None:
+    query = SlayerQuery.model_validate({"population": "orders", "distinct_dimension_values": False,
+                                        "dimensions": ["orders.id", "orders.amount / orders.id"]})
+    orders = SlayerDataset(name="orders", sql_table="orders", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="amount", datatype=DataType.INTEGER)])
+    sql = await _engine_generate(query=query, dataset=orders, dialect="mysql")
+    assert "CAST(orders.amount AS DOUBLE) / " in sql
+
+
+def test_mysql_parsed_variances_keep_mysqls_names() -> None:
+    """sqlglot writes VAR_SAMP as VARIANCE, MySQL's population variance, and VAR_POP as VARIANCE_POP, no function."""
+    tree = parse("SELECT VAR_SAMP(a), VAR_POP(a) FROM t", dialect="mysql")
+    assert MysqlDialect().rewrite_target_ast(tree).sql(dialect="mysql") == "SELECT VAR_SAMP(a), VAR_POP(a) FROM t"

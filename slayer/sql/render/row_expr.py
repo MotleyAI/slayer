@@ -746,7 +746,8 @@ def _row_arithmetic(
         return render_null_safe(op=key.op, operands=operands, dialect=dialect)
     if key.op == "%":
         return render_modulo(key=key, operands=operands, dialect=dialect, field_type=field_type)
-    return render_arithmetic(op=key.op.lower(), operands=operands)
+    rendered = render_arithmetic(op=key.op.lower(), operands=operands)
+    return dialect.true_division(rendered) if key.op == "/" else rendered
 
 
 def render_modulo(

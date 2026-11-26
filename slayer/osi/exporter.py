@@ -236,6 +236,11 @@ def _refuse_slayer_only(agg: AggregateKey) -> None:
         raise _Refused("is a windowed or partitioned aggregate", _RESTORE)
 
 
+def _nests_windows(tree: exp.Expr) -> bool:
+    """Whether a window function sits inside another's call, keys or frame."""
+    return any(w.find_ancestor(exp.Window) is not None for w in tree.find_all(exp.Window))
+
+
 def _calls(tree: exp.Expr) -> set[str]:
     """The lower-cased names of the functions ``tree`` calls."""
     return {(f.name if isinstance(f, exp.Anonymous) else f.sql_name()).lower() for f in tree.find_all(exp.Func)}
@@ -434,6 +439,12 @@ class _Exporter:
                 needs = {t.name for p in crossed
                          if (t := terminal_dataset(root=ds.graph, path=p, datasets_by_name=self.graph)) is not None}
                 self._carry_field(ds, field, reason="reads a joined dataset", needs=needs)
+                continue
+            portable = _valid_portable(self._portable(ds.dataset, ds.fields[field.name], seen=frozenset()))
+            if _nests_windows(tree) or (portable is not None
+                                        and _nests_windows(sqlglot.parse_one(portable, read=PORTABLE_READER))):
+                self._carry_field(ds, field, reason="holds a window inside a window, which Ossie does not define",
+                                  needs=set())
                 continue
             ds.osi_fields[field.name] = self._field(ds, field, tree)
 
@@ -734,6 +745,8 @@ class _Exporter:
             tree = self._render(ds.graph, _instant_comparisons(key), scoped=scoped, portable=portable)
         except Exception as exc:  # noqa: BLE001 — anything the shared renderer refuses stays SLayer-only
             raise _Refused(f"does not render as standard SQL ({exc})", _RESTORE) from exc
+        if _nests_windows(tree):
+            raise _Refused("holds a window inside a window, which Ossie does not define", _RESTORE)
         if not portable:
             self._check_dialect_entry(self.graph[readers[0]] if scoped else ds.graph, tree)
         return _Metric(home=ds.dataset.name, metric=metric, scope="dataset" if scoped else "model",

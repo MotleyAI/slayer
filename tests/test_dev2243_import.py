@@ -835,8 +835,7 @@ async def test_tpcds_example(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     storage = await offline_storage("yaml", tmp_path, monkeypatch)
     result = await run_import(storage, EXAMPLES / "tpcds_semantic_model.yaml")
     assert await _loaded_dataset_names(storage) == ["customer", "date_dim", "item", "store", "store_sales"]
-    assert sorted(e.entity for e in kinds(result, "not_evaluable")) == [
-        "brand_rank_in_store", "cumulative_sales", "monthly_sales_change"]
+    assert [e.entity for e in kinds(result, "not_evaluable")] == []
 
 
 async def test_flights_semantic_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

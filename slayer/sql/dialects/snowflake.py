@@ -156,6 +156,7 @@ def _snowflake_path(path: JsonPath) -> str:
 class SnowflakeDialect(SqlDialect):
     """Snowflake dialect."""
     enforces_unique_keys: ClassVar[bool] = False
+    windowed_holistic: ClassVar[frozenset[str]] = frozenset({"count_distinct", "median", "percentile_cont"})
 
     sqlglot_name: str = "snowflake"
     aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({

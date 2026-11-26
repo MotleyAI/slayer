@@ -130,6 +130,10 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
     ]
 
 
+def _is_double(node: Expression) -> bool:
+    return isinstance(node, exp.Cast) and node.to.is_type(exp.DataType.Type.DOUBLE)
+
+
 class MysqlDialect(SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "mysql"
@@ -369,12 +373,26 @@ class MysqlDialect(SqlDialect):
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is
-        a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``."""
+        a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``; the sample and population variances keep
+        MySQL's names."""
         def _fix(node: Expression) -> Expression:
             if isinstance(node, exp.Trunc) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
+            if isinstance(node, (exp.Variance, exp.VariancePop)):
+                # sqlglot writes these as VARIANCE / VARIANCE_POP: population variance and no function on MySQL.
+                name = "VAR_SAMP" if isinstance(node, exp.Variance) else "VAR_POP"
+                return exp.Anonymous(this=name, expressions=[node.this])
             return node
         return tree.transform(_fix)
+
+    def true_division(self, quotient: Expression) -> Expression:
+        """The dividend as a ``DOUBLE``: MySQL's ``/`` keeps only ``div_precision_increment`` extra decimal digits."""
+        dividend = quotient
+        while isinstance(dividend, exp.Div) and isinstance(dividend.this, exp.Div):
+            dividend = dividend.this
+        if isinstance(dividend, exp.Div) and not _is_double(dividend.this):
+            dividend.set("this", exp.Cast(this=dividend.this, to=exp.DataType.build("DOUBLE")))
+        return quotient
 
     def rewrite_statement(self, statement: Expression) -> Expression:
         """Emulate NULL placement on each ORDER BY term as written, so an alias stays an alias.

@@ -291,7 +291,7 @@ def _aggregated(node: exp.Expr) -> bool:
     """Inside an aggregate call, its ``FILTER`` clause or an ``AGG(d.m)`` call."""
     parent = node.parent
     while parent is not None:
-        if isinstance(parent, exp.AggFunc | exp.Filter) or is_agg_call(parent):
+        if _aggregate_call(parent) or (isinstance(parent, exp.Filter) and not isinstance(parent.parent, exp.Window)):
             return True
         parent = parent.parent
     return False
@@ -317,6 +317,8 @@ def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> M
         if not _aggregated(column) and not column.table and name in metric_names:
             names[name] = None
             continue
+        if _measure_window_key(column):
+            continue  # a grain member of the window's cells, judged when queried
         problem = _reference_problem(column)
         if problem is not None:
             problems.append(problem)
@@ -330,6 +332,18 @@ def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> M
     if tree.find(exp.Window) is not None:
         problems.append(MetricProblem(code=OssieErrorCode.E_DEFERRED_WINDOWED_METRIC, reason=DEFERRED_WINDOW))
     return ModelScopedAnalysis(homes=list(homes), metrics=list(names), problems=problems)
+
+
+def _measure_window_key(column: exp.Column) -> bool:
+    """Whether ``column`` is a partition or order key of a window over an aggregate."""
+    node: exp.Expr = column
+    while node.parent is not None:
+        parent = node.parent
+        if isinstance(parent, exp.Window) and node is not parent.this:
+            head = _unfiltered(parent.this) if parent.this is not None else None
+            return any(_aggregate_call(n) for n in parent.walk() if n is not parent.this and n is not head)
+        node = parent
+    return False
 
 
 def _reference_problem(column: exp.Column) -> MetricProblem | None:
@@ -346,14 +360,24 @@ def _reference_problem(column: exp.Column) -> MetricProblem | None:
 
 def _components(tree: exp.Expr) -> list[exp.Expr]:
     """The aggregate calls no other aggregate call contains, ``AGG(d.m)`` included; a call's own ``FILTER`` does not
-    contain it."""
-    return [n for n in tree.walk() if (isinstance(n, exp.AggFunc) or is_agg_call(n)) and not _enclosed(n)]
+    contain it, and the function a window applies is no aggregate call."""
+    return [n for n in tree.walk() if _aggregate_call(n) and not _enclosed(n)]
+
+
+def _aggregate_call(node: exp.Expr) -> bool:
+    if isinstance(_unfiltered(node).parent, exp.Window):
+        return False
+    return isinstance(node, exp.AggFunc) or is_agg_call(node)
+
+
+def _unfiltered(node: exp.Expr) -> exp.Expr:
+    return node.parent if isinstance(node.parent, exp.Filter) and node.parent.this is node else node
 
 
 def _enclosed(node: exp.Expr) -> bool:
     parent = node.parent
     while parent is not None:
-        if isinstance(parent, exp.AggFunc) or is_agg_call(parent):
+        if _aggregate_call(parent):
             return True
         parent = parent.parent
     return False

@@ -13,43 +13,13 @@ from slayer.core.keys import StarKey, WindowFrameSpec, WindowKey
 from slayer.core.refs import key_display
 from slayer.sql.dialects.base import SqlDialect
 
-__all__ = ["WINDOW_FUNCTIONS", "frame_changes_value", "render_window", "window_order_items"]
+__all__ = ["frame_changes_value", "render_window", "window_order_items"]
 
 #: Ranking and offset functions: a frame never changes their value.
 _FRAMELESS = frozenset({
     "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile", "lag", "lead",
 })
 
-_CALLS: dict[str, Callable[[List[Expression]], Expression]] = {
-    "row_number": lambda a: exp.RowNumber(),
-    "rank": lambda a: exp.Rank(),
-    "dense_rank": lambda a: exp.DenseRank(),
-    "percent_rank": lambda a: exp.PercentRank(),
-    "cume_dist": lambda a: exp.CumeDist(),
-    "ntile": lambda a: exp.Ntile(this=a[0]),
-    "lag": lambda a: exp.Lag(this=a[0], offset=a[1] if len(a) > 1 else None, default=a[2] if len(a) > 2 else None),
-    "lead": lambda a: exp.Lead(this=a[0], offset=a[1] if len(a) > 1 else None, default=a[2] if len(a) > 2 else None),
-    "first_value": lambda a: exp.FirstValue(this=a[0]),
-    "last_value": lambda a: exp.LastValue(this=a[0]),
-    "nth_value": lambda a: exp.NthValue(this=a[0], offset=a[1]),
-    "sum": lambda a: exp.Sum(this=a[0]),
-    "count": lambda a: exp.Count(this=a[0]),
-    "count_distinct": lambda a: exp.Count(this=exp.Distinct(expressions=[a[0]])),
-    "avg": lambda a: exp.Avg(this=a[0]),
-    "min": lambda a: exp.Min(this=a[0]),
-    "max": lambda a: exp.Max(this=a[0]),
-    "stddev": lambda a: exp.StddevSamp(this=a[0]),
-    "stddev_samp": lambda a: exp.StddevSamp(this=a[0]),
-    "stddev_pop": lambda a: exp.StddevPop(this=a[0]),
-    "variance": lambda a: exp.Variance(this=a[0]),
-    "var_samp": lambda a: exp.Variance(this=a[0]),
-    "var_pop": lambda a: exp.VariancePop(this=a[0]),
-    "median": lambda a: exp.Median(this=a[0]),
-    "percentile_cont": lambda a: exp.WithinGroup(
-        this=exp.PercentileCont(this=a[1]), expression=exp.Order(expressions=[exp.Ordered(this=a[0])])),
-}
-#: Every function a window may apply.
-WINDOW_FUNCTIONS = frozenset(_CALLS)
 
 
 def frame_changes_value(key: WindowKey) -> bool:
@@ -96,11 +66,12 @@ def render_window(
         condition = part(key.filter)
         value = exp.Literal.number(1) if isinstance(args[0], exp.Star) else args[0]
         args[0] = exp.Case(ifs=[exp.If(this=condition, true=value)])
-    call = dialect.window_call(key.function, args=args, build=_CALLS[key.function])
+    call = dialect.window_call(key, args)
     order = window_order_items(key, values=[part(o) for o in key.order], dialect=dialect, labels=labels)
-    return exp.Window(
+    window = exp.Window(
         this=call,
         partition_by=[part(p) for p in key.partition] or None,
         order=exp.Order(expressions=order) if order else None,
         spec=_spec(key.frame) if frame_changes_value(key) and key.frame is not None else None,
     )
+    return dialect.finish_window(key, window)
