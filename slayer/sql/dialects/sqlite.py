@@ -8,7 +8,6 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Context, Decimal
-from fractions import Fraction
 from functools import lru_cache
 from urllib.parse import unquote
 
