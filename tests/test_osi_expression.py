@@ -151,10 +151,10 @@ def test_percentile_cont_half_is_median():
     )
 
 
-def test_percentile_disc_clean_fails():
+def test_percentile_disc_converts():
     r = _run("PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY amount)")
-    assert not r.ok
-    assert "PERCENTILE_DISC" in (r.reason or "")
+    assert r.ok
+    assert r.expression == "percentile_disc(amount, p=0.9)"
 
 
 def test_percentile_out_of_range_clean_fails():

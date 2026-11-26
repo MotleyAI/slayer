@@ -41,4 +41,5 @@ carries them as gaps. Separately, SLayer's exact `percentile` / `median` on Clic
 `slayer/core` (syntax, enums, ossie_conformance, keys typing), `slayer/engine` (binding of the new names),
 `slayer/sql/render/aggregates.py` and every Tier-1 dialect plus `_ordered_set_split.py`, `slayer/importers/aggregates.py`,
 `slayer/dbt/converter.py`, `slayer/osi/exporter.py`, usage reporting, MCP query-tool text, help memory, docs, and the
-Ossie compliance manifest. No storage format change; no API removal.
+Ossie compliance manifest. Storage versions step (SlayerModel 32, SlayerQuery 20, Memory 15) with no per-document
+change, so a stored custom granularity named like a new built-in is renamed on load; no API removal.

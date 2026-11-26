@@ -62,7 +62,10 @@ PINNED: dict[str, frozenset[str]] = {
 SHADOWABLE = frozenset({"functions", "spellings"})
 
 #: A newly reserved name outside ``SHADOWABLE`` → the ``(entity, source_version)`` migration that renames it in stores.
-MIGRATED: dict[str, tuple[str, int]] = {"agg": ("SlayerModel", 18)}
+MIGRATED: dict[str, tuple[str, int]] = {
+    "agg": ("SlayerModel", 18),
+    **dict.fromkeys(("sum_distinct", "avg_distinct", "percentile_disc", "percentile_approx"), ("SlayerModel", 31)),
+}
 
 
 def live_vocabularies() -> dict[str, frozenset[str]]:

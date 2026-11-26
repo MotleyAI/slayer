@@ -150,3 +150,7 @@ every built-in name.
 #### Scenario: A model's own sum_distinct
 - **WHEN** model `t` defines the aggregation `sum_distinct` with formula `SUM({value}) * 100` and a query asks for `sum_distinct(a)`
 - **THEN** the measure is the model's aggregation
+
+#### Scenario: A stored granularity named like a new built-in
+- **WHEN** a datasource stored before this release defines the custom granularity `percentile_disc`, used by a stored model's time dimension
+- **THEN** both load, and the dimension buckets by the granularity renamed `percentile_disc_granularity`

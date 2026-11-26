@@ -90,6 +90,14 @@ carry the new names.
 - **(codex #9)** — Only `APPROX_PERCENTILE(x, p)` with a literal fraction and no accuracy / weight argument converts;
   BigQuery `APPROX_QUANTILES` (bucket / array) is dropped with a report.
 
+### Library growth
+- **D16 (user)** — The four names are reserved under `models/stored-upgrade` › Library growth never invalidates a
+  stored artefact: SlayerModel / SlayerQuery / Memory step to 32 / 20 / 15 through per-document no-op migrations, the
+  four names take the rename gate {32, 20, 15}, and a stored custom granularity of one of these names, written below
+  the gate, is renamed `<name>_granularity` on load by the existing rename. Model-scoped metric names need nothing:
+  their name check runs only when a metric is written. Rejected: a carve-out reserving the names only in call
+  position (one word, two meanings across stores); pinning them (silences the guard).
+
 ### Tests
 - **(codex #2)** — Execution (not only emission) of the ordered-set split on MySQL and Trino: grouped / ungrouped, NULL
   values, empty / all-NULL groups, p = 0 / 1, duplicates, two percentiles in one SELECT, FILTER.

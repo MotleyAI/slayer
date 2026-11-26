@@ -23,10 +23,9 @@ from tests._ossie_gate import refused as refused_state
 
 #: The issues that will add each family of missing constructs.
 WINDOWS = "DEV-2457"
-AGGREGATES = "DEV-2458"
 FUNCTIONS = "DEV-2459"
 TIME_OF_DAY = "DEV-2460"
-FAMILIES = frozenset({WINDOWS, AGGREGATES, FUNCTIONS, TIME_OF_DAY})
+FAMILIES = frozenset({WINDOWS, FUNCTIONS, TIME_OF_DAY})
 
 Kind = Literal["scalar", "aggregate", "window", "reserved"]
 
@@ -173,14 +172,12 @@ ROWS: tuple[Row, ...] = (
     ok(STATS, "VAR_SAMP", "VAR_SAMP(orders.amount)", 370, kind="aggregate"),
     ok(PCT, "MEDIAN", "MEDIAN(orders.amount)", 30, kind="aggregate"),
     ok(PCT, "PERCENTILE_CONT", "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY orders.amount)", 20, kind="aggregate"),
-    gap(PCT, "PERCENTILE_DISC", "PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY orders.amount)", 20,
-        kind="aggregate", issue=AGGREGATES, fails_with=ValueError),
+    ok(PCT, "PERCENTILE_DISC", "PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY orders.amount)", 20, kind="aggregate"),
     ok(APPROX, "APPROX_COUNT_DISTINCT", "APPROX_COUNT_DISTINCT(orders.status)", Approx(value=3, tolerance=0.1),
        kind="aggregate"),
-    refused(APPROX, "APPROX_PERCENTILE", "APPROX_PERCENTILE(orders.amount, 0.5)", Approx(value=30, tolerance=1),
-            kind="aggregate", error=UnknownFunctionError),
-    gap(COND_AGG, "DISTINCT MODIFIER", "SUM(DISTINCT orders.qty)", 6, kind="aggregate", issue=AGGREGATES,
-        fails_with=ValueError),
+    ok(APPROX, "APPROX_PERCENTILE", "APPROX_PERCENTILE(orders.amount, 0.5)", Approx(value=30, tolerance=1),
+       kind="aggregate"),
+    ok(COND_AGG, "DISTINCT MODIFIER", "SUM(DISTINCT orders.qty)", 6, kind="aggregate"),
     ok(COND_AGG, "DISTINCT MODIFIER", "COUNT(DISTINCT orders.customer_id)", 4, kind="aggregate"),
     ok(COND_AGG, "FILTERED AGGREGATION VIA CASE", "SUM(CASE WHEN orders.status = 'paid' THEN orders.amount END)", 130,
        kind="aggregate"),

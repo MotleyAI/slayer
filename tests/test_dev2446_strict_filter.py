@@ -36,9 +36,9 @@ OFF_COUNT = {
 
 #: Aggregate filter → strict code.
 AGGREGATES = {
-    "APPROX_PERCENTILE(orders.amount, 0.5) > 1": "E_INVALID_QUERY",
+    "APPROX_PERCENTILE(orders.amount, 0.5) > 1": "E_AGGREGATE_IN_WHERE",
     "percentile_disc(orders.amount, 0.5) > 1": "E_INVALID_QUERY",
-    "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY orders.amount) > 1": "E_INVALID_QUERY",
+    "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY orders.amount) > 1": "E_AGGREGATE_IN_WHERE",
     "SUM(orders.amount, 1) > 1": "E_INVALID_QUERY",
     "MEDIAN(orders.amount, 1) > 1": "E_INVALID_QUERY",
     "MEDIAN(orders.amount) > 1": "E_AGGREGATE_IN_WHERE",

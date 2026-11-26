@@ -9,12 +9,14 @@
 - [ ] 1.7 Importer tests: Cube / dbt SQL / Ossie dialect entries for SUM/AVG/MIN/MAX(DISTINCT), PERCENTILE_DISC, APPROX_PERCENTILE (Trino, Snowflake positive; BigQuery APPROX_QUANTILES dropped; STDDEV(DISTINCT), COUNT(DISTINCT a, b) dropped); dbt flags on the measure and the metric path (spec `importers/dbt-import`); align the old importer-refusal tests mechanically
 - [ ] 1.8 Exporter tests: `sum_distinct` / `percentile_disc` portable and re-import with their values; `avg_distinct` / `percentile_approx` as datasource-dialect entries
 - [ ] 1.9 Align `aggregations/functional-form` › "DISTINCT keyword rejected" tests to the new accepted forms
+- [ ] 1.10 Library growth: `tests/test_library_growth.py` `MIGRATED` gains the four names → the SlayerModel 31 step; the stored-granularity and rename-gate guards cover them; the new capability's stored-granularity scenario
 
 ## 2. Core: names, typing, parser, strict
 
 - [ ] 2.1 `core.enums`: add the four names to BUILTIN_AGGREGATIONS, value classes, numeric-only / boolean-lowered sets, per-type defaults (percentile_disc for text / date / timestamp; all four numeric / boolean), param order (`p`), type-preserving sets in `core.keys` / `engine.elaborate_env`; usage-reporting names — verify 1.2 typing scenarios pass
 - [ ] 2.2 `core.syntax`: DISTINCT table, MIN/MAX collapse, DISTINCT recorded in the non-Ossie spelling report, WITHIN GROUP for PERCENTILE_DISC, OVER refusal, reworded errors — verify 1.1 passes
 - [ ] 2.3 `core.ossie_conformance`: admit SUM(DISTINCT) / PERCENTILE_DISC WITHIN GROUP / APPROX_PERCENTILE(x, p); refuse AVG/MIN/MAX(DISTINCT) and the SLayer plain-call spellings by written callee — verify 1.6 passes
+- [ ] 2.4 Storage: SlayerModel / SlayerQuery / Memory → 32 / 20 / 15 via no-op migrations; rename gate {32, 20, 15} for the four names — verify 1.10 passes
 
 ## 3. SQL emission
 
