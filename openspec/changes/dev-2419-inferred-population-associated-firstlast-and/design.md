@@ -94,6 +94,10 @@ monotonicity), Law 8 (home-row preservation); `queries/attribution-modes` › "T
 16. **A bucket only a sibling supplies stays a gap for a transform over a windowed aggregate**, as for a plain one
     (Axiom 11.3): its row shows the windowed value, `time_shift` from the next bucket reads NULL; a spine query fills
     it. (default)
+17. **Over the spine, a transform's windowed constituent evaluates at its home's non-time tuples × every bucket the
+    transform reads** (shifted buckets included): the cells `population: <home>` gives. Its own cells alone drop the
+    buckets only its frame reaches; the stage population's tuples drop those only the home reaches (an inferred
+    spine `time_shift` read NULL in the NULL-status buckets). Found in review round 1 (spine probe). (user)
 
 ## Risks / Trade-offs
 

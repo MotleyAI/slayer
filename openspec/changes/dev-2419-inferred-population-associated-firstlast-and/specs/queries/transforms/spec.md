@@ -56,3 +56,7 @@ Scenarios marked "the Appendix B seed" use customers C1 EAST retail, C2 EAST cor
 #### Scenario: A sibling or a named population leaves a transform over a windowed aggregate unchanged
 - **WHEN** each query of the previous scenario runs again beside `sum(orders.amount)`, and again naming `population: customers`; and a query by `products.category` and the month of `orders.ordered_at` selects `cumsum(count(customers.*, window='60d'))` alone, beside `sum(orders.amount)` and naming `population: customers`
 - **THEN** every transform reads, cell by cell, its value in the query where it is the only metric; the second query's running total reads (food, March) 1, (toys, January) 1, (toys, February) 3, (NULL, April) 1 and (NULL, NULL) 0 in all three runs
+
+#### Scenario: Over the spine, a transform over a windowed aggregate steps over its home's tuples
+- **WHEN** over the association seed a query without `population` groups by `orders.status` and the month of `time_spine.timestamp` with `date_range` 2024-01-01 to 2024-06-30 and selects `time_shift(count(customers.*, window='60d'), -1)`, once alone, once beside `sum(orders.amount)` and once naming `population: customers`
+- **THEN** on SQLite and DuckDB all three runs read, January to June, `open` 0, 1, 1, 1, 0, 0; `paid` 0, 1, 2, 1, 0, 0; and NULL 0, 0, 0, 0, 1, 1: the NULL tuple, which only `customers` reaches, is in the series, and every bucket the frame reaches carries its value
