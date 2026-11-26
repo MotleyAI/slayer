@@ -15,7 +15,13 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.enums import DataType
-from slayer.core.errors import ComputedDimensionError, PartitionKeyError, ReaggregationError, SlayerError
+from slayer.core.errors import (
+    ComputedDimensionError,
+    ParameterGrainError,
+    PartitionKeyError,
+    ReaggregationError,
+    SlayerError,
+)
 from slayer.core.keys import (
     NON_IDENTITY_KEY_FIELDS,
     AggregateKey,
@@ -534,6 +540,48 @@ async def test_a_same_dataset_inner_is_refused_in_error_mode(backend: str) -> No
     assert not isinstance(ei.value, PartitionKeyError), str(ei.value)
     assert "error mode" in str(ei.value)
     _no_unwritten_grain_is_named(str(ei.value))
+
+
+# An aggregate parameter under a transform inside an aggregation, whose home (returns) does not determine the query
+# dimension: its defaulted grain is determined by construction. Values as before the defaulting pass.
+PARAM_QUERY: dict[str, Any] = {"population": "customers", "dimensions": ["orders.status"]}
+PARAM_SHAPES = [
+    pytest.param("sum(orders.amount)", {"completed": 1, "open": 1, None: None}, id="cross-dataset"),
+    pytest.param("count(visits.*)", {"completed": None, "open": 1, None: None}, id="sibling-dataset"),
+    pytest.param("count(customers.*)", {"completed": 1, "open": 1, None: None}, id="population"),
+]
+
+
+def _param_rank(weight: str) -> dict[str, str]:
+    return _mt(f"max(rank(weighted_avg(returns.amount, weight={weight}), direction='desc'))")
+
+
+@pytest.mark.parametrize("weight, expected", PARAM_SHAPES)
+async def test_a_defaulted_parameter_grain_is_determined_by_construction(backend: str, weight: str,
+                                                                         expected: dict) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, metrics=[_param_rank(weight)], **PARAM_QUERY)
+    assert _by(resp, ("orders.status",)) == expected
+    assert kinds(resp, "associated")
+    _assert_names_no_unwritten_grain(resp)
+
+
+@pytest.mark.parametrize("weight, _expected", PARAM_SHAPES)
+async def test_a_defaulted_parameter_grain_is_refused_by_the_mode_axis_only(backend: str, weight: str,
+                                                                            _expected: dict) -> None:
+    metrics = [_param_rank(weight)]
+    async with seed_engine(backend) as eng:
+        with pytest.raises(SlayerError) as ei:
+            await run(eng, metrics=metrics, to_many_handling="error", **PARAM_QUERY)
+    assert "error mode" in str(ei.value)
+    _no_unwritten_grain_is_named(str(ei.value))
+
+
+async def test_a_written_parameter_grain_must_still_be_determined(backend: str) -> None:
+    metrics = [_param_rank("count(customers.*, partition_by=orders.status)")]
+    async with seed_engine(backend) as eng:
+        with pytest.raises(ParameterGrainError):
+            await run(eng, metrics=metrics, **PARAM_QUERY)
 
 
 # --------------------------------------------------------------------------- #

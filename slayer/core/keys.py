@@ -1335,12 +1335,12 @@ def attached_parameter_grain(
 ) -> Optional[Grain]:
     """The grain at which an attached aggregation parameter is typed (Axiom 11.4 /
     2.3) — ``None`` when it is determined by construction. An ``AggregateKey`` types
-    at its ``partition_keys`` (``None`` = ungrained, at the enclosing grain and
-    determined). A ``TransformKey`` types at its result grain. Both home- and
+    at its written grain (``None`` = unwritten or defaulted, at the enclosing grain
+    and determined). A ``TransformKey`` types at its result grain. Both home- and
     operand-determination checks resolve the parameter to this grain first, so
     neither predicate needs a transform arm (D5)."""
     if isinstance(key, AggregateKey):
-        return key.partition_keys
+        return key.written_grain
     if isinstance(key, TransformKey):
         return constituent_grain(
             c=key, projected_dim_keys=projected_dim_keys,

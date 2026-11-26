@@ -2840,7 +2840,7 @@ def _param_is_determined(
     parameter types at the query grain, which the operand grain always refines; a
     grained transform parameter resolves to its result grain, every member of which
     must be determined."""
-    if isinstance(value, AggregateKey) and value.partition_keys is None:
+    if isinstance(value, AggregateKey) and value.written_grain is None:
         return True
     members = [value]
     if isinstance(value, TransformKey):
