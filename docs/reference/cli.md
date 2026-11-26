@@ -312,7 +312,7 @@ Detection is a strong guess, not a guarantee: a duplicate disproves uniqueness w
 
 ### `slayer recommend-population`
 
-Recommend the query root (population) for a set of `dataset.field` / `dataset.metric` items, with each item's reference path from it. See [Choosing a root dataset](../concepts/queries.md#choosing-a-root-dataset).
+Recommend the query root (population) for a set of `dataset.field` / `dataset.metric` items, with each item's reference path from it. See [Choosing a root dataset](../concepts/cross-dataset-queries.md#choosing-a-root-dataset).
 
 ```bash
 slayer recommend-population customers.name products.category

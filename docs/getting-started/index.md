@@ -36,7 +36,7 @@ require it, so `pip install motley-slayer` alone gives you a working driver.
 
 After setting up your interface, explore:
 
-- [Terminology](../concepts/terminology.md) — key terms and concepts
+- [Glossary](../concepts/terminology.md) — key terms and concepts
 - [Datasets](../concepts/datasets.md) — define custom dimensions and metrics
 - [Queries](../concepts/queries.md) — query structure and parameters
 - [Expressions](../concepts/expressions.md) — transforms, arithmetic, filters

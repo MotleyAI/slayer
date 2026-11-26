@@ -8,16 +8,16 @@
 
 ## 2. Split `docs/concepts/queries.md`
 
-- [ ] 2.1 Create `filters.md`, `cross-dataset-queries.md`, `saved-and-multistage-queries.md` with the sections in design.md's table, headings promoted one level, bodies verbatim except link targets; remove them from `queries.md`; verify by diff that only heading levels and link targets changed in moved text.
-- [ ] 2.2 Retarget every same-page link that crosses a file after the split (moved and remaining text) to `<file>.md#…`; verify with the anchor guard.
-- [ ] 2.3 Append the "Moved sections" list with hidden `<a id>` anchors for every moved slug to `queries.md`; verify the `MOVED_ANCHORS` id test passes.
-- [ ] 2.4 Retarget every `queries.md#<moved>` link in `docs/**/*.md` to its new home (notebooks untouched); verify the no-link-to-moved-anchor test passes and `git status` shows no `.ipynb` change.
+- [x] 2.1 Create `filters.md`, `cross-dataset-queries.md`, `saved-and-multistage-queries.md` with the sections in design.md's table, headings promoted one level, bodies verbatim except link targets; remove them from `queries.md`; verify by diff that only heading levels and link targets changed in moved text.
+- [x] 2.2 Retarget every same-page link that crosses a file after the split (moved and remaining text) to `<file>.md#…`; verify with the anchor guard.
+- [x] 2.3 Append the "Moved sections" list with hidden `<a id>` anchors for every moved slug to `queries.md`; verify the `MOVED_ANCHORS` id test passes.
+- [x] 2.4 Retarget every `queries.md#<moved>` link in `docs/**/*.md` to its new home (notebooks untouched); verify the no-link-to-moved-anchor test passes and `git status` shows no `.ipynb` change.
 
 ## 3. Nav and retitles
 
-- [ ] 3.1 Rewrite the `nav` block in `zensical.toml` as in design.md "Nav", adding the three new pages; redirect map unchanged; verify the nav-coverage, nav-entry-exists and nav-shape tests pass.
-- [ ] 3.2 Retitle the H1 of `docs/concepts/terminology.md` to "Glossary" and of `docs/development.md` to "Contributing"; verify `tests/test_contributing_guide.py` still passes.
+- [x] 3.1 Rewrite the `nav` block in `zensical.toml` as in design.md "Nav", adding the three new pages; redirect map unchanged; verify the nav-coverage, nav-entry-exists and nav-shape tests pass.
+- [x] 3.2 Retitle the H1 of `docs/concepts/terminology.md` to "Glossary" and of `docs/development.md` to "Contributing"; verify `tests/test_contributing_guide.py` still passes.
 
 ## 4. Finish
 
-- [ ] 4.1 Run `tests/test_docs_guards.py`, `tests/test_contributing_guide.py`, `tests/test_doc_examples.py` and ruff on the touched test file; all green.
+- [x] 4.1 Run `tests/test_docs_guards.py`, `tests/test_contributing_guide.py`, `tests/test_doc_examples.py` and ruff on the touched test file; all green.

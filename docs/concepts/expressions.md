@@ -1,6 +1,6 @@
 # Expressions
 
-SLayer uses expression strings in two places: **metrics** (data columns returned by a query) and **filters** (conditions). Both are compiled to SQL — everything runs in the database. Metric expressions are documented below; filter expressions are in [Queries — Filters](queries.md#filters).
+SLayer uses expression strings in two places: **metrics** (data columns returned by a query) and **filters** (conditions). Both are compiled to SQL — everything runs in the database. Metric expressions are documented below; filter expressions are in [Queries — Filters](filters.md#filters).
 
 ---
 
@@ -24,7 +24,7 @@ avg(customers.score)  — cross-dataset: AVG of "score" from the joined "custome
 collect(customers.name)      — the names as a list
 ```
 
-Aggregations are used everywhere metrics appear: in `metrics`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax). `count(distinct x)` is the same as `count_distinct(x)`. `collect` is specified in [List fields](queries.md#list-fields). The pre-2.0 colon spelling of aggregations and granularities is refused with its functional twin; stored text written in it is upgraded on load.
+Aggregations are used everywhere metrics appear: in `metrics`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax). `count(distinct x)` is the same as `count_distinct(x)`. `collect` is specified in [List fields](filters.md#list-fields). The pre-2.0 colon spelling of aggregations and granularities is refused with its functional twin; stored text written in it is upgraded on load.
 
 A metric may combine query-dimension values with aggregates (`orders.quantity * count(orders.*)` by `orders.quantity`, `iif(orders.region == 'North', sum(orders.amount), 0)` by `orders.region`), reading each dimension's value per result row; a row-level field that is not a query dimension (`orders.amount + sum(orders.amount)` by `orders.region`) is a typing error.
 
@@ -59,7 +59,7 @@ same key). Every operand is named by its expression text — date comparisons, n
 keys collide (`sum(orders.amount - orders.cost)` and `sum(orders.amount + orders.cost)`) fail with a
 duplicate-key error asking for a rename.
 
-Expression sources also accept joined-dataset refs (`sum(orders.amount - customers.discount)`, homed on the source's own dataset when that determines every operand, else the deepest dataset that does — see [cross-dataset metrics](queries.md#cross-dataset-metrics)), operands whose field carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) - 1)`, aggregated over the transform's own cells). A re-aggregation constituent mixed with a row-level field (`sum(orders.amount * last(X))`) executes at its own grain and broadcasts per partition onto the rows, and one query may select the same re-aggregation both on its own and inside a mixed source; a windowed inner under a transform constituent (`sum(rank(sum(orders.revenue, window='90d', partition_by=orders.region), direction='desc'))`) is a second-order aggregation over the operand cells (COMBINED phase, not a row broadcast); a target-homed inner whose `partition_by=` names the host's time axis stays a typed error.
+Expression sources also accept joined-dataset refs (`sum(orders.amount - customers.discount)`, homed on the source's own dataset when that determines every operand, else the deepest dataset that does — see [cross-dataset metrics](cross-dataset-queries.md#cross-dataset-metrics)), operands whose field carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) - 1)`, aggregated over the transform's own cells). A re-aggregation constituent mixed with a row-level field (`sum(orders.amount * last(X))`) executes at its own grain and broadcasts per partition onto the rows, and one query may select the same re-aggregation both on its own and inside a mixed source; a windowed inner under a transform constituent (`sum(rank(sum(orders.revenue, window='90d', partition_by=orders.region), direction='desc'))`) is a second-order aggregation over the operand cells (COMBINED phase, not a row broadcast); a target-homed inner whose `partition_by=` names the host's time axis stays a typed error.
 
 A source mixing row-level fields with attached values
 (`sum(orders.quantity * avg(orders.price, partition_by=orders.product))`) is a row-grain aggregation
@@ -160,7 +160,7 @@ A time bound narrows which buckets come back, not which rows a trailing window o
 A windowed metric (`sum(orders.revenue, window=…)`, `sum(customers.revenue, window=…)`)
 works when the query's active time dimension is *attributable* from the
 aggregation's home dataset — reachable from it over provably many-to-one relationship hops (see
-[cross-dataset metrics](queries.md#cross-dataset-metrics)); the window buckets by
+[cross-dataset metrics](cross-dataset-queries.md#cross-dataset-metrics)); the window buckets by
 that time dimension inside the metric's sub-query. When it is not
 attributable, the query errors naming the time dimension and the remedy.
 
@@ -218,7 +218,7 @@ the finer-grain freedom; a filter over, or `order` by the *name* of, that dimens
 own aggregate is a row-scope reference that stays legal at any partition grain.
 For a cross-dataset source, every explicit partition key must additionally be
 *attributable* from the metric's own dataset (see
-[cross-dataset metrics](queries.md#cross-dataset-metrics)) — an unprovable key
+[cross-dataset metrics](cross-dataset-queries.md#cross-dataset-metrics)) — an unprovable key
 errors naming the relationship remedy rather than fanning the value.
 
 Combining aggregates at **different** grains in one expression is well-defined:
@@ -270,7 +270,7 @@ Metric expressions define what aggregated values a query returns. They go in the
 
 The `name` is optional — if omitted, an expression that is more than a plain aggregate reference derives it from its references' common dataset and its sanitized text (`"sum(orders.revenue) / count(orders.*)"` → `orders.revenue_sum_count`; very long names hash-fold), while plain references keep their usual keys (`count(orders.*)` → `orders._count`). The `label` is an optional human-readable display name for the field.
 
-When a metric is renamed via `name`, query filters and ORDER BY entries in the same node accept either form — the raw aggregation expression or the user alias. See [Filters → Filtering on Computed Metrics](queries.md#filtering-on-computed-metrics).
+When a metric is renamed via `name`, query filters and ORDER BY entries in the same node accept either form — the raw aggregation expression or the user alias. See [Filters → Filtering on Computed Metrics](filters.md#filtering-on-computed-metrics).
 
 ### Arithmetic Operators
 
@@ -288,7 +288,7 @@ Parentheses work as expected: `"(sum(orders.revenue) - sum(orders.cost)) / count
 Precedence, tightest first: `::`, `**`, unary `-` / `+`, `*` / `/` / `%`, `+` / `-`, `||` / `->` / `->>`, comparisons (`=`, `<`, `IN`, `BETWEEN`, `LIKE`, `IS`, `~`, …), `NOT`, `AND`, `OR` — so `NOT a = b` is `NOT (a = b)` and `'a' || 'b' = 'ab'` is true.
 `**` is right-associative and binds tighter than a sign (`2 ** 3 ** 2` is 512, `-2 ** 2` is -4), and `%` takes the sign of its left operand (`-7 % 3` is -1, `7 % -3` is 1).
 
-Every reference in a query expression starts at its dataset (`count(orders.*)` counts rows), joined datasets included: `"avg(customers.score)"`, or with an explicit route: `"sum(customers.regions.population)"`. The population reaches each dataset by walking the relationship graph. See [Cross-Dataset Metrics](queries.md#cross-dataset-metrics).
+Every reference in a query expression starts at its dataset (`count(orders.*)` counts rows), joined datasets included: `"avg(customers.score)"`, or with an explicit route: `"sum(customers.regions.population)"`. The population reaches each dataset by walking the relationship graph. See [Cross-Dataset Metrics](cross-dataset-queries.md#cross-dataset-metrics).
 
 ### Saved Expressions (Named Metrics)
 
