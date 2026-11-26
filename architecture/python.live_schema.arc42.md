@@ -23,6 +23,7 @@ flowchart TD
   database["Database access"]
   live_schema["Live schema"]
   storage["Storage backends"]
+  ontology["Ontologies and mappings"]
   importers("Importers")
   search("Search & embeddings")
   memories("Agent memories")
@@ -38,6 +39,7 @@ flowchart TD
   live_schema --> storage
   storage --> live_schema
   surfaces --> live_schema
+  live_schema --> ontology
 ```
 <!-- /likec4:live_schema_focus -->
 

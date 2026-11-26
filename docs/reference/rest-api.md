@@ -170,7 +170,7 @@ PUT    /ontology-mappings/{data_source}/{name}    # Replace: {"content"}, declar
 DELETE /ontology-mappings/{data_source}/{name}    # Delete
 ```
 
-`content` is an Ossie `0.3.0.dev0` document as YAML/JSON text or an object. A refused document returns 400 listing every problem; an unknown one returns 404. Mapping saves return `notes`, such as the expressions whose type is unknown. See [Ontologies and mappings](../concepts/ontologies.md).
+`content` is an Ossie `0.3.0.dev0` document as YAML/JSON text or an object. A refused document returns 400 listing every problem; an unknown one returns 404. Mapping saves return `notes`, such as the expressions whose type is unknown; ontology, mapping and semantic-model saves return `warnings`, the identifier and multiplicity mismatches they touch. See [Ontologies and mappings](../concepts/ontologies.md).
 
 ### Datasources
 
@@ -200,7 +200,7 @@ A bare dataset name that exists in several datasources resolves to the first lis
 
 ### Validate datasets
 
-`POST /validate-datasets` with body `{"data_source": null}` (or a datasource name) diffs the stored datasets against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype`, `narrowed_access` and `untyped` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
+`POST /validate-datasets` with body `{"data_source": null}` (or a datasource name) diffs the stored datasets against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype`, `narrowed_access`, `untyped` and `ontology` entries ([Ontologies](../concepts/ontologies.md)); an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
 
 ### Recommend a population
 
