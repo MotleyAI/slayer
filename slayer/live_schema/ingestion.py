@@ -73,6 +73,7 @@ from slayer.memories.resolver import (
     extract_entities_from_query,
 )
 from slayer.storage.base import StorageBackend
+from slayer.storage.ontology_documents import database_driven
 from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:
@@ -1316,7 +1317,7 @@ def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetFie
         return persisted.model_copy(update={
             "datatype": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
             # Scalar-only settings; a temporal granularity would fail the list's validation.
-            "granularity": None, "format": None,
+            "granularity": None, "format": None, "time_zone": None,
             "allowed_aggregations": [
                 a for a in persisted.allowed_aggregations or () if a in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY]
             ] or None,
@@ -1326,6 +1327,14 @@ def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetFie
     if persisted.datatype is DataType.ARRAY and kind_of(persisted.element_type) is TypeKind.UNKNOWN and inferred and known:
         return persisted.model_copy(update={"element_type": fresh.element_type})
     return None
+
+
+def _retyped_instant(*, persisted: DatasetField, fresh: DatasetField) -> DatasetField | None:
+    """A stored ``DateTime`` field whose live column holds instants, re-typed ``DateTimeTz`` (live_schema P1's
+    exception); a source zone does not apply to an instant. ``None`` when nothing changes."""
+    if persisted.datatype is not DataType.DATETIME or fresh.datatype is not DataType.DATETIME_TZ:
+        return None
+    return persisted.model_copy(update={"datatype": DataType.DATETIME_TZ, "time_zone": None})
 
 
 def _merge_one_field(
@@ -1345,7 +1354,10 @@ def _merge_one_field(
     unique_filled = False
     described = False
     if fresh_col is not None:
-        retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) if _reads(persisted_col, fresh_col) else None
+        retyped = None
+        if _reads(persisted_col, fresh_col):
+            retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) or _retyped_instant(
+                persisted=merged_col, fresh=fresh_col)
         if retyped is not None:
             merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):
@@ -1959,11 +1971,32 @@ async def ingest_datasource_idempotent(
     include_views: bool = True,
     surface_internals: bool = False,
 ) -> "schema_drift.IdempotentIngestResult":
-    """Idempotent re-ingestion: create missing datasets, additively merge existing ones.
+    """Idempotent re-ingestion: create missing datasets, additively merge existing ones; a database-driven change.
 
     User-authored sql/query-backed datasets are skipped. Then validates the same
     scope so drift and dropped tables show up in ``to_delete``.
     """
+    with database_driven():
+        return await _ingest_datasource_idempotent(
+            datasource=datasource, storage=storage, client=client, include_tables=include_tables,
+            exclude_tables=exclude_tables, schema=schema, schemas=schemas, all_schemas=all_schemas,
+            include_views=include_views, surface_internals=surface_internals,
+        )
+
+
+async def _ingest_datasource_idempotent(
+    *,
+    datasource: DatasourceConfig,
+    storage: StorageBackend,
+    client: SqlClient,
+    include_tables: list[str] | None,
+    exclude_tables: list[str] | None,
+    schema: str | None,
+    schemas: list[str] | None,
+    all_schemas: bool,
+    include_views: bool,
+    surface_internals: bool,
+) -> "schema_drift.IdempotentIngestResult":
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
 
     scan = await ingest_datasource_report_async(
@@ -2321,6 +2354,13 @@ def _print_ingest_drift_and_errors(
     )
 
 
+def print_ingest_result(result, *, file: TextIO | None = None, data_source: str | None = None) -> None:
+    """The one renderer of an ingest result: ``Created:`` / ``Updated:`` lines, then every report section."""
+    for addition in result.additions:
+        _print_ingest_addition(addition, file=file)
+    _print_ingest_drift_and_errors(result, file=file, data_source=data_source)
+
+
 # --- Boot-time orchestrator ---
 
 
@@ -2400,9 +2440,7 @@ async def ingest_all_datasources_idempotent(
             print(f"Datasource '{name}': failed — {friendly}", file=out)
             continue
 
-        for addition in result.additions:
-            _print_ingest_addition(addition, file=out)
-        _print_ingest_drift_and_errors(result, file=out, data_source=name)
+        print_ingest_result(result, file=out, data_source=name)
         summary.succeeded.append(name)
         summary.drift_pending.extend(result.to_delete)
         print(f"Datasource '{name}': ingested", file=out)

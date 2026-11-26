@@ -20,7 +20,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey
+from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, Grain
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.ranked_planner import resolve_ranking_time_key
 from slayer.sql.naming import canonical_aggregate_alias
@@ -58,6 +58,8 @@ AMOUNT_LAST_LI_TS = AggregateKey(
 AMOUNT_LAST_LI_CREATED = AggregateKey(
     source=AMOUNT, agg="last", args=(FieldKey(path=("line_items",), leaf="created_at"),),
 )
+# A ranking key that is a query dimension is consumed from the grain (semantics Axiom 5).
+AMOUNT_LAST_LI_CREATED_CONSUMED = AMOUNT_LAST_LI_CREATED.model_copy(update={"partition_keys": Grain.EMPTY})
 LI_QTY_LAST = AggregateKey(source=FieldKey(path=("line_items",), leaf="qty"), agg="last")
 
 
@@ -181,7 +183,7 @@ class TestImplicitGrainKeyRefused:
     async def test_fanning_temporal_dimension(self, tmp_path, mode) -> None:
         engine = await make_engine(str(tmp_path), orders_default="created_at")
         await _refused(
-            engine, "ranks/reads by created_at", HOST_HOP, agg_key=AMOUNT_LAST,
+            engine, "ranks/reads by created_at", HOST_HOP, agg_key=AMOUNT_LAST_LI_CREATED_CONSUMED,
             dimensions=["line_items.created_at"], metrics=[metric("last(orders.amount)")],
             to_many_handling=mode,
         )

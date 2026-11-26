@@ -134,6 +134,23 @@ async def test_save_model_rejects_same_model_cycle(tmp_path) -> None:
     assert "A.c2" in msg, f"cycle chain missing names: {msg}"
 
 
+async def test_save_model_rejects_a_cycle_written_in_another_case(tmp_path) -> None:
+    """An unquoted reference matches its field case-insensitively, so ``A.c2`` reaches field ``C2``."""
+    storage = _yaml_storage(tmp_path)
+    model = SlayerDataset(
+        name="A",
+        data_source="ds",
+        sql_table="A",
+        fields=[
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c1", expression="A.c2 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="C2", expression="A.c1 - 1", datatype=DataType.FLOAT),
+        ],
+    )
+    with pytest.raises(DatasetFieldCycleError):
+        await storage.save_dataset(model)
+
+
 async def test_save_model_rejects_three_deep_cycle(tmp_path) -> None:
     storage = _yaml_storage(tmp_path)
     model = SlayerDataset(

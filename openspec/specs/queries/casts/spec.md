@@ -11,7 +11,7 @@ Defines casts in Mode-B expressions: `CAST` / `::` with one meaning on every dia
 
 - To `BOOLEAN`: a number SHALL be true exactly when it is not zero, a boolean SHALL be itself, and NULL SHALL stay NULL. The result SHALL be a nullable boolean in the dialect's own representation (1 and 0 where booleans are integers).
 - To an integer type, a non-integral number SHALL round half away from zero. An exact-numeric tie SHALL round exactly so; a floating-point tie SHALL be the database's own, since a binary value is rarely an exact tie; this is documented.
-- To `DECIMAL(p, s)` or `NUMERIC(p, s)`, a number or numeric text (an optionally signed decimal with an optional fraction and exponent, surrounding spaces ignored) SHALL round to `s` fractional digits half away from zero. On Trino and SQL Server, whose own cast reads no exponent, exponent-form text is read through a double, so its digits past a double's precision are not kept; this is documented. An omitted scale SHALL be 0 and an omitted precision 38: `DECIMAL` and `NUMERIC` mean `DECIMAL(38, 0)`, and `DECIMAL(p)` means `DECIMAL(p, 0)`.
+- To `DECIMAL(p, s)` or `NUMERIC(p, s)`, a number or numeric text (an optionally signed decimal with an optional fraction and exponent, surrounding spaces ignored) SHALL keep every digit and round to `s` fractional digits half away from zero, exponent-form text included. An omitted scale SHALL be 0 and an omitted precision 38: `DECIMAL` and `NUMERIC` mean `DECIMAL(38, 0)`, and `DECIMAL(p)` means `DECIMAL(p, 0)`.
 - To `VARCHAR(n)` or `STRING(n)`, the value SHALL be the first `n` characters (Unicode code points) of its text, never an error for a longer value.
 
 Invalid input — text that is not a literal of the target type, or a value outside the target's range or precision — SHALL follow the database's own `CAST` unless a requirement below says otherwise. A type Ossie does not define SHALL keep the database's own conversion. These rules govern the casts an author writes; the casts SLayer emits itself to read or type a value SHALL keep their values. A type the target dialect cannot express SHALL be rejected at plan time with a typed query error naming the type and the dialect; a type is not expressed when the target's rendering would drop or change any part of it — its family, precision or scale, time-zone modifier, signedness, or array suffix — save a `VARCHAR` length, and on BigQuery a `DECIMAL` precision and scale, which the cast applies itself (`TRY_CAST` yields NULL past the precision). An array of arrays (`T[][]`) SHALL be rejected.
@@ -90,6 +90,11 @@ Invalid input — text that is not a literal of the target type, or a value outs
 
 - **WHEN** dimensions are `CAST(12.345 AS DECIMAL(10,2))`, `CAST('12.345' AS DECIMAL(10,2))` and `CAST(-12.345 AS NUMERIC(10,2))`
 - **THEN** they yield `12.35`, `12.35` and `-12.35` on every Tier-1 dialect
+
+#### Scenario: Exponent-form text casts to a decimal exactly
+
+- **WHEN** dimensions are `CAST('9007199254740993e0' AS DECIMAL(20,0))`, `CAST('12345e-2' AS DECIMAL(10,2))`, `CAST('1.2345e1' AS DECIMAL(10,3))` and `CAST('1.25e0' AS DECIMAL(5,1))`
+- **THEN** they yield `9007199254740993`, `123.45`, `12.345` and `1.3` on every Tier-1 dialect, Trino and SQL Server included
 
 #### Scenario: An omitted scale is zero
 

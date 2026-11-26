@@ -1,0 +1,94 @@
+name: Tier-1 engine setup
+description: >-
+  The Poetry environment plus what one Tier-1 engine's integration and compliance-gate suites need: the testcontainers
+  extra, the SQL Server ODBC driver, or the Snowflake / BigQuery credentials. Missing credentials fail the step; a
+  caller that may run without them decides whether to call it.
+
+inputs:
+  engine:
+    description: postgres, mysql, clickhouse, tsql, trino, snowflake or bigquery.
+    required: true
+  python-version:
+    description: Python version to set up.
+    default: "3.11"
+  install-args:
+    description: Arguments to `poetry install`.
+    default: "-E all --with dev"
+  snowflake-connections-toml:
+    description: The ~/.snowflake/connections.toml text (snowflake only).
+    default: ""
+  snowflake-private-key:
+    description: The key-pair private key the profile reads (snowflake only).
+    default: ""
+  gcp-project-id:
+    description: The BigQuery project (bigquery only).
+    default: ""
+  gcp-sa-key-b64:
+    description: The base64 service-account JSON key (bigquery only).
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install ODBC Driver 18 for SQL Server
+      if: inputs.engine == 'tsql'
+      shell: bash
+      # pyodbc runs in-process on the runner. Microsoft's apt repo, versioned from /etc/os-release.
+      run: |
+        UBUNTU_VERSION="$(. /etc/os-release && echo "$VERSION_ID")"
+        curl --proto '=https' --tlsv1.2 -sSfL https://packages.microsoft.com/keys/microsoft.asc \
+          | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc > /dev/null
+        curl --proto '=https' --tlsv1.2 -sSfL "https://packages.microsoft.com/config/ubuntu/${UBUNTU_VERSION}/prod.list" \
+          | sudo tee /etc/apt/sources.list.d/mssql-release.list > /dev/null
+        sudo apt-get update
+        sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+
+    - uses: ./.github/actions/poetry-env
+      with:
+        python-version: ${{ inputs.python-version }}
+        install-args: ${{ inputs.install-args }}
+
+    - name: Verify the testcontainers extra is importable
+      if: contains(fromJSON('["mysql", "clickhouse", "tsql", "trino"]'), inputs.engine)
+      shell: bash
+      # A missing extra fails here rather than skipping the suite.
+      env:
+        MODULE: ${{ inputs.engine == 'tsql' && 'mssql' || inputs.engine }}
+      run: poetry run python -c "import importlib, os; importlib.import_module('testcontainers.' + os.environ['MODULE'])"
+
+    - name: Verify ODBC Driver 18 is visible to pyodbc
+      if: inputs.engine == 'tsql'
+      shell: bash
+      run: |
+        poetry run python -c "import pyodbc; drivers = pyodbc.drivers(); \
+          assert 'ODBC Driver 18 for SQL Server' in drivers, f'Missing ODBC Driver 18 — installed: {drivers!r}'"
+
+    - name: Write ~/.snowflake/connections.toml and the key-pair key
+      if: inputs.engine == 'snowflake'
+      shell: bash
+      env:
+        SNOWFLAKE_CONNECTIONS_TOML: ${{ inputs.snowflake-connections-toml }}
+        SNOWFLAKE_PRIVATE_KEY: ${{ inputs.snowflake-private-key }}
+      # The connector refuses a group- or world-readable TOML; the profile's private_key_file reads the key.
+      run: |
+        if [[ -z "$SNOWFLAKE_CONNECTIONS_TOML" || -z "$SNOWFLAKE_PRIVATE_KEY" ]]; then
+          echo "::error::Snowflake credentials are unset" && exit 1
+        fi
+        mkdir -p ~/.snowflake
+        printf '%s' "$SNOWFLAKE_CONNECTIONS_TOML" > ~/.snowflake/connections.toml
+        printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > ~/.snowflake/slayer_ci_key.p8
+        chmod 600 ~/.snowflake/connections.toml ~/.snowflake/slayer_ci_key.p8
+
+    - name: Decode the BigQuery service-account key
+      if: inputs.engine == 'bigquery'
+      shell: bash
+      env:
+        GCP_PROJECT_ID: ${{ inputs.gcp-project-id }}
+        GCP_SA_KEY_B64: ${{ inputs.gcp-sa-key-b64 }}
+      run: |
+        if [[ -z "$GCP_PROJECT_ID" || -z "$GCP_SA_KEY_B64" ]]; then
+          echo "::error::BigQuery credentials are unset" && exit 1
+        fi
+        (umask 077 && echo "$GCP_SA_KEY_B64" | base64 -d > "$RUNNER_TEMP/sa-key.json")
+        echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa-key.json" >> "$GITHUB_ENV"
+        echo "GCP_PROJECT_ID=$GCP_PROJECT_ID" >> "$GITHUB_ENV"

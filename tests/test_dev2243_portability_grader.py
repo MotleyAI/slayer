@@ -18,9 +18,9 @@ import pytest
 import yaml
 
 from tests._cli_inprocess import run_cli_in_process
-from tests._dev2243_fixtures import CORPUS
+from tests._ossie_gate import corpus_root
 
-ROOT = Path(os.environ.get("SLAYER_OSSIE_CORPUS") or CORPUS)
+ROOT = corpus_root()
 PORTABILITY = ROOT / "compliance" / "portability"
 RUNGS = sorted(PORTABILITY.glob("m[0-8]/*.ossie.yaml"))
 IDS = [p.relative_to(PORTABILITY).as_posix() for p in RUNGS]

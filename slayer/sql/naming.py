@@ -256,6 +256,13 @@ OUTER_WRAP_ALIAS = "_outer"
 STAGE_INNER_ALIAS = "_stage_inner"
 #: A keyless association home's per-query row number (``__slayer_`` is reserved at save time: no dataset field collides).
 ROW_IDENTITY_FIELD = "__slayer_row_id"
+#: The shortest identifier ceiling of the dialects, so a materialised column's name fits every one.
+_WINDOWED_COLUMN_BYTES = 63
+
+
+def windowed_column(field: str) -> str:
+    """The column a windowed field is materialised as in its dataset's relation (reserved ``__slayer_`` prefix)."""
+    return fit_identifier(f"__slayer_w_{field}", limit=_WINDOWED_COLUMN_BYTES)
 
 
 def with_row_identity(dataset: SlayerDataset) -> SlayerDataset:
@@ -466,6 +473,11 @@ def key_identifier(name: str, *, quoted: bool) -> exp.Identifier:
     ident = exp.to_identifier(name, quoted=True if quoted else None)
     maybe_quote_ident(ident)
     return ident
+
+
+def relation_column(name: str, *, relation: str) -> exp.Column:
+    """Output column ``name`` of SLayer's own relation ``relation``: the column quoted, the qualifier as declared."""
+    return exp.Column(this=exp.to_identifier(name, quoted=True), table=exp.to_identifier(relation))
 
 
 def quote_mixed_case_identifiers(node: Expression) -> Expression:

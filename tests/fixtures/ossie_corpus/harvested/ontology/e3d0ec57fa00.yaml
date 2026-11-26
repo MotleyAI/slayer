@@ -1,0 +1,16 @@
+document:
+  ontology:
+  - concept: Person
+    type: EntityType
+    relationships:
+    - name: files_married_joint
+      verbalizes:
+      - '{Person} files married filing joint'
+    - name: purchased_on
+      roles:
+      - concept: Vehicle
+      - concept: Date
+      multiplicity: ManyToOne
+      verbalizes:
+      - '{Person} purchased {Vehicle} on {Date}'
+files: {}

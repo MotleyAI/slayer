@@ -36,6 +36,9 @@ from slayer.core.errors import (
     GranularityDefinitionError,
     IdCollisionError,
     NamespaceCollisionError,
+    OntologiesUnsupportedError,
+    OntologyDocumentInvalidError,
+    OntologyMappingInvalidError,
     OssieDocumentInvalidError,
     RelationshipTargetCaseError,
     UndeterminedDatasourceError,
@@ -105,6 +108,7 @@ from slayer.storage.document_keys import (
 )
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
 from slayer.storage.field_expression_migration import FIELD_EXPRESSION_VERSION, respell_source_paths
+from slayer.storage.instant_field_migration import INSTANT_FIELD_VERSION, typed_instant_fields
 from slayer.storage.granularity_rename import (
     Renames,
     datasource_renames,
@@ -127,7 +131,7 @@ from slayer.storage.legacy_alias_rewrite import (
 )
 from slayer.database.client import SqlClient
 from slayer.sql.definitions import check_forms, with_converted_sql
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields, without_extension_fields
 from slayer.storage.qualified_references import qualified_stages, stage_readings
@@ -142,6 +146,13 @@ from slayer.storage.semantic_models import (
     DocumentIndex, build_index, checked_document, decompose, expression_datasets, metric_graph, unevaluable_targets,
 )
 from slayer.sql.sql_template import check_aggregation_definition
+from slayer.ontology.documents import (
+    checked_mapping_shape, edited_mapping, edited_ontology, read_ontology, stored_name_reasons,
+)
+from slayer.ontology.scope import MappingScope, check_mapping
+from slayer.storage.ontology_documents import (
+    MAPPING_NAME, ONTOLOGY_NAME, StoredMapping, broken_mappings, report_broken, stored_data,
+)
 from slayer.live_schema.type_refinement import (
     has_refineable_fields,
     has_sqlite_widenable_fields,
@@ -930,6 +941,9 @@ class StorageBackend(ABC):
             dataset = await self._without_repointed_enforced_keys(dataset)
             await self.validate_for_save(dataset, failures=failures)
             warn_library_shadows(dataset)
+            saved = dataset
+            await self._guard_mappings(change=f"Saving dataset {dataset.name!r}", data_source=dataset.data_source,
+                                       changed=lambda scope: scope.with_dataset(saved.name, saved))
         owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
         moving = owner is None and dataset.semantic_model is not None
         owner = owner or dataset.semantic_model
@@ -1014,8 +1028,9 @@ class StorageBackend(ABC):
         _refuse_colon_metrics(dataset)
         check_enforced_keys(dataset)
         datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
+        stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
         if datasource is not None and not dataset.source_queries:
-            check_forms(dataset, ds_type=datasource.type)
+            check_forms(dataset, ds_type=datasource.type, stored=stored)
         if self._ids_collide_as_filenames:
             await self._check_dataset_identity_collision(dataset)
         await self._check_case_collisions(dataset)
@@ -1027,8 +1042,8 @@ class StorageBackend(ABC):
         await self._validate_mode_a_placeholders(dataset)
         check_field_agg(dataset)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
-        check_dataset_filters(dataset=dataset, reachable=peers)
-        stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
+        check_dataset_filters(dataset=dataset, reachable=peers,
+                              dialect=ossie_token(datasource.type) if datasource is not None else None)
         check_evaluated_metrics(dataset=dataset, reachable=peers, stored=stored, model_metrics={
             m.name for m in await self.list_model_scoped_metrics(dataset.data_source)})
         self._validate_relationship_edges(dataset, peers=peers)
@@ -1297,6 +1312,10 @@ class StorageBackend(ABC):
             name=name, data_source=data_source, datasets=[d.name for d in doc.datasets],
             metrics=[m.name for m in doc.metrics or []],
         )
+        if await self.list_ontology_mappings(data_source):
+            datasets = await self._document_datasets(data_source=data_source, name=name, text=text)
+            await self._guard_mappings(change=f"Saving semantic model {name!r}", data_source=data_source,
+                                       changed=lambda scope: scope.with_document(name, datasets))
         await self._save_semantic_model_text_impl(data_source=data_source, name=name, text=text)
 
     async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
@@ -1470,6 +1489,8 @@ class StorageBackend(ABC):
         index = await self._document_index(ds)
         members = [d.name for k, d in index.datasets.items() if index.owners.get(k) == name]
         metrics = [m.name for m in index.metrics.values() if m.semantic_model == name]
+        await self._guard_mappings(change=f"Deleting semantic model {name!r}", data_source=ds,
+                                   changed=lambda scope: scope.with_document(name, None))
         if not await self._delete_semantic_model_row(data_source=ds, name=name):
             return False
         for entity in [*members, *metrics]:
@@ -1485,6 +1506,202 @@ class StorageBackend(ABC):
     async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
         """``data_source``'s loadable model-scoped metrics, in document order."""
         return [m.model_copy(deep=True) for m in (await self._document_index(data_source)).metrics.values()]
+
+    # ---- ontology and mapping documents ------------------------------------
+
+    def _supports_ontologies(self) -> bool:
+        return type(self)._get_ontology_text_impl is not StorageBackend._get_ontology_text_impl
+
+    def _ontologies_unsupported(self) -> OntologiesUnsupportedError:
+        return OntologiesUnsupportedError(backend=type(self).__name__)
+
+    def _require_ontologies(self) -> None:
+        if not self._supports_ontologies():
+            raise self._ontologies_unsupported()
+
+    async def _save_ontology_text_impl(self, *, name: str, text: str) -> None:
+        """Durably store an ontology's text verbatim (backends implement this to support ontologies)."""
+        raise self._ontologies_unsupported()
+
+    async def _get_ontology_text_impl(self, *, name: str) -> str | None:
+        raise self._ontologies_unsupported()
+
+    async def _list_ontology_names(self) -> list[str]:
+        """Every stored ontology name; a backend without ontologies lists none. Every ontology or mapping change must
+        change ``graph_fingerprint``."""
+        await asyncio.sleep(0)
+        return []
+
+    async def _delete_ontology_row(self, *, name: str) -> bool:
+        raise self._ontologies_unsupported()
+
+    async def _save_ontology_mapping_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        raise self._ontologies_unsupported()
+
+    async def _get_ontology_mapping_text_impl(self, *, data_source: str, name: str) -> str | None:
+        raise self._ontologies_unsupported()
+
+    async def _list_ontology_mapping_identities(self) -> list[tuple[str, str]]:
+        await asyncio.sleep(0)
+        return []
+
+    async def _delete_ontology_mapping_row(self, *, data_source: str, name: str) -> bool:
+        raise self._ontologies_unsupported()
+
+    async def list_ontologies(self) -> list[str]:
+        """Every stored ontology's name."""
+        return sorted(await self._list_ontology_names()) if self._supports_ontologies() else []
+
+    async def get_ontology_text(self, name: str) -> str | None:
+        """A stored ontology's text as written; ``None`` when absent."""
+        self._require_ontologies()
+        _validate_path_component(name, kind=ONTOLOGY_NAME)
+        return await self._get_ontology_text_impl(name=name)
+
+    async def save_ontology_text(self, *, name: str, text: str) -> None:
+        """Store ontology ``name`` verbatim after its checks; refused when it would break a stored mapping."""
+        _validate_path_component(name, kind=ONTOLOGY_NAME)
+        self._require_ontologies()
+        data, reasons = read_ontology(text)
+        reasons = reasons or stored_name_reasons(data, name=name)
+        if isinstance(data, dict) and "ontology" in data:
+            await self._guard_mappings(change=f"Saving ontology {name!r}", own=reasons,
+                                       changed=lambda scope: scope.with_ontology(name, data))
+        if reasons:
+            raise OntologyDocumentInvalidError(name=name, reasons=reasons)
+        await self._save_ontology_text_impl(name=name, text=text)
+
+    async def delete_ontology(self, name: str) -> bool:
+        """Delete ontology ``name``; refused while a stored mapping resolves against it; ``False`` when absent."""
+        self._require_ontologies()
+        _validate_path_component(name, kind=ONTOLOGY_NAME)
+        if await self._get_ontology_text_impl(name=name) is None:
+            return False
+        await self._guard_mappings(change=f"Deleting ontology {name!r}",
+                                   changed=lambda scope: scope.with_ontology(name, None))
+        return await self._delete_ontology_row(name=name)
+
+    async def edit_ontology(self, name: str, **edits: Any) -> None:
+        """Apply ``edited_ontology``'s edits to ontology ``name`` and save it through every check."""
+        text = await self.get_ontology_text(name)
+        if text is None:
+            raise ValueError(f"Ontology {name!r} not found")
+        await self.save_ontology_text(name=name, text=edited_ontology(text, **edits))
+
+    async def list_ontology_mappings(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        """Every stored mapping as ``(data_source, name)``, of ``data_source`` when given."""
+        if not self._supports_ontologies():
+            return []
+        return sorted(i for i in await self._list_ontology_mapping_identities() if data_source in (None, i[0]))
+
+    async def get_ontology_mapping_text(self, name: str, data_source: str) -> str | None:
+        """A stored mapping's text as written; ``None`` when absent."""
+        self._require_ontologies()
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=MAPPING_NAME)
+        return await self._get_ontology_mapping_text_impl(data_source=data_source, name=name)
+
+    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str) -> list[str]:
+        """Store mapping ``name`` of ``data_source`` verbatim once it resolves; the informational notes of the save."""
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=MAPPING_NAME)
+        self._require_ontologies()
+        if await self.get_datasource(data_source) is None:
+            raise ValueError(f"Datasource {data_source!r} not found; a mapping belongs to a stored datasource")
+        data = checked_mapping_shape(text, name=name, data_source=data_source)
+        resolution = check_mapping(data, scope=await self._mapping_scope(data_source))
+        if resolution.problems:
+            raise OntologyMappingInvalidError(name=name, data_source=data_source,
+                                              reasons=[str(p) for p in resolution.problems])
+        await self._save_ontology_mapping_text_impl(data_source=data_source, name=name, text=text)
+        note = resolution.note(name)
+        return [note] if note else []
+
+    async def edit_ontology_mapping(self, name: str, *, data_source: str, **edits: Any) -> list[str]:
+        """Apply ``edited_mapping``'s edits to mapping ``name`` of ``data_source`` and save it through every check."""
+        text = await self.get_ontology_mapping_text(name, data_source)
+        if text is None:
+            raise ValueError(f"Mapping {name!r} not found in datasource {data_source!r}")
+        return await self.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                     text=edited_mapping(text, **edits))
+
+    async def delete_ontology_mapping(self, name: str, data_source: str) -> bool:
+        """Delete a stored mapping; ``False`` when absent."""
+        self._require_ontologies()
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=MAPPING_NAME)
+        return await self._delete_ontology_mapping_row(data_source=data_source, name=name)
+
+    async def ontology_mapping_problems(self, name: str, data_source: str) -> list[str]:
+        """Why stored mapping ``name`` of ``data_source`` does not resolve now; empty when it does."""
+        text = await self.get_ontology_mapping_text(name, data_source)
+        if text is None:
+            raise ValueError(f"Mapping {name!r} not found in datasource {data_source!r}")
+        return await self._stored_mapping_problems(text, data_source=data_source, name=name)
+
+    async def _stored_mapping_problems(self, text: str, *, data_source: str, name: str,
+                                       scope: MappingScope | None = None) -> list[str]:
+        try:
+            data = checked_mapping_shape(text, name=name, data_source=data_source)
+        except OntologyMappingInvalidError as exc:
+            return exc.reasons
+        resolution = check_mapping(data, scope=scope or await self._mapping_scope(data_source))
+        return [str(p) for p in resolution.problems]
+
+    async def load_ontology_mappings(self, *, data_source: str | None = None) -> Loaded[StoredMapping]:
+        """Every stored mapping that resolves (of ``data_source`` when given), and the ones that do not."""
+        loaded: list[StoredMapping] = []
+        errors: list[StoredDocumentLoadError] = []
+        scopes: dict[str, MappingScope] = {}
+        for ds, name in await self.list_ontology_mappings(data_source):
+            text = await self._get_ontology_mapping_text_impl(data_source=ds, name=name)
+            if text is None:
+                continue
+            if ds not in scopes:
+                scopes[ds] = await self._mapping_scope(ds)
+            problems = await self._stored_mapping_problems(text, data_source=ds, name=name, scope=scopes[ds])
+            if problems:
+                errors.append(StoredDocumentLoadError(kind="ontology_mapping", name=name, data_source=ds,
+                                                      cause=ValueError("; ".join(problems))))
+            else:
+                loaded.append(StoredMapping(name=name, data_source=ds, text=text))
+        return loaded, errors
+
+    async def _mapping_scope(self, data_source: str) -> MappingScope:
+        """What a mapping of ``data_source`` resolves against now."""
+        ontologies: dict[str, dict[str, Any]] = {}
+        for name in await self._list_ontology_names():
+            data = stored_data(await self._get_ontology_text_impl(name=name))
+            if isinstance(data, dict):
+                ontologies[name] = data
+        index = await self._document_index(data_source)
+        documents: dict[str, list[SlayerDataset]] = {
+            n: [] for ds, n in (await self._list_semantic_model_identities() if self._supports_semantic_models() else [])
+            if ds == data_source}
+        for key, dataset in index.datasets.items():
+            documents.setdefault(index.owners[key], []).append(dataset)
+        loaded, _ = await self.load_datasets(data_source=data_source)
+        return MappingScope(data_source=data_source, ontologies=ontologies, documents=documents, datasets=loaded)
+
+    async def _guard_mappings(self, *, change: str, changed: Callable[[MappingScope], MappingScope],
+                              data_source: str | None = None, own: list[str] | None = None) -> None:
+        """Refuse ``change`` (``changed`` maps a scope to its state after it) when it breaks a stored mapping, of
+        ``data_source`` when given, listing the changed document's ``own`` problems too; a database-driven change
+        warns instead."""
+        identities = await self.list_ontology_mappings(data_source)
+        broken = []
+        for ds in sorted({ds for ds, _ in identities}):
+            mappings = [(n, data) for d, n in identities if d == ds and isinstance(
+                data := stored_data(await self._get_ontology_mapping_text_impl(data_source=d, name=n)), dict)]
+            before = await self._mapping_scope(ds)
+            broken += broken_mappings(mappings, before=before, after=changed(before))
+        report_broken(change=change, broken=broken, own=own)
+
+    async def _document_datasets(self, *, data_source: str, name: str, text: str) -> list[SlayerDataset]:
+        datasource = await self.get_datasource(data_source)
+        return list(decompose(text=text, name=name, data_source=data_source,
+                              ds_type=datasource.type if datasource is not None else None,
+                              granularities=datasource.granularities if datasource is not None else []).datasets)
 
     async def get_dataset_or_builtin(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         """``get_dataset``, falling back to a built-in dataset of the datasource (the only one when unnamed)."""
@@ -1648,6 +1865,8 @@ class StorageBackend(ABC):
         if target is None:
             return False
         resolved_data_source, resolved_name = target
+        await self._guard_mappings(change=f"Deleting dataset {resolved_name!r}", data_source=resolved_data_source,
+                                   changed=lambda scope: scope.with_dataset(resolved_name, None))
         owner = await self._owner_of(resolved_name, data_source=resolved_data_source)
         if owner is not None:
             deleted = await self._delete_document_dataset(data_source=resolved_data_source, document=owner,
@@ -1880,6 +2099,8 @@ class StorageBackend(ABC):
             if pre_version < FIELD_EXPRESSION_VERSION:
                 data = respell_source_paths(data, peer_relationships=await self._peer_relationships(
                     data=data, data_source=data_source))
+            if pre_version < INSTANT_FIELD_VERSION:
+                data = typed_instant_fields(data, ds_type=await self._datasource_type(data_source))
             changes = True
             if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
                 await self._apply_refinement_or_raise(
@@ -1895,12 +2116,16 @@ class StorageBackend(ABC):
         dataset, converted = await self._with_dialect_sql(validated, data_source=data_source)
         return dataset, changes or converted or collected.rewritten
 
+    async def _datasource_type(self, data_source: str) -> str | None:
+        """The datasource's type: stored, else the enclosing upgrade's, else unknown."""
+        datasource = await self.get_datasource(data_source)
+        return datasource.type if datasource is not None else DATASOURCE_TYPES.get().get(data_source)
+
     async def _with_dialect_sql(self, dataset: SlayerDataset, *, data_source: str) -> tuple[SlayerDataset, bool]:
         """``dataset`` with its field ``sql`` converted once its datasource's dialect is known; whether it was."""
         if all(c.sql is None for c in dataset.fields):
             return dataset, False
-        datasource = await self.get_datasource(data_source)
-        ds_type = datasource.type if datasource is not None else DATASOURCE_TYPES.get().get(data_source)
+        ds_type = await self._datasource_type(data_source)
         if ds_type is None:
             return dataset, False
         return with_converted_sql(dataset, ds_type=ds_type), True
@@ -2311,6 +2536,8 @@ class StorageBackend(ABC):
         _validate_path_component(name, kind=DATASOURCE_NAME)
         deleted = await self._delete_datasource_row(name)
         self._forget_granularity_renames()
+        for ds, mapping in await self.list_ontology_mappings(name):
+            await self._delete_ontology_mapping_row(data_source=ds, name=mapping)
         if deleted:
             await self.delete_embeddings_for_canonical(
                 canonical_id_prefix=name,

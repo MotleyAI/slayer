@@ -7,7 +7,6 @@ vendored snapshot.
 from __future__ import annotations
 
 import contextlib
-import os
 import re
 import shutil
 import subprocess
@@ -24,11 +23,13 @@ from sqlglot.errors import ParseError
 from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.osi.exporter import export_osi
+from slayer.sql.ossie_dialects import reader_for
 from slayer.storage.base import StorageBackend
-from tests._dev2243_fixtures import CORPUS, STORAGES, error, importer_module, make_storage, semantic_model_module
+from tests._dev2243_fixtures import STORAGES, error, importer_module, make_storage, semantic_model_module
 from tests._engine_helpers import owned_query_engine
+from tests._ossie_gate import TIER1, corpus_root
 
-ROOT = Path(os.environ.get("SLAYER_OSSIE_CORPUS") or CORPUS)
+ROOT = corpus_root()
 DS = "corpus"
 SOURCES = ("examples/*.yaml", "compliance/portability/m[0-8]/*.ossie.yaml", "compliance/wide_table/*/*.ossie.yaml",
            "compliance/query/scott/*.ossie.yaml", "harvested/*.yaml")
@@ -77,7 +78,7 @@ def upstream_reports(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]
 # Which metrics SLayer cannot evaluate yet (windows; model-scoped metrics Ossie rejects at query time)
 # --------------------------------------------------------------------------- #
 def _expression_text(expression: dict[str, Any]) -> str | None:
-    """The first readable candidate: top-level ``sql``, then OSSIE_SQL_2026, ANSI_SQL, any other entry."""
+    """The first readable candidate: top-level ``sql``, then OSSIE_SQL_2026, ANSI_SQL, any SQL entry; else None."""
     if expression.get("sql"):
         return expression["sql"]
     entries = expression.get("dialects") or []
@@ -85,7 +86,7 @@ def _expression_text(expression: dict[str, Any]) -> str | None:
         for entry in entries:
             if entry.get("dialect") == wanted:
                 return entry["expression"]
-    return entries[0]["expression"] if entries else None
+    return next((e["expression"] for e in entries if reader_for(e.get("dialect") or "") is not None), None)
 
 
 def _parse(sql: str | None) -> exp.Expr | None:
@@ -176,17 +177,19 @@ def expected_outcomes(data: dict[str, Any]) -> dict[str, str]:
         windowed = {f["name"] for f in dataset.get("fields") or []
                     if (t := _parse(_expression_text(f.get("expression") or {}))) is not None and t.find(exp.Window)}
         for metric in dataset.get("metrics") or []:
-            tree = _parse(_expression_text(metric["expression"]))
-            unevaluable = tree is not None and (tree.find(exp.Window) is not None or _evaluates_source_measure(tree)
-                                                or any(not c.table and c.name in windowed
-                                                       for c in tree.find_all(exp.Column)))
+            text = _expression_text(metric["expression"])
+            tree = _parse(text)
+            unevaluable = text is None or tree is not None and (
+                tree.find(exp.Window) is not None or _evaluates_source_measure(tree)
+                or any(not c.table and c.name in windowed for c in tree.find_all(exp.Column)))
             outcomes[f"{dataset['name']}.{metric['name']}"] = "unevaluable" if unevaluable else "compiled"
     metric_names = {m["name"].casefold() for m in data.get("metrics") or []}
     trees: dict[str, exp.Expr | None] = {}
     for metric in data.get("metrics") or []:
-        tree = trees[metric["name"]] = _parse(_expression_text(metric["expression"]))
-        unevaluable = tree is not None and (tree.find(exp.Window) is not None
-                                            or _model_scoped_rejection(tree, metric_names=metric_names) is not None)
+        text = _expression_text(metric["expression"])
+        tree = trees[metric["name"]] = _parse(text)
+        unevaluable = text is None or tree is not None and (
+            tree.find(exp.Window) is not None or _model_scoped_rejection(tree, metric_names=metric_names) is not None)
         outcomes[metric["name"]] = "unevaluable" if unevaluable else "compiled"
     return _propagated(outcomes, trees)
 
@@ -219,7 +222,12 @@ def _query(reference: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Storage and engine over an empty datasource
 # --------------------------------------------------------------------------- #
-def _datasource(tmp: Path) -> DatasourceConfig:
+def _datasource(tmp: Path, dialect: str = "duckdb") -> DatasourceConfig:
+    """A DuckDB file, or any other dialect's type alone (compiled with a dry run; Snowflake names a profile)."""
+    if dialect == "snowflake":
+        return DatasourceConfig(name=DS, type=dialect, connection_name="dry_run")
+    if dialect != "duckdb":
+        return DatasourceConfig(name=DS, type=dialect)
     return DatasourceConfig(name=DS, type="duckdb", database=str(tmp / "corpus.duckdb"))
 
 
@@ -228,10 +236,10 @@ async def _store(storage: StorageBackend, *, text: str, data: dict[str, Any]) ->
 
 
 @contextlib.asynccontextmanager
-async def _env(kind: str, tmp: Path) -> AsyncGenerator[tuple[StorageBackend, SlayerQueryEngine]]:
+async def _env(kind: str, tmp: Path, dialect: str = "duckdb") -> AsyncGenerator[tuple[StorageBackend, SlayerQueryEngine]]:
     """Empty ``kind`` storage holding only the datasource, and an engine over it."""
     storage = make_storage(kind, tmp)
-    async with owned_query_engine(storage=storage, datasources=[_datasource(tmp)]) as engine:
+    async with owned_query_engine(storage=storage, datasources=[_datasource(tmp, dialect)]) as engine:
         yield storage, engine
 
 
@@ -271,14 +279,16 @@ async def test_stores_and_loads_natively(path: Path, tmp_path: Path) -> None:
         assert sorted(m.name for m in metrics) == sorted(m["name"] for m in data.get("metrics") or [])
 
 
+@pytest.mark.parametrize("dialect", TIER1)
 @pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
-async def test_every_metric_binds_and_compiles(path: Path, tmp_path: Path) -> None:
-    """Every metric compiles to SQL; an unevaluable one raises a typed error naming it, a ``REFUSED`` one its error."""
+async def test_every_metric_binds_and_compiles(path: Path, dialect: str, tmp_path: Path) -> None:
+    """Every metric compiles to SQL in every Tier-1 dialect; an unevaluable one raises a typed error naming it, a
+    ``REFUSED`` one its error, identically in every dialect."""
     text, data = _load(path)
     doc_id = path.relative_to(ROOT).as_posix()
     expected = (expected_outcomes(data) | {m: f"refused: {e}" for (d, m), e in REFUSED.items() if d == doc_id}
                 | {m: "unevaluable" for d, m in UNPARSEABLE if d == doc_id})
-    async with _env("yaml", tmp_path) as (storage, engine):
+    async with _env("yaml", tmp_path, dialect) as (storage, engine):
         await _store(storage, text=text, data=data)
         actual: dict[str, str] = {}
         for reference in expected:

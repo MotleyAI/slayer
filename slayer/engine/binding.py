@@ -31,7 +31,6 @@ from slayer.core.errors import (
     CallArgumentError,
     CircularRelationshipPathError,
     GranularityCallError,
-    IllegalWindowInFilterError,
     MetricCycleError,
     MetricRecursionLimitError,
     PartitionKeyError,
@@ -107,10 +106,12 @@ from slayer.engine.population.anchors import (
     unqualified_count,
 )
 from slayer.engine.key_metadata import bundle_dialect, scope_field_type
+from slayer.core.time_zones import check_bucketed_zones
 from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params
 from slayer.core.query import TimeDimension
 from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
+from slayer.core.time_zones import CIVIL
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
@@ -161,7 +162,7 @@ from slayer.core.scalar_args import (
     slot_name,
 )
 from slayer.sql.dialects.base import LIBRARY_FUNCTIONS, is_list_fn, require_library
-from slayer.sql.sql_expr import build_cast_type, cast_slayer_type, has_window_function, native_json_type
+from slayer.sql.sql_expr import build_cast_type, cast_slayer_type, native_json_type
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 from slayer.core.models import DatasetField
@@ -333,15 +334,18 @@ def bind_time_dimension(
         return BoundTimeDimension(
             bound=BoundExpr(value_key=TimeTruncKey(source=source, granularity=resolved)),
             bucketed_leaves=_bucketed_leaves(source, scope=scope, bundle=bundle),
+            bucketed_zones=_bucketed_zones(source, scope=scope, bundle=bundle),
             is_expression=True,
         )
     bound_col = _resolve_field_ref(parsed, scope=scope, bundle=bundle)
     field_type, upstream = _field_facts(bound_col, scope=scope, bundle=bundle)
     routed = _canonical_if_routed(parsed=parsed, value_key=bound_col)
+    zone = _bucket_zone(bound_col, scope=scope, bundle=bundle) if upstream is not None else None
     return BoundTimeDimension(
         bound=BoundExpr(value_key=TimeTruncKey(source=bound_col, granularity=resolved), routed_dotted=routed),
         field_type=field_type,
         bucketed_leaves=() if upstream is None else ((text, upstream),),
+        bucketed_zones=() if zone is None else ((text, zone),),
     )
 
 
@@ -405,6 +409,32 @@ def _bucketed_leaves(
     return tuple(out.items())
 
 
+def _bucket_zone(col: FieldKey | FieldSqlKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Optional[str]:
+    """The zone a bucketed timestamp field's buckets are in: its own (a stage's zone state), else, on a dataset of the
+    datasource, the datasource's; ``None``: civil or undeclared."""
+    terminal = _terminal_dataset_for_path(path=field_path(col), scope=scope, bundle=bundle)
+    found = terminal.get_field(field_leaf(col)) if terminal is not None else None
+    if found is None or found.datatype is not DataType.DATETIME:
+        return None
+    zone = found.time_zone
+    if zone is None and terminal is not None and terminal.name not in bundle.stage_displays:
+        zone = bundle.datasource_time_zone
+    return None if zone == CIVIL else zone
+
+
+def _bucketed_zones(
+    source: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Tuple[Tuple[str, str], ...]:
+    """``(leaf, zone)`` of every bucketed timestamp leaf of ``source`` in a zone."""
+    out: Dict[str, str] = {}
+    for leaf in walk_value_keys(source):
+        if isinstance(leaf, (FieldKey, FieldSqlKey)) and _field_facts(leaf, scope=scope, bundle=bundle)[1] is not None:
+            zone = _bucket_zone(leaf, scope=scope, bundle=bundle)
+            if zone is not None:
+                out.setdefault(".".join((*field_path(leaf), field_leaf(leaf))), zone)
+    return tuple(out.items())
+
+
 def _canonical_if_routed(
     *,
     parsed: ParsedExpr,
@@ -448,8 +478,7 @@ def bind_filter(
 ) -> BoundFilter:
     """Bind a parsed filter predicate + classify its phase.
 
-    Walks the bound tree to gather every referenced ``ValueKey``; raises
-    ``IllegalWindowInFilterError`` if a referenced ``DatasetField.sql`` is windowed.
+    Walks the bound tree to gather every referenced ``ValueKey``.
     ``alias_map`` maps a stage's declared-metric names to their bound
     ``ValueKey`` so a bare ref matching an alias interns onto that slot rather
     than resolving against dataset fields (the aggregate and its alias share one slot).
@@ -464,7 +493,6 @@ def bind_filter(
         (k.phase for k in refs),
         default=value_key.phase,
     )
-    _reject_windowed_field_sql(refs, scope=scope, bundle=bundle, parsed=parsed)
     return BoundFilter(
         value_key=value_key, phase=phase, referenced_keys=refs,
     )
@@ -494,7 +522,7 @@ def _bind(
     if isinstance(parsed, Cast):
         return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
     if isinstance(parsed, DateTrunc):
-        return _bind_date_trunc(parsed, source=sub(parsed.value), bundle=bundle)
+        return _bind_date_trunc(parsed, source=sub(parsed.value), scope=scope, bundle=bundle)
     if isinstance(parsed, NamedArg):
         raise CallArgumentError(f"`{canonical_metric_text(parsed)}` is only an argument of a call.")
     if isinstance(parsed, AggCall):
@@ -1798,8 +1826,8 @@ def _bind_agg_call(
         parsed, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
         dim_alias_map=dim_alias_map,
     )
-    if not isinstance(key, AggregateKey):
-        # A series transform over an attached value (``first(regions.metric)``) reads no rows of its own.
+    if not isinstance(key, AggregateKey) or is_attached_source(key.source):
+        # An aggregation over an attached value (``first(regions.metric)``) reads no rows of its own.
         return key if scope is query_scope else _bind_agg_call_in(
             parsed, scope=query_scope, bundle=query_bundle, alias_map=alias_map, metric_ctx=metric_ctx,
             dim_alias_map=dim_alias_map,
@@ -1816,8 +1844,8 @@ def _bind_agg_call_in(
     metric_ctx: Optional[MetricResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey | TransformKey | TimeTruncKey:
-    """Bind an ``AggCall`` (a granularity called like a function is refused); ``first`` / ``last`` dispatch by the bound operand's
-    type — attached → the series transform, row grain → the ranked aggregation."""
+    """Bind an ``AggCall`` (a granularity called like a function is refused); a built-in ``first`` / ``last`` over an
+    attached operand ranks the operand's cells (semantics Axiom 2.4)."""
     if parsed.agg.lower() in RESERVED_NAMES:
         raise ReservedFunctionNameError(name=parsed.agg, where=f"{canonical_metric_text(parsed)}")
     if parsed.filter is not None:
@@ -1842,10 +1870,8 @@ def _bind_agg_call_in(
         )
         owner, _leaf = _resolve_agg_owner(operand, bundle)
         if is_attached_source(operand) and builtin_semantics(aggregation_definition(owner=owner, agg=parsed.agg)):
-            return _bind_transform_params(
-                op=op, inp=operand, args=parsed.args, kwargs=parsed.kwargs,
-                scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-            )
+            return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+                            source=cast(AggregateSource, operand))
     return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
 
@@ -1913,8 +1939,11 @@ def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
     return key.model_copy(update={"filter": condition})
 
 
-def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSourceBundle) -> TimeTruncKey:
-    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``."""
+def _bind_date_trunc(
+    parsed: DateTrunc, *, source: ValueKey, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> TimeTruncKey:
+    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``; a leaf bucketed in another zone is
+    refused."""
     granularity = resolve_granularity(parsed.unit, defined=bundle.granularities)
     if granularity is None:
         raise UnknownGranularityError(summary=unknown_granularity_message(
@@ -1924,6 +1953,9 @@ def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSou
         isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)
     ):
         raise GranularityCallError.wrong_shape(canonical_metric_text(parsed))
+    if bundle.time_zone is not None:
+        check_bucketed_zones(name=canonical_metric_text(parsed), zone=bundle.time_zone,
+                             bucketed_zones=_bucketed_zones(source, scope=scope, bundle=bundle))
     return TimeTruncKey(source=source, granularity=granularity)
 
 
@@ -2017,8 +2049,11 @@ def _bind_agg(
     scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    source: Optional[AggregateSource] = None,
 ) -> AggregateKey:
-    source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+    """Bind an aggregation call; ``source`` is its already-bound operand, when given."""
+    if source is None:
+        source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).
@@ -2192,12 +2227,12 @@ def _check_ranking_positional(*, agg: str, source, bundle: ResolvedSourceBundle,
         )
     if len(args) != 1:
         raise ValueError(
-            f"Aggregation {agg!r} ranks by at most one field or row-level expression; got "
+            f"Aggregation {agg!r} ranks by at most one field or expression; got "
             f"{len(args)} positional value(s)."
         )
-    if not _is_row_level_ranking_key(args[0]):
+    if not _reads_a_field(args[0]):
         raise ValueError(
-            f"Aggregation {agg!r} ranks by a field or a row-level expression of fields; got "
+            f"Aggregation {agg!r} ranks by a field, or an expression of fields and aggregates; got "
             f"{key_display(args[0]) if isinstance(args[0], VALUE_KEY_TYPES) else repr(args[0])} "
             f"as its ranking key."
         )
@@ -2235,10 +2270,11 @@ def _fold_positional_agg_args(
     return (), tuple(folded)
 
 
-def _is_row_level_ranking_key(key: object) -> bool:
-    """A ranking key reads at least one field and no aggregate, transform or attached value."""
-    return isinstance(key, VALUE_KEY_TYPES) and not _carries_attached_value(cast(ValueKey, key)) and any(
-        isinstance(k, (FieldKey, FieldSqlKey)) for k in walk_value_keys(cast(ValueKey, key))
+def _reads_a_field(key: object) -> bool:
+    """A ranking key reads a field, directly or through an aggregate; whether its home determines it is judged at
+    plan time (semantics Axiom 2.4)."""
+    return isinstance(key, VALUE_KEY_TYPES) and not isinstance(key, SqlFragmentKey) and any(
+        isinstance(k, (FieldKey, FieldSqlKey, StarKey)) for k in walk_value_keys(cast(ValueKey, key))
     )
 
 
@@ -2776,48 +2812,3 @@ def _check_literal_count(count: ValueKey) -> None:
             f"date_add() / interval() count must be an integer or a numeric expression; "
             f"got the literal {value!r}."
         )
-
-
-def _reject_windowed_field_sql(
-    refs: Tuple[ValueKey, ...],
-    *,
-    scope: DatasetScope,
-    bundle: ResolvedSourceBundle,
-    parsed: ParsedExpr,
-) -> None:
-    """Raise ``IllegalWindowInFilterError`` if any referenced ``FieldSqlKey``
-    has a windowed ``DatasetField.sql`` body (no predicate-promotion)."""
-    for k in refs:
-        if not isinstance(k, FieldSqlKey):
-            continue
-        dataset = _lookup_dataset(name=k.dataset, scope=scope, bundle=bundle)
-        if dataset is None:
-            continue
-        col = next((c for c in dataset.fields if c.name == k.field_name), None)
-        if col is None or col.definition_sql is None:
-            continue
-        if has_window_function(col.definition_sql):
-            raise IllegalWindowInFilterError(
-                filter_expr=str(parsed),
-                source=(
-                    f"filter references field {k.field_name!r} on dataset "
-                    f"{k.dataset!r} whose DatasetField.sql contains a window "
-                    f"function"
-                ),
-                suggestion=(
-                    "use a rank-family transform (rank, percent_rank, "
-                    "dense_rank, ntile) in the expression instead, or "
-                    "compute the windowed value in an earlier stage."
-                ),
-            )
-
-
-def _lookup_dataset(
-    *,
-    name: str,
-    scope: DatasetScope,
-    bundle: ResolvedSourceBundle,
-) -> Optional[SlayerDataset]:
-    if scope.population is not None and scope.population.name == name:
-        return scope.population
-    return bundle.get_referenced_dataset(name)

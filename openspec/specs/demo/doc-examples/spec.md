@@ -83,8 +83,9 @@ check below passes on that install; any failure SHALL stop the upload and name t
 - Through the installed CLI, after `slayer datasources create demo --ingest` into empty storage, every
   checked README query SHALL return at least one row, and the demo `orders` model SHALL join to
   `customers` and `stores`.
-- Through the installed `slayer mcp --demo` over stdio, started on its own empty storage, every checked
-  README query SHALL return a successful, non-empty JSON row list, bare or in the `data` envelope, and
+- Through the installed `slayer mcp --demo` over stdio, started on its own empty storage, `initialize`
+  followed by `tools/list` SHALL complete within 10 seconds of the server's start; every checked README
+  query SHALL then return a successful, non-empty JSON row list, bare or in the `data` envelope, and
   inspecting the demo `orders` model SHALL report joins to `customers` and `stores`.
 - The gate SHALL send no usage reporting.
 
@@ -104,6 +105,11 @@ check below passes on that install; any failure SHALL stop the upload and name t
 - **WHEN** the installed MCP server returns an error, a response that is not a JSON row list, an empty
   row list, or does not start within its timeout
 - **THEN** the gate fails naming the MCP check, and nothing is uploaded
+
+#### Scenario: A slow MCP handshake stops the upload
+- **WHEN** the installed `slayer mcp --demo` on empty storage does not complete `initialize` and
+  `tools/list` within 10 seconds
+- **THEN** the gate fails naming the MCP handshake check, and nothing is uploaded
 
 #### Scenario: A README without a query fails the gate
 - **WHEN** `README.md` yields no checked query

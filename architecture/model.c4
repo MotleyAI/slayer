@@ -71,6 +71,11 @@ model {
       }
       migrations = node 'Migrations'
     }
+    ontology = node 'Ontologies and mappings' {
+      metadata {
+        package 'slayer.ontology'
+      }
+    }
     importers = bucket 'Importers' {
       metadata {
         packages ['slayer.dbt', 'slayer.cube', 'slayer.osi', 'slayer.ingest_report', 'slayer.importers']
@@ -202,5 +207,9 @@ model {
     protocols -> otel
     surfaces -> otel
     otel -> core.probes
+    ontology -> core
+    storage -> ontology
+    importers -> ontology
+    surfaces -> ontology
   }
 }

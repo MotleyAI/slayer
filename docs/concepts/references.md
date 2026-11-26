@@ -65,8 +65,10 @@ custom aggregations. Declared parameters may be passed positionally in
 declaration order — `percentile(orders.price, 0.9)` means `p=0.9` (`first`/`last`
 keep their positional ranking key instead). An aggregation that declares no
 parameters takes no positional value at all, and `first`/`last` at most one —
-their ranking key, a row-level expression (`last(accounts.balance, accounts.updated_at)`,
-`last(accounts.balance, CAST(accounts.updated_at AS DATE))`), never a literal or a nested aggregate.
+their ranking key, a field of the ranked dataset: over rows a row-level expression
+(`last(accounts.balance, accounts.updated_at)`, `last(accounts.balance, CAST(accounts.updated_at AS DATE))`) or an
+attached aggregate the rows determine, over an aggregate a field the operand's grain determines (a grain member,
+or a field it reaches over an entity key or to-one hops) or an aggregate at a grain the operand determines (`last(sum(orders.revenue), sum(orders.units))`); never a literal.
 
 Naming and matching read the parse tree, not the text: a metric declared
 `{"metric": "sum(orders.revenue)", "alias": "rev"}` is matched by a filter written
@@ -74,10 +76,9 @@ Naming and matching read the parse tree, not the text: a metric declared
 
 Disambiguation rules:
 
-* `first` / `last` are both aggregations and transforms: a call whose first
-  argument resolves to a row-level value is the aggregation (`last(accounts.balance)`),
-  one whose argument resolves to aggregated values — including a saved metric —
-  is the transform (`last(sum(orders.revenue))`, `last(orders.rev)`).
+* `first` / `last` are always aggregations: a call whose first argument resolves to a row-level value ranks
+  its home's rows (`last(accounts.balance)`), one whose argument resolves to aggregated values — including a saved
+  metric — ranks that aggregate's cells (`last(sum(orders.revenue))`, `last(orders.rev)`).
 * An unknown call name whose first argument is aggregatable defers to binding
   — custom aggregations resolve there, and genuinely unknown names get the
   "Unknown function" error.
@@ -106,7 +107,7 @@ The query-backed dataset wrap (`_expand_query_backed_dataset`, via `flat_name` i
 
 2. **Query-side filters** strict-resolve at enrichment time: any bare name that isn't a `DatasetField` / `DatasetMetric` / custom aggregation / query alias / canonical-agg synthesis raises a clear error.
 
-3. **No predicate promotion.** A query filter that names a windowed `DatasetField` raises with a suggestion to use a rank-family transform (`rank` / `percent_rank` / `dense_rank` / `ntile`) or a multi-stage `source_queries` dataset. The rank-family transforms cover top-N filtering in pure DSL.
+3. **A windowed field is a column.** A query filter naming a field whose dialect entry is a window function filters on the value computed over its dataset's rows (see [datasets.md](datasets.md#window-functions-in-a-fields-expression)).
 
 4. **Single reference-resolution surface.** Identifier handling lives in `slayer/core/refs.py`; relationship walks live in the binder (`slayer/engine/binding.py`), which resolves each hop against the resolved source bundle.
 

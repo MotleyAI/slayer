@@ -36,7 +36,6 @@ FINISHERS: tuple[tuple[str, str], ...] = (
 #: Value-layer renders of user fragments (which may hold subqueries); DEV-1972 makes them AST and removes this.
 VALUE_LAYER_EXEMPT: tuple[tuple[str, str], ...] = (
     ("slayer.sql.field_expansion", "expand_derived_refs_sync"),
-    ("slayer.sql.generator", "SQLGenerator._expand_derived_field_sql"),
 )
 
 GUARD_MARK = "__statement_render_law__"

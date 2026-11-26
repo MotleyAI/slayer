@@ -87,6 +87,7 @@ A field is the unit of structure on the dataset. The same field entry can serve 
 | `allowed_aggregations` | list[str] | No | — | Whitelist (must be a subset of the type-default eligibility set, or a custom aggregation defined on this dataset) |
 | `filter` | string | No | — | SQL condition wrapping the field value in `CASE WHEN` — a value mask that fires in every position. See [Filtered fields](#filtered-fields) |
 | `granularity` | string | No | — | Time bucket a temporal field is already truncated to (`month`, `year`, …); a finer or non-nesting time dimension over it is a typed error. Query-backed datasets stamp it automatically; set it by hand only when the values are truly bucketed at that grain |
+| `time_zone` | string | No | — | The zone a `DateTime` column's values are stored in: an IANA name, or `civil` for zone-free time never converted; overrides the datasource's `time_zone`, see [time zones](time.md#time-zones) |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
 | `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the field (or via `slayer datasources refresh-samples`), not at ingest time |
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical values only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal fields |
@@ -111,7 +112,7 @@ Data types are Ossie's datatype names plus `Array`, stored and shown as written.
 | `Boolean` | True/false | BOOLEAN |
 | `Date` | Date only | DATE |
 | `DateTime` | Date and time | TIMESTAMP, DATETIME |
-| `DateTimeTz` | Date and time with a time zone; behave as `DateTime` | TIMESTAMPTZ, TIMESTAMP WITH TIME ZONE |
+| `DateTimeTz` | An instant; behaves as `DateTime`, and under a query [time zone](time.md#time-zones) reads as that zone's wall clock | TIMESTAMPTZ, TIMESTAMP WITH TIME ZONE, BigQuery / MySQL `TIMESTAMP`, ClickHouse `DateTime('UTC')` |
 | `Time` | Time of day; opaque, like `Opaque` | TIME |
 | `Opaque` | Stored and displayed, never grouped, aggregated or cast | Postgres `point`, `json`, range types |
 | `Array` | A list of `element_type` values, see [list fields](queries.md#list-fields); re-ingest re-types a `String` field whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
@@ -205,9 +206,7 @@ Cycles in the reference graph (e.g., `c1: "orders.c2 + 1"` and `c2: "orders.c1 -
 
 ### Window functions in a field's expression
 
-A field's expression may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The field behaves like any other field when used in `dimensions` / SELECT.
-
-> **Filtering on a windowed field is rejected.** A query filter naming a field whose expression contains a window function (e.g. `{"filter": ["orders.rn <= 3"]}` against a field defined as `row_number() over (...)`) raises with a clear message. Use `{"filter": ["rank(<metric>, direction='desc') <= 3"]}` (see [expressions.md](expressions.md#rank-family-transforms)) — the rank-family transforms cover the top-N case in pure DSL — or factor the field into a multi-stage `source_queries` dataset.
+A field whose dialect entry contains a window function (`row_number() over (...)`, …) is computed over its dataset's filtered rows before any join, query filter or aggregation, then read as a column in every position — so a dataset filter reading its own dataset's windowed field is a filter cycle, and a window in a field's portable `sql` is refused at save.
 
 ### SQLite JSON extraction
 
@@ -326,7 +325,9 @@ fields:
 
 `last(accounts.balance, accounts.updated_at)` gives the most recent balance per group; `first(accounts.balance, accounts.updated_at)` the earliest. A row whose ranking key is NULL is never picked, on every database; a group whose keys are all NULL returns NULL. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time field is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated field or expression → the dataset's `default_time_dimension` (its only DATE / TIMESTAMP field when unset). Whichever field wins is an input of the aggregation: if it, or a derived definition it names, crosses a relationship hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(orders.amount - customers.discount)`, `last(accounts.balance, coalesce(accounts.updated_at, accounts.created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
 
-Not to be confused with the [`last()` expression function](expressions.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
+The ranking key is consumed: when it is itself one of the query's dimensions (or named in `partition_by=`), the aggregation returns one value per coarser cell — grouped by `accounts.customer_id` and the raw `accounts.updated_at`, `last(accounts.balance, accounts.updated_at)` is each customer's latest balance on every row. Only an exact match is consumed: a raw date key never drops its month bucket.
+
+Over an aggregate, `first` / `last` rank that aggregate's cells — see [First and last over an aggregate](expressions.md#first-and-last-over-an-aggregate).
 
 ## Custom aggregations
 

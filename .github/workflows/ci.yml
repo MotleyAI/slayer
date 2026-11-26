@@ -12,10 +12,6 @@ on:
     # same lint + test gate as PRs to main.
     branches: ['**']
 
-env:
-  # jaffle-shop-generator is not on PyPI; the demo-DB cache key carries this pin too.
-  JAFGEN_SHA: 09557a1118b000071f8171aa97d54d5029bf0f0b
-
 jobs:
   # Full basedpyright check against the committed ratchet baseline; parallel, as it needs ~3 GB.
   type-check:
@@ -77,9 +73,6 @@ jobs:
       - uses: ./.github/actions/poetry-env
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
 
       # The Ossie corpus tests run upstream's validator and portability grader through `uv run`.
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
@@ -163,9 +156,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
-
       # Install a pinned, checksum-verified DuckDB CLI into ~/.duckdb/cli/latest
       # (the layout the installer uses and the 15_duckdb notebook expects on
       # PATH). Cached across runs; on a miss we fetch a pinned release and verify
@@ -212,7 +202,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: docs/examples/jaffle_data/demo/jaffle_shop.duckdb
-          key: notebook-demo-db-${{ runner.os }}-${{ env.JAFGEN_SHA }}-${{ hashFiles('poetry.lock', 'slayer/demo/**', 'tests/integration/_demo_build.py') }}
+          key: notebook-demo-db-${{ runner.os }}-${{ hashFiles('poetry.lock', 'slayer/demo/**', 'tests/integration/_demo_build.py') }}
 
       - name: Build or refresh the notebook demo DuckDB
         run: poetry run python -c "from tests.integration._demo_build import build_notebook_demo_db; build_notebook_demo_db()"
@@ -236,7 +226,8 @@ jobs:
         # The live-Metabase e2e suite (`metabase_e2e` marker) has
         # its own workflow at .github/workflows/pg-facade-e2e.yml — same
         # reasoning, exclude here so this job isn't on the hook for booting
-        # a Metabase container.
+        # a Metabase container. The Ossie compliance gate's server engines run
+        # nightly in ossie-compliance.yml.
         # -n logical --dist loadscope: parallelise across all vCPUs, but pin each
         # test module to one worker so the notebook suite's fixed-path DuckDB
         # (single-writer) can't hit a cross-process lock. --durations logs slowest.
@@ -246,7 +237,8 @@ jobs:
             --ignore=tests/integration/test_integration_mysql.py \
             --ignore=tests/integration/test_integration_clickhouse.py \
             --ignore=tests/integration/test_integration_sqlserver.py \
-            --ignore=tests/integration/test_integration_trino.py
+            --ignore=tests/integration/test_integration_trino.py \
+            --ignore=tests/integration/test_integration_ossie_gate.py
 
   # The Docker examples' verify.py checks run in examples.yml.
 

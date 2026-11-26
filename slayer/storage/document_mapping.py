@@ -30,8 +30,8 @@ def core_datatype(datatype: DataType | None) -> str | None:
     return datatype.value if datatype.value in OSSIE_CORE_TYPES else "Opaque"
 
 
-_FIELD_ONLY = ("hidden", "format", "granularity", "allowed_aggregations", "meta", "filter", "element_type", "db_type",
-               "sampled", "sampled_values", "distinct_count")
+_FIELD_ONLY = ("hidden", "format", "granularity", "time_zone", "allowed_aggregations", "meta", "filter", "element_type",
+               "db_type", "sampled", "sampled_values", "distinct_count")
 
 
 def ossie_expression(expression: Expression) -> dict[str, Any]:

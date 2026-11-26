@@ -54,8 +54,8 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
-| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
-| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo in the background (idempotent); tool calls wait for it. |
+| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion in the background, after the demo; tool calls wait for it. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 | `--always-load-query` | off | Mark the MCP `query` tool with Claude Code's `anthropic/alwaysLoad` flag so it is never deferred behind tool search. Also enabled by `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`. |
 
 ### `slayer pg-serve`
@@ -301,7 +301,7 @@ Exit code is `0` for any report about the data, including `contradicts_hard` —
 | `confirms` | Detected value matches what was stored. |
 | `refines` | Differs from the stored value, but the data does not disprove it — "no duplicates observed" only *suggests* uniqueness. |
 | `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
-| `skipped_unsupported` | Not profilable — a non-`sql_table` dataset (sql-mode / query-backed) or an expression-valued join key. |
+| `skipped_unsupported` | Not profilable — a non-`sql_table` dataset (sql-mode / query-backed), a join key reading beyond its own dataset's source, or a windowed join key on a dataset with filters. |
 | `no_evidence` | Profiled fine, but one side had no non-null key rows. An empty scan says nothing about arity, so nothing is detected or written. Worth re-running once data lands — unlike `skipped_unsupported`, which never becomes profilable. |
 | `scan_failed` | The scan itself raised; the message is in `note`. Contained per relationship, so one unreadable table costs one finding rather than the whole report — but the command still exits 1, since that relationship was not profiled. |
 
@@ -376,7 +376,7 @@ slayer import-osi ./model.yaml --datasource my_postgres
 | `--datasource` | Yes | Configured SLayer datasource the documents belong to; it must be reachable only to upgrade a legacy `semantic_model` wrapper document |
 | `--storage` | No | Storage path |
 
-Prints each stored semantic model and the import report. Exits 1 when any file is refused, after storing the others.
+Imports semantic-model, [ontology and mapping](../concepts/ontologies.md) documents. Prints each stored document and the import report. Exits 1 when any file is refused, after storing the others.
 
 ### `slayer ossie-roundtrip`
 
@@ -402,7 +402,9 @@ slayer export-osi --datasource my_postgres --datasets orders customers --out sho
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--datasource` | Yes | SLayer datasource whose datasets to export |
+| `--datasource` | Yes, unless `--ontology` | SLayer datasource whose datasets (or, with `--mapping`, whose mapping) to export |
+| `--ontology` | No | Export this stored ontology's text instead; takes no `--datasource` or `--datasets` |
+| `--mapping` | No | Export this stored mapping of `--datasource` instead |
 | `--out` | Yes | Output file; JSON when it ends in `.json`, YAML otherwise |
 | `--datasets` | No | Export only these datasets (an unknown name fails with no file written) |
 | `--no-extensions` | No | Omit the `SLAYER` non-portable extensions; SLayer-only content is reported instead of exported |
@@ -438,6 +440,27 @@ slayer semantic-models delete sales --datasource shop --yes
 | `delete <name> [--datasource X] [--yes]` | Delete the document and its datasets, after a confirmation prompt that `--yes` skips |
 
 `--datasource` is needed for `show` and `delete` when the name exists in several datasources. An unknown document fails with an `Error:` line and exit code 1.
+
+### `slayer ontologies` / `slayer ontology-mappings`
+
+Manage [ontologies and mappings](../concepts/ontologies.md). Ontologies are stored once per store; mappings per datasource, so every `ontology-mappings` subcommand but `list` needs `--datasource`.
+
+```bash
+slayer ontologies create flights.ontology.yaml
+slayer ontologies show Flights
+slayer ontology-mappings create flights.mapping.yaml --datasource flights
+slayer ontology-mappings list --datasource flights
+```
+
+| Subcommand | Description |
+|------|-------------|
+| `list` | One name per line; a mapping that no longer resolves is listed with its problems |
+| `show <name>` | Print the stored text |
+| `create <file>` | Store the document under its own `name` |
+| `replace <name> <file>` | Replace the stored document |
+| `delete <name> [--yes]` | Delete it, after a confirmation prompt that `--yes` skips |
+
+A refused document fails with one `Error:` line listing every problem and exit code 1.
 
 ### `slayer datasources`
 
@@ -488,7 +511,7 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
 | `--no-views` | No | (with `--ingest`) Skip views and materialized views (ingested by default) |
 | `--surface-internals` | No | (with `--ingest`) Ingest recognised ELT/migration internals visible instead of hidden |
-| `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
+| `--years` | No | (demo only) Years of synthetic data (default: reuse the existing demo, else 2); differing from the existing demo's years rebuilds it |
 | `-y`, `--yes` | No | Overwrite an existing datasource without prompting |
 | `--storage` | No | Storage path |
 

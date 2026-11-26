@@ -134,8 +134,7 @@ class TestMedianPercentilePerDialect:
     """Per-dialect SQL emission for median and percentile aggregations.
 
     These pin the dialect-specific output of `_build_median` and
-    `_build_percentile` and assert that MySQL raises ``NotImplementedError``
-    (no native function, no Python-UDF mechanism).
+    `_build_percentile`; MySQL interpolates over windows in a subquery.
     """
 
     def _metric(
@@ -184,11 +183,10 @@ class TestMedianPercentilePerDialect:
         # sqlglot translates PERCENTILE_CONT to DuckDB's QUANTILE_CONT.
         assert "QUANTILE_CONT" in sql or "PERCENTILE_CONT" in sql
 
-    def test_build_median_mysql_raises(self) -> None:
-        gen = SQLGenerator(dialect="mysql")
-        inner = sqlglot.parse_one("amount", dialect="mysql")
-        with pytest.raises(NotImplementedError, match="MySQL"):
-            gen._build_median(inner)
+    async def test_build_median_mysql_interpolates_over_windows(self) -> None:
+        sql = await orders_agg_sql("median(orders.amount)", dialect="mysql")
+        assert "ROW_NUMBER() OVER" in sql
+        assert "PERCENTILE_CONT" not in sql
 
     # --- percentile --------------------------------------------------------
 
@@ -216,9 +214,10 @@ class TestMedianPercentilePerDialect:
         assert "QUANTILE_CONT" in sql
         assert "orders.amount" in sql
 
-    async def test_build_percentile_mysql_raises(self) -> None:
-        with pytest.raises(NotImplementedError, match="MySQL"):
-            await orders_agg_sql("percentile(orders.amount, p=0.5)", dialect="mysql")
+    async def test_build_percentile_mysql_interpolates_over_windows(self) -> None:
+        sql = await orders_agg_sql("percentile(orders.amount, p=0.5)", dialect="mysql")
+        assert "ROW_NUMBER() OVER" in sql
+        assert "PERCENTILE_CONT" not in sql
 
     def test_build_percentile_missing_p_raises(self) -> None:
         gen = SQLGenerator(dialect="postgres")
@@ -585,18 +584,13 @@ class TestTsqlDialect:
             f"INTERVAL is invalid T-SQL syntax for granularity {gran!r}: {sql}"
         )
 
-    # --- median / percentile (unsupported) ---
+    # --- median / percentile: T-SQL PERCENTILE_CONT is window-only ---
 
-    def test_build_median_tsql_raises(self, gen: SQLGenerator) -> None:
-        """T-SQL PERCENTILE_CONT is window-only (requires OVER); unsupported as GROUP BY agg."""
-        inner = sqlglot.parse_one("amount", dialect="tsql")
-        with pytest.raises(NotImplementedError):
-            gen._build_median(inner)
-
-    async def test_build_percentile_tsql_raises(self) -> None:
-        """T-SQL PERCENTILE_CONT is window-only (requires OVER); unsupported as GROUP BY agg."""
-        with pytest.raises(NotImplementedError):
-            await orders_agg_sql("percentile(orders.amount, p=0.5)", dialect="tsql")
+    @pytest.mark.parametrize("metric", ["median(orders.amount)", "percentile(orders.amount, p=0.5)"])
+    async def test_percentile_tsql_reads_a_window_per_row(self, metric: str) -> None:
+        sql = await orders_agg_sql(metric, dialect="tsql")
+        assert "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY" in sql
+        assert ") OVER (" in sql
 
     @pytest.mark.parametrize("agg,expected_fn", [
         ("stddev_samp", "STDEV"),

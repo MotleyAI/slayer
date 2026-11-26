@@ -1,6 +1,6 @@
 # Time
 
-The single reference for how SLayer reads time: time points, `date_range`, time buckets, frame bounds, `whole_periods_only`, the time spine and custom granularities. Date *functions* (`date_part`, `date_diff`, `date_add`, `now()`, `current_date()`) are in [References](references.md#date-and-time-functions).
+The single reference for how SLayer reads time: time points, `date_range`, time buckets, frame bounds, `whole_periods_only`, the time spine, custom granularities and time zones. Date *functions* (`date_part`, `date_diff`, `date_add`, `now()`, `current_date()`) are in [References](references.md#date-and-time-functions).
 
 ## Time points
 
@@ -29,7 +29,7 @@ Relative tokens are periods computed from "now", matched case-insensitively. `<u
 | `N <units> ago`, `N <units> from now` — the single unit N steps away | `3 months ago` = `[2026-06-01, 2026-07-01)` |
 | `week to date`, `month to date`, `quarter to date`, `year to date` | `year to date` = `[2026-01-01, 2026-09-30)` |
 
-"Now" is the SLayer host's local wall-clock time, read once per execution, so every stage of a multi-stage query sees the same instant; a new day's bounds are new SQL, so a cached result never crosses days. SQL-side `now()` / `current_date()` read the *database* clock instead. Setting `SLAYER_NOW` to a naive ISO-8601 datetime or date (`2025-07-15T12:00:00`, `2025-07-15` = midnight) pins "now" for every engine built without an explicit `clock=`; a timezone-aware or unparseable value fails at startup.
+"Now" is the SLayer host's local wall-clock time, read once per execution, so every stage of a multi-stage query sees the same instant; a new day's bounds are new SQL, so a cached result never crosses days. SQL-side `now()` / `current_date()` read the *database* clock instead. Under a [time zone](#time-zones), both are that one reading taken in the zone. Setting `SLAYER_NOW` to a naive ISO-8601 datetime or date (`2025-07-15T12:00:00`, `2025-07-15` = midnight) pins "now" for every engine built without an explicit `clock=`; a timezone-aware or unparseable value fails at startup.
 
 ### Comparisons
 
@@ -120,3 +120,25 @@ An expression is never an axis: a time dimension whose expression reads `time_sp
 ## Custom granularities
 
 A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `date_trunc('fiscal_year', orders.order_date)`, `DatasetField.granularity`, transform units), each bucket starting at `origin + k × multiple × base`. A granularity renamed because the library reserved its name carries `renamed_from` with the former name; a save keeps it.
+
+## Time zones
+
+A query's `time_zone` (an IANA name such as `"America/New_York"`) buckets, filters and returns timestamps as that zone's wall clock:
+
+<!-- doc-check: not-a-query -->
+```json
+{"population": "orders", "time_zone": "America/New_York",
+ "time_dimensions": [{"field": "orders.ordered_at", "granularity": "day"}],
+ "metrics": ["sum(orders.amount)"]}
+```
+
+Every read of a dataset timestamp is converted once, where it is read, so every position sees the converted value: buckets, custom granularities (their origin is read in the zone), filters, `date_range`, relative tokens, `whole_periods_only`, date functions, windows, `time_shift`, aggregates, join keys, raw rows and the time spine. A query without `time_zone` is unchanged, whatever source zones its datasets declare.
+
+- **Source zone.** A `DateTimeTz` field holds instants and has no source zone. A `DateTime` field's source zone is its own `time_zone`, else its datasource's `time_zone`; `time_zone: "civil"` marks zone-free civil time, never converted. A field `time_zone` is accepted only on a `DateTime` field reading a plain column. Under a zone, a `DateTime` field with no source zone is read as stored with a `time_zone_undeclared` warning; so is a source column no field maps.
+- **Definitions and predicates.** Derived fields and dataset metrics (their `FILTER (WHERE …)` included) read converted values, so each means what its expression written in the query means; a dialect entry sees converted values too. A field's `filter`, a dataset's `filters` and row-level security read stored values, so a dataset's rows never depend on the zone.
+- **Stages.** A stage without its own `time_zone` takes the final stage's, and so do the stored stages of the query-backed datasets it reads. A stage's timestamp output carries its zone; a stage in another zone converts it, a repeated local hour reading as its later occurrence. Re-bucketing a field already bucketed in another zone is a typed error. A query-backed dataset whose final stage pins a zone stamps it on its fields.
+- **Now.** One clock reading per execution, taken in each stage's zone, drives relative tokens, `whole_periods_only`, the spine's upper bound and `now()` / `current_date()`, which render as literals; `now()` still bypasses the result cache, a zoned `current_date()` caches per day.
+- **Results.** A `DateTimeTz` value comes back as the zone's naive wall clock, and the response's `time_zone` reports the zone. Elapsed-time arithmetic across a DST transition is off by the shift, except on ClickHouse, whose converted values are zoned instants, so sub-day arithmetic adds elapsed time and in a repeated hour a `civil` value equals only one of the two instants reading as it.
+- **DST.** A skipped wall-clock time takes the offset before the transition and a repeated one its later occurrence (Postgres, DuckDB and SQLite); BigQuery, Snowflake and SQL Server apply their own rule.
+- **Pruning.** A filter comparing a converted column with a time point also compares the stored column with the point widened by two days, so indexes and partitions still prune; never on a frame bound.
+- **Databases.** Every Tier-1 database converts: SQL Server maps the zone to its Windows name (a zone with none is a typed error) and MySQL needs its time zone tables loaded, checked once per zone before the query runs. A Tier-2 database refuses a query that needs a conversion.

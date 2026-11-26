@@ -34,9 +34,9 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev1737_fixtures import TableSpec, seed_backend, server_table_statements
 from tests._engine_helpers import seeded_exec_engine
 from tests._time_points_fixtures import PinnedClock
+from tests._ossie_gate import TIER1 as TIER1  # re-exported: the one Tier-1 list
 
 BACKENDS = ("sqlite", "duckdb")
-TIER1 = ("sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "trino", "snowflake", "bigquery")
 NOW = datetime(2026, 9, 29, 12, 0, 0)
 GRANULARITIES: list[dict[str, Any]] = [{"name": "fiscal_year", "base": "year", "origin": "2000-04-01"}]
 DS_FIELDS: dict[str, Any] = {"granularities": GRANULARITIES}

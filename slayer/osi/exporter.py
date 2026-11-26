@@ -546,7 +546,7 @@ class _Exporter:
             osi_field["ai_context"] = meta["osi_ai_context"]
         payload = ext.FieldPayload(entity=field.name, field=ext.FieldContent(
             expression=field.expression, filter=field.filter, datatype=stored.datatype, hidden=stored.hidden,
-            format=stored.format, granularity=stored.granularity,
+            format=stored.format, granularity=stored.granularity, time_zone=stored.time_zone,
             allowed_aggregations=stored.allowed_aggregations, meta=_slayer_meta(stored.meta),
         ))
         self._extensions(osi_field, meta, payload=payload, dataset=ds.dataset.name,
@@ -1142,3 +1142,20 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
     result.warnings = [*left_out, *result.warnings]
     result.text = dump_yaml(result.document)
     return result
+
+
+async def export_ontology(*, storage: Any, name: str) -> str:
+    """Stored ontology ``name``'s text, as written."""
+    text = await storage.get_ontology_text(name) if name in await storage.list_ontologies() else None
+    if text is None:
+        raise OsiExportError(f"Ontology {name!r} not found.")
+    return text
+
+
+async def export_ontology_mapping(*, storage: Any, data_source: str, name: str) -> str:
+    """Stored mapping ``name`` of ``data_source``'s text, as written."""
+    held = (data_source, name) in await storage.list_ontology_mappings(data_source)
+    text = await storage.get_ontology_mapping_text(name, data_source) if held else None
+    if text is None:
+        raise OsiExportError(f"Mapping {name!r} not found in datasource {data_source!r}.")
+    return text

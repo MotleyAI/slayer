@@ -26,7 +26,7 @@ from slayer.core.keys import (
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.compile.discovery import RootDisposition
-from slayer.engine.compile.stages import _regroup_producer_prebound
+from slayer.engine.compile.stages import _regroup_partition_order, _regroup_producer_prebound
 from slayer.engine.plan import plan_query
 from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -412,7 +412,7 @@ def _grain_names(keys) -> dict:
     """``{key: declared grain name}`` of a producer grouped by ``keys``."""
     models = dev1847_datasets()
     prebound, _ = _regroup_producer_prebound(
-        pks=Grain(keys=frozenset(keys)),
+        pks=_regroup_partition_order(Grain(keys=frozenset(keys))),
         aggs=[AggregateKey(source=FieldKey(leaf="amount"), agg="sum")],
         dataset=models[0], bundle=_bundle(), inherited=[], n_date_range=0, mode_policy=ModePolicy(),
         ranking_candidates=(),

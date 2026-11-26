@@ -138,9 +138,9 @@ def memory_bytes(*, backend: str, base: str, storage: StorageBackend, memory_id:
 
 def test_versions_bumped() -> None:
     # Later bumps: SlayerQuery 18 stamps ``population_inferred``; 29/19/14 trust stored relationships; SlayerModel 30
-    # unwraps AGG in field expressions.
+    # unwraps AGG in field expressions; 31 types BigQuery TIMESTAMP fields DateTimeTz.
     assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == {
-        "SlayerModel": 30, "SlayerQuery": 19, "Memory": 14}
+        "SlayerModel": 31, "SlayerQuery": 19, "Memory": 14}
 
 
 # --------------------------------------------------------------------------- #

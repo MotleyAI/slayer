@@ -1,5 +1,6 @@
 """MCP server for SLayer."""
 
+import asyncio
 import functools
 import json
 import logging
@@ -7,10 +8,13 @@ import sys
 import weakref
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
+from contextlib import asynccontextmanager
 from inspect import cleandoc
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+import anyio
+import anyio.to_thread
 from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 from pydantic import (
@@ -22,6 +26,7 @@ from slayer import __version__, usage_reporting
 from slayer import otel
 from slayer.usage_reporting.payload import USAGE_KEYS
 from slayer.core.enums import Conformance
+from slayer.demo.jaffle_shop import DemoSetupError
 from slayer.core.errors import (
     AmbiguousDatasetError,
     MemoryNotFoundError,
@@ -64,6 +69,7 @@ from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine, SlayerR
 from slayer.engine.response_meta import FieldMetadata, ResponseAttributes
 from slayer.database.client import SqlClient, SqlClientError
 from slayer.memories.help_seed import seed_help_memories
+from slayer.ontology.documents import content_text, document_name
 from slayer.inspect.dataset_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
     _escape_md_cell,
@@ -253,6 +259,107 @@ _OLD_ARGUMENTS: dict[str, dict[str, str]] = {
 _OLD_REMOVE_KEYS = {**DATASET_KEYS, "join_edges": "relationship_edges"}
 
 
+_PROGRESS_INTERVAL_S = 1.0
+_PREPARING = "Waiting for SLayer startup preparation (demo setup / startup ingest)"
+
+
+class StartupOutcome(BaseModel):
+    """Where startup preparation stands; only a demo failure fails tool calls."""
+
+    state: Literal["pending", "ready", "demo_failed"] = "pending"
+    reason: str | None = None
+
+
+class StartupPreparation:
+    """Demo setup, then startup ingest, run once in the background on the server's loop; tool calls wait for it."""
+
+    def __init__(
+        self,
+        *,
+        demo_setup: Callable[[], object] | None,
+        ingest: Callable[[], Coroutine[Any, Any, object]] | None,
+    ) -> None:
+        self._demo_setup = demo_setup
+        self._ingest = ingest
+        self._task: asyncio.Task[None] | None = None
+        self._sessions = 0
+        self.outcome = StartupOutcome() if demo_setup or ingest else StartupOutcome(state="ready")
+
+    @asynccontextmanager
+    async def lifespan(self, _app: object) -> AsyncGenerator[None]:
+        """Run preparation while any session is open (mcp enters this per connection); the last one out cancels it."""
+        if self.outcome.state != "pending":
+            yield
+            return
+        self._sessions += 1
+        self._ensure_running()
+        try:
+            yield
+        finally:
+            self._sessions -= 1
+            if self._sessions == 0 and self._task is not None:
+                with anyio.CancelScope(shield=True):
+                    if not self._task.cancelling():  # a repeat cancel would cut the demo-thread drain short
+                        self._task.cancel()
+                    await asyncio.wait({self._task})
+                if self._sessions:  # a session arrived while the cancel was awaited
+                    self._ensure_running()
+
+    def _ensure_running(self) -> None:
+        """Start preparation unless it is running or has finished; a cancelled run starts afresh."""
+        if self.outcome.state == "pending" and (self._task is None or self._task.done()):
+            self._task = asyncio.get_running_loop().create_task(self._run())
+
+    async def _run(self) -> None:
+        if self._demo_setup is not None:
+            try:
+                await self._finish_on_cancel(anyio.to_thread.run_sync(self._demo_setup))
+            except Exception as exc:  # noqa: BLE001 — becomes every tool call's error
+                failure = exc if isinstance(exc, DemoSetupError) else DemoSetupError(str(exc))
+                print(failure, file=sys.stderr, flush=True)
+                self.outcome = StartupOutcome(state="demo_failed", reason=failure.reason)
+                return
+        if self._ingest is not None:
+            try:
+                await self._ingest()
+            except Exception as exc:  # noqa: BLE001 — a startup-ingest failure never blocks tool calls
+                print(f"Ingest-on-startup failed: {exc}", file=sys.stderr, flush=True)
+        self.outcome = StartupOutcome(state="ready")
+
+    @staticmethod
+    async def _finish_on_cancel(work: Coroutine[Any, Any, object]) -> None:
+        """Await ``work``; a cancel waits for it to finish (a thread cannot be stopped) before propagating."""
+        task = asyncio.ensure_future(work)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.wait({task})
+            raise
+
+    async def wait(self, *, report_progress: Callable[[float, str], Coroutine[Any, Any, None]]) -> None:
+        """Hold the calling request until preparation ends, reporting progress; a cancelled caller never cancels it."""
+        tick = 0
+        while (task := self._task) is not None and not task.done():
+            tick += 1
+            try:
+                await report_progress(tick, _PREPARING)
+            except Exception:  # noqa: BLE001 — progress is best-effort
+                logger.debug("MCP progress notification failed", exc_info=True)
+            await asyncio.wait({task}, timeout=_PROGRESS_INTERVAL_S)
+        if self.outcome.state == "demo_failed":
+            raise DemoSetupError(self.outcome.reason or "unknown error")
+        if self.outcome.state == "pending" and self._task is not None:
+            raise RuntimeError("SLayer startup preparation was interrupted; reconnect to retry")
+
+
+
+async def _report_progress(context: "Context | None", progress: float, message: str) -> None:
+    """Progress on ``context``'s request; none without a context."""
+    if context is not None:
+        await context.report_progress(progress, message=message)
+
+
+
 def _respelled(
     arguments: dict[str, Any], renames: dict[str, str], reported: dict[tuple[str, str], DeprecatedInputWarning],
 ) -> dict[str, Any]:
@@ -305,12 +412,14 @@ def _with_deprecations(
     return result.model_copy(update={"content": blocks, "structured_content": structured})
 
 
-def _counted(server_cls: "type[MCPServer]", *, tool_error: "type[ToolError]") -> "type[MCPServer]":
-    """``server_cls`` counting every tool call, and each session's client once."""
+def _counted(
+    server_cls: "type[MCPServer]", *, tool_error: "type[ToolError]", preparation: StartupPreparation,
+) -> "type[MCPServer]":
+    """``server_cls`` counting every tool call, and each session's client once; calls wait for ``preparation``."""
 
     class CountedMCPServer(server_cls):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            super().__init__(*args, **kwargs)
+            super().__init__(*args, lifespan=preparation.lifespan, **kwargs)
             self._usage_reporting_sessions: weakref.WeakSet = weakref.WeakSet()
 
         @otel.request(surface="mcp", extract=_tool_operation)
@@ -320,6 +429,10 @@ def _counted(server_cls: "type[MCPServer]", *, tool_error: "type[ToolError]") ->
             session = self._observe_session(context)
             with usage_reporting.action() as action:
                 try:
+                    try:
+                        await preparation.wait(report_progress=functools.partial(_report_progress, context))
+                    except Exception as exc:
+                        raise tool_error(str(exc)) from exc
                     # One request is one input document: its pre-2.0 spellings each warn once.
                     with converted_document(stored=False) as (spellings, _):
                         arguments, renamed = _converted_arguments(tool=name, arguments=arguments)
@@ -596,6 +709,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
     client_factory: ClientFactory | None = None,
+    demo_setup: Callable[[], object] | None = None,
     _seed_help: bool = True,
 ):
     _check_budget(what="MCP server instructions", text=SERVER_INSTRUCTIONS)
@@ -613,17 +727,29 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                 "SLayer help-memory seeding skipped: %s", exc, exc_info=True
             )
 
+    raw_storage = storage
+
+    async def startup_ingest() -> None:
+        # Its own engine, so no client bound to this job outlives it in the serving engine.
+        prep = SlayerQueryEngine(storage=raw_storage, client_factory=client_factory)
+        try:
+            await engine_ingestion.ingest_all_datasources_idempotent(
+                storage=prep.storage, client_for=prep.client_for, stream=sys.stderr,
+            )
+        finally:
+            try:
+                await prep.aclose()
+            finally:
+                prep.close()
+
+    preparation = StartupPreparation(demo_setup=demo_setup, ingest=startup_ingest if ingest_on_startup else None)
     # Every tool reads datasets, and the live database, through the server's engine.
     storage = engine.storage
-    if ingest_on_startup:
-        engine.run_sync(
-            engine_ingestion.ingest_all_datasources_idempotent(
-                storage=storage, client_for=engine.client_for, stream=sys.stderr,
-            )
-        )
     server_cls, tool_error, mcp_error = _import_mcp_sdk()
 
-    mcp = _counted(server_cls, tool_error=tool_error)("SLayer", instructions=SERVER_INSTRUCTIONS, version=__version__)
+    mcp = _counted(server_cls, tool_error=tool_error, preparation=preparation)(
+        "SLayer", instructions=SERVER_INSTRUCTIONS, version=__version__,
+    )
     # Expose the closure engine so callers can dispose per-task pools via
     # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).
     # The read-only introspection tools share this same engine.
@@ -761,7 +887,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     async def inspect(
         entity_type: Annotated[str, Field(
             description=(
-                "Required: datasource, dataset, field, metric, aggregation, memory or semantic_model. Asserts the "
+                "Required: datasource, dataset, field, metric, aggregation, memory, semantic_model, ontology or "
+                "ontology_mapping (<datasource>.<name>). Asserts the "
                 "resolved kind and disambiguates a name shared by, e.g., a field and an aggregation."
             ),
         )],
@@ -1379,7 +1506,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
 
     @tool()
     async def create_datasource(
-        name: Annotated[str, Field(description="Unique datasource name.")],
+        name: Annotated[str, Field(description="Unique datasource name.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
         type: Annotated[str, Field(description="Database type: postgres, mysql, sqlite, bigquery, snowflake, ...")],
         host: Annotated[str | None, Field(description="Database host (default localhost).")] = None,
         port: Annotated[int | None, Field(description="Database port, e.g. 5432.")] = None,
@@ -1405,6 +1532,9 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                 'origin + k * multiple * base, e.g. {name: "fiscal_year", base: "year", origin: '
                 '"2000-04-01"}; usable wherever a built-in granularity is.'
             ),
+        )] = None,
+        time_zone: Annotated[str | None, Field(
+            description="IANA zone its DateTime columns are stored in, e.g. 'UTC'; a field's own time_zone wins.",
         )] = None,
     ) -> str:
         """Create a database connection, verify it, and auto-ingest datasets. Use ${ENV_VAR} in credentials to read environment variables.
@@ -1435,7 +1565,10 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             connection_string=connection_string,
             schema_name=schema_name,
         )
-        ds = DatasourceConfig.model_validate({**data, "granularities": granularities or []})
+        try:
+            ds = DatasourceConfig.model_validate({**data, "granularities": granularities or [], "time_zone": time_zone})
+        except ValueError as exc:
+            return f"Cannot create datasource: {exc}"
         existed = await storage.get_datasource(name) is not None
         try:
             await storage.save_datasource(ds)
@@ -1556,6 +1689,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     @tool()
     async def edit_datasource(
         name: Annotated[str, Field(description="Datasource to update.")],
+        *,
         description: Annotated[str | None, Field(description="New datasource description.")] = None,
         granularities: Annotated[list[CustomGranularity] | None, Field(
             description=(
@@ -1563,6 +1697,13 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                 "start at origin + k * multiple * base."
             ),
         )] = None,
+        time_zone: Annotated[str | None, Field(
+            default_factory=_unset,
+            description=(
+                "IANA zone its DateTime columns are stored in, e.g. 'UTC'; a field's own time_zone wins. "
+                "null clears it."
+            ),
+        )],
     ) -> str:
         """Update a datasource's metadata."""
         ds = await storage.get_datasource(name)
@@ -1576,6 +1717,11 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         if granularities is not None:
             update["granularities"] = granularities
         ds = ds.model_copy(update=update)
+        if time_zone is not _UNSET:
+            try:
+                ds.time_zone = time_zone
+            except ValueError as exc:
+                return f"Cannot update datasource '{name}': {exc}"
 
         try:
             await storage.save_datasource(ds)
@@ -1698,6 +1844,120 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
         return f"Semantic model '{name}' deleted." if deleted else f"Semantic model '{name}' not found."
+
+    def _refusal(action: str, exc: Exception) -> str:
+        return f"Error {action}: {type(exc).__name__}: {exc}"
+
+    @tool()
+    async def create_ontology(
+        content: Annotated[str | dict[str, Any], Field(
+            description="A whole Ossie 0.3.0.dev0 ontology document, as YAML/JSON text or an object.",
+        )],
+    ) -> str:
+        """Store an Ossie ontology (concepts, relationships, identifiers, rules) under its own name, replacing one of that name. Stored and checked only: SLayer does not use ontologies in queries yet."""
+        try:
+            text = content_text(content)
+            name = document_name(text)
+            await storage.save_ontology_text(name=name, text=text)
+        except Exception as exc:
+            return _refusal("creating ontology", exc)
+        return f"Ontology '{name}' stored."
+
+    @tool()
+    async def edit_ontology(
+        name: Annotated[str, Field(description="Ontology to edit.")],
+        description: Annotated[str | None, Field(description="New description.")] = None,
+        ai_context: Annotated[str | dict[str, Any] | None, Field(description="New document-level AI context.")] = None,
+        prefixes: Annotated[dict[str, str] | None, Field(description="New QName prefixes, prefix to IRI.")] = None,
+        requires: Annotated[list[str] | None, Field(description="New document-level rule expressions.")] = None,
+        concepts: Annotated[list[dict[str, Any]] | None, Field(
+            description='Whole concepts to add or replace by name, each an ontology component {"concept", "type", ...}.',
+        )] = None,
+        remove_concepts: Annotated[list[str] | None, Field(description="Concepts to remove, by name.")] = None,
+        relationships: Annotated[list[dict[str, Any]] | None, Field(
+            description='Relationships to add or replace by name: {"concept", "relationship": {"name", "roles", ...}}.',
+        )] = None,
+        remove_relationships: Annotated[list[str] | None, Field(
+            description="Relationships to remove, as Concept.name.",
+        )] = None,
+    ) -> str:
+        """Edit an ontology in place; the rest of its text stays as written. Refused when the result is invalid or breaks a stored mapping."""
+        edits = {k: v for k, v in {"description": description, "ai_context": ai_context, "prefixes": prefixes,
+                                   "requires": requires}.items() if v is not None}
+        try:
+            await storage.edit_ontology(name, concepts=concepts, remove_concepts=remove_concepts,
+                                        relationships=relationships, remove_relationships=remove_relationships, **edits)
+        except Exception as exc:
+            return _refusal(f"editing ontology '{name}'", exc)
+        return f"Ontology '{name}' edited."
+
+    @tool()
+    async def delete_ontology(
+        name: Annotated[str, Field(description="Ontology to delete.")],
+    ) -> str:
+        """Delete an ontology; refused while a stored mapping resolves against it."""
+        try:
+            deleted = await storage.delete_ontology(name)
+        except Exception as exc:
+            return _refusal(f"deleting ontology '{name}'", exc)
+        return f"Ontology '{name}' deleted." if deleted else f"Ontology '{name}' not found."
+
+    @tool()
+    async def create_ontology_mapping(
+        data_source: Annotated[str, Field(description="The datasource whose datasets the mapping reads.")],
+        content: Annotated[str | dict[str, Any], Field(
+            description="A whole Ossie 0.3.0.dev0 mapping document, as YAML/JSON text or an object.",
+        )],
+    ) -> str:
+        """Store an Ossie mapping of a datasource under its own name: it populates a stored ontology's concepts from one semantic model of the datasource (or the datasource itself). Refused unless it resolves."""
+        try:
+            text = content_text(content)
+            name = document_name(text)
+            notes = await storage.save_ontology_mapping_text(data_source=data_source, name=name, text=text)
+        except Exception as exc:
+            return _refusal("creating mapping", exc)
+        return f"Mapping '{name}' stored in datasource '{data_source}'." + "".join(f"\nNote: {n}" for n in notes)
+
+    @tool()
+    async def edit_ontology_mapping(
+        name: Annotated[str, Field(description="Mapping to edit.")],
+        data_source: Annotated[str, Field(description="Its datasource.")],
+        description: Annotated[str | None, Field(description="New description.")] = None,
+        ontology_ref: Annotated[dict[str, str] | None, Field(description='New ontology reference {"name", "iri"}.')] = None,
+        semantic_model_ref: Annotated[dict[str, str] | None, Field(
+            description='New semantic model reference {"name", "iri"}: a semantic model of the datasource, or the '
+                        "datasource's own name.",
+        )] = None,
+        concept_mappings: Annotated[list[dict[str, Any]] | None, Field(
+            description='Concept mappings to add or replace by concept, each {"concept", "object_mappings", '
+                        '"link_mappings"}.',
+        )] = None,
+        remove_concept_mappings: Annotated[list[str] | None, Field(
+            description="Concept mappings to remove, by concept.",
+        )] = None,
+    ) -> str:
+        """Edit a mapping in place; the rest of its text stays as written. Refused unless the result resolves."""
+        edits = {k: v for k, v in {"description": description, "ontology_ref": ontology_ref,
+                                   "semantic_model_ref": semantic_model_ref}.items() if v is not None}
+        try:
+            notes = await storage.edit_ontology_mapping(name, data_source=data_source,
+                                                        concept_mappings=concept_mappings,
+                                                        remove_concept_mappings=remove_concept_mappings, **edits)
+        except Exception as exc:
+            return _refusal(f"editing mapping '{name}'", exc)
+        return f"Mapping '{name}' edited." + "".join(f"\nNote: {n}" for n in notes)
+
+    @tool()
+    async def delete_ontology_mapping(
+        name: Annotated[str, Field(description="Mapping to delete.")],
+        data_source: Annotated[str, Field(description="Its datasource.")],
+    ) -> str:
+        """Delete a mapping."""
+        try:
+            deleted = await storage.delete_ontology_mapping(name, data_source)
+        except Exception as exc:
+            return _refusal(f"deleting mapping '{name}'", exc)
+        return f"Mapping '{name}' deleted." if deleted else f"Mapping '{name}' not found."
 
     @tool()
     async def validate_datasets(
@@ -2002,6 +2262,8 @@ def _json_metadata(result: SlayerResponse) -> dict[str, Any]:
             meta["population"] = result.population
         meta["population_inferred"] = True
         meta["row_sources"] = list(result.row_sources)
+    if result.time_zone is not None:
+        meta["time_zone"] = result.time_zone
     return meta
 
 
@@ -2013,6 +2275,7 @@ def _text_envelope(result: SlayerResponse, fmt: str, body: str) -> str:
         return (
             _population_comment(population)
             + ("" if not sources else f"# row sources: {', '.join(sources)}\n")
+            + ("" if result.time_zone is None else f"# time zone: {result.time_zone}\n")
             + _csv_attribute_comments(result)
             + _csv_warning_comments(result)
             + body
@@ -2022,6 +2285,7 @@ def _text_envelope(result: SlayerResponse, fmt: str, body: str) -> str:
         + _attributes_footer(result.attributes)
         + _population_footer(population)
         + _row_sources_footer(sources, after_population=population is not None)
+        + ("" if result.time_zone is None else f"\n\nTime zone: {result.time_zone}")
         + _format_warnings(result)
     )
 
