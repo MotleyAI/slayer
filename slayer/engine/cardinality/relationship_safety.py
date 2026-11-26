@@ -1042,7 +1042,7 @@ def crossing_local_root_predicate(
     def _pred(k: ValueKey) -> bool:
         return (
             isinstance(k, AggregateKey)
-            and k.partition_keys is None
+            and k.written_grain is None
             and not homes.target_rooted(k)
             # A host-locus wrap already compiles inline at the producer grain; its
             # attached parameter's crossing closure must not re-route it onto a
