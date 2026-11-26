@@ -144,11 +144,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHON_VERSION: "3.14"
-      # TEMPORARY diagnostic: report where a leaked sqlite3 connection was opened, as a warning instead of an error.
-      PYTEST_ADDOPTS: >-
-        -p tests._sqlite_leak_probe
-        -W "default:unclosed database:ResourceWarning"
-        -W "default:Exception ignored while finalizing database connection:pytest.PytestUnraisableExceptionWarning"
     strategy:
       matrix:
         shard: [1, 2, 3, 4]
