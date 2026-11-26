@@ -10,7 +10,6 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    IllegalWindowInFilterError,
     UnknownReferenceError,
     UnresolvableDimensionRelationshipError,
 )
@@ -511,12 +510,12 @@ class TestFilterBinder:
 
 
 # ---------------------------------------------------------------------------
-# Windowed DatasetField.sql in filter → IllegalWindowInFilterError
+# Portable windowed DatasetField resolves as a windowed field
 # ---------------------------------------------------------------------------
 
 
-class TestWindowInFilter:
-    def test_portable_windowed_field_is_refused_at_resolution(self):
+class TestWindowedField:
+    def test_portable_windowed_field_resolves_as_windowed(self):
         model = _orders().model_copy(update={
             "fields": list(_orders().fields) + [
                 DatasetField(
@@ -527,8 +526,10 @@ class TestWindowInFilter:
             ],
         })
         peers = [_customers(), _regions()]
-        with pytest.raises(IllegalWindowInFilterError, match="rolling_rank"):
-            resolved_dataset(model, ds_type="postgres", datasets=peers, live={})
+        resolved = resolved_dataset(model, ds_type="postgres", datasets=peers, live={})
+        field = resolved.get_field("rolling_rank")
+        assert field is not None
+        assert field.windowed
 
 
 class TestNestedAggregateParamDimAliasMap:

@@ -54,6 +54,8 @@ from tests._dev2120_fixtures import (
     lib_dataset,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2457_fixtures import server_statements as window_statements, window_datasets
+from tests._dev2457_matrix import CASE_IDS as WINDOW_CASE_IDS, CASES as WINDOW_CASES, WindowCase, check_case
 from tests._cast_fixtures import check_author_casts, check_boolean_casts, check_try_cast_targets
 from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
@@ -1394,6 +1396,33 @@ def _trino_dev2120_storage(trino_container, tmp_path_factory):
 class TestTrinoPortableLibrary:
     async def test_library(self, _trino_dev2120_storage) -> None:
         await check_library(SlayerQueryEngine(storage=_trino_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _trino_windows_storage(trino_container, tmp_path_factory):
+    with _seeded_schema(trino_container, window_statements("trino")) as schema:
+        yield _storage(
+            str(tmp_path_factory.mktemp("trino_windows")), _ds_config(trino_container, schema),
+            window_datasets(data_source=_DS),
+        )
+
+
+@pytest.fixture
+def trino_windows(_trino_windows_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_trino_windows_storage)
+
+
+@pytest.mark.integration
+class TestTrinoWindows:
+    @pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+    async def test_the_matrix(self, trino_windows: SlayerQueryEngine, case: WindowCase) -> None:
+        await check_case(trino_windows, case)
 
 
 # ---------------------------------------------------------------------------

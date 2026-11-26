@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import SlayerError
+from slayer.core.errors import WindowFunctionError
 from slayer.core.syntax import AggCall, WindowCall, canonical_metric_text, parse_expr
+from tests._dev2457_fixtures import raw, run, window_engine
 
 DISTINCT_FORMS = ("count", "sum", "avg", "min", "max", "array_agg")
 ORDERED_SET_FORMS = ("PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)", "PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)")
@@ -79,15 +80,17 @@ def test_unsupported_ordered_set_names_both_forms(text: str) -> None:
     assert all(form in str(refused.value) for form in ORDERED_SET_FORMS), str(refused.value)
 
 
+@pytest.mark.parametrize("backend", ["duckdb", "sqlite"])
 @pytest.mark.parametrize("text", [
-    "SUM(DISTINCT amount) OVER (PARTITION BY region)",
-    "avg(distinct amount) OVER ()",
-    "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY amount) OVER ()",
+    "SUM(DISTINCT orders.amount) OVER (PARTITION BY orders.region)",
+    "avg(distinct orders.amount) OVER ()",
+    "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY orders.amount) OVER ()",
 ])
-def test_distinct_or_ordered_set_inside_a_window_is_a_typed_error(text: str) -> None:
+async def test_distinct_or_ordered_set_inside_a_window_is_a_typed_error(backend: str, text: str) -> None:
     """Scenario: DISTINCT inside a window."""
-    with pytest.raises(SlayerError):
-        parse_expr(text)
+    async with window_engine(backend) as engine:
+        with pytest.raises(WindowFunctionError):
+            await run(engine, raw("orders", text))
 
 
 @pytest.mark.parametrize(("windowed", "plain"), [
@@ -95,7 +98,7 @@ def test_distinct_or_ordered_set_inside_a_window_is_a_typed_error(text: str) -> 
     ("PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY x) OVER ()", "PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY x)"),
 ])
 def test_the_window_reading_wraps_the_plain_reading(windowed: str, plain: str) -> None:
-    window = parse_expr(windowed, windows=True)
+    window = parse_expr(windowed)
     assert isinstance(window, WindowCall)
     assert isinstance(window.function, AggCall)
     assert window.function == parse_expr(plain)

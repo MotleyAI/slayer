@@ -552,4 +552,13 @@ ROWS: Tuple[LedgerRow, ...] = (
          message='Order key … is a list, which has no sort order.'
          + SUGGEST + 'Order by a scalar field, or by length(...) of the list.',
          category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function="check_row_window", exc="WindowFunctionError",
+         message="The window `…` names no dataset, so no rows to run over: it reads no field, or only the time "
+         "spine's." + SUGGEST + "Read a field of the dataset whose rows it numbers or aggregates, e.g. ORDER BY "
+         "orders.id.",
+         category="checker", family="windows", user=True, owner="checker"),
+    _row(module=_EE, function="_check_window_operands", exc="WindowFunctionError",
+         message="The window `…` reads `…` per cell, but it is neither aggregate-valued nor a member of the "
+         "window's operand grain." + SUGGEST + "Add `…` as a dimension, or aggregate it.",
+         category="checker", family="windows", user=True, owner="checker"),
 )

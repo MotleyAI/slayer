@@ -10,11 +10,10 @@ import pytest
 
 from slayer.core import syntax
 from slayer.core.enums import DataType
-from slayer.core.errors import IllegalWindowInFilterError
 from slayer.core.keys import AggregateKey, FieldKey, Grain, TransformKey, ValueKey
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
 from slayer.core.scope import DatasetScope
-from slayer.core.syntax import AggCall, Cast, DottedRef, Literal, Ref, ScalarCall, TransformCall, parse_expr
+from slayer.core.syntax import AggCall, Cast, DottedRef, Literal, Ref, ScalarCall, TransformCall, WindowCall, parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -390,9 +389,9 @@ class TestRejectionsWithHints:
     def test_regex_operators(self, op: str) -> None:
         rejected(f"status {op} '^p'", op)
 
-    def test_raw_over(self) -> None:
-        with pytest.raises(IllegalWindowInFilterError):
-            parse_expr("sum(amount) OVER (PARTITION BY region)")
+    def test_raw_over_parses_as_a_window(self) -> None:
+        assert parse_expr("sum(amount) OVER (PARTITION BY region)") == WindowCall(
+            function=AggCall(source=Ref(name="amount"), agg="sum"), partition=(Ref(name="region"),))
 
     def test_over_inside_string_is_text(self) -> None:
         same("status = 'OVER('", "status == 'OVER('")

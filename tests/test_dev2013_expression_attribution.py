@@ -36,6 +36,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    WindowKey,
 )
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
 from slayer.core.query import QueryMetric, SlayerQuery
@@ -660,6 +661,9 @@ DISPLAY_CASES: List[Tuple[ValueKey, List[str]]] = [
     (_lit("Alpha"), ["'Alpha'"]),
     (_sum([CITY, REGION]), ["sum", "amount", "partition_by", "city", "region"]),
     (TransformKey(op="rank", input=_sum([CITY])), ["rank", "sum", "amount"]),
+    (WindowKey(function="row_number", partition=(CITY,), order=(FieldKey(leaf="amount"),), descending=(True,),
+               nulls_first=(False,)),
+     ["ROW_NUMBER() OVER (PARTITION BY city ORDER BY amount DESC NULLS LAST)"]),
     (_eq(CITY, _lit("Alpha")), ["city == 'Alpha'"]),
     (ScalarCallKey(name="upper", args=(CITY,)), ["upper(city)"]),
     (TimePointCmpKey(op=">=", operand=FieldKey(leaf="ordered_at"), point="last month"),

@@ -1,5 +1,5 @@
-"""Detect SQL window functions: a raw ``OVER (...)`` in filter or metric text is refused, and a field whose native SQL
-holds one is read as a column its dataset's relation materialises."""
+"""Detect SQL window functions: a field whose native SQL holds one is read as a column its dataset's relation
+materialises, and a dataset filter holding one is a filter cycle."""
 
 import re
 
@@ -31,13 +31,3 @@ def holds_window(sql: str, *, dialect: str | None = None) -> bool:
     except sqlglot.errors.ParseError:
         return False
     return parsed.find(exp.Window) is not None
-
-
-WINDOW_IN_FILTER_ERROR = (
-    "contains a window function (OVER clause). Window functions are not "
-    "allowed in WHERE on SQLite or most dialects. Either: (a) use a SLayer "
-    "transform — rank(), first(), last(), lag(), lead() — e.g. "
-    "`rank(<metric>, direction='desc') <= 3`; (b) define the window expression as a "
-    "DatasetField.sql on the dataset and filter on the field; or (c) compute it "
-    "in an earlier stage of a multi-stage dataset."
-)

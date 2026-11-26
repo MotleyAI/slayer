@@ -30,6 +30,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    WindowKey,
     substitute_value_keys,
     SqlFragmentKey,
 )
@@ -116,6 +117,7 @@ class TestTotality:
             LiteralKey: LiteralKey(value=Decimal("1")),
             AggregateKey: AGG,
             TransformKey: TransformKey(op="cumsum", input=AGG),
+            WindowKey: WindowKey(function="sum", args=(AMOUNT,), partition=(CITY,)),
             ArithmeticKey: ArithmeticKey(op="+", operands=(CITY, AMOUNT)),
             ScalarCallKey: ScalarCallKey(name="coalesce", args=(CITY, "x")),
             TimePointCmpKey: TimePointCmpKey(op="=", operand=CITY, point="2025-Q1"),

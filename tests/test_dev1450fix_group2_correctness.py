@@ -20,7 +20,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import AggregationNotAllowedError, IllegalWindowInFilterError
+from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.keys import AggregateKey, StarKey, TransformKey
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, SlayerQuery
@@ -30,7 +30,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import _metric_expression_refs
 from slayer.storage.sqlite_conn import transaction
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.core.syntax import parse_expr, parse_expr as _parse
+from slayer.core.syntax import WindowCall, parse_expr, parse_expr as _parse
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -206,9 +206,8 @@ def test_aggregation_eligibility_allowed_aggregations_whitelist():
         bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
 
-def test_real_over_clause_still_rejected():
-    with pytest.raises(IllegalWindowInFilterError):
-        parse_expr("rank() OVER (ORDER BY x)")
+def test_real_over_clause_parses_as_a_window():
+    assert isinstance(parse_expr("rank() OVER (ORDER BY x)"), WindowCall)
 
 
 # ---------------------------------------------------------------------------

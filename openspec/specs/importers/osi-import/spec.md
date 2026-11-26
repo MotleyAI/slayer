@@ -163,7 +163,11 @@ A non-portable extension entry SHALL be accepted only when its `data` is an obje
 
 #### Scenario: A windowed metric is reported, not refused
 - **WHEN** upstream's `tpcds_semantic_model.yaml` is imported
-- **THEN** the document is stored whole and the report lists its windowed metrics as not evaluable yet
+- **THEN** the document is stored whole with its text unchanged, and the report lists none of `cumulative_sales`, `brand_rank_in_store` and `monthly_sales_change` as not evaluable
+
+#### Scenario: The TPC-DS window metrics evaluate
+- **WHEN** the imported TPC-DS document is queried over a small fixture of `store_sales`, `date_dim`, `store` and `item` for `cumulative_sales` by `date_dim.d_date`, `brand_rank_in_store` by `store.s_store_sk` and `item.i_brand`, and `monthly_sales_change` by `date_dim.d_year` and `date_dim.d_moy`
+- **THEN** each returns the values the metric's SQL gives when run by hand over the grouped fixture, and each queried without the grouping its window names fails with a typed error naming the missing key
 
 ### Requirement: Re-import replaces datasets converted in 1.x
 When a document is imported into a datasource holding standalone datasets that a 1.x import created from a document of the same `name`, the import SHALL replace those datasets with the native document. Each model-scoped metric the 1.x import attached to an anchor dataset SHALL become the document's model-scoped metric and SHALL be listed in the report as moved. SLayer-only content of a replaced dataset that the new document does not express SHALL be carried into `SLAYER` entries of the corresponding document entity, never dropped; content that names an entity the new document no longer declares SHALL be listed in the report. References to the replaced datasets by name SHALL keep resolving.

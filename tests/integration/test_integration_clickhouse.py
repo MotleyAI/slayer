@@ -96,6 +96,8 @@ from tests._dev2120_fixtures import (
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2457_fixtures import server_statements as window_statements, window_datasets
+from tests._dev2457_matrix import CASE_IDS as WINDOW_CASE_IDS, CASES as WINDOW_CASES, WindowCase, check_case
 from tests._cast_fixtures import check_author_casts, check_boolean_casts, check_try_cast_targets
 from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 from tests._dev2000_fixtures import (
@@ -2143,6 +2145,40 @@ class TestClickHousePortableLibrary:
 
     async def test_native_json_column(self, _clickhouse_dev2120_storage) -> None:
         await check_native_json(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _clickhouse_windows_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in window_statements("clickhouse"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_windows")))
+        run_sync(storage.save_datasource(_ds_config(clickhouse_container, db_name)))
+        for model in window_datasets(data_source="testclickhouse"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.fixture
+def clickhouse_windows(_clickhouse_windows_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_clickhouse_windows_storage)
+
+
+@pytest.mark.integration
+class TestClickHouseWindows:
+    @pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+    async def test_the_matrix(self, clickhouse_windows: SlayerQueryEngine, case: WindowCase) -> None:
+        await check_case(clickhouse_windows, case)
 
 
 # ---------------------------------------------------------------------------

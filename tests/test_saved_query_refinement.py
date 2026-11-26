@@ -84,9 +84,9 @@ class TestQueryRefinementModel:
             ("ordered_at", "year"),
         ]
 
-    def test_window_filter_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            QueryRefinement.model_validate({"filter": ["sum(amount) OVER (PARTITION BY region) > 1"]})
+    def test_window_filter_validates(self) -> None:
+        refinement = QueryRefinement.model_validate({"filter": ["sum(amount) OVER (PARTITION BY region) > 1"]})
+        assert refinement.filter == ["sum(amount) OVER (PARTITION BY region) > 1"]
 
     def test_supplied_fields_recorded_including_null(self) -> None:
         assert QueryRefinement.model_validate({"limit": None}).model_fields_set == {"limit"}

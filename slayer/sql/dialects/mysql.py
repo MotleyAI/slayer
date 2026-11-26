@@ -130,6 +130,16 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
     ]
 
 
+#: sqlglot writes these as VARIANCE / VARIANCE_POP / STDDEV: population, no function, population on MySQL.
+_MYSQL_STATISTIC_NAMES: dict[type[Expression], str] = {
+    exp.Variance: "VAR_SAMP", exp.VariancePop: "VAR_POP", exp.Stddev: "STDDEV_SAMP",
+}
+
+
+def _is_double(node: Expression) -> bool:
+    return isinstance(node, exp.Cast) and node.to.is_type(exp.DataType.Type.DOUBLE)
+
+
 class MysqlDialect(SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "mysql"
@@ -139,6 +149,10 @@ class MysqlDialect(SqlDialect):
         exp.DataType.Type.UBIGINT, exp.DataType.Type.UDECIMAL,
     })
     database_name: ClassVar[str] = "MySQL"
+    nulls_clause: bool = False
+    # ``AVG`` over integers keeps only ``div_precision_increment`` decimals.
+    integer_avg: bool = True
+    avg_input_type: str = "DOUBLE"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
@@ -368,12 +382,26 @@ class MysqlDialect(SqlDialect):
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is
-        a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``."""
+        a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``; the sample and population statistics keep
+        MySQL's names."""
         def _fix(node: Expression) -> Expression:
             if isinstance(node, exp.Trunc) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
+            name = _MYSQL_STATISTIC_NAMES.get(type(node))
+            if name is not None:
+                # ``transform`` skips a replaced node's children, so they are rewritten here.
+                return exp.Anonymous(this=name, expressions=[node.this.transform(_fix)])
             return node
         return tree.transform(_fix)
+
+    def true_division(self, quotient: Expression) -> Expression:
+        """The dividend as a ``DOUBLE``: MySQL's ``/`` keeps only ``div_precision_increment`` extra decimal digits."""
+        dividend = quotient
+        while isinstance(dividend, exp.Div) and isinstance(dividend.this, exp.Div):
+            dividend = dividend.this
+        if isinstance(dividend, exp.Div) and not _is_double(dividend.this):
+            dividend.set("this", exp.Cast(this=dividend.this, to=exp.DataType.build("DOUBLE")))
+        return quotient
 
     def rewrite_statement(self, statement: Expression) -> Expression:
         """Emulate NULL placement on each ORDER BY term as written, so an alias stays an alias.

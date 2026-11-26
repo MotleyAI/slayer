@@ -19,7 +19,8 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     attached_inputs,
-    transform_operand_grain,
+    is_transform,
+    value_grain,
     is_kernel_requiring,
     is_reaggregation_key,
     is_row_attach_root,
@@ -134,7 +135,7 @@ class _Walker:
         self.active_td = prebound.main_time_key
         self.transforms = transforms
         self.host_cells = transforms.rows_are_host_cells and all(
-            self._over_host_cells(t) for t in transforms.answers if isinstance(t, TransformKey)
+            self._over_host_cells(t) for t in transforms.answers if is_transform(t)
         )
 
     def _host_inline(self, a: AggregateKey) -> bool:
@@ -146,21 +147,21 @@ class _Walker:
             and not self.local_broadcasts(a)
         )
 
-    def _over_host_cells(self, t: TransformKey) -> bool:
+    def _over_host_cells(self, t: ValueKey) -> bool:
         """Whether ``t``'s domain is its host's cells at the plan grain."""
         grain = Grain.of(self.grain)
         return all(
             self._host_inline(k) if isinstance(k, AggregateKey)
-            else transform_operand_grain(k.input, query_grain=grain, active_bucket=self.active_td) == grain
-            for k in walk_value_keys(t) if isinstance(k, (AggregateKey, TransformKey))
+            else value_grain(k, query_grain=grain, active_bucket=self.active_td) == grain
+            for k in walk_value_keys(t) if isinstance(k, AggregateKey) or is_transform(k)
         )
 
     def routes(self, k: ValueKey) -> bool:
         """Whether transform ``k`` evaluates in its own domain producer."""
         # A dimensionless plan has one cell, the unit.
-        if not (self.transforms.route and self.grain and isinstance(k, TransformKey)) or k in self.transforms.answers:
+        if not (self.transforms.route and self.grain and is_transform(k)) or k in self.transforms.answers:
             return False
-        if k.op == "time_shift" and not _series_mode(k.input, to_original={}):
+        if isinstance(k, TransformKey) and k.op == "time_shift" and not _series_mode(k.input, to_original={}):
             return False
         return not (self.host_cells and self._over_host_cells(k))
 

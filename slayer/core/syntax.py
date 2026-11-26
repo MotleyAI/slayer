@@ -46,7 +46,6 @@ from slayer.core.errors import (
     CallArgumentError,
     ColonSpellingError,
     GranularityCallError,
-    IllegalWindowInFilterError,
     ReservedFunctionNameError,
     UnknownFunctionError,
     VariableError,
@@ -254,7 +253,8 @@ class OrderItem(_BaseNode):
 
     value: Any
     descending: bool = False
-    nulls: Optional[str] = None
+    #: ``"first"`` / ``"last"``, resolved at parse when omitted (Ossie: NULL is the largest value).
+    nulls: str = "last"
 
 
 class WindowFrame(_BaseNode):
@@ -266,7 +266,7 @@ class WindowFrame(_BaseNode):
 
 
 class WindowCall(_BaseNode):
-    """``function OVER (PARTITION BY … ORDER BY … frame)``, read only in window-reading mode."""
+    """``function OVER (PARTITION BY … ORDER BY … frame)``."""
 
     function: Any
     partition: Tuple[Any, ...] = ()
@@ -286,6 +286,24 @@ WINDOW_FUNCTION_ARITIES: Mapping[str, Tuple[int, int]] = MappingProxyType({
     "ntile": (1, 1), "lag": (1, 3), "lead": (1, 3), "first_value": (1, 1), "last_value": (1, 1),
     "nth_value": (2, 2),
 })
+#: The aggregations Ossie windows, by their SQL spelling under ``OVER``.
+WINDOW_AGGREGATES = frozenset({
+    "sum", "count", "count_distinct", "avg", "min", "max", "stddev", "stddev_pop", "stddev_samp", "variance",
+    "var_pop", "var_samp", "median", "percentile",
+})
+
+
+def unwindowable_function(window: "WindowCall") -> Optional[str]:
+    """The function ``window`` applies when Ossie does not window it, else ``None``."""
+    call = window.function
+    if isinstance(call, ScalarCall) and call.name in WINDOW_FUNCTION_ARITIES:
+        return None
+    if isinstance(call, AggCall):
+        agg = call.agg.lower()
+        if agg in WINDOW_AGGREGATES and not call.kwargs and (agg == "percentile" or not call.args):
+            return None
+        return call.agg
+    return getattr(call, "name", type(call).__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -485,12 +503,9 @@ class _State:
         #: While ``literal_comparisons`` reads: each string literal by id with its offsets, and each written comparison.
         self.literals: Optional[Dict[int, Tuple[Any, int, int]]] = None
         self.compared: Optional[Dict[int, Any]] = None
-        #: Window-reading mode: ``OVER (…)`` reads as a ``WindowCall`` instead of refusing.
-        self.windows = False
 
     def reset(self, text: str) -> None:
         self.text, self.farthest, self.calls, self.methods, self.spellings = text, 0, {}, {}, {}
-        self.windows = False
 
 
 _STATE = _State()
@@ -1061,17 +1076,7 @@ _FILTER_CLAUSE = (pp.Suppress(_kw("filter")) + LPAR
                   + _need(RPAR, "FILTER (WHERE <condition>) is missing its ')'."))
 
 
-def _reject_over(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
-    if _STATE.windows:
-        return
-    raise IllegalWindowInFilterError(
-        filter_expr=_STATE.text,
-        source="raw OVER(...) is not allowed in Mode-B DSL",
-        suggestion="use a transform instead (rank, percent_rank, dense_rank, ntile, cumsum, lag, lead, time_shift, …).",
-    )
-
-
-_OVER = pp.Suppress((_kw("over") + pp.FollowedBy(LPAR)).set_parse_action(_reject_over))
+_OVER = pp.Suppress(_kw("over") + pp.FollowedBy(LPAR))
 _WINDOW_FORM = "a window is OVER ([PARTITION BY …] [ORDER BY …] [ROWS|RANGE frame])."
 _PARTITION = _on(
     pp.Suppress(_kw("partition")) + _need(pp.Suppress(_kw("by")), "PARTITION needs BY.")
@@ -1082,8 +1087,10 @@ _PARTITION = _on(
 
 def _order_item(toks: List[Any]) -> OrderItem:
     words = [t.lower() for t in toks[1:]]
-    return OrderItem(value=toks[0], descending="desc" in words,
-                     nulls=next((w for w in words if w in ("first", "last")), None))
+    descending = "desc" in words
+    # Omitted, NULL sorts as the largest value (Ossie): last ascending, first descending.
+    nulls = next((w for w in words if w in ("first", "last")), "first" if descending else "last")
+    return OrderItem(value=toks[0], descending=descending, nulls=nulls)
 
 
 _ORDER_ITEM = _on(
@@ -1184,12 +1191,57 @@ def _is_window_function(node: Any) -> bool:
 def _window_function(call: _PendingCall) -> ScalarCall:
     """An Ossie ranking or offset call under ``OVER``, undispatched."""
     word = call.words[0]
+    name = word.name.lower()
     args, _, distinct = _split_args(call.items, call=word.name)
     if distinct:
         raise _Problem(f"{_DISTINCT_ONLY}.")
     _reject_bare_star_args(args, (), func_name=word.name, original=_STATE.text)
+    low, high = WINDOW_FUNCTION_ARITIES[name]
+    if not low <= len(args) <= high or any(isinstance(a, NamedArg) for a in args):
+        counts = f"{low}" if low == high else f"{low} to {high}"
+        raise _Problem(f"{word.name.upper()} takes {counts} positional argument(s), got {len(args)}.")
+    minimum = _WINDOW_LITERAL_ARGS.get(name)
+    if minimum is not None and len(args) > minimum[0] and not _whole_at_least(args[minimum[0]], minimum[1]):
+        raise _Problem(f"{word.name.upper()}'s {minimum[2]} is a whole-number literal of at least {minimum[1]}.")
     _record_call(call)
-    return ScalarCall(name=word.name.lower(), args=args, written=word.name)
+    return ScalarCall(name=name, args=args, written=word.name)
+
+
+#: Window functions with a literal argument: its position, its least value and what it is.
+_WINDOW_LITERAL_ARGS: Mapping[str, Tuple[int, int, str]] = MappingProxyType({
+    "ntile": (0, 1, "bucket count"), "nth_value": (1, 1, "position"),
+    "lag": (1, 0, "offset"), "lead": (1, 0, "offset"),
+})
+_UNBOUNDED_PRECEDING = "unbounded preceding"
+_UNBOUNDED_FOLLOWING = "unbounded following"
+_BOUND_ORDER = {_UNBOUNDED_PRECEDING: 0, "preceding": 1, "current row": 2, "following": 3, _UNBOUNDED_FOLLOWING: 4}
+
+
+def _whole_at_least(node: Any, least: int) -> bool:
+    if isinstance(node, Placeholder):
+        return True  # judged again once its variable is bound
+    value = node.value if isinstance(node, Literal) else None
+    return (isinstance(value, Decimal) and not isinstance(value, bool) and value == value.to_integral_value()
+            and value >= least)
+
+
+def _check_frame(frame: WindowFrame, *, order: Tuple[OrderItem, ...]) -> None:
+    """A frame's bounds in order, a single bound not FOLLOWING, a RANGE offset over exactly one order key."""
+    start, end = frame.start, frame.end
+    if end is None and start[0] in ("following", _UNBOUNDED_FOLLOWING):
+        raise _Problem(f"a frame's single bound is its start, so it cannot be FOLLOWING; write "
+                       f"{frame.unit.upper()} BETWEEN … AND … FOLLOWING.")
+    if end is not None:
+        rank_start, rank_end = _BOUND_ORDER[start[0]], _BOUND_ORDER[end[0]]
+        first, last = start[1] or Decimal(0), end[1] or Decimal(0)
+        backwards = (rank_start > rank_end or start[0] == _UNBOUNDED_FOLLOWING or end[0] == _UNBOUNDED_PRECEDING
+                     or (rank_start == rank_end and start[0] == "preceding" and first < last)
+                     or (rank_start == rank_end and start[0] == "following" and first > last))
+        if backwards:
+            raise _Problem("a window frame's bounds are out of order: its start comes after its end.")
+    offset = any(b is not None and b[1] is not None for b in (start, end))
+    if frame.unit == "range" and offset and len(order) != 1:
+        raise _Problem(f"a RANGE frame with an offset orders by exactly one key, got {len(order)}.")
 
 
 def _primary_node(toks: List[Any]) -> Any:
@@ -1204,6 +1256,10 @@ def _primary_node(toks: List[Any]) -> Any:
     node = _with_filters(node, items[-1])
     if window is None:
         return node
+    if isinstance(node, AggCall) and node.agg.lower() == "percentile" and not node.args and not node.kwargs:
+        raise _Problem("a windowed percentile takes its fraction: PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x) OVER (…).")
+    if window.frame is not None:
+        _check_frame(window.frame, order=window.order)
     return WindowCall(function=node, partition=window.partition, order=window.order, frame=window.frame)
 
 
@@ -1490,14 +1546,12 @@ class _Reading(BaseModel):
     spellings: Tuple[str, ...] = ()
 
 
-def parse_expr(text: str, *, windows: bool = False) -> ParsedExpr:
+def parse_expr(text: str) -> ParsedExpr:
     """Parse a Mode-B expression string into a ``ParsedExpr``; a deprecated spelling read is noted for its warning.
-    ``windows`` reads ``OVER (…)`` as a ``WindowCall`` (the strict reader's mode).
 
-    Raises ``ValueError`` (empty / syntax / unsupported form / reserved prefix),
-    ``UnknownFunctionError``, or ``IllegalWindowInFilterError`` (raw ``OVER(...)`` outside ``windows``).
+    Raises ``ValueError`` (empty / syntax / unsupported form / reserved prefix) or ``UnknownFunctionError``.
     """
-    reading = _read(text, windows)
+    reading = _read(text)
     if reading.legacy:
         note_legacy_spellings(reading.legacy)
     return reading.parsed
@@ -1578,27 +1632,27 @@ def literal_comparisons(text: str) -> Tuple[LiteralComparison, ...]:
     return tuple(sorted(out, key=lambda c: c.start))
 
 
-def legacy_spans(text: str, *, windows: bool = False) -> Tuple[LegacySpan, ...]:
+def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
     """The deprecated spellings in template ``text``, each with its canonical twin; none when it does not parse."""
     try:
-        return _read(_bound_strings(text), windows).legacy
+        return _read(_bound_strings(text)).legacy
     except Exception:  # noqa: BLE001 — unparseable text has no spans
         return ()
 
 
-def nonossie_spellings(text: str, *, windows: bool = False) -> Tuple[str, ...]:
+def nonossie_spellings(text: str) -> Tuple[str, ...]:
     """The spellings Ossie Layer 1 does not define that template ``text`` uses and the parser rewrites (``~``, ``->>``,
     ``::``, …); none when it does not parse."""
     try:
-        return _read(_bound_strings(text), windows).spellings
+        return _read(_bound_strings(text)).spellings
     except Exception:  # noqa: BLE001 — unparseable text has no spellings
         return ()
 
 
-def call_spans(text: str, *, windows: bool = False) -> Tuple[CallSpan, ...]:
+def call_spans(text: str) -> Tuple[CallSpan, ...]:
     """The single-name calls in template ``text``; none when it does not parse."""
     try:
-        return _read(_bound_strings(text), windows).calls
+        return _read(_bound_strings(text)).calls
     except Exception:  # noqa: BLE001 — unparseable text has no spans
         return ()
 
@@ -1647,19 +1701,18 @@ def _parse_tree(text: str) -> Any:
 
 
 @lru_cache(maxsize=8192)
-def _read(text: str, windows: bool) -> _Reading:
+def _read(text: str) -> _Reading:
     try:
-        return _reading(text, windows=windows)
+        return _reading(text)
     except RecursionError:
         raise ValueError(f"Invalid Mode-B expression {text!r}: it nests too deeply to read.") from None
 
 
-def _reading(text: str, *, windows: bool) -> _Reading:
+def _reading(text: str) -> _Reading:
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
     with _PARSE_LOCK:
         _STATE.reset(text)
-        _STATE.windows = windows
         parsed = cast(ParsedExpr, _parse_tree(text))
         methods, calls = list(_STATE.methods.values()), sorted(_STATE.calls.values(), key=lambda c: c.start)
         spellings = tuple(_STATE.spellings)
@@ -1788,9 +1841,9 @@ def _bound_strings(text: str) -> str:
     return "".join(chars)
 
 
-def parse_template(text: str, *, windows: bool = False) -> ParsedExpr:
+def parse_template(text: str) -> ParsedExpr:
     """``parse_expr`` of ``text`` before its string-literal variables are bound: the shape binding parses."""
-    return parse_expr(_bound_strings(text), windows=windows)
+    return parse_expr(_bound_strings(text))
 
 
 def variable_names(text: str) -> List[str]:
@@ -1802,7 +1855,7 @@ def variable_names(text: str) -> List[str]:
     return list(names)
 
 
-def bind_variables(text: str, variables: Mapping[str, Any], *, windows: bool = False) -> str:
+def bind_variables(text: str, variables: Mapping[str, Any]) -> str:
     """``text`` with every ``{name}`` bound as a literal value: inside a string literal its text,
     in a bare literal slot a number or boolean, as a whole ``IN`` list a list. The template is
     parsed first, so no value can change the expression's structure."""
@@ -1819,8 +1872,7 @@ def bind_variables(text: str, variables: Mapping[str, Any], *, windows: bool = F
     for m, in_string in _lookups(text, regions):
         _check_variable(m, text=text, variables=variables, in_string=in_string)
     # Strings bound and ``{{`` / ``}}`` outside strings read as braces: the grammar judges the variable slots.
-    template = parse_expr(_spliced(text, variables=variables, regions=regions, kinds=("string",), code_braces=True),
-                          windows=windows)
+    template = parse_expr(_spliced(text, variables=variables, regions=regions, kinds=("string",), code_braces=True))
     text_slots = _text_slot_ordinals(template, variables=variables)
     return _spliced(
         text, variables=variables, regions=regions, kinds=("string", "code"), code_braces=False, text_slots=text_slots,
@@ -1838,10 +1890,10 @@ def _in_slot_ordinals(template: Any) -> frozenset[int]:
     )
 
 
-def parse_bound_expr(text: str, variables: Mapping[str, Any], *, windows: bool = False) -> ParsedExpr:
+def parse_bound_expr(text: str, variables: Mapping[str, Any]) -> ParsedExpr:
     """``parse_expr`` of ``text``, each placeholder ``bind_variables`` left as a whole ``IN`` right-hand side bound to
     its value in ``variables``."""
-    return _with_in_variables(parse_expr(text, windows=windows), variables=variables)
+    return _with_in_variables(parse_expr(text), variables=variables)
 
 
 def _with_in_variables(node: Any, *, variables: Mapping[str, Any]) -> Any:
@@ -2176,6 +2228,10 @@ def walk_parsed_refs(
     if isinstance(parsed, BoolOp):
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
+        return
+    if isinstance(parsed, WindowCall):
+        for node in (parsed.function, *parsed.partition, *(item.value for item in parsed.order)):
+            yield from walk_parsed_refs(node)
 
 
 # ---------------------------------------------------------------------------
@@ -2187,7 +2243,7 @@ def walk_parsed_refs(
 # scalar expression, predicates included (a bare TupleLit is not a value).
 _AGG_SOURCE_KINDS = (
     Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, ScalarCall, DateTrunc, NamedArg, Cast, Arith,
-    UnaryOp, Cmp, BoolOp,
+    UnaryOp, Cmp, BoolOp, WindowCall,
 )
 
 
@@ -3228,7 +3284,48 @@ def _render(parsed: Any, *, style: _Style) -> str:  # NOSONAR(S3776) — flat pe
     if isinstance(parsed, BoolOp):
         prec = _precedence(parsed)
         return f" {parsed.op} ".join(_operand_text(o, minimum=prec + 1, style=style) for o in parsed.operands)
+    if isinstance(parsed, WindowCall):
+        return _window_text(parsed, style=style)
     return str(parsed)
+
+
+def _window_text(parsed: WindowCall, *, style: _Style) -> str:
+    """``function OVER (PARTITION BY … ORDER BY … frame)``, each order item's NULL placement stated."""
+    head = _window_head_text(parsed.function, style=style)
+    spec: List[str] = []
+    if parsed.partition:
+        spec.append("PARTITION BY " + ", ".join(_render(v, style=style) for v in parsed.partition))
+    if parsed.order:
+        spec.append("ORDER BY " + ", ".join(
+            f"{_render(i.value, style=style)}{' DESC' if i.descending else ''} NULLS {i.nulls.upper()}"
+            for i in parsed.order))
+    if parsed.frame is not None:
+        spec.append(_frame_text(parsed.frame))
+    return f"{head} OVER ({' '.join(spec)})"
+
+
+def _window_head_text(call: ParsedExpr, *, style: _Style) -> str:
+    """The function a window applies, as text."""
+    if not isinstance(call, AggCall):
+        return _render(call, style=style)
+    if call.agg == "percentile":
+        p = call.args[0].value if isinstance(call.args[0], NamedArg) else call.args[0]
+        head = f"PERCENTILE_CONT({_render(p, style=style)}) WITHIN GROUP (ORDER BY {_render(call.source, style=style)})"
+    elif call.agg == "count_distinct":
+        head = f"COUNT(DISTINCT {_render(call.source, style=style)})"
+    else:
+        return _canonical_agg_text(call, style=_Style.CANONICAL if style is _Style.LEGACY else style)
+    return head if call.filter is None else f"{head} FILTER (WHERE {_render(call.filter, style=style)})"
+
+
+def _frame_text(frame: WindowFrame) -> str:
+    def bound(b: Tuple[str, Optional[Decimal]]) -> str:
+        kind, offset = b
+        return kind.upper() if offset is None else f"{offset} {kind.upper()}"
+
+    if frame.end is None:
+        return f"{frame.unit.upper()} {bound(frame.start)}"
+    return f"{frame.unit.upper()} BETWEEN {bound(frame.start)} AND {bound(frame.end)}"
 
 
 def _canonical_agg_text(parsed: AggCall, *, style: _Style) -> str:
@@ -3383,7 +3480,7 @@ def _closing_paren(text: str, open_at: int) -> int:
 
 
 def _row_level(text: str, *, part: str) -> ParsedExpr:
-    parsed = parse_expr(text, windows=True)
+    parsed = parse_expr(text)
     for node in walk_parsed(parsed):
         if isinstance(node, _ROW_LEVEL_REFUSED):
             kind = "a window" if isinstance(node, WindowCall) else "an aggregate or a transform"
