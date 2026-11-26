@@ -29,7 +29,8 @@ Discord = "https://discord.gg/egWxMctHCA"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-sqlglot = {version = ">=30.17", extras = ["c"]}
+# 30.18+ changes emitted SQL and drops Scope.union_scopes; DEV-2468 lifts the cap.
+sqlglot = {version = ">=30.17,<30.18", extras = ["c"]}
 sqlalchemy = ">=2.0.43,<2.1"
 greenlet = ">=1"
 pydantic = ">=2.12"
@@ -52,9 +53,11 @@ pyodbc = {version = ">=5.0", optional = true}
 sqlalchemy-bigquery = {version = ">=1.11", optional = true, python = "<3.15"}
 # DuckDB + jafgen are core deps so the bundled `slayer datasources create demo`
 # works after a single `pip install motley-slayer`. 1.1 is the first catalog with every key column ingestion reads.
-duckdb = ">=1.1"
+# 2.0 drops relation fetch methods and changes an emulated percentile; DEV-2482 lifts the cap.
+duckdb = ">=1.1,<2.0"
 duckdb-engine = ">=0.13"
-jafgen = "^0.4.14"
+# The demo data (and the count the docs show) depends on this exact jafgen version.
+jafgen = "0.4.14"
 # esprima is a pure-Python ESTree parser (zero transitive deps) used by the
 # Cube JavaScript-config importer (`slayer import-cube` on `.js`
 # files). Core dep so `import-cube` works after a single
@@ -79,9 +82,10 @@ numpy = {version = ">=1.24", optional = true}
 # ``ladybug``.
 ladybug = {version = ">=0.1", optional = true}
 # Snowflake support. snowflake-sqlalchemy >= 1.7 is the first
-# release with SQLAlchemy 2.x support (a hard repo dep).
+# release with SQLAlchemy 2.x support (a hard repo dep). 2.0 registers an async
+# dialect SLayer refuses; DEV-2468 lifts the cap.
 snowflake-connector-python = {version = ">=3.13", optional = true}
-snowflake-sqlalchemy = {version = ">=1.7", optional = true}
+snowflake-sqlalchemy = {version = ">=1.7,<2.0", optional = true}
 # 0.340: credentials pass through undecoded, and HTTP auth needs allow_insecure_auth.
 trino = {version = ">=0.340", optional = true}
 # OpenTelemetry for slayer.otel (opt-in traces, metrics and logs over OTLP).
@@ -120,7 +124,7 @@ psycopg2-binary = "^2.9.11"
 asyncpg = ">=0.27"
 aiomysql = ">=0.2"
 pytest-benchmark = "^5.2.3"
-duckdb = ">=1.1"
+duckdb = ">=1.1,<2.0"
 duckdb-engine = ">=0.13"
 nbclient = ">=0.10"
 nbformat = ">=5.10"
