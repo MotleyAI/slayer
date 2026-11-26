@@ -3252,6 +3252,84 @@ def rewrite_colon_spans(text: str, *, units: Optional[frozenset[str]] = None) ->
     return _rewritten(text, spans=unique, start=0, end=len(text), units=units or frozenset())
 
 
+# ---------------------------------------------------------------------------
+# Ossie mapping expressions
+# ---------------------------------------------------------------------------
+
+
+class MappingExpression(BaseModel):
+    """An Ossie mapping expression: a row-level ``value``, kept only for rows where ``predicate`` holds."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    value: Any
+    predicate: Any = None
+
+
+_WHERE_RE = re.compile(r"(?<![\w.$])where(?![\w$])", re.IGNORECASE)
+_ROW_LEVEL_REFUSED = (AggCall, TransformCall, WindowCall, StarSource)
+
+
+def _top_level_where(text: str) -> Optional[re.Match[str]]:
+    """The first ``WHERE`` keyword in ``text``'s code outside every parenthesis."""
+    depth = 0
+    for region in _regions(text):
+        if region.kind != "code":
+            continue
+        cursor = region.start
+        for match in _WHERE_RE.finditer(text, region.start, region.end):
+            chunk = text[cursor:match.start()]
+            depth += chunk.count("(") - chunk.count(")")
+            cursor = match.start()
+            if depth == 0:
+                return match
+        chunk = text[cursor:region.end]
+        depth += chunk.count("(") - chunk.count(")")
+    return None
+
+
+def _closing_paren(text: str, open_at: int) -> int:
+    """The offset of the ``)`` closing the ``(`` at ``open_at``; ``-1`` when unclosed."""
+    depth = 0
+    for region in _regions(text):
+        if region.kind != "code" or region.end <= open_at:
+            continue
+        for i in range(max(region.start, open_at), region.end):
+            depth += (text[i] == "(") - (text[i] == ")")
+            if depth == 0:
+                return i
+    return -1
+
+
+def _row_level(text: str, *, part: str) -> ParsedExpr:
+    parsed = parse_expr(text, windows=True)
+    for node in walk_parsed(parsed):
+        if isinstance(node, _ROW_LEVEL_REFUSED):
+            kind = "a window" if isinstance(node, WindowCall) else "an aggregate or a transform"
+            raise ValueError(f"Mapping expression {part} {text!r} uses {kind}; a mapping expression is row-level.")
+    return parsed
+
+
+def parse_mapping_expression(text: str) -> MappingExpression:
+    """Read ``<value>`` or ``<value> WHERE ( <predicate> )``, each a row-level expression; raises ``ValueError``."""
+    where = _top_level_where(text)
+    if where is None:
+        return MappingExpression(value=_row_level(text, part="value"))
+    value, rest = text[:where.start()], text[where.end():]
+    opening = len(rest) - len(rest.lstrip())
+    if not rest.strip().startswith("("):
+        raise ValueError(f"Mapping expression {text!r}: the predicate after WHERE is written in parentheses.")
+    close = _closing_paren(rest, opening)
+    if close < 0:
+        raise ValueError(f"Mapping expression {text!r}: the predicate's parenthesis is not closed.")
+    if rest[close + 1:].strip():
+        raise ValueError(f"Mapping expression {text!r}: nothing may follow the parenthesised predicate.")
+    if not value.strip():
+        raise ValueError(f"Mapping expression {text!r}: there is no value before WHERE.")
+    return MappingExpression(value=_row_level(value, part="value"),
+                             predicate=_row_level(rest[opening + 1:close], part="predicate"))
+
+
 def _rewritten(text: str, *, spans: List[_ColonSpan], start: int, end: int, units: frozenset[str]) -> str:
     """``text[start:end]`` with its outermost colon spans replaced by their twins."""
     out: List[str] = []
@@ -3272,7 +3350,8 @@ def _rewritten(text: str, *, spans: List[_ColonSpan], start: int, end: int, unit
 __all__ = [
     "AggCall", "ArrayLit", "Arith", "BoolOp", "CallSource", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr",
     "BoundVariable", "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
-    "CallSpan", "DateTrunc", "NamedArg", "DATE_TRUNC_FORM", "call_spans", "legacy_spans",
+    "CallSpan", "DateTrunc", "MappingExpression", "NamedArg", "DATE_TRUNC_FORM", "call_spans", "legacy_spans",
+    "parse_mapping_expression",
     "aggregation_reading", "bind_variables", "call_keywords", "call_source", "canonical_metric_text",
     "classify_arguments", "colon_twin", "comparison_hint",
     "bare_literal_text", "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",

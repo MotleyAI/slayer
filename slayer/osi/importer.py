@@ -1,12 +1,13 @@
-"""``slayer import-osi``: store each valid Ossie semantic-model document natively, as written.
+"""``slayer import-osi``: store each valid Ossie semantic-model, ontology and mapping document natively, as written.
 
 Earlier shapes are upgraded as Ossie's migration guidance prescribes; a legacy wrapper is split into flat documents,
-its datasets' introspected columns declared as fields. Nothing is converted: an entity SLayer cannot evaluate yet is
-stored and reported.
+its datasets' introspected columns declared as fields, and embedded ``ontology_mappings`` become standalone mappings.
+Nothing is converted: an entity SLayer cannot evaluate yet is stored and reported.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from slayer.core.portable_sql import portable_entity_expression
 from slayer.core.semantic_model import OSSIE_VERSION, ossie_validity_errors
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.ingestion import introspect_table_to_dataset
+from slayer.ontology.documents import DocumentKind, document_kind, ontology_reasons
 from slayer.osi.yaml_writer import dump_yaml
 from slayer.sql.ossie_source import parse_source
 
@@ -52,6 +54,8 @@ class ImportRefusal(BaseModel):
 
 class OsiImportResult(BaseModel):
     stored: list[str] = []
+    ontologies: list[str] = []
+    mappings: list[str] = []
     refused: list[ImportRefusal] = []
     entries: list[ImportEntry] = []
 
@@ -235,33 +239,110 @@ def _portable_document(doc: dict[str, Any]) -> None:
             entity["expression"] = portable_entity_expression(entity["expression"])
 
 
+_REFERENCES: tuple[tuple[DocumentKind, str], ...] = (("ontology", "ontology_ref"),
+                                                     ("semantic_model", "semantic_model_ref"))
+
+
+def _reasons(exc: Exception) -> list[str]:
+    reasons = getattr(exc, "reasons", None)
+    return [str(r) for r in reasons] if reasons else [str(exc).splitlines()[0]]
+
+
+def _read(file: Path) -> tuple[str, dict[str, Any], DocumentKind]:
+    """A file's text, data and document kind; raises ``_Refused`` for anything else."""
+    text = file.read_text(encoding="utf-8")  # NOSONAR(S8707) — reading the file the CLI user names is the feature
+    try:
+        data = parse_document_text(text)
+    except UnreadableDocumentError as exc:
+        raise _Refused(*exc.reasons) from exc
+    except RecursionError:
+        raise _Refused("the document nests too deeply to read") from None
+    kind = document_kind(data)
+    if kind is None or not isinstance(data, dict):
+        raise _Refused("the file is none of a semantic-model document (root `datasets` or a legacy "
+                       "`semantic_model`), an ontology document (root `ontology`) or a mapping document (root "
+                       "`concept_mappings`, `ontology_ref` and `semantic_model_ref`)")
+    return text, data, kind
+
+
+class _Undo:
+    """Restores the ontology, semantic models and mappings an embedded-mapping upgrade wrote."""
+
+    def __init__(self, *, storage: Any, data_source: str) -> None:
+        self.storage = storage
+        self.data_source = data_source
+        self.steps: list[tuple[str, str, str | None]] = []
+
+    async def ontology(self, name: str) -> None:
+        held = await self.storage.get_ontology_text(name) if name in await self.storage.list_ontologies() else None
+        self.steps.append(("ontology", name, held))
+
+    async def semantic_model(self, name: str) -> None:
+        self.steps.append(("semantic_model", name, await self.storage.get_semantic_model_text(
+            name, data_source=self.data_source)))
+
+    async def mapping(self, name: str) -> None:
+        held = await self.storage.get_ontology_mapping_text(name, self.data_source) if (
+            self.data_source, name) in await self.storage.list_ontology_mappings(self.data_source) else None
+        self.steps.append(("mapping", name, held))
+
+    async def run(self) -> None:
+        for kind, name, held in reversed(self.steps):
+            with contextlib.suppress(Exception):
+                await self._restore(kind, name, held)
+
+    async def _restore(self, kind: str, name: str, held: str | None) -> None:
+        if kind == "mapping":
+            if held is None:
+                await self.storage.delete_ontology_mapping(name, self.data_source)
+            else:
+                await self.storage.save_ontology_mapping_text(data_source=self.data_source, name=name, text=held)
+        elif kind == "semantic_model":
+            if held is None:
+                await self.storage.delete_semantic_model(name, data_source=self.data_source)
+            else:
+                await self.storage.save_semantic_model_text(data_source=self.data_source, name=name, text=held)
+        elif held is None:
+            await self.storage.delete_ontology(name)
+        else:
+            await self.storage.save_ontology_text(name=name, text=held)
+
+
 class _Importer:
     def __init__(self, *, storage: Any, data_source: str, engine: SlayerQueryEngine | None) -> None:
         self.storage = storage
         self.data_source = data_source
         self.engine = engine
         self.result = OsiImportResult()
+        self.refused_names: dict[DocumentKind, set[str]] = {"ontology": set(), "semantic_model": set(),
+                                                            "mapping": set()}
 
     def entry(self, kind: str, message: str, *, document: str | None = None, entity: str | None = None) -> None:
         self.result.entries.append(ImportEntry(kind=kind, document=document, entity=entity, message=message))
 
     async def run(self, path: Path) -> OsiImportResult:
+        read: list[tuple[Path, str, dict[str, Any], DocumentKind]] = []
         for file in _files(path):
             try:
-                await self._file(file)
+                read.append((file, *_read(file)))
             except _Refused as refused:
-                self.result.refused.append(ImportRefusal(file=str(file), reasons=refused.reasons))
+                self._refuse(file, refused)
+        for phase, step in (("ontology", self._ontology), ("semantic_model", self._semantic_model),
+                            ("mapping", self._mapping)):
+            for file, text, data, kind in read:
+                if kind != phase:
+                    continue
+                try:
+                    await step(file, text, data)
+                except _Refused as refused:
+                    self._refuse(file, refused)
+                    self.refused_names[kind].add(str(data.get("name")))
         return self.result
 
-    async def _file(self, file: Path) -> None:
-        text = file.read_text(encoding="utf-8")  # NOSONAR(S8707) — reading the file the CLI user names is the feature
-        try:
-            data = parse_document_text(text)
-        except UnreadableDocumentError as exc:
-            raise _Refused(*exc.reasons) from exc
-        if not isinstance(data, dict) or ("datasets" not in data and "semantic_model" not in data):
-            raise _Refused("the file is not a semantic-model document (it holds neither `datasets` nor a legacy "
-                           "`semantic_model`); ontology and mapping documents are not imported")
+    def _refuse(self, file: Path, refused: _Refused) -> None:
+        self.result.refused.append(ImportRefusal(file=str(file), reasons=refused.reasons))
+
+    async def _semantic_model(self, _file: Path, text: str, data: dict[str, Any]) -> None:
         if "datasets" in data and "semantic_model" in data:
             raise _Refused("the document mixes the flat shape (`datasets` at its root) with a legacy `semantic_model` "
                            "wrapper")
@@ -459,6 +540,77 @@ class _Importer:
         })
         if carried != current:
             await self.storage.save_dataset_extensions(carried)
+
+    # ---- ontology and mapping documents -------------------------------------
+
+    async def _ontology(self, file: Path, text: str, data: dict[str, Any]) -> None:
+        if "ontology_mappings" in data:
+            await self._embedded(file, text, data)
+            return
+        await self._store_ontology(name=str(data.get("name")), text=text)
+
+    async def _store_ontology(self, *, name: str, text: str) -> None:
+        replacing = name in await self.storage.list_ontologies()
+        try:
+            await self.storage.save_ontology_text(name=name, text=text)
+        except ValueError as exc:
+            raise _Refused(*_reasons(exc)) from exc
+        if replacing:
+            self.entry("replaced", f"ontology {name!r} replaced", document=name)
+        self.result.ontologies.append(name)
+
+    async def _mapping(self, _file: Path, text: str, data: dict[str, Any]) -> None:
+        name = str(data.get("name"))
+        for kind, key in _REFERENCES:
+            reference = data.get(key)
+            referenced = str(reference.get("name")) if isinstance(reference, dict) else None
+            if referenced in self.refused_names[kind]:
+                raise _Refused(f"{key}: {kind.replace('_', '-')} document {referenced!r} was refused in this import")
+        await self._store_mapping(name=name, text=text)
+
+    async def _store_mapping(self, *, name: str, text: str) -> None:
+        replacing = (self.data_source, name) in await self.storage.list_ontology_mappings(self.data_source)
+        try:
+            notes = await self.storage.save_ontology_mapping_text(data_source=self.data_source, name=name, text=text)
+        except ValueError as exc:
+            raise _Refused(*_reasons(exc)) from exc
+        if replacing:
+            self.entry("replaced", f"mapping {name!r} replaced", document=name)
+        self.result.mappings.append(name)
+        for note in notes:
+            self.entry("not_checked", note, document=name)
+
+    async def _embedded(self, file: Path, text: str, data: dict[str, Any]) -> None:
+        """An ontology with the deprecated ``ontology_mappings``: its inline semantic models and standalone mappings
+        stored too, or nothing of it."""
+        name = str(data.get("name"))
+        reasons = ontology_reasons(data)
+        if reasons:
+            raise _Refused(*reasons)
+        entries = [e for e in data.get("ontology_mappings") or [] if isinstance(e, dict)]
+        undo = _Undo(storage=self.storage, data_source=self.data_source)
+        reported = self.result.model_copy(deep=True)
+        await undo.ontology(name)
+        await self._store_ontology(name=name, text=edit_text(text, lambda doc: {
+            k: v for k, v in doc.items() if k != "ontology_mappings"}))
+        try:
+            for entry in entries:
+                model = {"version": OSSIE_VERSION, **(entry.get("semantic_model") or {})}
+                model_name = str(model.get("name"))
+                await undo.semantic_model(model_name)
+                await self._store(model_name, dump_yaml(model), model)
+                mapping = {"version": OSSIE_VERSION, "name": entry.get("name"),
+                           **({"description": entry["description"]} if "description" in entry else {}),
+                           "ontology_ref": {"name": name}, "semantic_model_ref": {"name": model_name},
+                           "concept_mappings": entry.get("concept_mappings") or []}
+                await undo.mapping(str(entry.get("name")))
+                await self._store_mapping(name=str(entry.get("name")), text=dump_yaml(mapping))
+        except _Refused:
+            await undo.run()
+            self.result = reported
+            raise
+        self.entry("upgraded", f"{file.name}: the deprecated embedded `ontology_mappings` stored as the standalone "
+                   f"mapping(s) {', '.join(repr(e.get('name')) for e in entries)}", document=name)
 
     async def _report_unevaluable(self, name: str) -> None:
         loaded, _ = await self.storage.load_datasets(data_source=self.data_source)

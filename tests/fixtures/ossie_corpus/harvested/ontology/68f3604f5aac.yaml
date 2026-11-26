@@ -1,0 +1,18 @@
+document:
+  version: 0.3.0.dev0
+  name: sales
+  ai_context:
+    instructions: Use for sales analysis
+  ontology:
+  - concept: Order
+    type: EntityType
+  ontology_mappings:
+  - name: sales_mapping
+    semantic_model:
+      version: 2
+      name: sales_model
+      datasets:
+      - name: orders
+        source: sales.public.orders
+    concept_mappings: []
+files: {}

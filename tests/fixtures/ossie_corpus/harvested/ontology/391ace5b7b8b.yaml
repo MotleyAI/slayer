@@ -1,0 +1,15 @@
+document:
+  version: 0.3.0.dev0
+  name: sales_mapping
+  ontology_ref:
+    name: sales
+    iri: .
+  semantic_model_ref:
+    name: sales_model
+    iri: ./sales.semantic_model.yaml
+  concept_mappings:
+  - concept: Order
+    object_mappings:
+    - expression: orders.order_id
+files:
+  ./sales.semantic_model.yaml: "datasets:\n- fields:\n  - expression: &id001\n      dialects:\n      - dialect: ANSI_SQL\n        expression: order_id\n    name: order_id\n  - expression: *id001\n    name: customer_id\n  name: orders\n  source: sales.public.orders\nname: sales_model\nversion: 0.3.0.dev0\n"

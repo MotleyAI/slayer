@@ -1,0 +1,21 @@
+document:
+  ontology:
+  - concept: SocialSecurityNr
+    type: ValueType
+    extends:
+    - Integer
+    requires:
+    - 0 < SocialSecurityNr
+    - SocialSecurityNr <= 999999999
+  - concept: Person
+    type: EntityType
+    identify_by:
+    - nr
+    relationships:
+    - name: nr
+      roles:
+      - concept: SocialSecurityNr
+      multiplicity: OneToOne
+      verbalizes:
+      - '{Person} is identified by {SocialSecurityNr}'
+files: {}

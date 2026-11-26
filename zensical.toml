@@ -29,6 +29,7 @@ nav = [
     { "Terminology" = "concepts/terminology.md" },
     { "Datasets" = "concepts/datasets.md" },
     { "Semantic Models" = "concepts/semantic-models.md" },
+    { "Ontologies and Mappings" = "concepts/ontologies.md" },
     { "Queries" = "concepts/queries.md" },
     { "Expressions" = "concepts/expressions.md" },
     { "Time" = "concepts/time.md" },
