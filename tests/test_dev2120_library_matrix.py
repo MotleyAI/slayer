@@ -13,6 +13,8 @@ from tests._dev2120_fixtures import (
     NATIVE_LIST_DIALECTS,
     NEW_FUNCTIONS,
     NO_LIST_DATABASES,
+    OSSIE_FUNCTIONS,
+    REFUSED_FUNCTIONS,
     TIER1,
     Case,
     contractors_engine,
@@ -24,6 +26,7 @@ from tests._dev2120_fixtures import (
     required_names,
     run_case,
 )
+from tests._ossie_gate import DISPLAY
 
 CASES = library_cases()
 CASE_IDS = [c.case_id for c in CASES]
@@ -37,6 +40,9 @@ class TestRegistry:
 
     def test_new_functions_are_registered(self) -> None:
         assert sorted(NEW_FUNCTIONS - set(SCALAR_SPECS)) == []
+
+    def test_ossie_functions_are_registered(self) -> None:
+        assert sorted(OSSIE_FUNCTIONS - set(SCALAR_SPECS)) == []
 
     @pytest.mark.parametrize("name", sorted(required_names()))
     def test_every_function_and_operator_has_cases(self, name: str) -> None:
@@ -61,7 +67,14 @@ async def test_executes(engine, case: Case) -> None:
 @pytest.mark.parametrize("dialect", TIER1)
 @pytest.mark.parametrize("case", CASES, ids=CASE_IDS)
 async def test_emits(case: Case, dialect: str) -> None:
-    await emit_lib(case.query(), dialect=dialect)
+    refused = REFUSED_FUNCTIONS.get(dialect, frozenset()) & set(case.covers)
+    if not refused:
+        await emit_lib(case.query(), dialect=dialect)
+        return
+    with pytest.raises(SlayerError) as info:
+        await emit_lib(case.query(), dialect=dialect)
+    assert DISPLAY[dialect] in str(info.value), str(info.value)
+    assert all(name in str(info.value) for name in refused), str(info.value)
 
 
 class TestListRegistry:

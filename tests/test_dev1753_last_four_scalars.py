@@ -317,7 +317,7 @@ class TestEndToEndBinding:
     @pytest.mark.parametrize(
         "predicate,func",
         [
-            ("trunc(orders.amount, 2) > 1", "trunc"),
+            ("trunc(orders.amount, 2, 3) > 1", "trunc"),
             ("mod(orders.amount) > 1", "mod"),
             ("greatest(orders.amount) > 1", "greatest"),
         ],
