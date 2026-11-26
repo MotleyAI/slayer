@@ -282,7 +282,8 @@ definition's `datatype`) SHALL win over the derived one. The derived type SHALL 
   `aggregations/boolean-inputs` type it;
 - an aggregation's result type (per `aggregations/boolean-inputs` and, for a custom
   aggregation, `aggregations/formula-templates`), its input typed through any path;
-- `lag`, `lead`, `time_shift`, `first`, `last`: the input's type; `cumsum`: `sum`'s
+- `lag`, `lead`, `time_shift`: the input's type; `first`, `last` over rows or over an
+  aggregate: the picked value's type; `cumsum`: `sum`'s
   result type over the input; `change`: the type of the input minus itself;
   `change_pct` and `percent_rank`: DOUBLE; `rank`, `dense_rank`, `ntile` and
   `consecutive_periods`: INT;

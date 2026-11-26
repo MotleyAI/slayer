@@ -25,7 +25,7 @@ Any measure-legal expression SHALL be legal as a computed dimension provided it 
 - THEN the transform partitions by the dimension's value exactly as `sum(amount, partition_by=ureg)` would, in the measure, aggregation-parameter, filter, order and computed-dimension positions (values per `queries/partitioned-aggregates` › Transform partition keys bind like aggregate partition keys)
 
 ### Requirement: Transforms inside dimension expressions
-A transform inside a dimension expression SHALL evaluate at the union of its inner aggregates' effective grains — the grain of its containing context — over that grain's domain, exactly as the same expression does as a measure, a filter or an order key (`queries/transforms` › Transforms evaluate over their operand's domain). An inner aggregate's effective grain is its declared `partition_by=` set, plus the query's active time bucket when the aggregate is windowed (`window=`); a `first`/`last` inner aggregate contributes its declared partition set only. Each inner aggregate is computed at its own effective grain and broadcast to the union-grain rows; when all inner aggregates share one grain the union degenerates to that grain (behavior unchanged). The rule is recursive: a nested transform evaluates at the union of its OWN inner aggregates' grains and its result is broadcast into the containing union like any other grained value. Keyword references on the transform (e.g. an explicit `partition_by=`) SHALL resolve against the union grain. A time-ordered transform (e.g. `cumsum`, `lag`, `time_shift`) inside a dimension expression SHALL fail with a clear error when its evaluation grain does not contain its time-ordering key — never duplicated result rows. When a windowed inner aggregate contributes the active time bucket, that synthesized bucket IS the query's bucketed time dimension — one dimension for all grain purposes (union membership, deduplication, attachment keys) — and a mixed-grain transform with a windowed inner aggregate but no resolvable time dimension SHALL fail with the same time-resolution error as windowed measures; single-grain windowed and `first`/`last` transform inputs remain legal.
+A transform inside a dimension expression SHALL evaluate at the union of its inner aggregates' effective grains — the grain of its containing context — over that grain's domain, exactly as the same expression does as a measure, a filter or an order key (`queries/transforms` › Transforms evaluate over their operand's domain). An inner aggregate's effective grain is its declared `partition_by=` set, plus the query's active time bucket when the aggregate is windowed (`window=`); a `first`/`last` inner aggregate contributes its declared partition set only, less its ranking key when that key is an exact member (`queries/semantics` › A ranked aggregation's grain drops its ranking key). Each inner aggregate is computed at its own effective grain and broadcast to the union-grain rows; when all inner aggregates share one grain the union degenerates to that grain (behavior unchanged). The rule is recursive: a nested transform evaluates at the union of its OWN inner aggregates' grains and its result is broadcast into the containing union like any other grained value. Keyword references on the transform (e.g. an explicit `partition_by=`) SHALL resolve against the union grain. A time-ordered transform (e.g. `cumsum`, `lag`, `time_shift`) inside a dimension expression SHALL fail with a clear error when its evaluation grain does not contain its time-ordering key — never duplicated result rows. When a windowed inner aggregate contributes the active time bucket, that synthesized bucket IS the query's bucketed time dimension — one dimension for all grain purposes (union membership, deduplication, attachment keys) — and a mixed-grain transform with a windowed inner aggregate but no resolvable time dimension SHALL fail with the same time-resolution error as windowed measures; single-grain windowed and `first`/`last` inner aggregates remain legal.
 
 #### Scenario: Rank of partitions as a bandable dimension
 - WHEN a query declares the dimension `rank(sum(revenue, partition_by=region), direction='desc')`
@@ -73,7 +73,7 @@ A transform inside a dimension expression SHALL evaluate at the union of its inn
 
 #### Scenario: Different grains in one transform are deferred, not misgrained
 - WHEN a mixed-grain transform's inner aggregates include a `window=` or `first`/`last` aggregation at a different grain than a sibling aggregate
-- THEN the query is no longer deferred: each aggregate is computed at its own effective grain (a windowed one contributing the active time bucket) and broadcast to the union rows, returning correct executed values — never a misgrained value and never the former DEV-1835 not-yet-supported error
+- THEN the query is no longer deferred: each aggregate is computed at its own effective grain (a windowed one contributing the active time bucket) and broadcast to the union rows, returning correct executed values — never a misgrained value and never the former not-yet-supported error
 
 #### Scenario: A windowed inner aggregate contributes the time bucket to the union
 - WHEN a dimension expression applies a transform over `sum(a, window='90d', partition_by=region) - sum(b, partition_by=region)` in a query with a month time dimension
@@ -88,11 +88,15 @@ A transform inside a dimension expression SHALL evaluate at the union of its inn
 - THEN the query fails with the same clear time-resolution error as windowed measures
 
 ### Requirement: First and last inside dimension expressions
-`first`/`last` aggregations with `partition_by=` SHALL be legal inside dimension expressions.
+`first`/`last` aggregations with `partition_by=` SHALL be legal inside dimension expressions. A `first`/`last` over an aggregate SHALL be legal there without `partition_by=`: its default grain is its operand's, never the query's dimensions (`queries/semantics` › first and last over an aggregate rank their operand's cells).
 
 #### Scenario: Latest timestamp per partition as a dimension
 - WHEN a query declares the dimension `last(ordered_at, partition_by=region)`
 - THEN every row carries its region's latest order timestamp and rows group by it correctly
+
+#### Scenario: A second-order last as a dimension
+- WHEN a query over a month time dimension declares the dimension `last(sum(amount, partition_by=[region, ordered_at]))`
+- THEN every row carries its region's latest monthly total, rows group by it correctly, and the values equal the former transform reading
 
 ### Requirement: Windowed aggregations inside dimension expressions
 `window=` aggregations with `partition_by=` SHALL be legal inside dimension expressions, evaluated per the partition keys plus the query's active time bucket; the time bucket need not itself be a selected dimension.
@@ -205,7 +209,7 @@ An aggregation-derived dimension (banded, bare partitioned aggregate, or transfo
 - THEN all three values are correct and the dimension's grain treatment of the shared aggregate is unaffected by its measure role
 
 ### Requirement: Every dimension kind enters a windowed or ranked grain
-A bare windowed or `first`/`last` measure SHALL compose with every legal dimension kind — plain columns, derived columns, scalar-expression computed dimensions, and aggregation-derived dimensions — with the measure evaluated at the full projected grain of the query.
+A bare windowed or `first`/`last` measure SHALL compose with every legal dimension kind — plain columns, derived columns, scalar-expression computed dimensions, and aggregation-derived dimensions — with the measure evaluated at the full projected grain of the query — a ranked one less its ranking key when that key is a query dimension (`queries/semantics` › A ranked aggregation's grain drops its ranking key).
 
 #### Scenario: Scalar-expression dimension with a bare windowed measure
 - WHEN a query groups by `lower(city)` and selects `sum(amount, window='1y')` over a month time dimension
@@ -214,6 +218,10 @@ A bare windowed or `first`/`last` measure SHALL compose with every legal dimensi
 #### Scenario: Scalar-expression dimension with a bare last measure
 - WHEN a query groups by `lower(city)` and selects `last(amount)`
 - THEN each expression group carries its value at the latest ranking timestamp, correct by executed values
+
+#### Scenario: A temporal dimension that is the default ranking key is dropped
+- WHEN a query groups by `lower(city)` and the raw `created_at` and selects `last(amount)`
+- THEN the default ranking key `created_at` is dropped from the grain: each expression group carries its value at its latest `created_at`, broadcast onto every `created_at` row of the group with no warning
 
 ### Requirement: Grain self-containment error surface
 Expressions that are not grain-self-contained SHALL fail with clear errors naming the offending construct: a bare aggregate without `partition_by=`, and an aggregate whose partition keys or inputs are not attributable from its root. Two deliberate, permanent type rules govern transforms in dimension position — they are typed residue of the closure axiom, not deferrals, and their errors SHALL cite no tracking issue: a transform inside a dimension expression SHALL have at least one aggregate in its input (a transform acts on aggregates), and every aggregate contained in such a transform SHALL declare `partition_by=` explicitly — the ungrained default (the query's dimensions) would include the dimension being defined, a self-referential grain. The two violations SHALL raise distinct errors, each naming its own remedy.

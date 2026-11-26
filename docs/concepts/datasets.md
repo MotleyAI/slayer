@@ -325,7 +325,9 @@ fields:
 
 `last(accounts.balance, accounts.updated_at)` gives the most recent balance per group; `first(accounts.balance, accounts.updated_at)` the earliest. A row whose ranking key is NULL is never picked, on every database; a group whose keys are all NULL returns NULL. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time field is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated field or expression → the dataset's `default_time_dimension` (its only DATE / TIMESTAMP field when unset). Whichever field wins is an input of the aggregation: if it, or a derived definition it names, crosses a relationship hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(orders.amount - customers.discount)`, `last(accounts.balance, coalesce(accounts.updated_at, accounts.created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
 
-Not to be confused with the [`last()` expression function](expressions.md#first-and-last-functions) — a window-function transform that broadcasts a value across all rows. Same name, different layer.
+The ranking key is consumed: when it is itself one of the query's dimensions (or named in `partition_by=`), the aggregation returns one value per coarser cell — grouped by `accounts.customer_id` and the raw `accounts.updated_at`, `last(accounts.balance, accounts.updated_at)` is each customer's latest balance on every row. Only an exact match is consumed: a raw date key never drops its month bucket.
+
+Over an aggregate, `first` / `last` rank that aggregate's cells — see [First and last over an aggregate](expressions.md#first-and-last-over-an-aggregate).
 
 ## Custom aggregations
 
