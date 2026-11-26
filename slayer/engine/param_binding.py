@@ -44,7 +44,9 @@ from slayer.core.models import (
     reserved_window_param_message,
 )
 from slayer.core.scope import resolve_generated_field
-from slayer.core.syntax import BoundVariable, Literal, NamedArg, Placeholder, UnaryOp, canonical_metric_text
+from slayer.core.syntax import (
+    BoundVariable, Literal, NamedArg, Placeholder, UnaryOp, canonical_metric_text, parse_expr,
+)
 from slayer.engine.population.anchors import anchor_route, find_anchor
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -70,23 +72,37 @@ def check_percentile_fraction(*, agg: str, args: Tuple[Any, ...], kwargs: Tuple[
     if positional and named:
         raise AggregationArgumentError(f"Aggregation '{agg}' got parameter 'p' both positionally and by name.")
     value = next(iter([*positional, *named]), None)
-    if value is not None and not _is_fraction(value):
+    node = _unquoted(value)
+    if value is None or isinstance(node, (Placeholder, BoundVariable)):  # a variable is judged once bound
+        return
+    number = _signed_number(node)
+    if number is None:
         raise AggregationArgumentError(
             f"Aggregation '{agg}' parameter 'p' must be a numeric literal in [0, 1]; "
             f"got {canonical_metric_text(value)!r}."
         )
+    if not (number.is_finite() and 0 <= number <= 1):
+        raise AggregationArgumentError(f"Aggregation '{agg}' parameter 'p' must be in [0, 1]; got {number}.")
 
 
-def _is_fraction(node: Any) -> bool:
-    """A numeric literal in [0, 1]; a variable is judged once bound."""
+def _unquoted(value: Any) -> Any:
+    """A string argument read as its unquoted Mode-B spelling, as binding reads it; ``None`` when that does not
+    parse."""
+    if not (isinstance(value, Literal) and isinstance(value.value, str)):
+        return value
+    try:
+        return parse_expr(value.value)
+    except ValueError:
+        return None
+
+
+def _signed_number(node: Any) -> Optional[Decimal]:
+    """An optionally negated numeric literal's value, else ``None``."""
     negative = isinstance(node, UnaryOp) and node.op == "-"
     node = node.operand if negative else node
-    if isinstance(node, (Placeholder, BoundVariable)):
-        return True
     if not isinstance(node, Literal) or isinstance(node.value, bool) or not isinstance(node.value, (int, Decimal)):
-        return False
-    value = -Decimal(node.value) if negative else Decimal(node.value)
-    return value.is_finite() and 0 <= value <= 1
+        return None
+    return -Decimal(node.value) if negative else Decimal(node.value)
 FieldRef = Union[FieldKey, FieldSqlKey]
 #: Binds a query-side string argument as its unquoted spelling; raises ``QuotedArgumentRefused``.
 QuotedArgumentBinder = Callable[[str], Any]

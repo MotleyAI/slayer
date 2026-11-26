@@ -123,6 +123,25 @@ def test_an_unusable_fraction_or_extra_argument_is_dropped(sql: str) -> None:
     assert result.reason
 
 
+def test_a_descending_discrete_percentile_is_dropped() -> None:
+    """Its value has no ascending fraction (``1, 2, 3, 4``: 0.25 descending is 4, ascending 1)."""
+    result = _run("PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY amount DESC)")
+    assert not result.ok
+    assert result.expression is None
+    assert result.reason
+
+
+@pytest.mark.parametrize(("sql", "expected"), [
+    ("PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY amount DESC)", "percentile(amount, p=0.75)"),
+    ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount DESC)", "median(amount)"),
+    ("PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY amount ASC)", "percentile_disc(amount, p=0.25)"),
+])
+def test_a_directed_order_keeps_its_value(sql: str, expected: str) -> None:
+    result = _run(sql)
+    assert result.ok, result.reason
+    assert result.expression == expected
+
+
 @pytest.mark.parametrize(("sql", "construct"), [
     ("STDDEV(DISTINCT amount)", "DISTINCT"),
     ("COUNT(DISTINCT a, b)", "DISTINCT"),

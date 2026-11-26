@@ -1969,7 +1969,7 @@ class SqlDialect(BaseModel):
         return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner, input_type=input_type)
 
     def build_percentile(
-        self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,
+        self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,  # NOSONAR(S1172) — hook parameter dialect overrides read
     ) -> Expression:
         """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)``."""
         return exp.WithinGroup(
@@ -1981,7 +1981,7 @@ class SqlDialect(BaseModel):
         )
 
     def build_percentile_disc(
-        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],  # NOSONAR(S1172) — hook parameter dialect overrides read
     ) -> Expression:
         """``PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)``."""
         return exp.WithinGroup(

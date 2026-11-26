@@ -53,7 +53,9 @@ from slayer.sql.dialects.base import (
     text_try_cast,
     zone_name,
 )
-from slayer.sql.dialects._ordered_set_split import PercentileColumns, split_percentile_selects
+from slayer.sql.dialects._ordered_set_split import (
+    Columns, PercentileColumns, complement_fraction, discrete_percentile, split_percentile_selects,
+)
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 from slayer.sql.dialects.reflection import TableLocation, clean_comment, col, eq_literal, relation
@@ -141,10 +143,14 @@ def _durable_oauth_material(raw: str) -> str:
 
 
 def _analytic(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
-    """``F(v, p) OVER (PARTITION BY <keys>)`` per row, its MAX per group."""
+    """``F(v, p) OVER (PARTITION BY <keys>)`` per row, its MAX per group; a descending ``PERCENTILE_DISC`` is ranked
+    (no ascending fraction picks its value)."""
 
-    def columns(p: Expr, value: Expr, partition: Sequence[Expr]):
-        window = exp.Window(this=function(this=value.copy(), expression=p.copy()),
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+        if descending and function is exp.PercentileDisc:
+            return discrete_percentile(p, value, partition, descending=True)
+        fraction = complement_fraction(p) if descending else p
+        window = exp.Window(this=function(this=value.copy(), expression=fraction.copy()),
                             partition_by=[k.copy() for k in partition])
         return [window], lambda reads: exp.Max(this=reads[0])
 

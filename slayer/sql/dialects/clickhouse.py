@@ -749,9 +749,9 @@ class ClickhouseDialect(SqlDialect):
         self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,
     ) -> Expression:
         """ClickHouse: the exact ``quantileExactInclusive(p)(x)`` (R-7, as ``PERCENTILE_CONT``); it refuses a
-        ``Decimal``, read as a float."""
+        ``Decimal`` and a wide integer (``Int128`` …), read as a float (it interpolates in ``Float64`` anyway)."""
         value = col_expr.copy()
-        if input_type is DataType.DECIMAL:
+        if input_type is DataType.DECIMAL or kind_of(input_type) is TypeKind.INT:
             value = exp.Anonymous(this="toFloat64", expressions=[value])
         return _null_when_empty(
             exp.ParameterizedAgg(this="quantileExactInclusive", expressions=[p.copy()], params=[value]),

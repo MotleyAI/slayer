@@ -8,7 +8,7 @@ becomes an aggregate of those values and every other column reads its row-level 
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expr, Expression
@@ -18,11 +18,16 @@ from slayer.core.enums import DataType, TypeKind, kind_of
 _ROWS = "__slayer_os"
 _COLUMN = "__slayer_o"
 
-#: ``(p, value, partition)`` → ``(row-level window columns, pick over their outer reads)``.
-PercentileColumns = Callable[
-    [Expr, Expr, Sequence[Expr]],
-    Tuple[Sequence[Expr], Callable[[List[exp.Column]], Expr]],
-]
+#: Row-level window columns, and the pick over their outer reads.
+Columns = Tuple[Sequence[Expr], Callable[[List[exp.Column]], Expr]]
+
+
+class PercentileColumns(Protocol):
+    """The columns computing a percentile at ``p`` of ``value`` per ``partition``, ordered ``descending`` or not."""
+
+    def __call__(self, p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns: ...
+
+
 #: The columns builder splitting an ordered-set node, ``None`` to leave it in place.
 ColumnsFor = Callable[[exp.WithinGroup], Optional[PercentileColumns]]
 #: Marks a ``PERCENTILE_DISC`` node the split ranks even where the database has a native one.
@@ -45,24 +50,26 @@ def _value_at(rn: Expr, v: Expr, rank: Expr) -> Expression:
     return exp.Max(this=exp.Case(ifs=[exp.If(this=hit, true=v.copy())]))
 
 
-def discrete_percentile(p: Expr, value: Expr, partition: Sequence[Expr]
-                        ) -> Tuple[Sequence[Expr], Callable[[List[exp.Column]], Expr]]:
-    """Exact ``PERCENTILE_DISC`` from ``ROW_NUMBER`` / ``COUNT`` windows: the non-NULL value ranked ``⌈p·n⌉`` per
-    group, rank 1 at ``p = 0``."""
+def discrete_percentile(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+    """Exact ``PERCENTILE_DISC`` from ``ROW_NUMBER`` / ``COUNT`` windows: the non-NULL value ranked ``r = ⌈p·n⌉`` per
+    group (rank 1 at ``p = 0``), ascending rank ``n − r + 1`` when ``descending``."""
 
     def pick(reads: List[exp.Column]) -> Expr:
         rn, n, v = reads
         zero = isinstance(p, exp.Literal) and p.is_number and Decimal(p.this) == 0
-        rank = exp.Literal.number(1) if zero else exp.Ceil(this=exp.Mul(this=p.copy(), expression=n.copy()))
+        rank: Expression = exp.Literal.number(1) if zero else exp.Ceil(this=exp.Mul(this=p.copy(), expression=n.copy()))
+        if descending:
+            rank = exp.Add(this=exp.Sub(this=n.copy(), expression=rank), expression=exp.Literal.number(1))
         return _value_at(rn, v, rank)
 
     return _ranked(value, partition), pick
 
 
-def interpolated_percentile(p: Expr, value: Expr, partition: Sequence[Expr]
-                            ) -> Tuple[Sequence[Expr], Callable[[List[exp.Column]], Expr]]:
+def interpolated_percentile(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
     """Exact ``PERCENTILE_CONT`` from ``ROW_NUMBER`` / ``COUNT`` windows: the non-NULL values ranked per group,
-    interpolated between ranks ``⌊h⌋`` and ``⌈h⌉`` at ``h = 1 + p·(n − 1)``."""
+    interpolated between ranks ``⌊h⌋`` and ``⌈h⌉`` at ``h = 1 + p·(n − 1)`` (``p`` complemented when
+    ``descending``)."""
+    p = complement_fraction(p) if descending else p
 
     def pick(reads: List[exp.Column]) -> Expr:
         rn, n, v = reads
@@ -137,7 +144,7 @@ def _grouping_term(key: Expr, select: exp.Select) -> Expr:
     return (key.this if isinstance(key, exp.Alias) else key).copy()
 
 
-def _complement(p: Expr) -> Expr:
+def complement_fraction(p: Expr) -> Expr:
     """``1 − p``; a literal for a literal ``p`` (SQL Server and BigQuery take only a literal fraction)."""
     if isinstance(p, exp.Literal) and p.is_number:
         return exp.Literal.number(str(Decimal(1) - Decimal(p.this)))
@@ -183,9 +190,7 @@ def _split(select: exp.Select, *, columns: ColumnsFor) -> None:
             projected.append(column.copy().as_(names[ident]))
     for node, builder in builders:
         p, ordered = node.this.this, node.expression.expressions[0]
-        if ordered.args.get("desc"):  # the p-th value descending is the (1 − p)-th ascending
-            p = _complement(p)
-        windowed, pick = builder(p, ordered.this, partition)
+        windowed, pick = builder(p, ordered.this, partition, descending=bool(ordered.args.get("desc")))
         outer: List[exp.Column] = []
         for window in windowed:
             name = f"{_COLUMN}{len(projected)}"

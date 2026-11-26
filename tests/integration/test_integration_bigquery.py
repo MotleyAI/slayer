@@ -578,4 +578,4 @@ def bq_dev2458(bq_dataset, tmp_path_factory):
 
 @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_exact], ids=lambda c: c.__name__)
 async def test_distinct_and_percentiles(bq_dev2458, check) -> None:
-    await check(SlayerQueryEngine(storage=bq_dev2458))
+    await dev2458.run_check(check, storage=bq_dev2458)

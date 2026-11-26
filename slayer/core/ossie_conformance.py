@@ -21,7 +21,8 @@ from slayer.core.enums import (
 from slayer.core.errors import UnknownConformanceError
 from slayer.core.keys import SCALAR_SPECS, SCALAR_SPELLINGS
 from slayer.core.syntax import (
-    WINDOW_FUNCTION_ARITIES, AggCall, ArrayLit, Arith, BoolOp, BoundVariable, Cast, Cmp, DateTrunc, DottedRef, Literal,
+    WINDOW_FUNCTION_ARITIES, AggCall, ArrayLit, Arith, BoolOp, BoundVariable, CallSpan, Cast, Cmp, DateTrunc, DottedRef,
+    Literal,
     NamedArg, Placeholder, Ref, ScalarCall, StarSource, TemporalLiteral, TransformCall, TupleLit, UnaryOp, WindowCall,
     WindowFrame, call_spans, legacy_spans, nonossie_spellings, parse_bound_expr, parse_template, variable_names,
     walk_parsed,
@@ -153,20 +154,23 @@ def _text_problem(text: str) -> Optional[str]:
     spellings = nonossie_spellings(text, windows=True)
     if spellings:
         return f"{spellings[0]} is SLayer syntax, not an Ossie expression"
-    for call in call_spans(text, windows=True):
-        name = call.name.lower()
-        if name in OSSIE_UNREAD_CALLS:
-            return OSSIE_UNREAD_CALLS[name]
-        if name in REWRITTEN_AGGREGATES:
-            return f"{call.callee}() is a SLayer function Ossie does not define"
-        spec = SCALAR_SPECS.get(name)
-        if spec is not None and not spec.ossie_arg_counts:
-            return f"{call.callee}() is a SLayer function Ossie does not define"
-        if spec is not None and not spec.ossie_admits(call.arguments):
-            return f"{call.callee}() with {call.arguments} arguments is not an Ossie call"
-        if spec is None and name in (SCALAR_SPELLINGS | set(DATE_PART_ALIASES) | AMBIGUOUS_WEEKDAY_NAMES) \
-                and name not in OSSIE_CALL_SPELLINGS:
-            return f"{call.callee}() is a SLayer function Ossie does not define"
+    return next(filter(None, map(_call_problem, call_spans(text, windows=True))), None)
+
+
+def _call_problem(call: CallSpan) -> Optional[str]:
+    name = call.name.lower()
+    if name in OSSIE_UNREAD_CALLS:
+        return OSSIE_UNREAD_CALLS[name]
+    if name in REWRITTEN_AGGREGATES:
+        return f"{call.callee}() is a SLayer function Ossie does not define"
+    spec = SCALAR_SPECS.get(name)
+    if spec is not None and not spec.ossie_arg_counts:
+        return f"{call.callee}() is a SLayer function Ossie does not define"
+    if spec is not None and not spec.ossie_admits(call.arguments):
+        return f"{call.callee}() with {call.arguments} arguments is not an Ossie call"
+    if spec is None and name in (SCALAR_SPELLINGS | set(DATE_PART_ALIASES) | AMBIGUOUS_WEEKDAY_NAMES) \
+            and name not in OSSIE_CALL_SPELLINGS:
+        return f"{call.callee}() is a SLayer function Ossie does not define"
     return None
 
 

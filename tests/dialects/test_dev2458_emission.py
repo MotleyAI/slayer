@@ -75,9 +75,12 @@ def _without_output_alias(sql: str, *, dialect: str) -> str:
 async def test_distinct_aggregate_is_the_sql_distinct_form(dialect: str, agg: str, sql_agg: str) -> None:
     """DISTINCT sum and average: ``SUM/AVG(DISTINCT x)`` on every dialect."""
     sql = await _sql(f"{agg}(orders.qty)", dialect=dialect)
-    # SQL Server's AVG of an integer is an integer: the value is read as a float.
-    operand = "CAST(ORDERS.QTY AS FLOAT)" if (dialect, agg) == ("tsql", "avg_distinct") else "ORDERS.QTY"
-    assert f"{sql_agg}(DISTINCT {operand})" in sql.upper().replace("`", "").replace('"', "")
+    # SQL Server's AVG of an integer is an integer: the value is read as an exact decimal (FLOAT would merge distinct
+    # integers past 2^53), the average as a float.
+    tsql_avg = (dialect, agg) == ("tsql", "avg_distinct")
+    operand = "CAST(ORDERS.QTY AS NUMERIC(38, 10))" if tsql_avg else "ORDERS.QTY"
+    expected = f"{sql_agg}(DISTINCT {operand})"
+    assert (f"CAST({expected} AS FLOAT)" if tsql_avg else expected) in sql.upper().replace("`", "").replace('"', "")
 
 
 @pytest.mark.parametrize("dialect", TIER1)
@@ -210,6 +213,13 @@ async def test_clickhouse_percentile_is_exact_and_null_guarded(expression: str, 
     assert f"quantileexactinclusive({p})(" in sql
     assert re.search(r"\bquantile\(", sql) is None
     assert re.search(r"\bcount(if)?\(", sql) is not None
+
+
+@pytest.mark.parametrize("expression", ["percentile(orders.qty, 0.9)", "median(orders.qty)"])
+async def test_clickhouse_percentile_reads_an_integer_as_a_float(expression: str) -> None:
+    """``quantileExactInclusive`` refuses ``Int128`` / ``UInt256``, which reflect as integers."""
+    sql = (await _sql(expression, dialect="clickhouse")).lower()
+    assert re.search(r"quantileexactinclusive\([\d.]+\)\(tofloat64\(", sql) is not None
 
 
 @pytest.mark.parametrize("column", ["amount", "order_date", "created_at"])

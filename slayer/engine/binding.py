@@ -2062,7 +2062,7 @@ def _bind_agg(
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
     )
-    if aggregation_definition(owner=_resolve_agg_owner(source, bundle)[0], agg=effective_agg) is None:
+    if builtin_semantics(aggregation_definition(owner=_resolve_agg_owner(source, bundle)[0], agg=effective_agg)):
         check_percentile_fraction(agg=effective_agg, args=parsed.args, kwargs=parsed.kwargs)
     # Names first: no argument value binds before its name is accepted.
     folded = _declared_agg_param_names(agg=effective_agg, source=source, bundle=bundle)[:len(parsed.args)]

@@ -892,8 +892,7 @@ class TestPostgresDistinctAndPercentiles:
     @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_exact],
                              ids=lambda c: c.__name__)
     async def test_matrix(self, _pg_dev2458_storage, check) -> None:
-        async with owned_query_engine(storage=_pg_dev2458_storage) as engine:
-            await check(engine)
+        await dev2458.run_check(check, storage=_pg_dev2458_storage)
 
 
 @pytest.mark.integration

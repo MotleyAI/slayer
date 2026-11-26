@@ -1040,7 +1040,7 @@ class TestSQLServerDistinctAndPercentiles:
 
     @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_types], ids=lambda c: c.__name__)
     async def test_matrix(self, _sqlserver_dev2458_storage, check) -> None:
-        await check(SlayerQueryEngine(storage=_sqlserver_dev2458_storage))
+        await dev2458.run_check(check, storage=_sqlserver_dev2458_storage)
 
 
 # ---------------------------------------------------------------------------

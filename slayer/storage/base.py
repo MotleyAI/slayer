@@ -1042,7 +1042,7 @@ class StorageBackend(ABC):
         check_relationship_target_spellings(dataset, names=[n for ds, n in identities if ds == dataset.data_source], peers=peers)
         await self._validate_mode_a_placeholders(dataset)
         check_field_agg(dataset)
-        check_metric_fractions(dataset)
+        check_metric_fractions(dataset=dataset, peers=peers)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
         check_dataset_filters(dataset=dataset, reachable=peers,
                               dialect=ossie_token(datasource.type) if datasource is not None else None)

@@ -1378,4 +1378,4 @@ def test_distinct_and_percentiles(_sf_dev2458_tables, sf_datasource: DatasourceC
     run_sync(storage.save_datasource(sf_datasource))
     for model in dev2458.datasets(data_source="sf_test", explicit_sql=True):
         run_sync(storage.save_dataset(model))
-    run_sync(check(SlayerQueryEngine(storage=storage)))
+    run_sync(dev2458.run_check(check, storage=storage))

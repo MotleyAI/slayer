@@ -898,10 +898,10 @@ class TestClickHouseDistinctAndPercentiles:
 
     @pytest.mark.parametrize("check", [
         *dev2458.COMMON_CHECKS, dev2458.check_approx_types, dev2458.check_clickhouse_large_group,
-        dev2458.check_clickhouse_null_groups,
+        dev2458.check_clickhouse_null_groups, dev2458.check_clickhouse_wide_integers,
     ], ids=lambda c: c.__name__)
     async def test_matrix(self, _clickhouse_dev2458_storage, check) -> None:
-        await check(SlayerQueryEngine(storage=_clickhouse_dev2458_storage))
+        await dev2458.run_check(check, storage=_clickhouse_dev2458_storage)
 
 
 # ---------------------------------------------------------------------------

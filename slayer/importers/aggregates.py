@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import re
+from decimal import Decimal
 from typing import Callable, Optional, get_args
 
 import sqlglot
@@ -501,6 +502,10 @@ class _Translator:
         if not isinstance(col_node, exp.Column):
             raise Unconvertible("percentile ORDER BY must be a bare column")
         self._refuse_list(col_node, "PERCENTILE")
+        if isinstance(ordered, exp.Ordered) and ordered.args.get("desc"):
+            if isinstance(inner, exp.PercentileDisc):
+                raise Unconvertible("PERCENTILE_DISC over a descending order picks no ascending fraction's value")
+            p = str(Decimal(1) - Decimal(p))  # the p-th value descending is the (1 − p)-th ascending
         if isinstance(inner, exp.PercentileDisc):
             agg, suffix = "percentile_disc", f"percentile_disc(p={p})"
         elif math.isclose(float(p), 0.5):

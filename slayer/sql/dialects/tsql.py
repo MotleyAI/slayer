@@ -51,7 +51,9 @@ from slayer.sql.dialects.base import (
     iso_text,
 )
 from slayer.sql.dialects._ordered_set_split import (
+    Columns,
     PercentileColumns,
+    complement_fraction,
     marked_ranked,
     ranked_unless_numeric,
     split_percentile_selects,
@@ -207,11 +209,17 @@ def _bit_value(predicate: Expr) -> Expression:
 
 def _windowed(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
     """``F(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs are skipped,
-    so they sort natively (one ORDER BY key is all it takes)."""
+    so they sort natively (one ORDER BY key is all it takes). A descending ``PERCENTILE_CONT`` reads ``1 − p``
+    ascending; a descending ``PERCENTILE_DISC`` keeps its direction (no ascending fraction picks its value)."""
 
-    def columns(p: Expr, value: Expr, partition: Sequence[Expr]):
-        key = exp.Ordered(this=value.copy(), nulls_first=True)
-        window = exp.Window(this=exp.WithinGroup(this=function(this=p.copy()), expression=exp.Order(expressions=[key])),
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+        flip = descending and function is exp.PercentileCont
+        reversed_key = descending and not flip
+        key = exp.Ordered(this=value.copy(), nulls_first=not reversed_key)  # T-SQL's own NULL placement either way
+        if reversed_key:
+            key.set("desc", True)
+        fraction = complement_fraction(p) if flip else p.copy()
+        window = exp.Window(this=exp.WithinGroup(this=function(this=fraction), expression=exp.Order(expressions=[key])),
                             partition_by=[k.copy() for k in partition])
         return [window], lambda reads: exp.Max(this=reads[0])
 

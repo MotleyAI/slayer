@@ -18,8 +18,16 @@ from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.storage.base import StorageBackend
+from tests._engine_helpers import owned_query_engine
 
 Row = tuple[Any, ...]
+
+
+async def run_check(check: Callable[[SlayerQueryEngine], Any], *, storage: StorageBackend) -> None:
+    """``check`` over an engine on ``storage``, released even when it fails."""
+    async with owned_query_engine(storage=storage) as engine:
+        await check(engine)
 
 #: (id, grp, grp2, amount, price, label, sold_on)
 PQ: tuple[Row, ...] = (
@@ -156,6 +164,8 @@ def clickhouse_statements() -> list[str]:
         "t Nullable(DateTime64(6)), tt DateTime64(6)) ENGINE = MergeTree ORDER BY id",
         "INSERT INTO pq_nulls VALUES (1, NULL, 1.5, NULL, '2024-01-01', NULL, '2024-01-01 10:00:00'), "
         "(2, NULL, 2.5, NULL, '2024-01-02', NULL, '2024-01-02 10:00:00')",
+        "CREATE TABLE pq_wide (id Int32, w Int128, u UInt256) ENGINE = MergeTree ORDER BY id",
+        "INSERT INTO pq_wide VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 4)",
     ]
 
 
@@ -187,7 +197,9 @@ def clickhouse_datasets(*, data_source: str) -> list[SlayerDataset]:
     nulls = SlayerDataset(name="pq_nulls", sql_table="pq_nulls", data_source=data_source, fields=_fields(
         [("id", DataType.INTEGER), ("n", DataType.FLOAT), ("m", DataType.FLOAT), ("d", DataType.DATE),
          ("dd", DataType.DATE), ("t", DataType.DATETIME), ("tt", DataType.DATETIME)], explicit_sql=False))
-    return [big, nulls]
+    wide = SlayerDataset(name="pq_wide", sql_table="pq_wide", data_source=data_source, fields=_fields(
+        [("id", DataType.INTEGER), ("w", DataType.INTEGER), ("u", DataType.INTEGER)], explicit_sql=False))
+    return [big, nulls, wide]
 
 
 # --------------------------------------------------------------------------- #
@@ -219,6 +231,8 @@ def _compare(resp: SlayerResponse, *, keys: Sequence[str], expected: dict[Any, d
         key = key[0] if len(keys) == 1 else key
         if key not in expected:
             continue
+        if key in seen:
+            failures.append(f"{key!r}: repeated row")
         seen.add(key)
         for alias, want in expected[key].items():
             got = _norm(row[alias])
@@ -362,6 +376,17 @@ async def check_clickhouse_null_groups(engine: SlayerQueryEngine) -> None:
              "dtn": "percentile_disc(pq_nulls.t, 0.5)"}
     resp = await _run(engine, metrics=empty, population="pq_nulls", filters=["pq_nulls.id < 0"])
     _compare(resp, keys=[], expected={(): dict.fromkeys(empty)})
+
+
+async def check_clickhouse_wide_integers(engine: SlayerQueryEngine) -> None:
+    """``Int128`` / ``UInt256`` columns (reflected as integers) take every percentile."""
+    metrics = {f"{agg}_{col}": text.format(col=col) for col in ("w", "u") for agg, text in (
+        ("p", "percentile(pq_wide.{col}, 0.5)"), ("md", "median(pq_wide.{col})"),
+        ("d", "percentile_disc(pq_wide.{col}, 0.5)"), ("a", "percentile_approx(pq_wide.{col}, 0.5)"))}
+    resp = await _run(engine, metrics=metrics, population="pq_wide")
+    want = {"p": 2.5, "md": 2.5, "d": 2, "a": 2.5}
+    _compare(resp, keys=[], expected={(): {alias: want[alias.split("_")[0]] for alias in metrics}},
+             approx=lambda alias: 1.0 if alias.startswith("a_") else 1e-9)
 
 
 #: Every check every server dialect runs.
