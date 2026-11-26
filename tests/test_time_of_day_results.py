@@ -101,18 +101,20 @@ class TestDriverForms:
     @pytest.mark.parametrize(("driver", "named"), NOT_A_TIME, ids=[_id(v) for v, _ in NOT_A_TIME])
     async def test_a_value_that_is_no_time_of_day_fails_the_query(self, monkeypatch: pytest.MonkeyPatch, ds_type: str,
                                                                   driver: Any, named: str) -> None:
+        query = q(dimensions=[START])
         async with served(monkeypatch, ds_type, {START: driver}) as engine:
             with pytest.raises(SlayerError) as info:
-                await engine.execute(q(dimensions=[START]))
+                await engine.execute(query)
         msg = str(info.value)
         assert START in msg, msg
         assert named in msg, msg
 
     @pytest.mark.parametrize("ds_type", SERVERS)
     async def test_the_error_names_a_computed_column(self, monkeypatch: pytest.MonkeyPatch, ds_type: str) -> None:
+        query = q(metrics=[m(f"max({START})", "opens")])
         async with served(monkeypatch, ds_type, {"opens": timedelta(hours=30)}) as engine:
             with pytest.raises(SlayerError) as info:
-                await engine.execute(q(metrics=[m(f"max({START})", "opens")]))
+                await engine.execute(query)
         assert "opens" in str(info.value)
         assert "30:00:00" in str(info.value)
 
@@ -152,9 +154,10 @@ class TestSqliteText:
 
     @pytest.mark.parametrize("stored", ["noon", "25:00:00", "24:00:00", "2024-01-15", "9h30"])
     async def test_text_that_names_no_time_fails_the_query(self, stored: str) -> None:
+        query = q(dimensions=["shifts.id", START])
         async with text_engine("09:30:00", stored) as engine:
             with pytest.raises(SlayerError) as info:
-                await engine.execute(q(dimensions=["shifts.id", START]))
+                await engine.execute(query)
         msg = str(info.value)
         assert START in msg, msg
         assert stored in msg, msg

@@ -42,7 +42,7 @@ SLayer has two distinct expression layers and the rules for what each one accept
 * Inside an aggregation or transform call, `name = value` is a keyword argument when `name` is one of the call's parameters (`weighted_avg(amount, weight = qty)`, `time_shift(x, periods = -1)`) and a comparison otherwise (`sum(status = 'paid')` counts the paid rows); parenthesise or double-quote the left side to compare a field named like a parameter (`sum((weight = 1))`), and a scalar function's arguments are always values (`iif(status = 'paid', 1, 0)`).
 * A syntax error reports its column (`syntax error at column 12`), and a malformed `CASE` names the missing keyword (`THEN`, `END`).
 * `CAST(x AS type)` and `x::type` render the type you write and mean the same on every database: a number cast to `BOOLEAN` is true when it is not zero, a fraction cast to an integer or `DECIMAL(p, s)` type rounds half away from zero (`CAST(2.5 AS INT)` is `3`; a floating-point tie as the database rounds it), a bare `DECIMAL` / `NUMERIC` is `DECIMAL(38, 0)` and `DECIMAL(p)` is `DECIMAL(p, 0)`, and `VARCHAR(n)` keeps the first `n` characters; invalid input (text that is no literal of the type, a value out of range) is the database's own, except that SQLite gives `NULL` for a `BOOLEAN` or `DECIMAL` cast it cannot convert. `TRY_CAST(x AS type)` is that cast where it converts and NULL otherwise, except that Postgres older than 16 (or of unknown version) gets a plain `CAST` and MariaDB and a MySQL server reporting a version before 8.0 refuse `TRY_CAST` to a number at plan time.
-* A cast's type follows its target's name — integer names INT, `DECIMAL` / `NUMERIC` / float names DOUBLE, character names TEXT, `BOOLEAN`, `DATE`, timestamp names TIMESTAMP, anything else UNKNOWN — and type parameters and chained casts are kept as written (`CAST(x AS DECIMAL(10,2))`, `x::INT::TEXT`), while a type the database cannot express (`MONEY` on DuckDB) is a plan-time `CastTypeError`.
+* A cast's type follows its target's name — integer names INT, `DECIMAL` / `NUMERIC` / float names DOUBLE, character names TEXT, `BOOLEAN`, `DATE`, timestamp names TIMESTAMP, `TIME` a [time of day](#time-of-day), anything else UNKNOWN — and type parameters and chained casts are kept as written (`CAST(x AS DECIMAL(10,2))`, `x::INT::TEXT`), while a type the database cannot express (`MONEY` on DuckDB) is a plan-time `CastTypeError`.
 * A type's parameters may sit between its words and an array is written `T[]` (`TIMESTAMP(6) WITH TIME ZONE`, `CAST(codes AS INT[])`, a list of INT usable with the list functions where the database has arrays), while a type the database would render losing a part (`DECIMAL(10,2) UNSIGNED` on Postgres), `T[][]` and `TRY_CAST` to an array are plan-time `CastTypeError`s.
 * `--` starts a comment to the end of the line and `/* … */` is a (nestable) comment, as in SQL, so `a --b` means `a`.
 * `TRY_CAST` to an integer type accepts only optionally signed digits with surrounding spaces, or a number rounded half away from zero, in the type's range (`INT` is 32-bit on every database), so `TRY_CAST('1.5' AS INT)` is `NULL` and `TRY_CAST(1.5 AS INT)` is `2` wherever `TRY_CAST` yields NULL (above); a JSON number converts as a number (`json_value(doc, '$.v' RETURNING INT)` over `{"v": 1.5}` is `2`), a boolean reads as `1` / `0` in `TRY_CAST` to a number, and a value past a `DECIMAL(p, s)`'s precision is `NULL`.
@@ -286,6 +286,7 @@ case-insensitively):
 | `date_add(ts, n, unit)` | DATE or TIMESTAMP | same units as `date_diff` |
 | `date_trunc(unit, ts)` | DATE for a day-or-coarser bucket of a DATE, else TIMESTAMP | any granularity, the datasource's custom ones included |
 | `current_date()` / `now()` | DATE / TIMESTAMP | — |
+| `current_time()` | [`Time`](#time-of-day) | — |
 
 `extract(part from ts)` and `year(ts)`, `quarter(ts)`, `month(ts)`, `week(ts)` (the ISO week number), `day(ts)`, `hour(ts)`, `minute(ts)` and `second(ts)` mean `date_part('part', ts)`, and the aliases `isodow` / `day_of_week`, `doy` / `dayofyear` / `day_of_year`, `isoyear` / `iso_year`, `isoweek` / `iso_week` / `weekofyear` and `dayofmonth` / `day_of_month` work both as one-argument functions (`isodow(ts)`) and as parts. Ossie's `dayofweek` (`EXTRACT(DAYOFWEEK FROM ts)`) and `millisecond` are parts only: `dayofweek(ts)` and `millisecond(ts)` are rejected, as are `dow` and `weekday` in any position, because databases number weekdays differently. As in `extract`, `date_part`'s part may be written as a bare word: `date_part(MONTH, ts)` means `date_part('month', ts)`.
 
@@ -325,8 +326,20 @@ case-insensitively):
   session time zone elsewhere); relative time points such as `'last month'` read the SLayer
   host clock instead. On SQLite a stored date that is not ISO text yields `NULL`, and date arithmetic
   runs through the registered `slayer_date_add` function, so dry-run SQL needs a SLayer
-  connection. Queries using `now()` / `current_date()` are never served from, or stored in, the
+  connection. Queries using `now()` / `current_date()` / `current_time()` are never served from, or stored in, the
   [result cache](query-cache.md).
+
+### Time of day
+
+`TIME '10:30:00'` (also `'HH:MM'`, and up to six fraction digits), `current_time()` (bare `CURRENT_TIME` too: the time of day of `now()`) and `CAST(x AS TIME)` of text, a timestamp or a time of day each yield a `Time` value, as a field typed `Time` does.
+
+A time of day groups, orders, takes `count`, `min`, `max`, `first`, `last` and `collect`, keeps its type through `coalesce` / `ifnull` / `nullif` / `greatest` / `least` / `iif` / `CASE`, and compares with another time of day; a string beside one is its `TIME` literal (`shifts.starts_at >= '09:00'`).
+
+`hour`, `minute` and `second` (in every `date_part` spelling) read its parts; arithmetic, every other date function, a comparison with a date or timestamp, a granularity, a `date_range` and a `default_time_dimension` are refused, and a query `time_zone` never converts it.
+
+It casts to a character type as `HH:MM:SS` followed by its fraction when that is not zero, and to no other type; `TRY_CAST(x AS TIME)` is NULL for text that names no time of day inside the day.
+
+A result cell of a `Time` column is always a time of day (`"10:30:00"` in JSON): a stored value outside the day, which MySQL and ClickHouse allow, fails the query naming the column and the value. Per-database notes are in [database support](../database-support.md#time-of-day).
 
 ## `NULL` inside an `in` list
 

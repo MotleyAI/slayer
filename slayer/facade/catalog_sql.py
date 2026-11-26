@@ -35,7 +35,7 @@ from slayer.facade.catalog import (
 from slayer.facade.datatypes import datatype_to_jdbc
 from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.pg_facade.identity import PG_SERVER_VERSION
-from slayer.pg_facade.protocol import OID_BOOL, OID_DATE, OID_FLOAT8, OID_INT8, OID_TEXT, OID_TIMESTAMP
+from slayer.pg_facade.protocol import OID_BOOL, OID_DATE, OID_FLOAT8, OID_INT8, OID_TEXT, OID_TIME, OID_TIMESTAMP
 from slayer.pg_facade.types import datatype_to_oid
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ PG_SLAYER_ROLE_OID = 10
 PG_SLAYER_ROLE_NAME = "slayer"
 PG_ENCODING_UTF8 = 6
 
-# OID → (typname, typlen, typcategory) for the six wire types.
+# OID → (typname, typlen, typcategory) for the wire types.
 _TYPE_META: dict[int, tuple[str, int, str]] = {
     OID_BOOL: ("bool", 1, "B"),
     OID_INT8: ("int8", 8, "N"),
@@ -75,6 +75,7 @@ _TYPE_META: dict[int, tuple[str, int, str]] = {
     OID_FLOAT8: ("float8", 8, "N"),
     OID_DATE: ("date", 4, "D"),
     OID_TIMESTAMP: ("timestamp", 8, "D"),
+    OID_TIME: ("time", 8, "D"),
 }
 
 # typname → OID, for resolving ``::regtype`` casts.
@@ -90,6 +91,7 @@ _UDT_NAME_BY_KIND: dict[TypeKind, str] = {
     TypeKind.DOUBLE: "float8",
     TypeKind.DATE: "date",
     TypeKind.TIMESTAMP: "timestamp",
+    TypeKind.TIME: "time",
 }
 _UDT_NAME_BY_DATATYPE: dict[DataType, str] = {t: _UDT_NAME_BY_KIND[t.kind] for t in DataType if t.kind in _UDT_NAME_BY_KIND}
 
@@ -1630,6 +1632,7 @@ _KIND_TO_DUCKDB_CREATE: dict[TypeKind, str] = {
     TypeKind.BOOLEAN: "BOOLEAN",
     TypeKind.DATE: "DATE",
     TypeKind.TIMESTAMP: "TIMESTAMP",
+    TypeKind.TIME: "TIME",
 }
 _DATATYPE_TO_DUCKDB_CREATE: dict[DataType, str] = {
     t: _KIND_TO_DUCKDB_CREATE[t.kind] for t in DataType if t.kind in _KIND_TO_DUCKDB_CREATE}

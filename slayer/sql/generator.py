@@ -7685,6 +7685,7 @@ def build_planned_statement(
         plan_has_semi_join_filters(p) for p in emitted_plans(planned_queries, kept_stages=kept)
     ):
         _as_dialect(dialect).attach_correlated_setting(statement)
+    _as_dialect(dialect).attach_time_setting(statement)
     # Length-fit over-limit projection aliases from the plan-derived canonical keys, not parsed off the SQL —
     # BigQuery can't parse a backticked dotted alias.
     return PlannedStatement(

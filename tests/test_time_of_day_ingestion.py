@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import sqlalchemy as sa
@@ -15,8 +16,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.database.client import SlayerSQLClient
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.sql.dialects import base as dialects_base
 from slayer.sql.dialects import dialect_for_ds_type
-from slayer.sql.dialects.reflection import column_from_sa_type, column_from_type_string
+from slayer.sql.dialects.reflection import TableLocation, column_from_sa_type, column_from_type_string
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import owned_query_engine
@@ -68,6 +70,20 @@ class TestTypeNames:
     def test_an_inspector_type(self, sa_type: Any, sa_dialect: Any, expected: DataType) -> None:
         column = column_from_sa_type(name="c", sa_type=sa_type, sa_dialect=sa_dialect)
         assert column.narrowed_type is expected
+
+
+class TestClickhouseCatalogTypes:
+    def test_a_column_the_driver_cannot_type_reads_its_catalog_type(self) -> None:
+        """The driver knows no ``Time``; a ``Nullable`` around it is still untyped."""
+        clickhouse_types = pytest.importorskip("clickhouse_sqlalchemy.types")
+        raw = [{"name": "t", "type": sa.types.NullType()},
+               {"name": "n", "type": clickhouse_types.Nullable(sa.types.NullType())},
+               {"name": "s", "type": clickhouse_types.Nullable(clickhouse_types.String())}]
+        declared = [("t", "Time"), ("n", "Nullable(Time)"), ("s", "Nullable(String)")]
+        with patch.object(dialects_base, "fetch", return_value=declared):
+            columns = dialect_for_ds_type("clickhouse").columns_from_inspector(
+                raw, connection=None, inspector=None, location=TableLocation(name="clocks"))
+        assert {c.name: c.narrowed_type for c in columns} == {"t": TIME, "n": TIME, "s": DataType.STRING}
 
 
 class TestStatementProbe:

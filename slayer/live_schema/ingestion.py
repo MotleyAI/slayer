@@ -1337,6 +1337,19 @@ def _retyped_instant(*, persisted: DatasetField, fresh: DatasetField) -> Dataset
     return persisted.model_copy(update={"datatype": DataType.DATETIME_TZ, "time_zone": None})
 
 
+def _retyped_time_of_day(*, persisted: DatasetField, fresh: DatasetField) -> DatasetField | None:
+    """A stored field of another type whose live column is a time of day, re-typed ``Time`` (live_schema P1's
+    exception); a setting only its old type takes is dropped. ``None`` when nothing changes."""
+    if fresh.datatype is not DataType.TIME or persisted.datatype in (DataType.TIME, DataType.ARRAY):
+        return None
+    return persisted.model_copy(update={
+        "datatype": DataType.TIME, "granularity": None, "time_zone": None,
+        "allowed_aggregations": [
+            a for a in persisted.allowed_aggregations or () if a in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.TIME]
+        ] or None,
+    })
+
+
 def _merge_one_field(
     *,
     persisted_col: DatasetField,
@@ -1356,8 +1369,9 @@ def _merge_one_field(
     if fresh_col is not None:
         retyped = None
         if _reads(persisted_col, fresh_col):
-            retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) or _retyped_instant(
-                persisted=merged_col, fresh=fresh_col)
+            retyped = (_retyped_list(persisted=merged_col, fresh=fresh_col)
+                       or _retyped_instant(persisted=merged_col, fresh=fresh_col)
+                       or _retyped_time_of_day(persisted=merged_col, fresh=fresh_col))
         if retyped is not None:
             merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):

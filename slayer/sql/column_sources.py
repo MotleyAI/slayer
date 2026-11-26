@@ -1,0 +1,81 @@
+"""The table columns a statement's result columns read as they are."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
+from sqlglot.expressions.core import Expr
+from sqlglot.optimizer.scope import Scope, build_scope
+
+
+class ColumnSource(BaseModel):
+    """A result column that is a table's column unchanged; ``result`` and ``column`` ``None``: every column of the
+    table, under its own name."""
+
+    model_config = ConfigDict(frozen=True)
+
+    table: str
+    schema_name: Optional[str] = None
+    result: Optional[str] = None
+    column: Optional[str] = None
+
+
+def column_sources(statement: Expr) -> list[ColumnSource]:
+    """The plain column reads among ``statement``'s result columns, through subqueries and ``*``; a computed column,
+    a set operation and an unqualified column of a join have none."""
+    try:
+        scope = build_scope(statement)
+    except SqlglotError:
+        return []
+    return [] if scope is None else _scope_sources(scope)
+
+
+def _scope_sources(scope: Scope) -> list[ColumnSource]:
+    select = scope.expression
+    if not isinstance(select, exp.Select):
+        return []
+    out: list[ColumnSource] = []
+    for projection in select.expressions:
+        node = projection.unalias()
+        if isinstance(node, exp.Star) or (isinstance(node, exp.Column) and isinstance(node.this, exp.Star)):
+            qualifier = node.table if isinstance(node, exp.Column) else ""
+            for name in [qualifier] if qualifier else list(scope.selected_sources):
+                out.extend(_every_column(scope.sources.get(name)))
+        elif isinstance(node, exp.Column):
+            out.extend(_one_column(_source(scope, node), column=node.name, result=projection.alias_or_name))
+    return out
+
+
+def _source(scope: Scope, column: exp.Column) -> object:
+    if column.table:
+        return scope.sources.get(column.table)
+    names = list(scope.selected_sources)
+    return scope.sources.get(names[0]) if len(names) == 1 else None
+
+
+def _table(table: exp.Table, *, result: Optional[str] = None, column: Optional[str] = None) -> list[ColumnSource]:
+    if not table.name:
+        return []  # a table function
+    return [ColumnSource(table=table.name, schema_name=table.db or None, result=result, column=column)]
+
+
+def _every_column(source: object) -> list[ColumnSource]:
+    if isinstance(source, exp.Table):
+        return _table(source)
+    return _scope_sources(source) if isinstance(source, Scope) else []
+
+
+def _one_column(source: object, *, column: str, result: str) -> list[ColumnSource]:
+    if isinstance(source, exp.Table):
+        return _table(source, result=result, column=column)
+    if not isinstance(source, Scope):
+        return []
+    inner = _scope_sources(source)
+    named = [i for i in inner if i.result is not None and i.result.lower() == column.lower()]
+    if named:
+        return [named[0].model_copy(update={"result": result})]
+    # Under ``*`` the column is whichever table's it is: each is asked, and only its owner answers.
+    return [i.model_copy(update={"result": result, "column": column}) for i in inner if i.result is None]

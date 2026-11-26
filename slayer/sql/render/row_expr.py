@@ -14,7 +14,7 @@ between the ScopeFrame and the generator's spec-builder call sites.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -60,6 +60,7 @@ from slayer.core.keys import (
 )
 from slayer.sql.dialects.base import (
     CONSTANT_INPUT,
+    LIBRARY_FUNCTIONS,
     SqlDialect,
     TemporalComparisonOp,
     bare_comparands,
@@ -91,6 +92,8 @@ def _literal(value: Any, *, dialect: Optional[SqlDialect] = None) -> Expression:
     """Render a scalar leaf; unsupported types RAISE rather than stringify to a wrong value."""
     if isinstance(value, date) and dialect is not None:
         return dialect.build_temporal_literal(value=value, dt=temporal_type_of(value))
+    if isinstance(value, time) and dialect is not None:
+        return dialect.build_time_literal(value)
     if value is None:
         return exp.Null()
     if isinstance(value, bool):
@@ -296,6 +299,10 @@ def render_cast(
         require_library(dialect, "try_cast")
         to = dialect.try_cast_type(to, data_type=key.data_type)
     source = key.source
+    if key.data_type is DataType.TIME:
+        return dialect.build_time_cast(part(source), to, source=key.temporal_source, try_=key.try_)
+    if key.temporal_source is DataType.TIME:
+        return dialect.build_time_text(part(source))
     sized = text_length(to) is not None or decimal_parts(to) is not None
     if key.try_ and direct and not sized and isinstance(source, ScalarCallKey) and source.name == "json_value":
         value, path, native = json_operands(source, part=part, dialect=dialect)
@@ -492,7 +499,7 @@ def passthrough_call(*, name: str, args: List[Expression], dialect: SqlDialect) 
     return rewrite_log_alias(node, dialect=dialect)
 
 
-DATE_FUNCTIONS = frozenset({*DATE_OPERAND_ARGS, *CLOCK_FUNCTIONS})
+DATE_FUNCTIONS = frozenset({*DATE_OPERAND_ARGS, *CLOCK_FUNCTIONS}) - LIBRARY_FUNCTIONS
 
 
 def render_date_call(
@@ -539,6 +546,8 @@ def _render_clock(*, name: str, dialect: SqlDialect) -> Expression:
 
 def _operand_type(key: ScalarCallKey, pos: int, *, field_type: FieldTypeFn) -> DataType:
     dt = temporal_type(key.args[pos], field_type=field_type)
+    if dt is None and key.name == "date_part" and value_type(key.args[pos], field_type=field_type) is DataType.TIME:
+        return DataType.TIME
     if dt is None:
         # The checker rejects these at bind; reaching render is a wiring bug.
         raise RuntimeError(f"{key.name}() operand {pos} has no DATE/TIMESTAMP type at render.")

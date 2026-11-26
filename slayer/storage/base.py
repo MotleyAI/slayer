@@ -23,10 +23,12 @@ from pydantic import BaseModel
 from typing_extensions import deprecated
 
 from slayer.core.deprecation import outside_stacklevel
-from slayer.core.enums import DataType, RESERVED_NAMES, TEMPORAL_DATATYPES, TimeGranularity
+from slayer.core.enums import DataType, RESERVED_NAMES, TimeGranularity
 from slayer.core.granularity import granularity_key, resolve_granularity, unknown_granularity_message
 from slayer.core.stored_rewrites import collecting_rewrites
-from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset, spine_variant_warnings
+from slayer.core.time_spine import (
+    TIME_SPINE_DATASET, check_default_time_dimension, is_spine_spelling, spine_dataset, spine_variant_warnings,
+)
 from slayer.core.errors import (
     AmbiguousDatasetError,
     AmbiguousReferenceError,
@@ -45,7 +47,6 @@ from slayer.core.errors import (
     UnreadableDocumentError,
     SemanticModelsUnsupportedError,
     MemoryNotFoundError,
-    DefaultTimeDimensionTypeError,
     ReservedFunctionNameError,
     ReservedDatasetNameError,
     StoredDocumentLoadError,
@@ -760,12 +761,6 @@ def _repointed_key_field(*, old: DatasetField | None, new: DatasetField | None) 
     return not new.is_base or new.physical_name != old.physical_name
 
 
-def _validate_default_time_dimension(dataset: SlayerDataset) -> None:
-    field = dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
-    if field is not None and field.datatype is not None and field.datatype not in TEMPORAL_DATATYPES:
-        raise DefaultTimeDimensionTypeError(dataset=dataset.name, field=field.name, field_type=field.datatype)
-
-
 #: The 1.x methods and hooks a custom backend may still override, by their 2.0 names.
 HOOK_RENAMES = {
     "get_model": "get_dataset", "save_model": "save_dataset", "delete_model": "delete_dataset",
@@ -1054,7 +1049,7 @@ class StorageBackend(ABC):
         self._validate_relationship_edges(dataset, peers=peers)
         await self._validate_aggregations(dataset)
         await self._validate_field_granularities(dataset)
-        _validate_default_time_dimension(dataset)
+        check_default_time_dimension(dataset)
         if failures.report:
             warn_broken_dependents(dataset=dataset, stored=stored, peers=peers)
             warn_broken_model_metrics(dataset=dataset, stored=stored,

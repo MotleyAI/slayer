@@ -195,6 +195,11 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     database_name: ClassVar[str] = "BigQuery"
     native_lists: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """``%E*S``: the seconds with only the fraction digits they need."""
+        return anon("FORMAT_TIME", lit("%H:%M:%E*S"), value)
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "CBRT", "GREATEST", "LEAST",
     })

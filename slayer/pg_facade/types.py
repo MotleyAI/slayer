@@ -34,6 +34,7 @@ from slayer.pg_facade.protocol import (
     OID_FLOAT8,
     OID_INT8,
     OID_TEXT,
+    OID_TIME,
     OID_TIMESTAMP,
 )
 
@@ -44,6 +45,7 @@ _KIND_TO_OID: dict[TypeKind, int] = {
     TypeKind.BOOLEAN: OID_BOOL,
     TypeKind.DATE: OID_DATE,
     TypeKind.TIMESTAMP: OID_TIMESTAMP,
+    TypeKind.TIME: OID_TIME,
     # Opaque columns go out as text — see slayer.core.enums.DataType.is_opaque.
     TypeKind.UNKNOWN: OID_TEXT,
     # Lists go out as their JSON array text.
@@ -125,6 +127,8 @@ def value_to_binary(value: Any, oid: int) -> bytes | None:
         delta = _as_naive_datetime(value) - _PG_EPOCH_DATETIME
         micros = (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
         return struct.pack(">q", micros)
+    if oid == OID_TIME:
+        return struct.pack(">q", _time_micros(_as_time(value)))
     # OID_TEXT and any fallback → UTF-8 text bytes (same as text format).
     text = value_to_text(value)
     return text if text is not None else b""
@@ -136,6 +140,14 @@ def _as_date(value: Any) -> _dt.date:
     if isinstance(value, _dt.date):
         return value
     return _dt.date.fromisoformat(str(value))
+
+
+def _as_time(value: Any) -> _dt.time:
+    return value if isinstance(value, _dt.time) else _dt.time.fromisoformat(str(value))
+
+
+def _time_micros(value: _dt.time) -> int:
+    return ((value.hour * 60 + value.minute) * 60 + value.second) * 1_000_000 + value.microsecond
 
 
 def _as_naive_datetime(value: Any) -> _dt.datetime:
@@ -164,6 +176,8 @@ def value_from_text(buf: bytes, oid: int) -> Any:
         return _dt.date.fromisoformat(s)
     if oid == OID_TIMESTAMP:
         return _dt.datetime.fromisoformat(s.replace(" ", "T"))
+    if oid == OID_TIME:
+        return _dt.time.fromisoformat(s)
     return s
 
 
@@ -181,6 +195,9 @@ def value_from_binary(buf: bytes, oid: int) -> Any:
     if oid == OID_TIMESTAMP:
         micros = struct.unpack(">q", buf)[0]
         return _PG_EPOCH_DATETIME + _dt.timedelta(microseconds=micros)
+    if oid == OID_TIME:
+        micros = struct.unpack(">q", buf)[0]
+        return (_dt.datetime.min + _dt.timedelta(microseconds=micros)).time()
     return buf.decode("utf-8")
 
 
@@ -208,6 +225,8 @@ def literal_for_substitution(value: Any) -> str:
         return _quote(_format_timestamp(value))
     if isinstance(value, _dt.date):
         return _quote(value.isoformat())
+    if isinstance(value, _dt.time):
+        return _quote(encode_text(value))
     if isinstance(value, bytes):
         return _quote(value.decode("utf-8", errors="replace"))
     return _quote(str(value))

@@ -157,7 +157,8 @@ _TYPE_NAME_MAP = {
     "TIMESTAMP_LTZ": DataType.DATETIME,
     "TIMESTAMP_TZ": DataType.DATETIME,
     "DATE": DataType.DATE,
-    "TIME": DataType.DATETIME,
+    "TIME": DataType.TIME,
+    "TIME64": DataType.TIME,
     "INTERVAL": DataType.STRING,  # no interval DataType; groupable as TEXT
     # ClickHouse
     "INT8": DataType.INTEGER,
@@ -254,6 +255,21 @@ def parse_info_schema_is_float(data_type_str: str) -> bool:
     return True
 
 
+_TIME_OF_DAY_NAME = re.compile(
+    r"TIME(?:64)?\s*(?:\(\s*\d+\s*\))?\s*(?:(?P<zone>WITH(?:OUT)?)\s+TIME\s+ZONE)?|(?P<tz>TIMETZ)\s*(?:\(\s*\d+\s*\))?",
+    re.I,
+)
+
+
+def time_of_day_type(name: str) -> DataType | None:
+    """``Time`` for a time-of-day type name without a time zone, ``Opaque`` for a zoned one, else ``None``."""
+    m = _TIME_OF_DAY_NAME.fullmatch(name.strip())
+    if m is None:
+        return None
+    zoned = m.group("tz") is not None or (m.group("zone") or "").upper() == "WITH"
+    return DataType.OPAQUE if zoned else DataType.TIME
+
+
 def _is_container_name(name: str) -> bool:
     if name.endswith("[]"):
         return True
@@ -274,6 +290,9 @@ def info_schema_type(
         return DataType.STRING, False
     if base in _OPAQUE_TYPE_NAMES:
         return DataType.OPAQUE, False
+    time_of_day = time_of_day_type(name)
+    if time_of_day is not None:
+        return time_of_day, False
     if is_exact_numeric_db_type(base):
         is_float = parse_info_schema_is_float(name)
         return (DataType.FLOAT if is_float else DataType.INTEGER), is_float
@@ -362,6 +381,11 @@ def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEn
 
 
 #: Element types that are records or containers: a list of them has opaque elements.
+def is_untyped_sa_type(sa_type: sa.types.TypeEngine) -> bool:
+    """A type the driver did not recognise (``NullType``), a ClickHouse wrapper around one included."""
+    return isinstance(_unwrap_clickhouse_wrappers(sa_type), sa.types.NullType)
+
+
 _OPAQUE_ELEMENT_TYPE_NAMES = frozenset({"STRUCT", "RECORD", "TUPLE", "MAP", "OBJECT", "VARIANT", "ROW", "JSON"})
 
 
@@ -420,10 +444,16 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     # Any dialect's UUID, e.g. SQL Server UNIQUEIDENTIFIER.
     if isinstance(sa_type, sa.Uuid):
         return DataType.STRING
+    if isinstance(sa_type, sa.Time):
+        # SQLite's affinity reader passes a ``TIME(p)`` precision as ``timezone``.
+        return DataType.OPAQUE if getattr(sa_type, "timezone", False) is True else DataType.TIME
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
     if type_name in _CONTAINER_PREFIXES or _is_container_name(str(sa_type)):
         return DataType.STRING
+    time_of_day = time_of_day_type(str(sa_type)) or time_of_day_type(type_name)
+    if time_of_day is not None:
+        return time_of_day
     if type_name in _OPAQUE_TYPE_NAMES or type_str in _OPAQUE_TYPE_NAMES:
         return DataType.OPAQUE
     if is_exact_numeric_db_type(type_name) or is_exact_numeric_db_type(type_str):

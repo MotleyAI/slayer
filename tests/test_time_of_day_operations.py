@@ -60,7 +60,8 @@ STRING_SLOTS: list[tuple[str, str, set[int]]] = [
     (f"{END} IS NOT DISTINCT FROM '17:00'", f"{END} IS NOT DISTINCT FROM TIME '17:00'", {1}),
     (f"nullif({START}, '09:30') IS NULL", f"nullif({START}, TIME '09:30') IS NULL", {1, 2}),
     ("CAST(shifts.created_at AS TIME) > '09:00'", "CAST(shifts.created_at AS TIME) > TIME '09:00'", {1, 3}),
-    (f"TIME '09:30' = '09:30' AND {START} > '00:00'", f"{START} > TIME '00:00'", {1, 2, 3}),
+    (f"TIME '09:30' = '09:30' AND {START} > '00:00'", f"TIME '09:30' = TIME '09:30' AND {START} > TIME '00:00'",
+     {1, 2, 3}),
     (f"min({START}) >= '09:30'", f"min({START}) >= TIME '09:30'", {1, 2, 3}),
 ]
 NOT_A_TIME = [
@@ -186,7 +187,7 @@ class TestDimensionOrderAggregate:
     async def test_collect_where_the_database_has_lists(self) -> None:
         async with shifts_engine("duckdb") as eng:
             resp = await eng.execute(q(metrics=[m(f"collect({START})")]))
-        assert sorted(resp.data[0]["v"]) == [time(9, 30), time(9, 30), time(17, 0)]
+        assert sorted(resp.data[0]["v"]) == [time(9, 30), time(17, 0)]
 
     async def test_a_time_metric_filters_and_orders(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["shifts.is_paid"], metrics=[m(f"max({START})", "hi")],
@@ -223,8 +224,9 @@ class TestRefusedOperations:
     @pytest.mark.parametrize(("entry", "operand"), REFUSED, ids=[next(iter(e.values())) for e, _ in REFUSED])
     async def test_refused_naming_the_operand_and_its_type(self, engine: SlayerQueryEngine, data_calls: list[str],
                                                            entry: dict[str, str], operand: str) -> None:
+        query = q(**_entry(entry))
         with pytest.raises(SlayerError) as info:
-            await engine.execute(q(**_entry(entry)))
+            await engine.execute(query)
         msg = str(info.value)
         assert operand in msg, msg
         assert "time" in msg.lower(), msg
@@ -260,16 +262,18 @@ class TestNotATimeAxis:
     ])
     async def test_refused_as_a_time_dimension(self, engine: SlayerQueryEngine, data_calls: list[str],
                                                entry: dict[str, Any]) -> None:
+        query = q(time_dimensions=[entry], metrics=[m("count(shifts.*)")])
         with pytest.raises(SlayerError) as info:
-            await engine.execute(q(time_dimensions=[entry], metrics=[m("count(shifts.*)")]))
+            await engine.execute(query)
         msg = str(info.value)
         assert "starts_at" in msg, msg
         assert "Time" in msg, msg
         assert _data(data_calls) == []
 
     async def test_refused_as_a_default_time_dimension(self, engine: SlayerQueryEngine) -> None:
+        dataset = shifts_dataset(default_time_dimension="starts_at")
         with pytest.raises(DefaultTimeDimensionTypeError) as info:
-            await engine.storage.save_dataset(shifts_dataset(default_time_dimension="starts_at"))
+            await engine.storage.save_dataset(dataset)
         assert "starts_at" in str(info.value)
         assert "Time" in str(info.value)
 
@@ -288,8 +292,9 @@ class TestNotATimeAxis:
         dataset = shifts_dataset().model_copy(update={"fields": [
             f for f in shifts_dataset().fields if f.name in ("id", "starts_at", "amount")]})
         await engine.storage.save_dataset(dataset)
+        query = q(metrics=[m("last(shifts.amount)")])
         with pytest.raises(ValueError, match="ranking time field"):
-            await engine.execute(q(metrics=[m("last(shifts.amount)")]))
+            await engine.execute(query)
 
 
 class TestNoZoneConversion:
@@ -353,10 +358,11 @@ class TestNotASpineAxis:
     async def test_a_stored_non_temporal_default_is_refused(self, backend: str, data_calls: list[str], field: str,
                                                             type_name: str) -> None:
         spine = {"field": "time_spine.timestamp", "granularity": "month", "date_range": ["2024-01-01", "2024-02-29"]}
+        query = q(time_dimensions=[spine], metrics=[m("count(shifts.*)")])
         async with shifts_engine(backend) as eng:
             await eng.storage.save_dataset(shifts_dataset(default_time_dimension=field), _validate=False)
             with pytest.raises(DefaultTimeDimensionTypeError) as info:
-                await eng.execute(q(time_dimensions=[spine], metrics=[m("count(shifts.*)")]))
+                await eng.execute(query)
         msg = str(info.value)
         assert all(part in msg for part in ("shifts", field, type_name)), msg
         assert _data(data_calls) == []

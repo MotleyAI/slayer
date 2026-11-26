@@ -23,6 +23,7 @@ class TypeKind(StrEnum):
     BOOLEAN = "BOOLEAN"
     DATE = "DATE"
     TIMESTAMP = "TIMESTAMP"
+    TIME = "TIME"
     UNKNOWN = "UNKNOWN"
     ARRAY = "ARRAY"
 
@@ -79,12 +80,17 @@ class DataType(StrEnum, metaclass=_DataTypeType):
     def is_temporal(self) -> bool:
         return _KINDS[self] in (TypeKind.DATE, TypeKind.TIMESTAMP)
 
+    @property
+    def is_time_of_day(self) -> bool:
+        """A clock time with no date: ordered, never a time axis."""
+        return _KINDS[self] is TypeKind.TIME
+
 
 #: The one wire → kind table.
 _KINDS: dict[DataType, TypeKind] = {
     DataType.STRING: TypeKind.TEXT, DataType.INTEGER: TypeKind.INT, DataType.DECIMAL: TypeKind.DOUBLE,
     DataType.FLOAT: TypeKind.DOUBLE, DataType.BOOLEAN: TypeKind.BOOLEAN, DataType.DATE: TypeKind.DATE,
-    DataType.TIME: TypeKind.UNKNOWN, DataType.DATETIME: TypeKind.TIMESTAMP, DataType.DATETIME_TZ: TypeKind.TIMESTAMP,
+    DataType.TIME: TypeKind.TIME, DataType.DATETIME: TypeKind.TIMESTAMP, DataType.DATETIME_TZ: TypeKind.TIMESTAMP,
     DataType.OPAQUE: TypeKind.UNKNOWN, DataType.ARRAY: TypeKind.ARRAY,
 }
 
@@ -94,14 +100,14 @@ TEMPORAL_DATATYPES: frozenset[DataType] = frozenset(t for t in DataType if t.is_
 
 
 def canonical_datatype(datatype: DataType) -> DataType:
-    """The value SLayer itself produces for ``datatype``'s kind (``Decimal`` → ``Float``, ``Time`` → ``Opaque``)."""
+    """The value SLayer itself produces for ``datatype``'s kind (``Decimal`` → ``Float``)."""
     return _CANONICAL[_KINDS[datatype]]
 
 
 _CANONICAL: dict[TypeKind, DataType] = {
     TypeKind.TEXT: DataType.STRING, TypeKind.INT: DataType.INTEGER, TypeKind.DOUBLE: DataType.FLOAT,
     TypeKind.BOOLEAN: DataType.BOOLEAN, TypeKind.DATE: DataType.DATE, TypeKind.TIMESTAMP: DataType.DATETIME,
-    TypeKind.UNKNOWN: DataType.OPAQUE, TypeKind.ARRAY: DataType.ARRAY,
+    TypeKind.TIME: DataType.TIME, TypeKind.UNKNOWN: DataType.OPAQUE, TypeKind.ARRAY: DataType.ARRAY,
 }
 
 
@@ -591,6 +597,7 @@ _AGGREGATIONS_BY_KIND: dict[TypeKind, frozenset[str]] = {
     TypeKind.BOOLEAN: _NUMERIC_AGGREGATIONS,
     TypeKind.DATE: _ORDERED_AGGREGATIONS,
     TypeKind.TIMESTAMP: _ORDERED_AGGREGATIONS,
+    TypeKind.TIME: _ORDERED_AGGREGATIONS - {"percentile_disc"},
     # A list counts as a whole or by distinct element sets; its elements aggregate through ``<field>.value``.
     TypeKind.ARRAY: frozenset({"count", "count_distinct"}),
 }

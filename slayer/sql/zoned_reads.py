@@ -120,6 +120,9 @@ def read_column(column: exp.Column, *, site: ReadSite, dialect: SqlDialect, sett
     """``column`` as SLayer reads it at ``site``: under the dialect's zone, a timestamp value converted to its wall
     clock (``civil`` and undeclared ones as stored, the latter with a warning); a stored predicate's as stored."""
     field = site.field
+    if (field is not None and field.datatype is DataType.TIME
+            and site.dataset.name not in setting.stages):
+        return dialect.read_time_of_day(column)  # no zone: a time of day is never converted
     instant = field is not None and dialect.holds_instant(datatype=field.datatype, db_type=field.db_type)
     zone = dialect.time_zone
     if zone is None or site.context == STORED:

@@ -133,7 +133,8 @@ def test_door_executes_the_probe_verbatim(sqlite_engine: sa.Engine) -> None:
     assert get_result_column_types_sync(probe, engine=sqlite_engine, db_type="sqlite") == _TYPED
     statement, *census = seen
     assert statement == probe.sql
-    assert census == [probe.census_sql(["a", "b"], dialect=SqliteDialect())]
+    assert census == [probe.census_sql(["a", "b"], dialect=SqliteDialect()),
+                      probe.declared_sql(dialect=SqliteDialect())]
 
 
 _TYPED = {"a": ResultColumnType(type=DataType.INTEGER), "b": ResultColumnType(type=DataType.STRING)}

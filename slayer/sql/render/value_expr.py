@@ -11,7 +11,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TEMPORAL_DATATYPES
-from slayer.core.errors import RenderContextMissingFacilityError
+from slayer.core.errors import CastTypeError, RenderContextMissingFacilityError
 from slayer.core.keys import (
     NULL_SAFE_COMPARISON_OPS,
     AggregateKey,
@@ -99,13 +99,21 @@ def _wrap_cast_for_type(
         zoned = dialect.zoned_timestamp_cast(expr)
         if zoned is not None:
             return zoned
-    target = data_type_target(dt)
+    if dt is DataType.TIME:
+        try:
+            target = dialect.time_of_day_type()
+        except CastTypeError:
+            return expr  # no time-of-day type here: the value stays as its SQL gives it
+    else:
+        target = data_type_target(dt)
     if isinstance(expr, exp.Cast):
         existing = expr.args.get("to")
         if isinstance(existing, exp.DataType) and (
             existing.sql(dialect=dialect.sqlglot_name) == target.sql(dialect=dialect.sqlglot_name)
         ):
             return expr
+    if dt is DataType.TIME:
+        return dialect.build_time_cast(expr, target, source=None, try_=False)
     return exp.Cast(this=expr, to=target)
 
 

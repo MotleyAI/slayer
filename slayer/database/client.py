@@ -526,7 +526,10 @@ def _probe_sync(conn: Any, *, probe: TypeProbe, db_type: str | None) -> dict[str
     if census_sql is None:
         return _types_from_cursor(result, dialect=dialect)
     result.fetchall()
-    return dialect.result_census_types(columns=columns, row=_first_row(_exec_verbatim(conn, census_sql)))
+    types = dialect.result_census_types(columns=columns, row=_first_row(_exec_verbatim(conn, census_sql)))
+    declared_sql = probe.declared_sql(dialect=dialect)
+    declared = dialect.declared_result_types(_exec_verbatim(conn, declared_sql).fetchall()) if declared_sql else {}
+    return {name: declared.get(name, found) for name, found in types.items()}
 
 
 async def _probe_async(conn: Any, *, probe: TypeProbe, db_type: str | None) -> dict[str, ResultColumnType]:
@@ -546,9 +549,13 @@ async def _probe_async(conn: Any, *, probe: TypeProbe, db_type: str | None) -> d
     if census_sql is None:
         return _types_from_cursor(result, dialect=dialect)
     result.fetchall()
-    return dialect.result_census_types(
+    types = dialect.result_census_types(
         columns=columns, row=_first_row(await _exec_verbatim_async(conn, census_sql)),
     )
+    declared_sql = probe.declared_sql(dialect=dialect)
+    declared = dialect.declared_result_types(
+        (await _exec_verbatim_async(conn, declared_sql)).fetchall()) if declared_sql else {}
+    return {name: declared.get(name, found) for name, found in types.items()}
 
 
 def _open_probe_transaction(conn: sa.Connection) -> bool:

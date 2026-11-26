@@ -7,12 +7,15 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
+from slayer.core.enums import DataType
 from slayer.core.errors import CastTypeError, SlayerError, UnsupportedServerFunctionError
+from slayer.core.models import DatasetField
 from slayer.sql.dialects import dialect_for_ds_type
 from tests._dev2000_fixtures import PinnedClock, instant
 from tests._dev2120_fixtures import patch_profile
 from tests._ossie_gate import TIER1
-from tests._time_of_day_fixtures import NY, d, emit, m, q
+from tests._engine_helpers import _engine_generate
+from tests._time_of_day_fixtures import NY, d, emit, m, q, shifts_dataset
 
 #: Ossie's five required time-of-day rows, the three parts, and the other uses of the type.
 CONSTRUCTS: dict[str, str] = {
@@ -108,15 +111,17 @@ class TestTier2:
     @pytest.mark.parametrize("ds_type", TIER2_NO_CAST)
     @pytest.mark.parametrize("text", ["CAST('10:30:00' AS TIME)", "TIME '10:30:00'"])
     async def test_a_database_without_the_type_still_refuses(self, ds_type: str, text: str) -> None:
+        query = q(dimensions=[d(text)])
         with pytest.raises(CastTypeError) as info:
-            await emit(q(dimensions=[d(text)]), dialect=ds_type)
+            await emit(query, dialect=ds_type)
         assert ds_type in str(info.value).lower()
 
     @pytest.mark.parametrize("ds_type", TIER2)
     @pytest.mark.parametrize("text", ["current_time()", "CURRENT_TIME", "CURRENT_TIME()"])
     async def test_the_clock_is_refused(self, ds_type: str, text: str) -> None:
+        query = q(dimensions=[d(text)])
         with pytest.raises(UnsupportedServerFunctionError) as info:
-            await emit(q(dimensions=[d(text)]), dialect=ds_type)
+            await emit(query, dialect=ds_type)
         msg = str(info.value)
         assert dialect_for_ds_type(ds_type).database_name in msg, msg
         assert "current_time" in msg.lower(), msg
@@ -125,9 +130,17 @@ class TestTier2:
     @pytest.mark.parametrize("text", ["date_part('hour', shifts.starts_at)", "EXTRACT(MINUTE FROM shifts.starts_at)",
                                       "SECOND(shifts.starts_at)"])
     async def test_the_parts_of_a_time_of_day_are_refused(self, ds_type: str, text: str) -> None:
+        query = q(dimensions=[d(text)])
         with pytest.raises(SlayerError) as info:
-            await emit(q(dimensions=[d(text)]), dialect=ds_type)
+            await emit(query, dialect=ds_type)
         assert dialect_for_ds_type(ds_type).database_name in str(info.value), str(info.value)
+
+    @pytest.mark.parametrize("ds_type", TIER2_NO_CAST)
+    async def test_a_derived_time_field_is_read_as_it_is(self, ds_type: str) -> None:
+        """No time-of-day type to cast to: the field's own SQL is the value, as before."""
+        dataset = shifts_dataset(extra_fields=[DatasetField(name="opens", expression="label || ''", datatype=DataType.TIME)])
+        sql = await _engine_generate(query=q(dimensions=["shifts.opens"]), dataset=dataset, dialect=ds_type)
+        assert "CAST(" not in sql.upper(), sql
 
     @pytest.mark.parametrize("ds_type", TIER2)
     async def test_the_parts_of_a_timestamp_still_emit(self, ds_type: str) -> None:

@@ -122,9 +122,10 @@ class TestSettingSent:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_sent_in_every_mode(self, ch_server: ChServer, engine: SlayerQueryEngine, mode: str) -> None:
-        ch_server.start(version="25.8.3.1")
+        fake = ch_server.start(version="25.8.3.1")
         resp = await _run(engine, CAST, mode)
-        sent = ch_server.executed if mode != "dry_run" else [resp.sql or ""]
+        # An explain runs through ``SlayerSQLClient.explain``, so its statement is read off the server.
+        sent = {"dry_run": [resp.sql or ""], "explain": fake.user_statements()}.get(mode, ch_server.executed)
         assert sent, mode
         assert all(TIME_SETTING in s for s in sent), sent
 

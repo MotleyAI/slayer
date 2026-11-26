@@ -96,4 +96,4 @@ class TestDefaultAggregationsByType:
         for key in DEFAULT_AGGREGATIONS_BY_TYPE.keys():
             assert isinstance(key, DataType)
             assert key.name in {
-                "STRING", "INTEGER", "DECIMAL", "FLOAT", "BOOLEAN", "DATE", "DATETIME", "DATETIME_TZ", "ARRAY"}
+                "STRING", "INTEGER", "DECIMAL", "FLOAT", "BOOLEAN", "DATE", "TIME", "DATETIME", "DATETIME_TZ", "ARRAY"}

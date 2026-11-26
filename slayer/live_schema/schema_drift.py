@@ -481,10 +481,10 @@ def data_type_bucket(dt: DataType) -> str:
 
 
 def _type_buckets_conflict(*, persisted: DataType, live: DataType, temporal_text: bool) -> bool:
-    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP over live TEXT is the dialect's own date storage."""
+    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP/TIME over live TEXT is the dialect's own storage of it."""
     if live is DataType.ARRAY and persisted is not DataType.ARRAY:
         return False
-    if temporal_text and live is DataType.STRING and persisted in TEMPORAL_DATATYPES:
+    if temporal_text and live is DataType.STRING and (persisted in TEMPORAL_DATATYPES or persisted.is_time_of_day):
         return False
     if live.is_opaque:
         return not persisted.is_opaque
@@ -510,7 +510,7 @@ def _field_finding(
         return None
     return RetypeFinding.of(
         dataset=dataset, field=field, live_type=live_type, live_db_type=live_db_type,
-        remedy_kind="reingest" if live_type is DataType.ARRAY else "set_type",
+        remedy_kind="reingest" if live_type in (DataType.ARRAY, DataType.TIME) else "set_type",
     )
 
 

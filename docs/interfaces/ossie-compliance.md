@@ -5,7 +5,7 @@ claim is measured against the Ossie specification vendored in SLayer's test suit
 (26 November 2026), and names the tests that back it. The Tier-1 databases are SQLite, DuckDB, PostgreSQL, MySQL,
 ClickHouse, SQL Server, Trino, Snowflake and BigQuery. The compliance gate runs on SQLite and DuckDB on every pull
 request (`tests/test_ossie_gate.py`), on the others nightly (`tests/integration/test_integration_ossie_gate.py`), and on
-all nine weekly against upstream's `main`.
+all nine weekly against upstream's `main`. ClickHouse is measured on server 25.12.
 
 | Layer | Claim | Certified on |
 |---|---|---|
@@ -31,15 +31,15 @@ cases are:
 
 | Database | Pass | Refused | Gap |
 |---|---|---|---|
-| SQLite | 178 | 0 | 26 |
-| DuckDB | 180 | 0 | 24 |
-| PostgreSQL | 180 | 0 | 24 |
-| MySQL | 179 | 1 | 24 |
-| ClickHouse | 178 | 0 | 26 |
-| SQL Server | 176 | 4 | 24 |
-| Trino | 180 | 0 | 24 |
-| Snowflake | 180 | 0 | 24 |
-| BigQuery | 180 | 0 | 24 |
+| SQLite | 185 | 0 | 21 |
+| DuckDB | 185 | 0 | 21 |
+| PostgreSQL | 185 | 0 | 21 |
+| MySQL | 184 | 1 | 21 |
+| ClickHouse | 185 | 0 | 21 |
+| SQL Server | 181 | 4 | 21 |
+| Trino | 185 | 0 | 21 |
+| Snowflake | 185 | 0 | 21 |
+| BigQuery | 185 | 0 | 21 |
 
 | Construct | Example | Status |
 |---|---|---|
@@ -47,10 +47,6 @@ cases are:
 | `REGEXP_LIKE` | `REGEXP_LIKE(orders.status, '^pe')`, on SQL Server before 2025 | refused |
 | `REGEXP_EXTRACT` | `REGEXP_EXTRACT(orders.status, 'e.d')`, on SQL Server before 2025 | refused |
 | `REGEXP_REPLACE` | `REGEXP_REPLACE(orders.status, 'n', 'N')`, on SQL Server before 2025 | refused |
-| `CURRENT_TIME` | `CURRENT_TIME`, `CURRENT_TIME()` | planned |
-| `TIME '10:30:00'` | a time-of-day literal | planned |
-| `CAST('10:30:00' AS TIME)` | a cast to a time of day (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
-| `CAST AS TIME` | `CAST('10:30:00' AS TIME)` (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
 | `ROW_NUMBER` | `ROW_NUMBER() OVER (ORDER BY orders.amount)` in a query dimension | planned |
 | `RANK` | `RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
 | `DENSE_RANK` | `DENSE_RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
@@ -125,7 +121,5 @@ known not to follow Ossie yet:
 | `format-delimited-dataset-name` | a delimited dataset name (`"Order Lines"`) cannot be referenced | planned |
 | `format-quoted-column-expression` | a field expression naming a quoted column (`"Order Amount"`) is refused | planned |
 | `format-decimal-exact` | `Decimal` aggregates are not exact | planned |
-| `format-time-dimension` | a `Time` field cannot be a dimension | planned |
-| `format-time-aggregate` | a `Time` field cannot be aggregated (`MIN`, `MAX`) | planned |
 | `format-datetimetz-truncation` | truncating a `DateTimeTz` field drops its time zone | planned |
 | `format-datetimetz-offset-literal` | a timestamp literal with a UTC offset cannot be compared with a `DateTimeTz` field | planned |

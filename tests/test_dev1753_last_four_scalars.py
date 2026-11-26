@@ -73,7 +73,7 @@ class TestScalarSetsClosed:
         # Rewrite targets and dialect-rendered date functions are not SQL pass-throughs.
         assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
             "like", "ilike", "iif", "date_part", "date_diff", "date_add", "interval",
-            "current_date", "now",
+            "current_date", "now", "current_time",
         }
 
     def test_arity_entries_exist_for_the_four(self) -> None:

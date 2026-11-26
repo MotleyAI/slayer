@@ -9,7 +9,7 @@ the Postgres catalog queries duckdb-engine inherits.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
@@ -40,6 +40,7 @@ from slayer.sql.dialects.base import (
     text_try_cast,
     at_time_zone,
     iso_text,
+    time_precision,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
@@ -151,6 +152,24 @@ class DuckdbDialect(SqlDialect):
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
+
+    time_of_day_parts: ClassVar[bool] = True
+    # ``TRY_CAST('24:00:00' AS TIME)`` is ``24:00:00`` here.
+    time_of_day_range_check: ClassVar[bool] = True
+    rounds_time_precision: ClassVar[bool] = True
+
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """``TIME`` takes no precision here: a ``TIME(p)`` cast is rounded to ``p`` digits."""
+        digits = time_precision(to)
+        cast = super().build_time_cast(value, self.time_of_day_type(), source=source, try_=try_)
+        if digits is None or digits >= 6:
+            return cast
+        unit = lit(10 ** (6 - digits))
+        rounded = exp.Mul(this=exp.Round(this=exp.Div(this=anon("EPOCH_US", cast), expression=unit)), expression=unit.copy())
+        micros = exp.Cast(this=rounded, to=exp.DataType.build("BIGINT"))
+        return exp.Add(this=self.build_time_literal(time(0, 0)), expression=anon("TO_MICROSECONDS", micros))
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         """``left`` / ``right`` / ``lpad`` / ``rpad`` / ``repeat`` are native with the reference meaning."""

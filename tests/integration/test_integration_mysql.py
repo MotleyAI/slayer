@@ -2290,10 +2290,11 @@ class TestTimeOfDay:
 
     @pytest.mark.parametrize(("row", "stored"), [(1, "25:00:00"), (2, "-01:30:00")])
     async def test_a_stored_duration_fails_the_query(self, shifts_env: SlayerQueryEngine, row: int, stored: str) -> None:
+        query = SlayerQuery.model_validate({
+            "population": "long_shifts", "dimensions": ["long_shifts.starts_at"],
+            "filter": [f"long_shifts.id = {row}"]})
         with pytest.raises(core_errors.SlayerError) as info:
-            await shifts_env.execute(SlayerQuery.model_validate({
-                "population": "long_shifts", "dimensions": ["long_shifts.starts_at"],
-                "filter": [f"long_shifts.id = {row}"]}))
+            await shifts_env.execute(query)
         assert "long_shifts.starts_at" in str(info.value)
         assert stored in str(info.value)
 

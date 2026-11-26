@@ -124,8 +124,9 @@ class TestRefusedSources:
                                       "CAST(shifts.is_paid AS TIME)"])
     async def test_refused_on_every_database(self, monkeypatch: pytest.MonkeyPatch, dialect: str, text: str) -> None:
         patch_profile(monkeypatch, version=(99, 0, 0))
+        query = q(dimensions=[d(text)])
         with pytest.raises(CastTypeError):
-            await emit(q(dimensions=[d(text)]), dialect=dialect)
+            await emit(query, dialect=dialect)
 
 
 class TestInvalidText:

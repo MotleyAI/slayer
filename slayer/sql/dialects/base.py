@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from functools import lru_cache
 from zoneinfo import ZoneInfo
@@ -23,6 +23,7 @@ from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.errors import (
+    CastTypeError,
     ExplainUnsupportedError,
     IdentifierCollisionError,
     IdentifierLengthError,
@@ -35,6 +36,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastTypeParts, cast_type_parts
 from slayer.core.like_pattern import LikePattern
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
+from slayer.sql.column_sources import ColumnSource
 from slayer.sql.dialects.patterns import RegexFlavour, emit_regex, emit_replacement, like_expression, like_text
 from slayer.sql._identifier_fit import (
     SqlLexis,
@@ -59,6 +61,7 @@ from slayer.sql.dialects.reflection import (
     unwrap_clickhouse_wrapper_str,
     fetch,
     inspector_column_names,
+    is_untyped_sa_type,
     inspector_foreign_keys,
     inspector_unique_constraints,
     inspector_unique_indexes,
@@ -152,7 +155,7 @@ def is_extremum_fn(name: str) -> TypeGuard[ExtremumFn]:
 #: Scalars rendered through a dialect hook.
 LIBRARY_FUNCTIONS = frozenset({
     *get_args(TextFn), *get_args(MathFn), *get_args(ExtremumFn), "split_part", "like", "ilike", "json_value",
-    "regexp_like", "regexp_extract", "regexp_replace", "regexp_count",
+    "regexp_like", "regexp_extract", "regexp_replace", "regexp_count", "current_time",
 })
 REGEX_LIBRARY = frozenset({"regexp_like", "regexp_extract", "regexp_replace", "regexp_count"})
 #: Every library function plus ``TRY_CAST``: what a dialect translating the whole library declares.
@@ -483,6 +486,7 @@ _SLAYER_TYPES: tuple[tuple[frozenset[DType], DataType], ...] = (
     (frozenset({exp.DataType.Type.BOOLEAN}), DataType.BOOLEAN),
     (_DATE_TYPES, DataType.DATE),
     (_TIMESTAMP_TYPES, DataType.DATETIME),
+    (frozenset({exp.DataType.Type.TIME}), DataType.TIME),
 )
 
 
@@ -543,7 +547,7 @@ def _renders_losslessly(built: exp.DataType, *, dialect: "SqlDialect") -> bool:
     cast applies itself may go."""
     rendered = _read_type(built.sql(dialect=dialect.sqlglot_name), readers=(dialect.sqlglot_name,))
     signature = _cast_signature(built)
-    if text_length(built) is not None:
+    if text_length(built) is not None or (built.this is exp.DataType.Type.TIME and dialect.rounds_time_precision):
         signature = signature.model_copy(update={"sizes": ()})
     return rendered is not None and signature.kept_by(_cast_signature(rendered))
 
@@ -590,6 +594,22 @@ def _keeps_author_parts(parts: CastTypeParts, built: exp.DataType) -> bool:
 VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
     exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY, exp.DataType.Type.INT128, exp.DataType.Type.INT256,
 })
+
+
+#: Text naming a time of day: ``HH:MM[:SS[.f]]`` inside the day.
+TIME_OF_DAY_TEXT = r"^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\.[0-9]{1,6})?)?$"
+
+
+def trimmed_fraction(text: Expression) -> Expression:
+    """Fixed six-digit fraction text without its trailing zeros (and the point, when none is left)."""
+    zeros = exp.Trim(this=text, expression=lit("0"), position="TRAILING")
+    return exp.Trim(this=zeros, expression=lit("."), position="TRAILING")
+
+
+def time_precision(to: exp.DataType) -> Optional[int]:
+    """The fractional digits a ``TIME(p)`` cast type names, else ``None``."""
+    params = _type_params(to)
+    return int(params[0]) if len(params) == 1 and params[0].isdigit() else None
 
 
 def temporal_type_of(value: date) -> DataType:
@@ -774,6 +794,8 @@ class ServerProfile(BaseModel):
     version: tuple[int, ...] | None = None
     readonly: int | None = None
     correlated_subqueries: bool | None = None
+    #: The time-type setting is on for this user (unknown reads as off).
+    time_types: bool = False
 
     @field_validator("version", mode="before")
     @classmethod
@@ -1912,8 +1934,68 @@ class SqlDialect(BaseModel):
     def build_current_timestamp(self) -> Expression:
         return exp.Cast(this=exp.CurrentTimestamp(), to=self.naive_timestamp_type())
 
+    # -- Time of day (spec: queries/time-of-day) ---------------------------------------------------
+
+    #: Whether this database reads the hour, minute and second of a time of day.
+    time_of_day_parts: ClassVar[bool] = False
+    #: The fractional digits to name for microseconds where a bare ``TIME`` holds fewer.
+    time_of_day_precision: ClassVar[Optional[int]] = None
+    #: Whether a text ``TRY_CAST`` to a time of day checks the clock range itself: the type also holds durations.
+    time_of_day_range_check: ClassVar[bool] = False
+    #: Whether a ``TIME(p)`` cast is rounded here because the type takes no precision.
+    rounds_time_precision: ClassVar[bool] = False
+
+    def time_of_day_type(self) -> exp.DataType:
+        """This database's microsecond time-of-day type; refused where it has none."""
+        try:
+            to = cast_target("TIME", dialect=self)
+        except ValueError as e:
+            raise CastTypeError(summary=str(e), suggestion="cast to a type this database has.") from None
+        if self.time_of_day_precision is not None:
+            to.set("expressions", [exp.DataTypeParam(this=lit(self.time_of_day_precision))])
+        return to
+
+    def build_time_literal(self, value: time) -> Expression:
+        return exp.Cast(this=lit(value.isoformat()), to=self.time_of_day_type())
+
+    def build_current_time(self) -> Expression:
+        """The time of day of ``now()``."""
+        return exp.Cast(this=self.build_current_timestamp(), to=self.time_of_day_type())
+
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """A cast to a time of day; ``source``: the value's type when a timestamp or a time of day, else text."""
+        if not to.expressions:
+            to = self.time_of_day_type()
+        if source is not None or not try_:
+            return self.build_cast(value, to)
+        if not self.time_of_day_range_check:
+            return self.build_try_cast(value, to)
+        text = as_text(value)
+        return case((self.build_regexp_like(text, parse_regex(TIME_OF_DAY_TEXT), False), exp.Cast(this=text.copy(), to=to)))
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """A time of day as ``HH:MM:SS``, followed by its fraction only when not zero."""
+        return as_text(value)
+
+    def build_time_part(self, part: DatePart, expr: Expression) -> Expression:
+        """The hour, minute or second of a time of day."""
+        if not self.time_of_day_parts:
+            raise UnsupportedServerFunctionError(
+                summary=f"The {part.value} of a time of day is not supported on {self.database_name} yet.",
+                suggestion="Run the query on a database that translates it.",
+            )
+        return self._date_part(part, expr.copy())
+
+    def read_time_of_day(self, column: Expression) -> Expression:
+        """A stored time-of-day column as SLayer reads it; default: as stored."""
+        return column
+
     def build_date_part(self, *, part: DatePart, expr: Expression, operand: DataType) -> Expression:
         """``date_part``: an integer; sub-day parts of a DATE are 0."""
+        if operand is DataType.TIME:
+            return self.build_time_part(part, expr)
         if part in SUB_DAY_PARTS and operand is DataType.DATE:
             return self._date_part(part, self.promote_to_timestamp(expr))
         return self._date_part(part, expr.copy())
@@ -2451,6 +2533,27 @@ class SqlDialect(BaseModel):
         """Hook: follow-up probe for the correlated-subquery setting (its row is ``correlated_row``), or ``None``."""
         return None
 
+    def time_setting_probe(self, profile: ServerProfile) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: follow-up probe for the time-type setting (its row is ``time_row``), or ``None``."""
+        return None
+
+    #: Whether a time of day needs a server version or setting here (``time_of_day_refusal``).
+    time_of_day_gated: ClassVar[bool] = False
+    #: This statement's time of day needs the server's time-type setting sent with it.
+    sends_time_setting: bool = False
+
+    def time_of_day_refusal(self, profile: ServerProfile, *, construct: str) -> Optional[ServerVersionError]:  # NOSONAR(S1172) — no-op hook default
+        """Hook: why this server or user cannot run ``construct``, a time of day, or ``None``."""
+        return None
+
+    def time_setting_needed(self, profile: ServerProfile) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Hook: whether a time-of-day statement must enable the time-type setting on this server."""
+        return False
+
+    def attach_time_setting(self, statement: Expression) -> None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: enable the time-type setting on ``statement`` in place, where ``sends_time_setting``."""
+        return None
+
     def type_probe(self, query: Expr) -> exp.Select:
         """Hook: ``query`` bounded to ``type_probe_rows`` rows, for typing its columns."""
         source = exp.Subquery(this=query.copy(), alias=exp.TableAlias(this=exp.to_identifier("_types")))
@@ -2461,6 +2564,7 @@ class SqlDialect(BaseModel):
         *,
         base_row: Sequence[Any] | None,  # NOSONAR(S1172) — no-op hook default; overrides use it
         correlated_row: Sequence[Any] | None = None,  # NOSONAR(S1172) — no-op hook default
+        time_row: Sequence[Any] | None = None,  # NOSONAR(S1172) — no-op hook default
     ) -> ServerProfile:
         """Hook: probe rows → profile; tolerant, never raises."""
         return ServerProfile()
@@ -2502,6 +2606,15 @@ class SqlDialect(BaseModel):
     def result_census_select(self, columns: Sequence[str]) -> list[Expression] | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: a select-list counting ``columns``' stored value kinds over a sample, or ``None`` when the cursor types them."""
         return None
+
+    def declared_types_select(self, sources: Sequence[ColumnSource]) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: a query of ``(result column, declared type)`` for ``sources``, where the census cannot type a
+        declared type's values; ``None``: nothing to read."""
+        return None
+
+    def declared_result_types(self, rows: Sequence[Sequence[Any]]) -> dict[str, ResultColumnType]:  # NOSONAR(S1172) — no-op hook default
+        """Hook: ``declared_types_select``'s rows → the result columns their declaration types."""
+        return {}
 
     def result_census_types(  # NOSONAR(S1172) — no-op hook default
         self, *, columns: Sequence[str], row: Sequence[Any] | None,
@@ -2547,7 +2660,7 @@ class SqlDialect(BaseModel):
             )
             for c in raw
         ]
-        untyped = {c["name"] for c in raw if isinstance(c["type"], sa.types.NullType)}
+        untyped = {c["name"] for c in raw if is_untyped_sa_type(c["type"])}
         catalog = self.catalog_types_query(location) if untyped else None
         if catalog is None:
             return columns

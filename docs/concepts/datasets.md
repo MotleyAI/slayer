@@ -89,7 +89,7 @@ A field is the unit of structure on the dataset. The same field entry can serve 
 | `granularity` | string | No | — | Time bucket a temporal field is already truncated to (`month`, `year`, …); a finer or non-nesting time dimension over it is a typed error. Query-backed datasets stamp it automatically; set it by hand only when the values are truly bucketed at that grain |
 | `time_zone` | string | No | — | The zone a `DateTime` column's values are stored in: an IANA name, or `civil` for zone-free time never converted; overrides the datasource's `time_zone`, see [time zones](time.md#time-zones) |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
-| `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the field (or via `slayer datasources refresh-samples`), not at ingest time |
+| `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric, temporal and `Time` fields); populated lazily on the first `inspect` of the field (or via `slayer datasources refresh-samples`), not at ingest time |
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical values only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal fields |
 | `distinct_count` | int | No | — | Exact distinct count when ≤ 50 (categorical only). `None` on overflow (> 50 distinct — one scan only, no secondary `count_distinct` query) and for numeric/temporal fields |
 
@@ -113,11 +113,13 @@ Data types are Ossie's datatype names plus `Array`, stored and shown as written.
 | `Date` | Date only | DATE |
 | `DateTime` | Date and time | TIMESTAMP, DATETIME |
 | `DateTimeTz` | An instant; behaves as `DateTime`, and under a query [time zone](time.md#time-zones) reads as that zone's wall clock | TIMESTAMPTZ, TIMESTAMP WITH TIME ZONE, BigQuery / MySQL `TIMESTAMP`, ClickHouse `DateTime('UTC')` |
-| `Time` | Time of day; opaque, like `Opaque` | TIME |
+| `Time` | [Time of day](references.md#time-of-day), with no date and no time zone; never a time axis | TIME, ClickHouse `Time` / `Time64` |
 | `Opaque` | Stored and displayed, never grouped, aggregated or cast | Postgres `point`, `json`, range types |
 | `Array` | A list of `element_type` values, see [list fields](queries.md#list-fields); re-ingest re-types a `String` field whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
 
 The pre-2.0 values `TEXT`, `INT`, `BOOLEAN`, `DATE`, `UNKNOWN` and `ARRAY` (and their lowercase spellings) still convert, with a deprecation; `DOUBLE` becomes `Decimal` when the field's `db_type` is an exact numeric, else `Float`, and `TIMESTAMP` becomes `DateTimeTz` when the `db_type` carries a time zone, else `DateTime`.
+
+Ingestion types a database time-of-day column (`TIME`, `TIME(p)`, ClickHouse `Time` / `Time64(p)`) as `Time` and a time type with a time zone as `Opaque`; a re-ingest re-types a stored field of another type over such a column to `Time`, keeping its other attributes.
 
 ### Aggregation eligibility
 
@@ -130,7 +132,8 @@ A field with no explicit `allowed_aggregations` whitelist gets a default set bas
 | `Boolean` | the `Integer` set |
 | `Date` / `DateTime` / `DateTimeTz` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
 | `Array` | count (non-NULL lists), count_distinct (distinct element sets) |
-| `Time` / `Opaque` | none |
+| `Time` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
+| `Opaque` | none |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
 

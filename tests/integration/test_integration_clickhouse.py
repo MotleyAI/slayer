@@ -2587,19 +2587,22 @@ class TestVersionedTimeOfDay:
     async def test_a_stored_duration_fails_the_query(self, clickhouse_shifts) -> None:
         version, container, db_name = clickhouse_shifts
         _from_25_6(version)
+        query = SlayerQuery.model_validate({"population": "long_shifts", "dimensions": ["long_shifts.starts_at"]})
         with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            engine = _shifts_engine(ds)
             with pytest.raises(SlayerError) as ei:
-                await _shifts_engine(ds).execute(SlayerQuery.model_validate({
-                    "population": "long_shifts", "dimensions": ["long_shifts.starts_at"]}))
+                await engine.execute(query)
         assert "long_shifts.starts_at" in str(ei.value)
         assert "25:00:00" in str(ei.value)
 
     async def test_a_readonly_user_is_refused_naming_the_setting(self, clickhouse_shifts) -> None:
         version, container, db_name = clickhouse_shifts
         _from_25_6(version)
+        query = _shift_query(dimensions=["shifts.starts_at"])
         with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            engine = _shifts_engine(ds)
             with pytest.raises(SlayerError) as ei:
-                await _shifts_engine(ds).execute(_shift_query(dimensions=["shifts.starts_at"]))
+                await engine.execute(query)
             assert _TIME_SETTING in str(ei.value)
             assert _user_queries_touching(container, user=ds.username or "", table="shifts") == 0
 

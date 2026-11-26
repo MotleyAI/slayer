@@ -277,7 +277,7 @@ class TestTypedBy160Probe:
         assert set(found) == {"span", "flags", "tz"}, entries
         _assert_live(found["span"], stored=DataType.DATETIME, live=DataType.STRING, db_type="INTERVAL")
         _assert_live(found["flags"], stored=DataType.STRING, live=DataType.BOOLEAN, db_type="BIT")
-        _assert_live(found["tz"], stored=DataType.DATETIME, live=DataType.STRING, db_type="TIME WITH TIME ZONE")
+        _assert_live(found["tz"], stored=DataType.DATETIME, live=DataType.OPAQUE, db_type="TIME WITH TIME ZONE")
         assert {f["remedy_kind"] for f in found.values()} == {"set_type"}, found
         assert _removed(entries, "legacy_sql") == set(), entries
 
