@@ -1686,7 +1686,7 @@ class SqlDialect(BaseModel):
         a column of their own); ``key`` itself where it has the window."""
         return key
 
-    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:  # NOSONAR(S1172) — hook; overrides read key
         """``window`` as the database computes ``key`` exactly (a rewrite where it lacks the native form)."""
         return window
 

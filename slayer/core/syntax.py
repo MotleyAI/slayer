@@ -1179,7 +1179,9 @@ _WINDOW_LITERAL_ARGS: Mapping[str, Tuple[int, int, str]] = MappingProxyType({
     "ntile": (0, 1, "bucket count"), "nth_value": (1, 1, "position"),
     "lag": (1, 0, "offset"), "lead": (1, 0, "offset"),
 })
-_BOUND_ORDER = {"unbounded preceding": 0, "preceding": 1, "current row": 2, "following": 3, "unbounded following": 4}
+_UNBOUNDED_PRECEDING = "unbounded preceding"
+_UNBOUNDED_FOLLOWING = "unbounded following"
+_BOUND_ORDER = {_UNBOUNDED_PRECEDING: 0, "preceding": 1, "current row": 2, "following": 3, _UNBOUNDED_FOLLOWING: 4}
 
 
 def _whole_at_least(node: Any, least: int) -> bool:
@@ -1193,13 +1195,13 @@ def _whole_at_least(node: Any, least: int) -> bool:
 def _check_frame(frame: WindowFrame, *, order: Tuple[OrderItem, ...]) -> None:
     """A frame's bounds in order, a single bound not FOLLOWING, a RANGE offset over exactly one order key."""
     start, end = frame.start, frame.end
-    if end is None and start[0] in ("following", "unbounded following"):
+    if end is None and start[0] in ("following", _UNBOUNDED_FOLLOWING):
         raise _Problem(f"a frame's single bound is its start, so it cannot be FOLLOWING; write "
                        f"{frame.unit.upper()} BETWEEN … AND … FOLLOWING.")
     if end is not None:
         rank_start, rank_end = _BOUND_ORDER[start[0]], _BOUND_ORDER[end[0]]
         first, last = start[1] or Decimal(0), end[1] or Decimal(0)
-        backwards = (rank_start > rank_end or start[0] == "unbounded following" or end[0] == "unbounded preceding"
+        backwards = (rank_start > rank_end or start[0] == _UNBOUNDED_FOLLOWING or end[0] == _UNBOUNDED_PRECEDING
                      or (rank_start == rank_end and start[0] == "preceding" and first < last)
                      or (rank_start == rank_end and start[0] == "following" and first > last))
         if backwards:
@@ -3206,19 +3208,7 @@ def _render(parsed: Any, *, style: _Style) -> str:  # NOSONAR(S3776) — flat pe
 
 def _window_text(parsed: WindowCall, *, style: _Style) -> str:
     """``function OVER (PARTITION BY … ORDER BY … frame)``, each order item's NULL placement stated."""
-    call = parsed.function
-    if isinstance(call, AggCall) and call.agg == "percentile":
-        p = call.args[0].value if isinstance(call.args[0], NamedArg) else call.args[0]
-        head = (f"PERCENTILE_CONT({_render(p, style=style)}) WITHIN GROUP "
-                f"(ORDER BY {_render(call.source, style=style)})")
-    elif isinstance(call, AggCall) and call.agg == "count_distinct":
-        head = f"COUNT(DISTINCT {_render(call.source, style=style)})"
-        if call.filter is not None:
-            head += f" FILTER (WHERE {_render(call.filter, style=style)})"
-    elif isinstance(call, AggCall):
-        head = _canonical_agg_text(call, style=_Style.CANONICAL if style is _Style.LEGACY else style)
-    else:
-        head = _render(call, style=style)
+    head = _window_head_text(parsed.function, style=style)
     spec: List[str] = []
     if parsed.partition:
         spec.append("PARTITION BY " + ", ".join(_render(v, style=style) for v in parsed.partition))
@@ -3229,6 +3219,19 @@ def _window_text(parsed: WindowCall, *, style: _Style) -> str:
     if parsed.frame is not None:
         spec.append(_frame_text(parsed.frame))
     return f"{head} OVER ({' '.join(spec)})"
+
+
+def _window_head_text(call: ParsedExpr, *, style: _Style) -> str:
+    """The function a window applies, as text."""
+    if not isinstance(call, AggCall):
+        return _render(call, style=style)
+    if call.agg == "percentile":
+        p = call.args[0].value if isinstance(call.args[0], NamedArg) else call.args[0]
+        return f"PERCENTILE_CONT({_render(p, style=style)}) WITHIN GROUP (ORDER BY {_render(call.source, style=style)})"
+    if call.agg == "count_distinct":
+        head = f"COUNT(DISTINCT {_render(call.source, style=style)})"
+        return head if call.filter is None else f"{head} FILTER (WHERE {_render(call.filter, style=style)})"
+    return _canonical_agg_text(call, style=_Style.CANONICAL if style is _Style.LEGACY else style)
 
 
 def _frame_text(frame: WindowFrame) -> str:

@@ -2259,22 +2259,30 @@ def check_window_keys_in_operand_grain(
     """Each row-level operand of a measure-level window is a member of its operand grain (semantics Axiom 11.7)."""
     for top in roots:
         for k in walk_value_keys(top):
-            if not isinstance(k, WindowKey) or k.row_level:
-                continue
-            grain = window_operand_grain(k, query_grain=query_grain, active_bucket=active_bucket)
-            for c in k.children():
-                if c.phase is not Phase.ROW or c in grain or isinstance(c, (LiteralKey, StarKey)):
-                    continue
-                shown = dotted_key_display(c)
-                if isinstance(c, (FieldKey, FieldSqlKey)) and c.anchor is not None:
-                    shown = ".".join((*c.anchor, field_leaf(c)))
-                elif root is not None and isinstance(c, (FieldKey, FieldSqlKey)) and not c.path:
-                    shown = f"{root}.{shown}"
-                raise WindowFunctionError(
-                    summary=f"The window `{key_display(k)}` reads `{shown}` per cell, but it is neither "
-                    f"aggregate-valued nor a member of the window's operand grain.",
-                    suggestion=f"Add `{shown}` as a dimension, or aggregate it.",
-                )
+            if isinstance(k, WindowKey) and not k.row_level:
+                _check_window_operands(k, grain=window_operand_grain(
+                    k, query_grain=query_grain, active_bucket=active_bucket), root=root)
+
+
+def _check_window_operands(k: WindowKey, *, grain: Grain, root: Optional[str]) -> None:
+    for c in k.children():
+        if c.phase is not Phase.ROW or c in grain or isinstance(c, (LiteralKey, StarKey)):
+            continue
+        shown = _window_operand_display(c, root=root)
+        raise WindowFunctionError(
+            summary=f"The window `{key_display(k)}` reads `{shown}` per cell, but it is neither "
+            f"aggregate-valued nor a member of the window's operand grain.",
+            suggestion=f"Add `{shown}` as a dimension, or aggregate it.",
+        )
+
+
+def _window_operand_display(c: ValueKey, *, root: Optional[str]) -> str:
+    """``c`` spelled from its anchor, else qualified by the query root."""
+    if isinstance(c, (FieldKey, FieldSqlKey)) and c.anchor is not None:
+        return ".".join((*c.anchor, field_leaf(c)))
+    if root is not None and isinstance(c, (FieldKey, FieldSqlKey)) and not c.path:
+        return f"{root}.{dotted_key_display(c)}"
+    return dotted_key_display(c)
 
 
 def check_partition_key_analysable(*, label: str, pk: ValueKey, analysable: bool) -> None:

@@ -276,6 +276,11 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
         return [node.input, *sorted(node.partition_keys, key=repr), node.time_key]
     if isinstance(node, WindowKey):
         return list(node.children())
+    return _row_children(node)
+
+
+def _row_children(node) -> List:
+    """The child keys of a row-level composite, failing closed on an unknown kind."""
     if isinstance(node, ArithmeticKey):
         return list(node.operands)
     if isinstance(node, ScalarCallKey):

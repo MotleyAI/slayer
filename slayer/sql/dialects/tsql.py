@@ -256,36 +256,45 @@ def _windows_zone(zone: ZoneInfo) -> exp.Literal:
 _RUNNING = ("unbounded preceding", None), ("current row", None)
 
 
+class _NthValueParts:
+    """The window calls ``_nth_value`` composes, each over ``key``'s partition and order."""
+
+    def __init__(self, key: WindowKey) -> None:
+        self.x = key.args[0]
+        self.bare = key.model_copy(update={"frame": None, "args": ()})
+
+    def window(self, function: str, *args: ValueKey, frame: WindowFrameSpec | None = None) -> WindowKey:
+        return self.bare.model_copy(update={"function": function, "args": args, "frame": frame})
+
+    def lead(self, offset: int) -> ValueKey:
+        return self.x if offset == 0 else self.window("lead", self.x, LiteralKey(value=Decimal(offset)))
+
+    def later(self, position: int) -> ValueKey:
+        """The ``position``-th row of a one-row-each-side frame, past the partition's first row."""
+        if position == 1:
+            return self.window("lag", self.x, LiteralKey(value=Decimal(1)))
+        return self.lead(position - 2) if position <= 3 else LiteralKey(value=None)
+
+
 def _nth_value(key: WindowKey) -> ValueKey:
     """``NTH_VALUE(x, n)``: the partition's ``n``-th row, read once the frame holds ``n`` rows (running frames); within a
     one-row-each-side frame, the ``n``-th row of the rows around the current one."""
-    x, n = key.args[0], key.args[1]
+    n = key.args[1]
     position = int(n.value) if isinstance(n, LiteralKey) and isinstance(n.value, Decimal) else 0
-    bare = key.model_copy(update={"frame": None, "args": ()})
-
-    def window(function: str, *args: ValueKey, frame: WindowFrameSpec | None = None) -> WindowKey:
-        return bare.model_copy(update={"function": function, "args": args, "frame": frame})
-
-    def lead(offset: int) -> ValueKey:
-        return x if offset == 0 else window("lead", x, LiteralKey(value=Decimal(offset)))
-
-    def when(condition: ValueKey, value: ValueKey) -> ValueKey:
-        return ScalarCallKey(name="iif", args=(condition, value, LiteralKey(value=None)))
-
+    parts = _NthValueParts(key)
     frame = key.frame
     if frame is None or (frame.start, frame.end) == _RUNNING:
         unit = "range" if frame is None else frame.unit
-        held = window("count", StarKey(), frame=WindowFrameSpec(unit=unit, start=_RUNNING[0], end=_RUNNING[1]))
-        nth = window("first_value", lead(position - 1),
-                     frame=WindowFrameSpec(unit="rows", start=_RUNNING[0], end=_RUNNING[1]))
-        return when(ArithmeticKey(op=">=", operands=(held, LiteralKey(value=Decimal(position)))), nth)
-    if frame.unit == "rows" and frame.start == ("preceding", Decimal(1)) and frame.end == ("following", Decimal(1)):
-        first = window("row_number")
-        at_start = lead(position - 1) if position <= 2 else LiteralKey(value=None)
-        later = (window("lag", x, LiteralKey(value=Decimal(1))) if position == 1
-                 else lead(position - 2) if position <= 3 else LiteralKey(value=None))
+        held = parts.window("count", StarKey(), frame=WindowFrameSpec(unit=unit, start=_RUNNING[0], end=_RUNNING[1]))
+        nth = parts.window("first_value", parts.lead(position - 1),
+                           frame=WindowFrameSpec(unit="rows", start=_RUNNING[0], end=_RUNNING[1]))
         return ScalarCallKey(name="iif", args=(
-            ArithmeticKey(op="=", operands=(first, LiteralKey(value=Decimal(1)))), at_start, later))
+            ArithmeticKey(op=">=", operands=(held, LiteralKey(value=Decimal(position)))), nth, LiteralKey(value=None)))
+    if frame.unit == "rows" and frame.start == ("preceding", Decimal(1)) and frame.end == ("following", Decimal(1)):
+        at_start = parts.lead(position - 1) if position <= 2 else LiteralKey(value=None)
+        return ScalarCallKey(name="iif", args=(
+            ArithmeticKey(op="=", operands=(parts.window("row_number"), LiteralKey(value=Decimal(1)))),
+            at_start, parts.later(position)))
     raise WindowFunctionError(
         summary=f"`{key_display(key)}` cannot run on SQL Server: it lacks NTH_VALUE, which SLayer rewrites only over "
         f"the default frame, ROWS or RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, and ROWS BETWEEN 1 PRECEDING "

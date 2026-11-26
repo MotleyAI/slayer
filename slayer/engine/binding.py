@@ -2496,7 +2496,10 @@ def _bind_quoted_arg(
         parsed = parse_expr(text)
     except ValueError as exc:
         raise QuotedArgumentRefused(f"it is not a SLayer expression: {exc}") from exc
-    if any(isinstance(node, (AggCall, TransformCall)) for node in walk_parsed(parsed)):
+    nodes = list(walk_parsed(parsed))
+    if any(isinstance(node, WindowCall) for node in nodes):
+        raise QuotedArgumentRefused("it contains a window function")
+    if any(isinstance(node, (AggCall, TransformCall)) for node in nodes):
         raise QuotedArgumentRefused("it contains an aggregate")
     return _bind_agg_arg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 

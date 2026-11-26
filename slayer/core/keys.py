@@ -1674,11 +1674,8 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
         return None if source is None else bucket_type(source, key.granularity)
     if isinstance(key, (LiteralKey, date)):
         return _literal_temporal_type(key.value if isinstance(key, LiteralKey) else key)
-    if isinstance(key, (AggregateKey, TransformKey)):
+    if isinstance(key, (AggregateKey, TransformKey, WindowKey)):
         return _derived_temporal_type(key, field_type=field_type)
-    if isinstance(key, WindowKey):
-        argument = _window_argument(key)
-        return None if argument is None or key.function == "sum" else temporal_type(argument, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         return _scalar_temporal_type(key, field_type=field_type)
     if isinstance(key, CastKey):
@@ -1686,8 +1683,13 @@ def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]
     return None
 
 
-def _derived_temporal_type(key: AggregateKey | TransformKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
-    """An aggregate's or transform's type when it keeps its input's (``max``, ``lag``, …), else ``None``."""
+def _derived_temporal_type(
+    key: AggregateKey | TransformKey | WindowKey, *, field_type: FieldTypeFn,
+) -> Optional[DataType]:
+    """An aggregate's, transform's or window's type when it keeps its input's (``max``, ``lag``, …), else ``None``."""
+    if isinstance(key, WindowKey):
+        argument = _window_argument(key)
+        return None if argument is None or key.function == "sum" else temporal_type(argument, field_type=field_type)
     if isinstance(key, AggregateKey):
         keeps = key.agg.lower() in _TEMPORAL_PRESERVING_AGGS
         return temporal_type(key.source, field_type=field_type) if keeps else None
