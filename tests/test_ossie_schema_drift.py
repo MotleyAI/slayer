@@ -59,7 +59,7 @@ def test_files_come_from_the_provenance() -> None:
     files = dict(drift_check.vendored_files())
     assert files == {up: CORPUS / up for up in PROVENANCE["files"]}
     assert SCHEMA in files
-    assert len([p for p in files if p.startswith("examples/")]) == 10
+    assert len([p for p in files if p.startswith("examples/")]) == 13
     assert all(path.is_file() for path in files.values())
 
 
@@ -178,11 +178,19 @@ def test_the_corpus_lists_every_semantic_model_source_and_the_oracles() -> None:
             "compliance/wide_table/stores/stores_ambiguous_model.ossie.yaml", "compliance/wide_table/stores/stores.sql",
             "compliance/query/scott/scott_model.ossie.yaml", "validation/validate.py",
             "python/src/ossie/_loading.py", SCHEMA} <= files
-    cases = {p.split("/")[3] for p in files if p.startswith("compliance/wide_table/cases/") and p.count("/") == 4}
+    cases = {p.split("/")[2] for p in files if p.startswith("compliance/wide_table/") and p.endswith(".ost")
+             and p.count("/") == 2}
     assert {c for c in cases if c.startswith("a")}
     assert {c for c in cases if c.startswith("e")}
-    assert all(f"compliance/wide_table/cases/{c}/query.json" in files for c in cases)
-    assert all(f"compliance/wide_table/cases/{c}/expected.txt" in files for c in cases)
+    assert not any(p.startswith("compliance/wide_table/cases/") for p in files)
+
+
+def test_every_vendored_file_is_in_the_provenance() -> None:
+    """No stale file survives a re-vendor."""
+    on_disk = {p.relative_to(CORPUS).as_posix() for p in CORPUS.rglob("*")
+               if p.is_file() and "__pycache__" not in p.parts}
+    unlisted = {p for p in on_disk if p != PROVENANCE_PATH.name and not p.startswith("harvested/")}
+    assert unlisted - set(PROVENANCE["files"]) == set()
 
 
 def test_harvested_documents_are_named_by_their_canonical_hash() -> None:
@@ -200,7 +208,7 @@ def test_harvested_documents_are_named_by_their_canonical_hash() -> None:
 # --------------------------------------------------------------------------- #
 def test_script_dependencies_read_the_validator_header() -> None:
     deps = drift_check.script_dependencies(CORPUS / "validation" / "validate.py")
-    assert {"jsonschema>=4.26.0", "pyyaml>=6.0.3", "sqlglot>=30.19.0"} <= set(deps)
+    assert {"jsonschema>=4.26.0", "pyyaml>=6.0.3", "sqlglot>=30.29.0"} <= set(deps)
 
 
 def test_script_dependencies_refuse_a_script_without_a_header(tmp_path: Path) -> None:
@@ -215,7 +223,7 @@ def test_the_harvest_runs_upstream_validator_tests_under_uv_with_the_plugin() ->
     assert command[:3] == ["/bin/uv", "run", "--no-project"]
     withs = [command[i + 1] for i, arg in enumerate(command) if arg == "--with"]
     assert "pytest" in withs
-    assert "sqlglot>=30.19.0" in withs
+    assert "sqlglot>=30.29.0" in withs
     assert command[command.index("-p"):command.index("-p") + 2] == ["-p", drift_check.HARVEST_PLUGIN]
     assert str(CORPUS / "validation" / "test_validate.py") in command
     assert str(CORPUS / "validation" / "tests") in command

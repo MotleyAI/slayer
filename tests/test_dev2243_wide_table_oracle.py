@@ -6,41 +6,57 @@ Every case runs on every Tier-1 engine in ``tests/test_ossie_gate.py`` and
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
 
-from tests._dev2217_fixtures import FIXTURES, STRICT, WIDE_TABLE, fixture_engine, ossie_query_error
+from slayer.engine.query_engine import SlayerQueryEngine
+from tests._dev2217_fixtures import STRICT, WIDE_TABLE, ossie_query_error, sql_engine
 from tests._ossie_gate import assert_logical
-from tests._ossie_gate_suite import case_query, cases, read_expected
+from tests._ossie_gate_suite import WideCase, cases, read_case
 
 
-def test_every_case_names_a_known_fixture() -> None:
+@contextlib.asynccontextmanager
+async def case_engine(base: Path, case: WideCase) -> AsyncGenerator[SlayerQueryEngine]:
+    """An engine over the data and model the case's script loads."""
+    async with sql_engine(base, sql=case.data_path.read_text(encoding="utf-8"),
+                          documents=[case.model_path.read_text(encoding="utf-8")]) as engine:
+        yield engine
+
+
+def test_every_case_loads_upstream_data_and_a_model() -> None:
     assert cases()
-    assert {read_expected(case).fixture for case in cases()} <= set(FIXTURES)
+    for case in cases():
+        assert case.data_path.is_file(), case.name
+        assert case.model_path.is_file(), case.name
 
 
 async def test_the_model_scoped_metric_components_case(tmp_path: Path) -> None:
     """The model-scoped metric components case."""
-    case = WIDE_TABLE / "cases" / "a08_model_metric_components"
-    async with fixture_engine(tmp_path, "retail") as engine:
-        response = await engine.execute(case_query(case))
-    assert [list(r) for r in response.data] == [["revenue_per_customer"]]
-    assert_logical(response.data[0]["revenue_per_customer"], 162.5, engine="duckdb")
+    case = read_case(WIDE_TABLE / "a08_model_metric_components.ost")
+    assert (case.data, case.model) == ("retail", "retail_model")
+    async with case_engine(tmp_path, case) as engine:
+        response = await engine.execute(case.query)
+    assert [list(r) for r in response.data] == [case.header] == [["revenue_per_customer"]]
+    assert_logical(response.data[0]["revenue_per_customer"], float(case.rows[0][0]), engine="duckdb")
 
 
 async def test_error_cases_raise_their_codes_under_strict(tmp_path: Path) -> None:
     """Error cases raise their codes under strict."""
-    query = case_query(WIDE_TABLE / "cases" / "e16_partial_dimension_reachability")
-    async with fixture_engine(tmp_path, "retail") as engine:
+    case = read_case(WIDE_TABLE / "e16_partial_dimension_reachability.ost")
+    assert (case.data, case.model, case.error) == ("retail", "retail_model", "E_PARTIAL_DIMENSION_REACHABILITY")
+    async with case_engine(tmp_path, case) as engine:
         with pytest.raises(ossie_query_error()) as raised:
-            await engine.execute(query, conformance=STRICT)
-        assert raised.value.code == "E_PARTIAL_DIMENSION_REACHABILITY"
-        assert (await engine.execute(query)).data
+            await engine.execute(case.query, conformance=STRICT)
+        assert raised.value.code == case.error
+        assert (await engine.execute(case.query)).data
 
 
 async def test_output_names_label_the_strict_result(tmp_path: Path) -> None:
     """Output names label the strict result."""
-    async with fixture_engine(tmp_path, "retail") as engine:
-        response = await engine.execute(case_query(WIDE_TABLE / "cases" / "a09_aliases"), conformance=STRICT)
-    assert response.columns == ["area", "revenue"]
+    case = read_case(WIDE_TABLE / "a09_aliases.ost")
+    async with case_engine(tmp_path, case) as engine:
+        response = await engine.execute(case.query, conformance=STRICT)
+    assert response.columns == case.header == ["area", "revenue"]
