@@ -73,8 +73,9 @@ class TestCounts:
     @pytest.mark.parametrize("expr", ["regexp_count(fn.status, 'n', 'g')", "regexp_count(fn.status, fn.code)",
                                       "regexp_count(fn.status)", "regexp_count(fn.status, 'n', 'i', 1)"])
     async def test_bad_calls_refused(self, engine: SlayerQueryEngine, expr: str) -> None:
+        body = fn_body(expr)
         with pytest.raises((SlayerError, ValueError)) as info:
-            await engine.execute(fn_body(expr))
+            await engine.execute(body)
         assert "regexp_count" in str(info.value).lower(), str(info.value)
 
 

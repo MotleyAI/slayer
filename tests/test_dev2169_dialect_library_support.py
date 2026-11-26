@@ -46,7 +46,8 @@ PRESTO = ("presto", "athena")
 #: The golden support sets; Presto's is checked structurally (``TestDeclaredSets``).
 EXPECTED: dict[str, frozenset[str]] = {
     **{d: LIBRARY for d in TIER1},
-    "mariadb": LIBRARY - REGEX - {"json_value"},
+    "mysql": LIBRARY - {"regexp_count"},
+    "mariadb": LIBRARY - REGEX - {"regexp_count", "json_value"},
     **{d: TIER2_SET for d in TIER2},
 }
 DS_TYPES = (*TIER1, "mariadb", *TIER2, *PRESTO)

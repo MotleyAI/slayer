@@ -309,7 +309,7 @@ async def test_a_current_version_store_colliding_with_a_later_addition(
     tmp_path: Any, backend: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A later release reserves ``left``, gated above today's versions.
-    monkeypatch.setitem(granularity_rename.RENAME_GATES, "left", {"SlayerModel": 31, "SlayerQuery": 20, "Memory": 15})
+    monkeypatch.setitem(granularity_rename.RENAME_GATES, "left", {"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16})
     stage =_current(stage_doc(dimensions=["date_trunc('left', events.created_at)"], measures=[QUALIFIED_SUM]),
                      "SlayerQuery")
     storage = await write_raw_store(

@@ -68,11 +68,12 @@ async def test_executes(engine, case: Case) -> None:
 @pytest.mark.parametrize("case", CASES, ids=CASE_IDS)
 async def test_emits(case: Case, dialect: str) -> None:
     refused = REFUSED_FUNCTIONS.get(dialect, frozenset()) & set(case.covers)
+    query = case.query()
     if not refused:
-        await emit_lib(case.query(), dialect=dialect)
+        await emit_lib(query, dialect=dialect)
         return
     with pytest.raises(SlayerError) as info:
-        await emit_lib(case.query(), dialect=dialect)
+        await emit_lib(query, dialect=dialect)
     assert DISPLAY[dialect] in str(info.value), str(info.value)
     assert all(name in str(info.value) for name in refused), str(info.value)
 

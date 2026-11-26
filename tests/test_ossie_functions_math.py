@@ -37,7 +37,8 @@ DIGIT_REFUSALS = ["round(fn.x, 1.5)", "trunc(fn.x, 1.5)", "round(fn.x, fn.ratio)
 def _close(got: dict[int, Any], expected: dict[int, float]) -> None:
     assert set(got) >= set(expected), got
     for rid, value in expected.items():
-        assert got[rid] is not None and math.isclose(float(got[rid]), value, abs_tol=1e-9), (rid, got[rid], value)
+        assert got[rid] is not None, (rid, value)
+        assert math.isclose(float(got[rid]), value, abs_tol=1e-9), (rid, got[rid], value)
 
 
 class TestTrunc:
@@ -84,8 +85,9 @@ class TestDigitsMustBeWhole:
     @pytest.mark.parametrize("dialect", TIER1)
     @pytest.mark.parametrize("expr", DIGIT_REFUSALS)
     async def test_refused_on_every_dialect(self, expr: str, dialect: str) -> None:
+        query = fn_query(expr)
         with pytest.raises(QueryTypeError):
-            await emit_fn(fn_query(expr), dialect=dialect)
+            await emit_fn(query, dialect=dialect)
 
     @pytest.mark.parametrize("expr", ["round(fn.x, 2)", "round(fn.x, -1)", "round(fn.x, 2.0)", "round(fn.x, fn.n)"])
     async def test_whole_digits_accepted(self, engine: SlayerQueryEngine, expr: str) -> None:

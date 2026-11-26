@@ -79,7 +79,7 @@ class TestScalarSetsClosed:
     def test_arity_entries_exist_for_the_four(self) -> None:
         assert SCALAR_FUNCTION_ARITY["greatest"] == (2, None)
         assert SCALAR_FUNCTION_ARITY["least"] == (2, None)
-        assert SCALAR_FUNCTION_ARITY["trunc"] == (1, 1)
+        assert SCALAR_FUNCTION_ARITY["trunc"] == (1, 2)
         assert SCALAR_FUNCTION_ARITY["mod"] == (2, 2)
 
 
@@ -89,9 +89,10 @@ class TestArityBoundaries:
         assert check_scalar_arity(name="mod", argc=2) is None
         assert check_scalar_arity(name="mod", argc=3) is not None
 
-    def test_trunc_is_one_arg_only(self) -> None:
+    def test_trunc_takes_one_or_two(self) -> None:
         assert check_scalar_arity(name="trunc", argc=1) is None
-        msg = check_scalar_arity(name="trunc", argc=2)
+        assert check_scalar_arity(name="trunc", argc=2) is None
+        msg = check_scalar_arity(name="trunc", argc=3)
         assert msg is not None
         assert "trunc" in msg
 

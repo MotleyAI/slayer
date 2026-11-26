@@ -111,9 +111,10 @@ class TestNumericFieldExpressions:
     @pytest.mark.parametrize("expression", TEXT_FIELD_EXPRESSIONS)
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_text_argument_refused_when_saved(self, backend: str, expression: str) -> None:
+        dataset = fn_dataset(extra=[_text_field(expression)])
         async with fn_engine(backend, validate=True) as eng:
             with pytest.raises(SlayerError) as info:
-                await eng.storage.save_dataset(fn_dataset(extra=[_text_field(expression)]))
+                await eng.storage.save_dataset(dataset)
         assert isinstance(info.value, ScalarOperandTypeError), (type(info.value), str(info.value))
         assert "TRY_CAST" in str(info.value)
 
