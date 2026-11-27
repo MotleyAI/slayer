@@ -8,15 +8,15 @@
 
 ## 2. Production
 
-- [ ] 2.1 Add the one sync-engine disposal routine to `slayer/database/engine_factory.py` (engine-level `checkin` listener that invalidates the returned record, then `dispose()`, both inside the log-and-continue boundary, registration idempotent per engine) and route `_dispose_quietly` through it; verify tasks 1.1–1.4 pass for the factory scenarios
-- [ ] 2.2 Route the client's private in-memory engine disposal (`close()` and the finalizer backstop) through the factory routine; verify the private-engine scenario passes and `tests/test_law_resource_ownership.py::test_resource_ownership_law_holds` stays green
+- [x] 2.1 Add the one sync-engine disposal routine to `slayer/database/engine_factory.py` (engine-level `checkin` listener that invalidates the returned record, then `dispose()`, both inside the log-and-continue boundary, registration idempotent per engine) and route `_dispose_quietly` through it; verify tasks 1.1–1.4 pass for the factory scenarios
+- [x] 2.2 Route the client's private in-memory engine disposal (`close()` and the finalizer backstop) through the factory routine; verify the private-engine scenario passes and `tests/test_law_resource_ownership.py::test_resource_ownership_law_holds` stays green
 
 ## 3. Harness
 
-- [ ] 3.1 Add `tests/_sqlite_connection_law.py` as designed and list it in `tests/conftest.py` `pytest_plugins`; verify the self-tests of task 1.5 pass
-- [ ] 3.2 Run the local test scope; if the harness flags an existing test that leaks in-process on purpose, stop and ask before changing that test
+- [x] 3.1 Add `tests/_sqlite_connection_law.py` as designed and list it in `tests/conftest.py` `pytest_plugins`; verify the self-tests of task 1.5 pass
+- [x] 3.2 Run the local test scope; if the harness flags an existing test that leaks in-process on purpose, stop and ask before changing that test
 
 ## 4. Gates
 
-- [ ] 4.1 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors against the baseline), `poetry run la-arch-check` and LikeC4 model validation all pass
-- [ ] 4.2 `openspec validate dev-2497-a-unit-test-leaks-an-unclosed-sqlite3 --strict` passes
+- [x] 4.1 `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors against the baseline), `poetry run la-arch-check` and LikeC4 model validation all pass
+- [x] 4.2 `openspec validate dev-2497-a-unit-test-leaks-an-unclosed-sqlite3 --strict` passes

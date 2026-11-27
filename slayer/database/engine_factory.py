@@ -70,9 +70,17 @@ def loggable_key(key: EngineCacheKey) -> str:
     return _digest("\x00".join(key))
 
 
+def _close_on_checkin(_dbapi_connection: Any, connection_record: ConnectionPoolEntry) -> None:
+    """Close a connection of a retired engine as it is returned."""
+    connection_record.invalidate()
+
+
 def _dispose_quietly(*, engine: sa.Engine, reason: str) -> None:
-    """Dispose an engine's pool, logging rather than raising (safe while others hold it). Keep secrets out of ``reason`` — it's logged."""
+    """Retire a sync engine: close idle connections now, every other one on return; log rather than raise.
+    Keep secrets out of ``reason`` — it's logged."""
     try:
+        if not sa_event.contains(engine, "checkin", _close_on_checkin):
+            sa_event.listen(engine, "checkin", _close_on_checkin)
         engine.dispose()
     except Exception:
         logger.warning("Failed to dispose engine (%s).", reason, exc_info=True)
@@ -402,9 +410,7 @@ def invalidate_engine(datasource: DatasourceConfig) -> bool:
 def reset_cache() -> None:
     """Discard and dispose every cached engine (teardown / test isolation).
 
-    Always disposes: a reset that leaves live pools behind is the leak (D5).
-    Dispose closes checked-in connections and lets a checked-out one finish and
-    close on return.
+    A checked-out connection keeps working and is closed on return.
     """
     with _cache_lock:
         dropped = list(_engine_cache.items())
