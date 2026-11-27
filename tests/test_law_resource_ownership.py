@@ -10,7 +10,8 @@ Import-binding-aware AST check over ``slayer/**`` and ``tests/**``:
 
 Plus the pyproject warning gate is pinned, (3.13+) a self-test proves a
 leaking test turns the suite red, and self-tests of the async-engine release law
-(``tests/_async_engine_release_law.py``). Zero tolerance — no baseline, like
+(``tests/_async_engine_release_law.py``) and the sqlite connection law
+(``tests/_sqlite_connection_law.py``). Zero tolerance — no baseline, like
 ``ALLOWED_EXPRESSIVENESS`` in the guard ratchet.
 """
 
@@ -646,6 +647,8 @@ class ScratchOutcome(BaseModel):
 class ScratchRun(BaseModel):
     outcomes: dict[str, ScratchOutcome]
     output: str
+    returncode: int
+    root: Path
 
 
 def _junit_outcomes(xml_path: Path) -> dict[str, ScratchOutcome]:
@@ -667,10 +670,16 @@ def _junit_outcomes(xml_path: Path) -> dict[str, ScratchOutcome]:
 def _run_scratch(root: Path, files: dict[str, str]) -> ScratchRun:
     (root / "pytest.ini").write_text(_LAW_INI)
     (root / "_lawkit.py").write_text(_LAW_KIT)
+    return _run_pytest_project(root, files)
+
+
+def _run_pytest_project(root: Path, files: dict[str, str]) -> ScratchRun:
+    """Write ``files`` (paths relative to ``root``) and run their test modules, in listed order, in one pytest."""
     for name, source in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(source)
     xml = root / "junit.xml"
-    tests = [name for name in files if name.startswith("test_")]
+    tests = [name for name in files if Path(name).name.startswith("test_")]
     proc = subprocess.run(
         [
             sys.executable, "-m", "pytest", *tests,
@@ -681,7 +690,9 @@ def _run_scratch(root: Path, files: dict[str, str]) -> ScratchRun:
         env={**os.environ, "PYTHONPATH": str(REPO)}, timeout=_SCRATCH_TIMEOUT,
     )
     output = proc.stdout + proc.stderr
-    return ScratchRun(outcomes=_junit_outcomes(xml) if xml.exists() else {}, output=output)
+    return ScratchRun(
+        outcomes=_junit_outcomes(xml) if xml.exists() else {}, output=output, returncode=proc.returncode, root=root,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -706,3 +717,333 @@ def test_async_engine_release_law(case: LawCase, law_runs: dict[str, ScratchRun]
     assert _LAW_DS in got.message, got.message
     if case.keeps is not None:
         assert case.keeps in got.message, got.message
+
+
+# --------------------------------------------------------------------------- #
+# sqlite connection law: a sqlite3 connection that dies unclosed fails the teardown
+# that follows (or the session), naming the test and code that opened it.
+# --------------------------------------------------------------------------- #
+_SQLITE_INI = """\
+[pytest]
+"""
+
+_SQLITE_CONFTEST = """\
+import pytest
+
+pytest_plugins = ["tests._sqlite_connection_law"]
+
+
+@pytest.fixture(scope="session")
+def held():
+    return []
+"""
+
+_SQLITE_DOORS = """\
+import gc
+import sqlite3
+import threading
+
+from slayer.core.models import DatasourceConfig
+from slayer.database import engine_factory
+
+
+def _open_via_connect(path):
+    return sqlite3.connect(path)
+
+
+def _open_nested(path):
+    return _open_via_connect(path)
+
+
+def _open_via_dbapi2(path):
+    return sqlite3.dbapi2.connect(path)
+
+
+def test_leak_via_connect(tmp_path):
+    _open_nested(str(tmp_path / "door_a.db"))
+    gc.collect()
+
+
+def test_leak_via_dbapi2(tmp_path):
+    _open_via_dbapi2(str(tmp_path / "door_b.db"))
+    gc.collect()
+
+
+def test_opens_and_keeps(tmp_path, held):
+    held.append(_open_via_connect(str(tmp_path / "kept.db")))
+
+
+def test_drops_the_earlier_connection(held):
+    held.clear()
+    gc.collect()
+
+
+def test_leak_on_another_thread(tmp_path):
+    opener = threading.Thread(target=_open_via_connect, args=(str(tmp_path / "thread.db"),), name="opener-thread")
+    opener.start()
+    opener.join()
+    gc.collect()
+
+
+def test_dies_on_another_thread(tmp_path):
+    kept = [_open_via_connect(str(tmp_path / "dropped.db"))]
+
+    def drop():
+        kept.clear()
+        gc.collect()
+
+    dropper = threading.Thread(target=drop, name="dropper-thread")
+    dropper.start()
+    dropper.join()
+
+
+def test_closed_connection_passes(tmp_path):
+    _open_via_connect(str(tmp_path / "closed.db")).close()
+    gc.collect()
+
+
+def test_disposed_engine_passes(tmp_path):
+    path = tmp_path / "engine.db"
+    path.touch()
+    engine = engine_factory.get_engine(DatasourceConfig(name="e", type="sqlite", database=str(path)))
+    with engine.connect() as conn:
+        conn.exec_driver_sql("SELECT 1")
+    engine_factory.reset_cache()
+    gc.collect()
+
+
+def test_caller_factory_is_kept(tmp_path):
+    class Mine(sqlite3.Connection):
+        pass
+
+    conn = sqlite3.connect(str(tmp_path / "mine.db"), factory=Mine)
+    try:
+        assert type(conn) is Mine
+    finally:
+        conn.close()
+"""
+
+_SQLITE_INTEGRATION_OPENS = """\
+import sqlite3
+import threading
+
+
+def test_integration_opens(tmp_path, held):
+    opener = threading.Thread(
+        target=lambda: held.append(sqlite3.connect(str(tmp_path / "int.db"))), name="integration-opener",
+    )
+    opener.start()
+    opener.join()
+"""
+
+_SQLITE_UNIT_SIDE = """\
+import gc
+import sqlite3
+
+
+def test_unit_drops_the_integration_connection(held):
+    held.clear()
+    gc.collect()
+
+
+def test_unit_opens(tmp_path, held):
+    held.append(sqlite3.connect(str(tmp_path / "unit.db")))
+"""
+
+_SQLITE_INTEGRATION_DROPS = """\
+import gc
+
+
+def test_integration_drops_the_unit_connection(held):
+    held.clear()
+    gc.collect()
+"""
+
+_SQLITE_SESSION_CONFTEST = _SQLITE_CONFTEST + """
+import gc
+
+HELD = []
+
+
+@pytest.fixture
+def keep():
+    return HELD.append
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionfinish(session):
+    HELD.clear()
+    gc.collect()
+"""
+
+_SQLITE_SESSION = """\
+import sqlite3
+
+
+def test_keeps_past_the_last_teardown(tmp_path, keep):
+    keep(sqlite3.connect(str(tmp_path / "late.db")))
+"""
+
+_SQLITE_WARNING = """\
+import gc
+import sqlite3
+import warnings
+from pathlib import Path
+
+
+def test_builtin_warning_names_the_opener(tmp_path):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sqlite3.connect(str(tmp_path / "warned.db"))
+        gc.collect()
+    Path("warning.txt").write_text("\\n".join(str(w.message) for w in caught if w.category is ResourceWarning))
+"""
+
+#: Scratch projects for the sqlite connection law, each run once in its own pytest process.
+_SQLITE_PROJECTS: dict[str, dict[str, str]] = {
+    "doors": {"conftest.py": _SQLITE_CONFTEST, "tests/test_doors.py": _SQLITE_DOORS},
+    "boundary": {
+        "conftest.py": _SQLITE_CONFTEST,
+        "tests/integration/test_a_integration.py": _SQLITE_INTEGRATION_OPENS,
+        "tests/test_b_unit.py": _SQLITE_UNIT_SIDE,
+        "tests/integration/test_c_integration.py": _SQLITE_INTEGRATION_DROPS,
+    },
+    "session": {"conftest.py": _SQLITE_SESSION_CONFTEST, "tests/test_session.py": _SQLITE_SESSION},
+    "warning": {"conftest.py": _SQLITE_CONFTEST, "tests/test_warning.py": _SQLITE_WARNING},
+}
+
+
+class SqliteLawCase(BaseModel):
+    """A scratch test and, when its teardown must fail, the opener it names (plus any further text)."""
+
+    project: str
+    node: str
+    opener: str | None
+    names: tuple[str, ...] = ()
+
+
+_DOORS = "tests/test_doors.py"
+_INTEGRATION_OPENER = "tests/integration/test_a_integration.py::test_integration_opens"
+_UNIT_OPENER = "tests/test_b_unit.py::test_unit_opens"
+
+_SQLITE_CASES = [
+    SqliteLawCase(project="doors", node=f"{_DOORS}::test_leak_via_connect", opener=f"{_DOORS}::test_leak_via_connect",
+                  names=("door_a.db", "_open_via_connect", "_open_nested")),
+    SqliteLawCase(project="doors", node=f"{_DOORS}::test_leak_via_dbapi2", opener=f"{_DOORS}::test_leak_via_dbapi2",
+                  names=("door_b.db", "_open_via_dbapi2")),
+    SqliteLawCase(project="doors", node=f"{_DOORS}::test_opens_and_keeps", opener=None),
+    # Died during a later test: that test's teardown fails, naming the earlier opener.
+    SqliteLawCase(project="doors", node=f"{_DOORS}::test_drops_the_earlier_connection",
+                  opener=f"{_DOORS}::test_opens_and_keeps",
+                  names=("kept.db", "_open_via_connect", "test_drops_the_earlier_connection")),
+    SqliteLawCase(project="doors", node=f"{_DOORS}::test_leak_on_another_thread",
+                  opener=f"{_DOORS}::test_leak_on_another_thread", names=("thread.db", "opener-thread", "MainThread")),
+    SqliteLawCase(project="doors", node=f"{_DOORS}::test_dies_on_another_thread",
+                  opener=f"{_DOORS}::test_dies_on_another_thread", names=("dropped.db", "MainThread", "dropper-thread")),
+    SqliteLawCase(project="doors", node=f"{_DOORS}::test_closed_connection_passes", opener=None),
+    SqliteLawCase(project="doors", node=f"{_DOORS}::test_disposed_engine_passes", opener=None),
+    SqliteLawCase(project="doors", node=f"{_DOORS}::test_caller_factory_is_kept", opener=None),
+    SqliteLawCase(project="boundary", node=_INTEGRATION_OPENER, opener=None),
+    # Opened by an integration test: a warning, even when it dies in a unit test.
+    SqliteLawCase(project="boundary", node="tests/test_b_unit.py::test_unit_drops_the_integration_connection",
+                  opener=None),
+    SqliteLawCase(project="boundary", node=_UNIT_OPENER, opener=None),
+    # Opened by a unit test: a failure, even when it dies in an integration test.
+    SqliteLawCase(project="boundary", node="tests/integration/test_c_integration.py::test_integration_drops_the_unit_connection",
+                  opener=_UNIT_OPENER, names=("unit.db",)),
+    SqliteLawCase(project="session", node="tests/test_session.py::test_keeps_past_the_last_teardown", opener=None),
+]
+
+
+@pytest.fixture(scope="module")
+def sqlite_law_runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, ScratchRun]:
+    runs: dict[str, ScratchRun] = {}
+    for project, files in _SQLITE_PROJECTS.items():
+        root = tmp_path_factory.mktemp(f"sqlite_law_{project}")
+        (root / "pytest.ini").write_text(_SQLITE_INI)
+        runs[project] = _run_pytest_project(root, files)
+    return runs
+
+
+@pytest.mark.parametrize("case", _SQLITE_CASES, ids=[f"{c.project}:{c.node}" for c in _SQLITE_CASES])
+def test_sqlite_connection_law(case: SqliteLawCase, sqlite_law_runs: dict[str, ScratchRun]) -> None:
+    run = sqlite_law_runs[case.project]
+    assert case.node in run.outcomes, f"{case.node} did not run:\n{run.output}"
+    got = run.outcomes[case.node]
+    if case.opener is None:
+        assert got.outcome == "passed", f"{case.node}: {got.outcome}\n{got.message}"
+        return
+    assert got.outcome == "error", f"{case.node}: {got.outcome}\n{got.message}\n{run.output}"
+    assert got.message.startswith("failed on teardown"), got.message
+    for text in (case.opener, *case.names):
+        assert text in got.message, f"{text!r} missing:\n{got.message}"
+
+
+def test_an_integration_opened_leak_is_reported_as_a_warning(sqlite_law_runs: dict[str, ScratchRun]) -> None:
+    run = sqlite_law_runs["boundary"]
+    # Only the law's report carries the opening thread; the built-in warning does not.
+    for text in (_INTEGRATION_OPENER, "int.db", "integration-opener",
+                 "tests/test_b_unit.py::test_unit_drops_the_integration_connection"):
+        assert text in run.output, f"{text!r} missing:\n{run.output}"
+
+
+def test_a_leak_dying_after_the_last_teardown_fails_the_session(sqlite_law_runs: dict[str, ScratchRun]) -> None:
+    run = sqlite_law_runs["session"]
+    assert {o.outcome for o in run.outcomes.values()} == {"passed"}, run.output
+    assert run.returncode != 0, run.output
+    assert "tests/test_session.py::test_keeps_past_the_last_teardown" in run.output, run.output
+    assert "late.db" in run.output, run.output
+
+
+@pytest.mark.skipif(not _ON_313, reason="`unclosed database` ResourceWarning is 3.13+")
+def test_the_builtin_warning_names_the_opener(sqlite_law_runs: dict[str, ScratchRun]) -> None:
+    run = sqlite_law_runs["warning"]
+    warned = run.root / "warning.txt"
+    text = warned.read_text() if warned.exists() else ""
+    assert "unclosed database" in text, f"{text!r}\n{run.output}"
+    assert "tests/test_warning.py::test_builtin_warning_names_the_opener" in text, f"{text!r}\n{run.output}"
+
+
+_SQLITE_INSTALL_DRIVER = """\
+import sqlite3
+import sys
+
+import pytest
+
+before = (sqlite3.connect, sqlite3.dbapi2.connect)
+code = pytest.main(["-q", "-p", "no:cacheprovider", "-p", "no:xdist", "-p", "no:randomly", "test_install.py"])
+restored = sqlite3.connect is before[0] and sqlite3.dbapi2.connect is before[1]
+print(f"EXIT={int(code)} RESTORED={restored}")
+"""
+
+_SQLITE_INSTALL = """\
+import sqlite3
+
+import tests._sqlite_connection_law as law
+
+
+def test_one_wrapper_on_both_names_installed_once(request):
+    wrapper = sqlite3.connect
+    assert sqlite3.dbapi2.connect is wrapper
+    conn = sqlite3.connect(":memory:")
+    try:
+        assert type(conn) is not sqlite3.Connection
+    finally:
+        conn.close()
+    law.pytest_configure(request.config)
+    assert sqlite3.connect is wrapper
+    assert sqlite3.dbapi2.connect is wrapper
+"""
+
+
+def test_the_sqlite_law_installs_once_and_restores_exactly(tmp_path: Path) -> None:
+    (tmp_path / "pytest.ini").write_text(_SQLITE_INI)
+    (tmp_path / "conftest.py").write_text(_SQLITE_CONFTEST)
+    (tmp_path / "test_install.py").write_text(_SQLITE_INSTALL)
+    (tmp_path / "driver.py").write_text(_SQLITE_INSTALL_DRIVER)
+    proc = subprocess.run(
+        [sys.executable, "driver.py"], cwd=str(tmp_path), capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(REPO)}, timeout=_SCRATCH_TIMEOUT,
+    )
+    output = proc.stdout + proc.stderr
+    assert "EXIT=0 RESTORED=True" in output, output
