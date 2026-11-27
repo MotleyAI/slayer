@@ -71,7 +71,12 @@ def _table(table: exp.Table, *, result: Optional[str] = None, column: Optional[s
 def _every_column(source: object) -> list[ColumnSource]:
     if isinstance(source, exp.Table):
         return _table(source)
-    return _scope_sources(source) if isinstance(source, Scope) else []
+    if not isinstance(source, Scope):
+        return []
+    if source.outer_columns:
+        return [found for position, name in enumerate(source.outer_columns)
+                for found in _listed_at(source, position=position, result=name)]
+    return _scope_sources(source)
 
 
 def _one_column(source: object, *, column: str, result: str) -> list[ColumnSource]:
@@ -90,16 +95,19 @@ def _one_column(source: object, *, column: str, result: str) -> list[ColumnSourc
 
 
 def _listed_column(source: Scope, *, column: str, result: str) -> list[ColumnSource]:
-    """``column`` of a source with a column list: the inner projection at its position; none under ``*``."""
+    """``column`` of a source with a column list: the inner projection at its position, if it names one."""
     names = [name.lower() for name in source.outer_columns]
+    if names.count(column.lower()) != 1:
+        return []
+    return _listed_at(source, position=names.index(column.lower()), result=result)
+
+
+def _listed_at(source: Scope, *, position: int, result: str) -> list[ColumnSource]:
+    """The inner projection at ``position`` of a source with a column list; none under ``*``."""
     select = source.expression
-    if column.lower() not in names or not isinstance(select, exp.Select):
+    if not isinstance(select, exp.Select):
         return []
     projections = select.expressions
-    if any(_is_star(p.unalias()) for p in projections):
+    if position >= len(projections) or any(_is_star(p.unalias()) for p in projections):
         return []
-    position = names.index(column.lower())
-    if position >= len(projections):
-        return []
-    found = _projection_sources(source, projections[position])
-    return [f.model_copy(update={"result": result}) for f in found]
+    return [f.model_copy(update={"result": result}) for f in _projection_sources(source, projections[position])]

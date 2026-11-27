@@ -137,6 +137,21 @@ class TestCorrelatedProbeFailure:
         assert fake.correlated_checks() == 2
 
 
+class TestCachedProfile:
+    def test_read_without_reaching_the_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = FakeClickHouse(version="25.8.3.1", correlated=True, time_types=True)
+        with fake_ch_engine(fake) as engine:
+            route_engine(monkeypatch, engine)
+            client = _client()
+            first = _profile(client)
+
+            def unreachable(*_args: object, **_kw: object) -> None:
+                raise ConnectionError("server down")
+
+            monkeypatch.setattr(engine, "connect", unreachable)
+            assert _profile(client) == first
+
+
 class TestBaseProbeFailure:
     def test_propagates_and_is_not_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeClickHouse(fail_permission=True)

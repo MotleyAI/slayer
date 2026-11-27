@@ -42,6 +42,9 @@ class TestColumnSources:
         ("WITH q(x) AS (SELECT opens FROM clocks) SELECT x FROM q", [_one("x", "opens")]),
         ("SELECT x FROM (SELECT opens FROM clocks) AS q(x)", [_one("x", "opens")]),
         ("WITH q(x, y) AS (SELECT id, opens FROM clocks) SELECT y AS o FROM q", [_one("o", "opens")]),
+        ("WITH q(opens, id) AS (SELECT id, opens FROM clocks) SELECT * FROM q",
+         [_one("opens", "id"), _one("id", "opens")]),
+        ("WITH q(x, x) AS (SELECT id, opens FROM clocks) SELECT * FROM q", [_one("x", "id"), _one("x", "opens")]),
     ])
     def test_a_plain_column_read(self, sql: str, expected: list[ColumnSource]) -> None:
         assert _sources(sql) == expected
@@ -85,6 +88,7 @@ class TestSqliteDeclaredTypes:
         ("SELECT o FROM (SELECT opens AS o FROM clocks) AS q", {"o": "Time"}),
         ("SELECT opens || '' AS computed, label FROM clocks", {"computed": "String", "label": "String"}),
         ("SELECT opens FROM (SELECT * FROM shops AS s JOIN clocks AS c ON s.id = c.id) AS q", {"opens": "Time"}),
+        ("WITH q(opens, id) AS (SELECT id, opens FROM clocks) SELECT * FROM q", {"opens": "Integer", "id": "Time"}),
     ])
     async def test_a_statement_column(self, client: SlayerSQLClient, sql: str, expected: dict[str, str]) -> None:
         types = await client.get_result_column_types(sql)

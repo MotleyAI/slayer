@@ -44,6 +44,11 @@ def _profile_lock(engine: Any, factory: Callable[[], Any]) -> Any:
         return lock
 
 
+def known_profile(engine: Any) -> ServerProfile | None:
+    """``engine``'s cached profile, without a connection; ``None`` until a complete fill."""
+    return _server_profiles.get(engine)
+
+
 def _setting_probe_failed(exc: Exception) -> None:
     logger.warning("Server setting probe failed; treating it as unknown: %s", exc)
 

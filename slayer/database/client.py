@@ -1068,12 +1068,14 @@ class SlayerSQLClient:
             return ServerProfile()
         try:
             async_engine = self._async_engine_here()
+            engine = async_engine if async_engine is not None else self._get_sync_engine_for_client()
+            known = server_profiles.known_profile(engine)
+            if known is not None:
+                return known
             if async_engine is not None:
                 async with async_engine.connect() as conn:
                     return await _server_profile_async(conn, engine=async_engine, dialect=dialect)
-            return await self._blocking(
-                _server_profile_sync, engine=self._get_sync_engine_for_client(), dialect=dialect,
-            )
+            return await self._blocking(_server_profile_sync, engine=engine, dialect=dialect)
         except Exception as exc:
             await self._typed(exc)
             raise
