@@ -168,7 +168,7 @@ from slayer.engine.compile.spine import (
     check_axis_rebucket, check_off_spine_order_keys, host_mask, is_spine_bound, plan_spine, spine_field,
     spine_upper_bound,
 )
-from slayer.engine.compile.shift import carried_placeholders, is_placeholder, moved_frame
+from slayer.engine.compile.shift import MovedFrame, carried_placeholders, is_placeholder, moved_frame
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.stage_edges import inherited_edges, pass_through
 from slayer.engine.key_metadata import (
@@ -1220,17 +1220,40 @@ def _synthesize_wrap_attach(
 _SHIFTED_ANSWER = "shifted"
 
 
-def _shifted_population_filters(
-    *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
-) -> Tuple[List[BoundFilter], int]:
-    """Every date range and field mask of the population (any stratum), with the date-range count."""
+class _ShiftedFrame(BaseModel):
+    """The population's date ranges and field masks a shifted producer inherits, the first ``n_date_range`` the date
+    ranges; ``spine_upper`` is the spine frame's upper bound, explicit even when ``now`` implies it."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    filters: List[BoundFilter]
+    n_date_range: int
+    spine_upper: Optional[BoundFilter] = None
+
+    def moved(self, key: TransformKey, *, date_axis: bool) -> MovedFrame:
+        """These filters with the frame on ``key``'s axis moved by its shift."""
+        axis = key.time_key
+        assert isinstance(axis, TimeTruncKey)
+        upper = self.spine_upper
+        on_axis = [upper] if upper is not None and is_frame_bound(key=upper.value_key, time_fields={axis.source}) else []
+        periods, unit = shift_offset_of(key)
+        return moved_frame(
+            filters=[*self.filters, *on_axis], n_date_range=self.n_date_range, axis=axis, periods=periods,
+            date_axis=date_axis, unit=unit or axis.granularity,
+        )
+
+
+def _shifted_frame(
+    *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping], spine_upper: Optional[BoundFilter],
+) -> _ShiftedFrame:
+    """Every date range and field mask of the population (any stratum), with the spine frame's upper bound."""
     out: List[BoundFilter] = []
     n_date_range = 0
     for idx, bf, ct in _population_filters(prebound, filter_typings):
         if idx < prebound.n_date_range or ct.typing == MaskTyping.FIELD:
             out.append(bf)
             n_date_range += idx < prebound.n_date_range
-    return out, n_date_range
+    return _ShiftedFrame(filters=out, n_date_range=n_date_range, spine_upper=spine_upper)
 
 
 def _plan_shifted_attaches(
@@ -1239,7 +1262,7 @@ def _plan_shifted_attaches(
     attaches: Sequence[RegroupAttachPlan],
     prebound: PreboundQuery,
     rewritten: PreboundQuery,
-    filter_typings: Sequence[ConjunctTyping],
+    shifted_frame: _ShiftedFrame,
     scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
@@ -1248,7 +1271,6 @@ def _plan_shifted_attaches(
     population: "Population",
     homes: AggregateHomes,
     candidates: AbstractSet[ValueKey],
-    spine_upper: Optional[BoundFilter],
 ) -> List[RegroupAttachPlan]:
     """One producer per ``time_shift`` slot over its moved frame, each leaf at its own
     grain (carried or re-evaluated), looked up by the slot on the shifted bucket."""
@@ -1272,7 +1294,6 @@ def _plan_shifted_attaches(
         dm.bound.value_key: dm.declared_name
         for dm in prebound.declared_metrics[:n_grain] if dm.declared_name is not None
     }
-    inherited, n_inherited_range = _shifted_population_filters(prebound=prebound, filter_typings=filter_typings)
     axis_typing = SlotTyping(scope=scope, bundle=bundle)
     producer_dataset = scope.population
     kernel_root = producer_dataset or bundle.population
@@ -1299,14 +1320,7 @@ def _plan_shifted_attaches(
             td_keys=td_keys, active_bucket=prebound.main_time_key,
         )
         aliases, alias_hint = _shifted_answer_aliases(answer=answer, public_alias=public_alias)
-        periods, shift_unit = shift_offset_of(key)
-        spine_frame = [spine_upper] if spine_upper is not None and is_frame_bound(
-            key=spine_upper.value_key, time_fields={key.time_key.source}) else []
-        frame = moved_frame(
-            filters=[*inherited, *spine_frame], n_date_range=n_inherited_range, axis=key.time_key, periods=periods,
-            date_axis=axis_typing.value_type(key.time_key.source) is DataType.DATE,
-            unit=shift_unit or key.time_key.granularity,
-        )
+        frame = shifted_frame.moved(key, date_axis=axis_typing.value_type(key.time_key.source) is DataType.DATE)
         producer_prebound, ordered_pks = _regroup_producer_prebound(
             pks=sorted(pks, key=lambda k: consumer_order.get(k, len(consumer_order))),
             aggs=[answer], dataset=producer_dataset, bundle=bundle,
@@ -5256,13 +5270,16 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
 
     regroup_attach_plans = [*regroup_attach_plans, *_plan_shifted_attaches(
         slots=projection.registry.slots, attaches=regroup_attach_plans,
-        prebound=typed_prebound, rewritten=prebound, filter_typings=filter_typings,
+        prebound=typed_prebound, rewritten=prebound,
+        shifted_frame=_shifted_frame(
+            prebound=typed_prebound, filter_typings=filter_typings,
+            spine_upper=spine_upper_bound(spine_factor, spine=spine)
+            if spine_factor is not None and spine is not None else None,
+        ),
         scope=scope, bundle=bundle, stage_schemas=stage_schemas,
         producer_source_dataset=_producer_source_dataset_name,
         producer_registry=producer_registry, population=population,
         candidates=routed.shift_candidates, homes=routed.homes,
-        spine_upper=spine_upper_bound(spine_factor, spine=spine)
-        if spine_factor is not None and spine is not None else None,
     )]
     # Assign every slot its materialisation stage / needs-field fact;
     # producer bodies were staged by their own compilation.
