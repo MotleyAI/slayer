@@ -110,6 +110,10 @@ Decisions log — `(user)` the user's call, `(default)` an obvious default, `(co
     grain member) on top of the spec scenarios, plus association and error cases across reverse-to-many, list-child,
     windowed and keyless homes, operand-only cells under a driving producer, explicit / defaulted / degenerate outer
     grains, nested re-aggregation, and two stages each minting attaches. (codex, findings 3–5, 12)
+20. **An edge joins on its members as the reader evaluates them** — once a plan's row substitution is final, every
+    attach it plans (the re-aggregations, minted first from the unsubstituted dimensions, included) has its join
+    members and its attached values' `on` members lowered by that substitution, so an edge and the reader's reads
+    agree and no join renders an aggregate inline. (user, review: option 1)
 
 ## Risks / Trade-offs
 

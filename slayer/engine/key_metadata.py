@@ -83,6 +83,9 @@ class AttachedTyping:
         typing = self._typing
         return list_element_type(self.original, field_type=typing.field_type, field_element=typing.field_element)
 
+    def native(self) -> bool:
+        return self._typing.native(self.original)
+
 
 class SlotTyping:
     """The one derivation of a key's type over a scope: field leaves through the bundle, an attached value by its
@@ -135,6 +138,9 @@ class SlotTyping:
         """Whether ``key``'s type is the database's own: every field leaf left untyped is a field declaring no type."""
         if self.value_type(key) is not None:
             return False
+        if isinstance(key, AttachedKey):
+            found = self._attached.get(key.attach)
+            return found is not None and found.native()
         unresolved = [k for k in walk_value_keys(key) if isinstance(k, (FieldKey, FieldSqlKey)) and self.field_type(k) is None]
         return bool(unresolved) and all(self._untyped(k) for k in unresolved)
 

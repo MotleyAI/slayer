@@ -423,3 +423,50 @@ class TestOneProducerAnswer:
         assert cells(resp, "team", "band") == {("A", 0): 20.0, ("B", 1): 50.0}
         assert cells(resp, "team", "band", value="v1") == {("A", 0): 3.0, ("B", 1): 2.0}
         assert band_producers(resp) == band_producers(alone) > 0, resp.sql
+
+
+# --------------------------------------------------------------------------- #
+# Grain members that hold an aggregate
+# --------------------------------------------------------------------------- #
+#: Account total > 8: a1 (9) and a3 (14).
+BIG = dim(f"CASE WHEN sum({INV}fee, partition_by={INV}account_id) > 8 THEN 1 ELSE 0 END", "big")
+#: Per-(account, big) max of per-(account, state, big) fee > 5: a1 (5) no, a2 (6), a3 (10), a4 (8) yes.
+BAND_OVER_BIG = band_over(value=f"{INV}fee", members=[f"{INV}account_id", f"{INV}state", "big"],
+                          grain=f"[{INV}account_id, big]", threshold=5)
+#: Region's last amount > 25: North (30) and NULL (60), not South (25).
+LAST_BIG = dim(f"CASE WHEN last({ORD}amount, partition_by={ORD}region) > 25 THEN 1 ELSE 0 END", "big")
+#: Per-(region, big) max of per-(region, city, big) amount > 45: North 40, South 50, NULL 60.
+OBAND_OVER_BIG = band_over(value=f"{ORD}amount", members=[f"{ORD}region", f"{ORD}city", "big"],
+                           grain=f"[{ORD}region, big]", threshold=45)
+
+
+class TestGrainMembersThatHoldAnAggregate:
+    async def test_partitioned_sum_member(self, invoices: SlayerQueryEngine) -> None:
+        resp = await invoices.execute(query("invoices", [f"{INV}account_id", BIG, BAND_OVER_BIG], f"count({INV}*)"))
+        assert cells(resp, "account_id", "big", "band") == {
+            ("a1", 1, 0): 3.0, ("a2", 0, 1): 2.0, ("a3", 1, 1): 3.0, ("a4", 0, 1): 1.0}
+
+    async def test_ranked_member(self, orders: SlayerQueryEngine) -> None:
+        resp = await orders.execute(query("orders", [f"{ORD}region", LAST_BIG, OBAND_OVER_BIG], f"count({ORD}*)"))
+        assert cells(resp, "region", "big", "band", skip_null=False) == {
+            ("North", 1, 0): 4.0, ("South", 0, 1): 2.0, (None, 1, 1): 1.0}
+
+
+# --------------------------------------------------------------------------- #
+# Over an untyped field
+# --------------------------------------------------------------------------- #
+UNTYPED_FEE = [f if f.name != "fee" else DatasetField(name="fee", datatype=None) for f in INVOICE_FIELDS]
+#: Per-account max of per-state max fee: a1 4, a2 6, a3 7, a4 8.
+MAX_OF_MAX = dim(f"max(max({INV}fee, partition_by=[{INV}account_id, {INV}state]), partition_by={INV}account_id)",
+                 "band")
+
+
+class TestOverAnUntypedField:
+    @pytest.mark.parametrize("dialect", BACKENDS)
+    async def test_as_a_partition_key(self, dialect: str) -> None:
+        body = query("invoices", [f"{INV}account_id", MAX_OF_MAX], f"count({INV}id, partition_by=band)")
+        async with invoices_engine(dialect, fields=UNTYPED_FEE) as e:
+            untyped = cells(await e.execute(body), "account_id", "band")
+        async with invoices_engine(dialect, fields=INVOICE_FIELDS) as e:
+            typed = cells(await e.execute(body), "account_id", "band")
+        assert untyped == typed == {("a1", 4.0): 3.0, ("a2", 6.0): 2.0, ("a3", 7.0): 3.0, ("a4", 8.0): 1.0}

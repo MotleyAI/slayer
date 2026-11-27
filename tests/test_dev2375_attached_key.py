@@ -19,6 +19,7 @@ from slayer.core.keys import (
     Grain,
     LiteralKey,
     Phase,
+    TransformKey,
     anchor_token,
     is_attached_source,
     is_reaggregation_key,
@@ -31,8 +32,13 @@ from slayer.core.keys import (
     substitute_value_keys,
     walk_value_keys,
 )
+from slayer.core.enums import DataType
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.refs import agg_kwarg_canonical_str, partition_by_suffix
+from slayer.core.scope import DatasetScope
 from slayer.engine.cardinality.relationship_safety import grain_member_attributable
 from slayer.engine.compile.stages import ProducerContext, _assert_attached_reads_planned
+from slayer.engine.key_metadata import AttachedTyping, SlotTyping
 from slayer.engine.population.home import resolve_aggregate_homes
 from slayer.engine.reference_closure import key_closure
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -261,3 +267,25 @@ class TestRetired:
     @pytest.mark.parametrize("field", ["carried_attaches", "reserved_placeholders", "placeholder_originals"])
     def test_producer_context_field(self, field: str) -> None:
         assert field not in ProducerContext.model_fields
+
+
+class TestCanonicalName:
+    def test_as_a_partition_key(self) -> None:
+        assert "regroup__a0" in partition_by_suffix([attached(("team", TEAM))])
+
+    def test_as_a_transform_input(self) -> None:
+        assert "__regroup__a0" in agg_kwarg_canonical_str(TransformKey(op="cumsum", input=attached(("team", TEAM))))
+
+
+class TestTyping:
+    def test_over_an_untyped_original_is_opaque_like_its_producer_slot(self) -> None:
+        dataset = SlayerDataset(name="invoices", sql_table="invoices", data_source="test", fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="account_id", datatype=DataType.STRING), DatasetField(name="fee", datatype=None)])
+        scope = DatasetScope(population=dataset)
+        bundle = ResolvedSourceBundle(dialect="duckdb", population=dataset, referenced_datasets=[])
+        original = AggregateKey(source=FieldKey(leaf="fee"), agg="max")
+        producer = SlotTyping(scope=scope, bundle=bundle)
+        reader = SlotTyping(scope=scope, bundle=bundle,
+                            attached={"a0": AttachedTyping(original=original, typing=producer)})
+        assert reader.type_of(attached(("account_id", FieldKey(leaf="account_id")))) is DataType.OPAQUE

@@ -31,3 +31,14 @@
 - [x] 5.1 `docs/concepts/queries.md` (computed dimensions): one sentence that a dimension expression may hold a re-aggregation (`max(sum(...), partition_by=...)`), composing with every metric, partition key and measure; verify `zensical.toml` needs no nav change.
 - [x] 5.2 Local test scope per `/la:pr` (`la-affected-tests --base main` plus goldens and the files of 1.5), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `la-arch-check`; all green.
 - [ ] 5.3 At PR creation, note in the PR description that it closes DEV-2017 as well (user-approved); close DEV-2017 when the PR merges.
+
+## 6. Review findings
+
+- [x] 6.1 Executed tests for the two new scenarios on DuckDB and SQLite with hand oracles, plus unit tests: a
+  transform-valued parameter whose input is an attached value names canonically; an attached value over an untyped
+  original types `OPAQUE`, as its producer slot does; verify each fails without its fix.
+- [x] 6.2 Decision 20: lower every planned attach's join members and attached-value coordinates by the plan's final
+  row substitution.
+- [x] 6.3 Canonical naming spells a bare attached value by its display as a partition key and as a transform input;
+  an attached value's native type is its original's.
+- [x] 6.4 Local test scope, ruff, basedpyright, la-arch-check, conventions; all green.

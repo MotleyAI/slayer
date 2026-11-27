@@ -4685,7 +4685,7 @@ def _desugar_regroups(  # NOSONAR(S3776) — the regroup desugar body: re-aggreg
                     ),
                 ))
         attaches = _one_edge_per_answer(_synthesized_in_dependency_order(units, mapping=mapping))
-    attaches.extend(reagg_attaches)
+    attaches = [_lowered_coordinates(a, mapping=mapping) for a in [*attaches, *reagg_attaches]]
     if not attaches:
         return _Regrouped(prebound=prebound, attaches=[], homes=homes)
 
@@ -4737,6 +4737,16 @@ def _synthesized_in_dependency_order(
                 if out[i].attach_phase == "row" or sub.original_key not in mapping:
                     mapping[sub.original_key] = sub.placeholder
     return [out[i] for i in range(len(units))]
+
+
+def _lowered_coordinates(attach: RegroupAttachPlan, *, mapping: Mapping[ValueKey, ValueKey]) -> RegroupAttachPlan:
+    """``attach`` joined on its members as its reader evaluates them: each lowered by the reader's row substitution."""
+    pairs = [(substitute_value_keys(m, mapping), sid) for m, sid in attach.join_pairs]
+    subs = [sub.model_copy(update={"placeholder": substitute_value_keys(sub.placeholder, mapping)})
+            for sub in attach.substitutions]
+    if pairs == list(attach.join_pairs) and subs == list(attach.substitutions):
+        return attach
+    return attach.model_copy(update={"join_pairs": pairs, "substitutions": subs})
 
 
 def _one_edge_per_answer(attaches: Sequence[RegroupAttachPlan]) -> List[RegroupAttachPlan]:

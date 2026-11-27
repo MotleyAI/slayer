@@ -38,3 +38,11 @@ A computed dimension containing an aggregation over an aggregate (a re-aggregati
 #### Scenario: A field named with the former reserved prefix
 - **WHEN** a dataset declares a field `__regroup__0__max` and a query groups by it beside a re-aggregation dimension
 - **THEN** the field reads its own column and the query succeeds
+
+#### Scenario: Grain members that hold an aggregate
+- **WHEN** a query on `invoices` declares `big` = `CASE WHEN sum(invoices.fee, partition_by=invoices.account_id) > 8 THEN 1 ELSE 0 END` and `band` = `CASE WHEN max(sum(invoices.fee, partition_by=[invoices.account_id, invoices.state, big]), partition_by=[invoices.account_id, big]) > 5 THEN 1 ELSE 0 END`, groups by `invoices.account_id`, `big` and `band` and selects `count(*)`; or, on `orders`, `big` is built on `last(orders.amount, partition_by=orders.region)`
+- **THEN** each row carries its own `big` and `band`, correct by executed values
+
+#### Scenario: Over an untyped field, as a partition key
+- **WHEN** `band`'s re-aggregation reads a field that declares no type and a query selects `count(invoices.id, partition_by=band)`
+- **THEN** it returns the same values as with the field typed
