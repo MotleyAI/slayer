@@ -12,19 +12,19 @@
 
 ## 2. Quoted names (pr-implement)
 
-- [ ] 2.1 Add the Ossie normalized form of a declared name to `slayer/core/names.py` (upstream `declared_name`), and make `match_name` / `match_path` fall back to it for a quoted segment, raising `AmbiguousReferenceError` when several names match. Verify the 1.2 and 1.3 tests pass.
-- [ ] 2.2 Find every resolution path that compares a quoted name outside the matcher (strict `ossie-l3`, `slayer/engine/extensions.py`, scope lookups, stage and join names) and route it through the matcher. Leave physical source-column reads native. Verify the strict and per-segment tests pass.
+- [x] 2.1 Add the Ossie normalized form of a declared name to `slayer/core/names.py` (upstream `declared_name`), and make `match_name` / `match_path` fall back to it for a quoted segment, raising `AmbiguousReferenceError` when several names match. Verify the 1.2 and 1.3 tests pass.
+- [x] 2.2 Find every resolution path that compares a quoted name outside the matcher (strict `ossie-l3`, `slayer/engine/extensions.py`, scope lookups, stage and join names) and route it through the matcher. Leave physical source-column reads native. Verify the strict and per-segment tests pass.
 
 ## 3. SQLite unknown types (pr-implement)
 
-- [ ] 3.1 Extract one SQLite classifier from `slayer/database/sqlite_introspect.py` (declared type refined by the bounded sample) and call it from both ingestion and unknown-type resolution for single-column fields. Expression fields get the bounded census in place of the zero-row probe. Keep it in the SQLite dialect / introspection modules (sql P2) and run it through the client (database P1). Verify the 1.4 tests pass and the existing ingestion tests stay green.
+- [x] 3.1 Extract one SQLite classifier from `slayer/database/sqlite_introspect.py` (declared type refined by the bounded sample) and call it from both ingestion and unknown-type resolution for single-column fields. Expression fields get the bounded census in place of the zero-row probe. Keep it in the SQLite dialect / introspection modules (sql P2) and run it through the client (database P1). Verify the 1.4 tests pass and the existing ingestion tests stay green.
 
 ## 4. Docs and tracker
 
-- [ ] 4.1 `docs/concepts/references.md` line 41: state the quoted-name rule as exact spelling first, then Ossie's normalized form, then the ambiguity error. Verify by rereading against the identifier-case spec.
-- [ ] 4.2 `docs/osi/osi_import.md`: `CASE` and scalar functions around aggregates evaluate as written; `ARRAY_AGG(DISTINCT x)` reads as `collect(x)` (NULLs dropped, `[]` on no rows, sorted). Verify by rereading against the semantic-model-documents spec.
+- [x] 4.1 `docs/concepts/references.md` line 41: state the quoted-name rule as exact spelling first, then Ossie's normalized form, then the ambiguity error. Verify by rereading against the identifier-case spec.
+- [x] 4.2 `docs/osi/osi_import.md`: `CASE` and scalar functions around aggregates evaluate as written; `ARRAY_AGG(DISTINCT x)` reads as `collect(x)` (NULLs dropped, `[]` on no rows, sorted). Verify by rereading against the semantic-model-documents spec.
 - [x] 4.3 Post the quoted-name ruling as a comment on DEV-2452 (done in pr-plan).
 
 ## 5. Gates
 
-- [ ] 5.1 Run the local test scope (`la-affected-tests --base main` plus the corpus and aligned tests), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `poetry run la-arch-check`. Verify all are green.
+- [x] 5.1 Run the local test scope (`la-affected-tests --base main` plus the corpus and aligned tests), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors) and `poetry run la-arch-check`. Verify all are green.

@@ -431,7 +431,7 @@ async def test_routed_operand_keeps_its_whole_day_meaning(tmp_path, regions_ds, 
 @pytest.mark.parametrize(("stored_filter", "loaded"), [
     pytest.param('"Regions"."Opened_At" <= \'2024-01-31\'', f'{QUOTED_ROUTE}."Opened_At" < \'2024-02-01\'',
                  id="exact"),
-    pytest.param('"Regions"."OPENED_AT" <= \'2024-01-31\'', f'{QUOTED_ROUTE}."OPENED_AT" <= \'2024-01-31\'',
+    pytest.param('"Regions"."opened_at" <= \'2024-01-31\'', f'{QUOTED_ROUTE}."opened_at" <= \'2024-01-31\'',
                  id="wrong-case"),
 ])
 async def test_quoted_operand_is_typed_by_its_exact_spelling(tmp_path, regions_ds, backend, stored_filter, loaded):

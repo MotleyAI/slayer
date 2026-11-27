@@ -26,9 +26,12 @@ import duckdb
 import pytest
 import yaml
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinType
 from slayer.core.errors import AmbiguousReferenceError, ListTypeError, UnknownReferenceError
 from slayer.core.models import DatasetField, DatasetMetric, DatasourceConfig, SlayerDataset
+from slayer.core.names import match_name, match_path
+from slayer.core.relationship_walker import OrientedRelationship, matching_edges
+from slayer.core.scope import resolve_generated_field
 from slayer.database.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.engine.unknown_types import UnknownTypes
@@ -258,9 +261,10 @@ async def test_array_agg_distinct_follows_collect_on_duckdb(tmp_path: Path, typi
 async def test_array_agg_distinct_is_a_typed_list_error_on_sqlite(tmp_path: Path) -> None:
     """Spec: ARRAY_AGG DISTINCT follows collect's NULL conventions (SQLite has no lists)."""
     seed_backend("sqlite", str(seed_path(tmp_path, "sqlite")), TABLES)
+    query = {"population": "tickets", "metrics": [m("tickets.statuses", "s")]}
     async with imported(tmp_path, backend="sqlite", text=fidelity_document("typed")) as (engine, _):
         with pytest.raises(ListTypeError):
-            await engine.execute({"population": "tickets", "metrics": [m("tickets.statuses", "s")]})
+            await engine.execute(query)
 
 
 # --------------------------------------------------------------------------- #
@@ -448,6 +452,36 @@ def normalized_name() -> Callable[[str], str]:
 def test_normalized_forms_follow_ossie_validator(upstream_validator: ModuleType, name: str) -> None:
     """Spec: Normalized forms follow Ossie's validator."""
     assert normalized_name()(name) == upstream_validator.declared_name(name)
+
+
+# --------------------------------------------------------------------------- #
+# Exact lookups stay exact; the exact spelling wins at every precedence
+# --------------------------------------------------------------------------- #
+def test_an_exact_lookup_never_takes_the_normalized_form() -> None:
+    """Internal lookups and Mode-A leaves name a field exactly."""
+    ds = SlayerDataset(name="t", sql_table="t", data_source="test",
+                       fields=[DatasetField(name="amount", datatype=DataType.FLOAT)])
+    assert match_name(name="AMOUNT", declared=["amount"], quoted=True) == "amount"
+    assert match_name(name="AMOUNT", declared=["amount"], quoted=True, exact=True) is None
+    assert ds.get_field("AMOUNT", quoted=True) is ds.fields[0]
+    assert ds.get_field("AMOUNT", exact=True) is None
+    assert resolve_generated_field(dataset=ds, name="AMOUNT", exact=True) is None
+
+
+def test_a_quoted_segment_prefers_the_exact_spelling() -> None:
+    assert match_path(parts=("X", "AMOUNT"), declared=["x.AMOUNT", "x.amount"], quoted=(False, True)) == "x.AMOUNT"
+    assert match_path(parts=("X", "AMOUNT"), declared=["x.amount"], quoted=(False, True)) == "x.amount"
+
+
+def _edge(*, to: str, name: str | None = None) -> OrientedRelationship:
+    return OrientedRelationship(source_dataset="orders", to=to, column_pairs=[("id", "id")], join_type=JoinType.LEFT,
+                                cardinality=None, name=name, declaring_dataset="orders")
+
+
+def test_a_quoted_hop_takes_an_exact_spelling_before_a_normalized_one() -> None:
+    named, exact = _edge(to="other", name="customers"), _edge(to="CUSTOMERS")
+    assert matching_edges([named, exact], "CUSTOMERS", quoted=True) == [exact]
+    assert matching_edges([named], "CUSTOMERS", quoted=True) == [named]
 
 
 # --------------------------------------------------------------------------- #

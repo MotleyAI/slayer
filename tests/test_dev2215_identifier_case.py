@@ -340,7 +340,7 @@ async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
 
 @pytest.mark.parametrize(("parts", "quoted", "expected"), [
     (("Foo", "BAR"), (True, False), "Foo.bar"),
-    (("FOO", "bar"), (True, False), None),
+    (("foo", "bar"), (True, False), None),
     (("foo", "Bar"), (False, True), None),
     (("FOO", "BAR"), (), "Foo.bar"),
 ])

@@ -190,12 +190,12 @@ def _spellings(edge: OrientedRelationship) -> tuple[tuple[str, ...], ...]:
 
 
 def matching_edges(edges: list[OrientedRelationship], token: str, *, quoted: bool = False) -> list[OrientedRelationship]:
-    """The edges ``token`` names, by precedence (``_spellings``): an exact spelling at any precedence, else (unquoted)
-    a case-insensitive one."""
-    for exact in (True,) if quoted else (True, False):
+    """The edges ``token`` names, by precedence (``_spellings``): an exact spelling at any precedence, else one
+    ``match_name`` reaches."""
+    for exact in (True, False):
         for tier in range(4):
             names = [n for e in edges for n in _spellings(e)[tier]]
-            found = match_name(name=token, declared=names, quoted=exact)
+            found = match_name(name=token, declared=names, quoted=quoted, exact=exact)
             if found is not None:
                 return [e for e in edges if found in _spellings(e)[tier]]
     return []

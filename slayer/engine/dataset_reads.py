@@ -138,7 +138,7 @@ class _Reads:
                 self.metric(host=dataset, name=metric.name, scope=scope)
 
     def field(self, *, host: SlayerDataset, name: str, scope: QueryScope) -> None:
-        col = host.get_field(name, quoted=True)
+        col = host.get_field(name, exact=True)
         if col is None or not self._first_visit(host, f"field:{name}"):
             return
         if col.definition_sql is not None and not is_trivial_base(field=col):
