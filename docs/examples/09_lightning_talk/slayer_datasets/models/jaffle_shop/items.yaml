@@ -1,4 +1,4 @@
-version: 28
+version: 29
 name: items
 sql_table: items
 source_kind: table
@@ -43,6 +43,7 @@ relationships:
   - id
   join_type: left
   cardinality: many_to_one
+  trusted: true
 - to: products
   from_columns:
   - sku
@@ -50,6 +51,9 @@ relationships:
   - sku
   join_type: left
   cardinality: many_to_one
+  trusted: true
+enforced_keys:
+- - id
 filters: []
 description: "Order line items \u2014 one row per unit sold on an order."
 hidden: false

@@ -1,4 +1,4 @@
-version: 28
+version: 29
 name: stores
 sql_table: stores
 source_kind: table
@@ -62,6 +62,9 @@ relationships:
   - id
   join_type: left
   cardinality: many_to_one
+  trusted: true
+enforced_keys:
+- - id
 filters: []
 description: Physical Jaffle Shop locations.
 hidden: false

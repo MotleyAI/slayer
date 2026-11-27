@@ -1,4 +1,4 @@
-version: 28
+version: 29
 name: products
 sql_table: products
 source_kind: table
@@ -73,6 +73,8 @@ metrics:
   datatype: Float
 aggregations: []
 relationships: []
+enforced_keys:
+- - sku
 filters: []
 description: "Menu items sold at the Jaffle Shop \u2014 jaffles and beverages."
 hidden: false

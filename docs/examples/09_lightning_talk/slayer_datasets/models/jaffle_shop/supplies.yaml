@@ -1,4 +1,4 @@
-version: 28
+version: 29
 name: supplies
 sql_table: supplies
 source_kind: table
@@ -69,6 +69,10 @@ relationships:
   - sku
   join_type: left
   cardinality: many_to_one
+  trusted: true
+enforced_keys:
+- - id
+  - sku
 filters: []
 description: Supplies (ingredients and packaging) used per product, with unit costs
   in dollars.
