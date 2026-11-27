@@ -3729,15 +3729,9 @@ class SlayerQueryEngine:
         unique = list({n.message: n for n in notices}.values())
         mismatches = await self.storage.ontology_mismatches(data_source=dataset.data_source, datasets=[dataset.name]) \
             if dataset.data_source else []
-        if warnings_out is not None:
-            warnings_out.extend([*unique, *payloads, *mismatches])
-            return dataset
-        report_save_warnings(None, mismatches)
-        # Last, as in query(): under ``-W error`` this raises after the save.
-        for notice in unique:
-            _warnings_module.warn(SlayerDateOnlyMidnightWarning(notice), stacklevel=2)
-        for payload in payloads:
-            _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=2)
+        _report_saved_dataset_warnings(
+            notices=unique, payloads=payloads, mismatches=mismatches, warnings_out=warnings_out,
+        )
         return dataset
 
     async def _prior_data_source(self, dataset: SlayerDataset) -> Optional[str]:
@@ -4050,6 +4044,21 @@ def _key_reads(*, dataset: SlayerDataset, keys: List[str], dialect: str) -> List
         else exp.maybe_parse(f.definition_sql or f.name, dialect=dialect)
         for f in (by_name[k] for k in keys)
     ]
+
+
+def _report_saved_dataset_warnings(
+    *, notices: Sequence[DateOnlyMidnightWarning], payloads: Sequence[NarrowedAccessWarning],
+    mismatches: Sequence[SlayerWarning], warnings_out: Optional[List[SlayerWarning]],
+) -> None:
+    """A dataset save's warnings into ``warnings_out``, else emitted — last, so under ``-W error`` they raise after the save."""
+    if warnings_out is not None:
+        warnings_out.extend([*notices, *payloads, *mismatches])
+        return
+    report_save_warnings(None, mismatches)
+    for notice in notices:
+        _warnings_module.warn(SlayerDateOnlyMidnightWarning(notice), stacklevel=3)
+    for payload in payloads:
+        _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=3)
 
 
 def _validate_relationship_keys(
