@@ -1,6 +1,7 @@
 """MCP server for SLayer."""
 
 import asyncio
+import base64
 import functools
 import json
 import logging
@@ -11,6 +12,7 @@ from importlib.metadata import version as _pkg_version
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from inspect import cleandoc
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import anyio
@@ -101,7 +103,7 @@ if TYPE_CHECKING:
     from mcp.server.mcpserver import Context, MCPServer
     from mcp.server.mcpserver.exceptions import ToolError
     from mcp.shared.exceptions import MCPError
-    from mcp.types import CallToolResult, InputRequiredResult
+    from mcp.types import CallToolResult, Icon, InputRequiredResult, ToolAnnotations
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,20 @@ _MCP_REMEDY = (
 
 # Claude Code's default cap on each tool description and on the server instructions.
 MAX_TOOL_DESCRIPTION_CHARS = 2048
+
+SERVER_TITLE = "SLayer semantic layer"
+SERVER_DESCRIPTION = (
+    "Query databases by describing the data you want (metrics, dimensions, filters); SLayer writes and runs the SQL, "
+    "joins included. Also connects datasources, builds and edits datasets, and keeps agent memories."
+)
+SERVER_WEBSITE = "https://docs.motley.ai/slayer/"
+_ICONS_DIR = Path(__file__).parent / "icons"
+#: Icon file -> theme, light first: a client ignoring ``theme`` most likely renders on light.
+_ICON_THEMES: tuple[tuple[str, Literal["light", "dark"]], ...] = (
+    ("slayer-light.png", "light"), ("slayer-dark.png", "dark"),
+)
+_ICON_SIZES = ["180x160"]
+_HINT_FIELDS = ("read_only_hint", "destructive_hint", "idempotent_hint", "open_world_hint")
 
 SERVER_INSTRUCTIONS = """SLayer is a semantic layer for querying databases: describe the data you want (metrics, dimensions, filters) and SLayer writes the SQL, joins included.
 ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Do NOT split it into several queries, do NOT combine or recompute query results yourself (by hand or in Python), and do NOT add stages for what one stage can do. One SLayer query computes all of these together: totals at any coarser grain and shares of them, ranks and top N per group, period-over-period changes, running totals, trailing windows, aggregates of aggregates, and aggregates over several joined datasets. Each aggregate runs over its own dataset's rows, so one query NEVER fans out or double counts. Explore the data first if you need to; then write the one query.
@@ -206,8 +222,11 @@ def _mcp_supported(version_str: str) -> bool:
         return False
 
 
-def _import_mcp_sdk() -> "tuple[type[MCPServer], type[ToolError], type[MCPError]]":
-    """mcp 2.x's ``MCPServer``, ``ToolError`` and ``MCPError``, or an actionable ImportError."""
+def _import_mcp_sdk() -> (
+    "tuple[type[MCPServer], type[ToolError], type[MCPError], type[Icon], type[ToolAnnotations]]"
+):
+    """mcp 2.x's ``MCPServer``, ``ToolError``, ``MCPError``, ``Icon`` and ``ToolAnnotations``, or an actionable
+    ImportError."""
     try:
         installed = _pkg_version("mcp")
     except PackageNotFoundError as exc:
@@ -218,11 +237,44 @@ def _import_mcp_sdk() -> "tuple[type[MCPServer], type[ToolError], type[MCPError]
         from mcp.server.mcpserver import MCPServer  # ALLOW(import-not-top): SDK probe — at build time, so an out-of-range install gets the remedy, not a raw import error
         from mcp.server.mcpserver.exceptions import ToolError  # ALLOW(import-not-top): SDK probe, as above
         from mcp.shared.exceptions import MCPError  # ALLOW(import-not-top): SDK probe, as above
+        from mcp.types import Icon, ToolAnnotations  # ALLOW(import-not-top): SDK probe, as above
     except ImportError as exc:
         raise ImportError(
             f"mcp {installed} is installed, but 'mcp.server.mcpserver' could not be imported: {exc} {_MCP_REMEDY}"
         ) from exc
-    return MCPServer, ToolError, MCPError
+    return MCPServer, ToolError, MCPError, Icon, ToolAnnotations
+
+
+def _server_icons(icon_cls: "type[Icon]") -> "list[Icon]":
+    """SLayer's themed PNG icons as embedded data URIs."""
+    return [
+        icon_cls(
+            src="data:image/png;base64," + base64.b64encode((_ICONS_DIR / file).read_bytes()).decode("ascii"),
+            mime_type="image/png", sizes=_ICON_SIZES, theme=theme,
+        )
+        for file, theme in _ICON_THEMES
+    ]
+
+
+def _tool_registrar(
+    server: "MCPServer", *, tool_error: "type[ToolError]", mcp_error: "type[MCPError]",
+) -> "Callable[..., Callable[[Callable[..., Any]], Callable[..., Any]]]":
+    """``server.tool`` requiring a title and all four hints, with the budgeted docstring as the description and
+    every failure's text kept."""
+
+    def tool(
+        *, title: str, hints: "ToolAnnotations", **kwargs: Any,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        if not title:
+            raise ValueError("A tool needs a non-empty title.")
+        unset = [name for name in _HINT_FIELDS if getattr(hints, name) is None]
+        if unset:
+            raise ValueError(f"A tool's hints must set all four; unset: {', '.join(unset)}.")
+        return lambda fn: server.tool(description=_agent_description(fn), title=title, annotations=hints, **kwargs)(
+            _keeping_failure_text(fn, tool_error=tool_error, mcp_error=mcp_error),
+        )
+
+    return tool
 
 
 def _keeping_failure_text(
@@ -747,23 +799,29 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     preparation = StartupPreparation(demo_setup=demo_setup, ingest=startup_ingest if ingest_on_startup else None)
     # Every tool reads datasets, and the live database, through the server's engine.
     storage = engine.storage
-    server_cls, tool_error, mcp_error = _import_mcp_sdk()
+    server_cls, tool_error, mcp_error, icon_cls, annotations_cls = _import_mcp_sdk()
 
     mcp = _counted(server_cls, tool_error=tool_error, preparation=preparation)(
-        "SLayer", instructions=SERVER_INSTRUCTIONS, version=__version__,
+        "SLayer", title=SERVER_TITLE, description=SERVER_DESCRIPTION, instructions=SERVER_INSTRUCTIONS,
+        website_url=SERVER_WEBSITE, icons=_server_icons(icon_cls), version=__version__,
     )
     # Expose the closure engine so callers can dispose per-task pools via
     # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).
     # The read-only introspection tools share this same engine.
     mcp._slayer_engine = engine
+    tool = _tool_registrar(mcp, tool_error=tool_error, mcp_error=mcp_error)
 
-    def tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """``mcp.tool`` with the budgeted docstring as the description, keeping every failure's text."""
-        return lambda fn: mcp.tool(description=_agent_description(fn), **kwargs)(
-            _keeping_failure_text(fn, tool_error=tool_error, mcp_error=mcp_error),
-        )
+    def hints(*, read_only: bool, destructive: bool, idempotent: bool, open_world: bool) -> "ToolAnnotations":
+        return annotations_cls(read_only_hint=read_only, destructive_hint=destructive,
+                               idempotent_hint=idempotent, open_world_hint=open_world)
 
-    @tool(meta=_ALWAYS_LOAD_META if always_load_query else None)
+    # Open-world = can connect to a datasource's database.
+    reads_db = hints(read_only=True, destructive=False, idempotent=True, open_world=True)
+    reads_store = hints(read_only=True, destructive=False, idempotent=True, open_world=False)
+    writes_db = hints(read_only=False, destructive=True, idempotent=True, open_world=True)
+    writes_store = hints(read_only=False, destructive=True, idempotent=True, open_world=False)
+
+    @tool(title="Query data", hints=reads_db, meta=_ALWAYS_LOAD_META if always_load_query else None)
     async def query(
         query: Annotated[QueryArgument, Field(
             description="A query object, a list of query objects (stages), or a saved query-backed dataset's name.",
@@ -845,7 +903,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
 
     # Dataset discovery
 
-    @tool()
+    @tool(title="Summarize datasets", hints=reads_store)
     async def datasets_summary(
         datasource_name: Annotated[str, Field(description="Datasource name (from list_datasources).")],
         format: Annotated[str, Field(description='"markdown" (default) or "json".')] = "markdown",
@@ -885,7 +943,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             model_metrics=await storage.list_model_scoped_metrics(datasource_name),
         )
 
-    @tool()
+    @tool(title="Inspect entity", hints=reads_db)
     async def inspect(
         entity_type: Annotated[str, Field(
             description=(
@@ -942,7 +1000,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
 
     # Dataset creation and editing
 
-    @tool()
+    @tool(title="Create dataset", hints=writes_db)
     async def create_dataset(
         name: Annotated[str, Field(description="Unique dataset name (lowercase, underscores).")],
         sql_table: Annotated[str | None, Field(description='Database table, e.g. "public.orders".')] = None,
@@ -995,7 +1053,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
 
         Host a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Example: create_dataset(name="orders", sql_table="public.orders", data_source="mydb", fields=[{"name": "amount", "sql": "amount", "datatype": "Float"}], metrics=[{"name": "aov", "expression": "sum(amount) / count(*)"}])
+        Example: create_dataset(name="orders", sql_table="public.orders", data_source="mydb", fields=[{"name": "amount", "expression": "amount", "datatype": "Float"}], metrics=[{"name": "aov", "expression": "sum(amount) / count(*)"}])
 
         A custom aggregation named sum_sq is called like a built-in: sum_sq(field). Authoring guide: inspect(reference="memory:help.datasets", entity_type="memory").
         """
@@ -1147,7 +1205,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
 
     VALID_REMOVE_KEYS = {"fields", "metrics", "aggregations", "relationships", "relationship_edges", "enforced_keys"}
 
-    @tool()
+    @tool(title="Edit dataset", hints=writes_db)
     async def edit_dataset(
         dataset_name: Annotated[str, Field(description="Dataset to edit.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
         *,
@@ -1510,7 +1568,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
 
     # Datasource management
 
-    @tool()
+    @tool(title="Create datasource", hints=writes_db)
     async def create_datasource(
         name: Annotated[str, Field(description="Unique datasource name.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
         type: Annotated[str, Field(description="Database type: postgres, mysql, sqlite, bigquery, snowflake, ...")],
@@ -1613,7 +1671,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             lines.extend(["", "Use datasets_summary and inspect to explore, then query to fetch data."])
         return "\n".join(lines)
 
-    @tool()
+    @tool(title="List datasources", hints=reads_store)
     async def list_datasources() -> str:
         """List all configured database connections (names and types only, credentials are not shown). Use describe_datasource for connection details and status."""
         names = await storage.list_datasources()
@@ -1628,7 +1686,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                 pairs.append((name, None))
         return render_datasource_list(pairs=pairs, fmt="markdown")
 
-    @tool()
+    @tool(title="Describe datasource", hints=reads_db)
     async def describe_datasource(
         name: Annotated[str, Field(description="Datasource name (from list_datasources).")],
         list_tables: Annotated[bool, Field(description="Also list the tables of schema_name (default true).")] = True,
@@ -1692,7 +1750,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
 
         return "\n".join(lines)
 
-    @tool()
+    @tool(title="Edit datasource", hints=writes_store)
     async def edit_datasource(
         name: Annotated[str, Field(description="Datasource to update.")],
         *,
@@ -1711,7 +1769,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             ),
         )],
     ) -> str:
-        """Update a datasource's metadata."""
+        """Update a datasource's metadata. To change its connection settings, call create_datasource with the same
+        name, which replaces it."""
         ds = await storage.get_datasource(name)
         if ds is None:
             return f"Datasource '{name}' not found."
@@ -1760,14 +1819,14 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
 
     # Delete operations
 
-    @tool()
+    @tool(title="Delete dataset", hints=writes_store)
     async def delete_dataset(
         name: Annotated[str, Field(description="Dataset to delete.")],
         data_source: Annotated[str | None, Field(
             description="The dataset's datasource; required when the name exists in several datasources.",
         )] = None,
     ) -> str:
-        """Delete a semantic dataset."""
+        """Delete a semantic dataset. Refused when a stored model-scoped metric or ontology mapping depends on it."""
         try:
             deleted = await storage.delete_dataset(name, data_source=data_source)
         except AmbiguousDatasetError as exc:
@@ -1786,7 +1845,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             logger.warning("semantic model search refresh failed for %r: %s", data_source, exc)
             return [f"search refresh failed: {exc}"]
 
-    @tool()
+    @tool(title="Create semantic model", hints=writes_store)
     async def create_semantic_model(
         name: Annotated[str, Field(description="The semantic model's name, unique in its datasource.")],
         data_source: Annotated[str, Field(description="The datasource it describes (from list_datasources).")],
@@ -1807,7 +1866,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         return (f"Semantic model '{name}' created." + _warning_lines(notes)
                 + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source)))
 
-    @tool()
+    @tool(title="Edit semantic model", hints=writes_store)
     async def edit_semantic_model(
         name: Annotated[str, Field(description="Semantic model to edit.")],
         data_source: Annotated[str, Field(description="Its datasource.")],
@@ -1844,7 +1903,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         return (f"Semantic model '{name}' edited." + _warning_lines(notes)
                 + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source)))
 
-    @tool()
+    @tool(title="Delete semantic model", hints=writes_store)
     async def delete_semantic_model(
         name: Annotated[str, Field(description="Semantic model to delete.")],
         data_source: Annotated[str | None, Field(
@@ -1867,7 +1926,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         """Best-effort search refresh of the datasets whose concepts a mapping or ontology change touches."""
         return "".join(f"\nWarning: {w}" for w in await search_service.refresh_after_concept_change(data_source))
 
-    @tool()
+    @tool(title="Create ontology", hints=writes_store)
     async def create_ontology(
         content: Annotated[str | dict[str, Any], Field(
             description="A whole Ossie 0.3.0.dev0 ontology document, as YAML/JSON text or an object.",
@@ -1883,7 +1942,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             return _refusal("creating ontology", exc)
         return f"Ontology '{name}' stored." + _warning_lines(notes) + await _refreshed_concepts()
 
-    @tool()
+    @tool(title="Edit ontology", hints=writes_store)
     async def edit_ontology(
         name: Annotated[str, Field(description="Ontology to edit.")],
         description: Annotated[str | None, Field(description="New description.")] = None,
@@ -1913,7 +1972,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             return _refusal(f"editing ontology '{name}'", exc)
         return f"Ontology '{name}' edited." + _warning_lines(notes) + await _refreshed_concepts()
 
-    @tool()
+    @tool(title="Delete ontology", hints=writes_store)
     async def delete_ontology(
         name: Annotated[str, Field(description="Ontology to delete.")],
     ) -> str:
@@ -1924,7 +1983,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             return _refusal(f"deleting ontology '{name}'", exc)
         return f"Ontology '{name}' deleted." + await _refreshed_concepts() if deleted else f"Ontology '{name}' not found."
 
-    @tool()
+    @tool(title="Create ontology mapping", hints=writes_store)
     async def create_ontology_mapping(
         data_source: Annotated[str, Field(description="The datasource whose datasets the mapping reads.")],
         content: Annotated[str | dict[str, Any], Field(
@@ -1943,7 +2002,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         return (f"Mapping '{name}' stored in datasource '{data_source}'." + "".join(f"\nNote: {n}" for n in notes)
                 + _warning_lines(warnings_out) + await _refreshed_concepts(data_source))
 
-    @tool()
+    @tool(title="Edit ontology mapping", hints=writes_store)
     async def edit_ontology_mapping(
         name: Annotated[str, Field(description="Mapping to edit.")],
         data_source: Annotated[str, Field(description="Its datasource.")],
@@ -1975,7 +2034,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         return (f"Mapping '{name}' edited." + "".join(f"\nNote: {n}" for n in notes) + _warning_lines(warnings_out)
                 + await _refreshed_concepts(data_source))
 
-    @tool()
+    @tool(title="Delete ontology mapping", hints=writes_store)
     async def delete_ontology_mapping(
         name: Annotated[str, Field(description="Mapping to delete.")],
         data_source: Annotated[str, Field(description="Its datasource.")],
@@ -1989,7 +2048,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             return f"Mapping '{name}' not found."
         return f"Mapping '{name}' deleted." + await _refreshed_concepts(data_source)
 
-    @tool()
+    @tool(title="Validate datasets", hints=reads_db)
     async def validate_datasets(
         data_source: Annotated[str | None, Field(description="Datasource to validate; omit for all.")] = None,
     ) -> str:
@@ -2011,7 +2070,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             raise _db_tool_failure(exc) from exc
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
-    @tool()
+    @tool(title="Recommend population", hints=reads_store)
     async def recommend_population(
         items: Annotated[list[str], Field(
             description="Entity references: orders.revenue, customers.name, sum(orders.revenue), a saved metric's bare name, ...",
@@ -2052,16 +2111,17 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             return json.dumps(rec.model_dump(mode="json"), indent=2)
         return render_recommendation_markdown(rec)
 
-    @tool()
+    @tool(title="Delete datasource", hints=writes_store)
     async def delete_datasource(name: Annotated[str, Field(description="Datasource to delete.")]) -> str:
-        """Delete a datasource configuration."""
+        """Delete a datasource configuration and its ontology mappings, and strip it from memories' linked entities.
+        Its datasets are kept."""
         if await storage.delete_datasource(name):
             return f"Datasource '{name}' deleted."
         return f"Datasource '{name}' not found."
 
     # Ingestion
 
-    @tool()
+    @tool(title="Ingest datasource", hints=writes_db)
     async def ingest_datasource(
         datasource_name: Annotated[str, Field(description="An existing datasource (from list_datasources).")],
         include_tables: Annotated[str, Field(description="Comma-separated tables to ingest; empty for all.")] = "",
@@ -2075,7 +2135,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     ) -> str:
         """Discover a database's tables and create or additively update datasets from them.
 
-        Idempotent and additive: new fields and relationships are appended; existing definitions are never overwritten. Also returns the pending validate_datasets deletes.
+        Idempotent and additive: new fields and relationships are appended and nothing is deleted. Existing definitions are kept, except that an existing field may be re-typed to the type the database now reports; the result lists the stored definitions that re-type breaks. Also returns the pending validate_datasets deletes.
         """
 
         ds = await storage.get_datasource(datasource_name)
@@ -2111,7 +2171,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             result, schema_name=schema_name, ds=ds, client=client,
         )
 
-    @tool()
+    @tool(title="Set datasource priority", hints=writes_store)
     async def set_datasource_priority(
         priority: Annotated[list[str], Field(
             description="Existing datasource names, most preferred first; an empty list clears it.",
@@ -2126,7 +2186,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             return "Datasource priority cleared."
         return f"Datasource priority set: {list(priority)}."
 
-    @tool()
+    @tool(title="Get datasource priority", hints=reads_store)
     async def get_datasource_priority() -> str:
         """Return the datasource priority list (most preferred first), or [] when none is set."""
         priority = await storage.get_datasource_priority()
@@ -2145,7 +2205,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         prefix = f"{type(exc).__name__}: "
         return f"Error: {exc}" if str(exc).startswith(prefix) else f"Error: {prefix}{exc}"
 
-    @tool()
+    @tool(title="Save memory", hints=hints(read_only=False, destructive=True, idempotent=False, open_world=False))
     async def save_memory(
         learning: Annotated[str, Field(description="The note text; required, non-empty.")],
         linked_entities: Annotated[Any, Field(
@@ -2184,7 +2244,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 
-    @tool()
+    @tool(title="Forget memory", hints=writes_store)
     async def forget_memory(
         id: Annotated[Any, Field(description="The memory_id returned by save_memory (a legacy int is accepted).")],  # noqa: A002 — MCP arg name
     ) -> str:
@@ -2202,7 +2262,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     # field-hit hook can auto-refresh stale categorical fields.
     search_service = SearchService(storage=storage, engine=engine)
 
-    @tool()
+    @tool(title="Search memories and entities", hints=reads_db)
     async def search(
         entities: Annotated[list[str] | None, Field(
             description=("Entity references; ranks memories tagged with overlapping entities. concept:<Concept> or "

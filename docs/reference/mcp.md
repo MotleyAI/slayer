@@ -69,20 +69,41 @@ Bound to a loopback address (`slayer serve --host 127.0.0.1`), `/mcp` refuses a 
 claude mcp list
 ```
 
+## Server metadata and tool annotations
+
+On `initialize` the server reports the name `SLayer`, the installed version, the title `SLayer semantic layer`, a one-sentence description, the website `https://docs.motley.ai/slayer/`, and two embedded PNG icons (180×160): an ink mark for light themes, listed first, and the white mark for dark themes.
+
+Every tool has a title and all four MCP behaviour hints. *Stored definitions* are datasources, datasets, semantic models, ontologies, ontology mappings, memories and the datasource priority list; cached field samples, embeddings and search indexes are derived state and do not count.
+
+- **Read-only**: the tool changes no stored definition.
+- **Destructive**: the tool can remove, replace or re-type existing stored content, including a same-name replace.
+- **Idempotent**: a repeat call with the same arguments leaves the stored definitions as the first call did; a refusal or "not found" counts.
+- **Open-world**: the tool can connect to a datasource's database (embedding-provider calls do not count).
+
+| Tools | Read-only | Destructive | Idempotent | Open-world |
+|-------|-----------|-------------|------------|------------|
+| `query`, `inspect`, `search`, `describe_datasource`, `validate_datasets` | yes | no | yes | yes |
+| `datasets_summary`, `list_datasources`, `get_datasource_priority`, `recommend_population` | yes | no | yes | no |
+| `create_dataset`, `edit_dataset`, `create_datasource`, `ingest_datasource` | no | yes | yes | yes |
+| `edit_datasource`, `set_datasource_priority`, `delete_dataset`, `delete_datasource`, the semantic-model, ontology and mapping create / edit / delete tools, `forget_memory` | no | yes | yes | no |
+| `save_memory` | no | yes | no (without `id` each call adds a memory) | no |
+
+Every tool returns its text as the structured output `{"result": "<text>"}`.
+
 ## Tools Reference
 
 ### Datasource Management
 
 | Tool | Description |
 |------|-------------|
-| `create_datasource` | Create a DB connection, test it, and auto-ingest datasets (set `auto_ingest=false` to skip). The ingest is the idempotent one of `ingest_datasource`: re-creating a datasource merges into its stored datasets and never overwrites them. |
+| `create_datasource` | Create a DB connection, test it, and auto-ingest datasets (set `auto_ingest=false` to skip). The ingest is the idempotent one of `ingest_datasource`: re-creating a datasource merges into its stored datasets and never overwrites them, except that it may re-type a field to the type the database now reports. |
 | `list_datasources` | List configured datasources (no credentials shown). |
 | `describe_datasource` | Show details, test connection, list available schemas, and (by default) list tables in the given or default schema. Params: `name`, `list_tables` (default `true`), `schema_name` (empty = dialect default). |
 | `edit_datasource` | Edit an existing datasource config; `create_datasource` and `edit_datasource` take `time_zone`, the IANA zone its `DateTime` columns are stored in ([Time zones](../concepts/time.md#time-zones)). |
-| `delete_datasource` | Remove a datasource config. |
+| `delete_datasource` | Remove a datasource config and its ontology mappings, and strip it from memories' linked entities; its datasets are kept. |
 | `set_datasource_priority` | Set the datasource priority list (most preferred first; `[]` clears it): a bare dataset name that exists in several datasources resolves to the first listed datasource that has it, else errors as ambiguous. Params: `priority`. |
 | `get_datasource_priority` | Return the datasource priority list, or `[]` when none is set. |
-| `ingest_datasource` | Auto-generate datasets from DB schema with rollup relationships. Params: `datasource_name`, `include_tables`, `schema_name`. Reports `Skipped` objects and `Hidden` [recognised internals](cli.md#recognised-internals) alongside the datasets it created — including on a no-op re-ingest. Use `edit_dataset("<dataset>", data_source="<datasource>", hidden=False)` to surface a hidden one — internals collide across datasources, so the bare form can un-hide the wrong dataset. |
+| `ingest_datasource` | Auto-generate datasets from DB schema with rollup relationships. Params: `datasource_name`, `include_tables`, `schema_name`. Additive: it never deletes, but may re-type an existing field to the type the database now reports, listing the stored definitions that breaks. Reports `Skipped` objects and `Hidden` [recognised internals](cli.md#recognised-internals) alongside the datasets it created — including on a no-op re-ingest. Use `edit_dataset("<dataset>", data_source="<datasource>", hidden=False)` to surface a hidden one — internals collide across datasources, so the bare form can un-hide the wrong dataset. |
 
 ### Dataset Management
 

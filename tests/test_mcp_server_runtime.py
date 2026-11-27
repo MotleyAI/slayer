@@ -114,7 +114,8 @@ class TestServerIdentity:
     async def test_initialize_reports_themed_png_icons(self, tmp_path: Path) -> None:
         async with _client(tmp_path) as client:
             info = client.server_info
-        assert info is not None and info.icons is not None
+        assert info is not None
+        assert info.icons is not None
         assert [icon.theme for icon in info.icons] == ["light", "dark"]
         payloads = []
         for icon in info.icons:

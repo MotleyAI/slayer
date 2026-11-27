@@ -188,7 +188,7 @@ class TestToolTable:
 class TestRegistrationGuard:
     @staticmethod
     def _registrar() -> tuple[Any, Any]:
-        server_cls, tool_error, mcp_error = _import_mcp_sdk()
+        server_cls, tool_error, mcp_error, _, _ = _import_mcp_sdk()
         server = server_cls("probe")
         # The registration wrapper create_mcp_server decorates every tool with.
         registrar = getattr(server_module, "_tool_registrar")
@@ -202,18 +202,19 @@ class TestRegistrationGuard:
     def test_missing_title_fails(self) -> None:
         _, tool = self._registrar()
         with pytest.raises(TypeError, match="title"):
-            tool(hints=_HINTS)(self._probe)
+            tool(hints=_HINTS)
 
     def test_missing_hints_fails(self) -> None:
         _, tool = self._registrar()
         with pytest.raises(TypeError, match="hints"):
-            tool(title="Probe")(self._probe)
+            tool(title="Probe")
 
     @pytest.mark.parametrize("omitted", ["read_only_hint", "destructive_hint", "idempotent_hint", "open_world_hint"])
     def test_partial_hints_fail(self, omitted: str) -> None:
         _, tool = self._registrar()
+        partial = _HINTS.model_copy(update={omitted: None})
         with pytest.raises((TypeError, ValueError), match=omitted):
-            tool(title="Probe", hints=_HINTS.model_copy(update={omitted: None}))(self._probe)
+            tool(title="Probe", hints=partial)
 
     async def test_title_and_hints_reach_the_listing(self) -> None:
         server, tool = self._registrar()
