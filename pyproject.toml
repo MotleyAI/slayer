@@ -1,19 +1,26 @@
 [project]
 name = "motley-slayer"
-version = "2.0.0"
-description = "A lightweight, agent-first semantic layer for AI agents"
+version = "2.1.0"
+description = "An expressive, embeddable semantic layer for AI agents and humans"
 requires-python = ">=3.11"
 license = "MIT"
 readme = "README.md"
 authors = [{name = "MotleyAI"}]
+keywords = ["semantic-layer", "sql", "ai", "mcp", "data", "analytics", "bi"]
+dynamic = ["classifiers"]
+
+[project.urls]
+Homepage = "https://motley.ai/slayer/"
+Documentation = "https://docs.motley.ai/slayer/"
+Repository = "https://github.com/MotleyAI/slayer"
+Issues = "https://github.com/MotleyAI/slayer/issues"
+Changelog = "https://github.com/MotleyAI/slayer/releases"
 
 [tool.poetry]
 packages = [{include = "slayer"}]
-keywords = ["semantic-layer", "sql", "ai", "mcp", "data", "analytics", "bi"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -21,11 +28,6 @@ classifiers = [
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Information Analysis",
 ]
-
-[tool.poetry.urls]
-Repository = "https://github.com/MotleyAI/slayer"
-Documentation = "https://docs.motley.ai/slayer/"
-Discord = "https://discord.gg/egWxMctHCA"
 
 [tool.poetry.dependencies]
 python = "^3.11"

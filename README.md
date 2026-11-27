@@ -5,9 +5,8 @@
 [![PyPI](https://img.shields.io/pypi/v/motley-slayer?label=PyPI)](https://pypi.org/project/motley-slayer/)
 [![Python](https://img.shields.io/pypi/pyversions/motley-slayer)](https://pypi.org/project/motley-slayer/)
 [![Docs](https://img.shields.io/badge/docs-docs.motley.ai-blue)](https://docs.motley.ai/slayer/)
-[![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
+[![License](https://img.shields.io/github/license/MotleyAI/slayer)](https://github.com/MotleyAI/slayer/blob/main/LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
-[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/egWxMctHCA)
 
 
 # SLayer
