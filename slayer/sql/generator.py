@@ -702,8 +702,7 @@ def _is_host_grain(key) -> bool:
     return getattr(key, "locus", "target") == "host"
 
 
-# --- Transform-input shape classification, shared by the series-regime
-# time_shift selector and the consecutive_periods emitter. ---
+# --- Transform-input shape classification for the consecutive_periods emitter. ---
 
 #: Argument-less rank-family window functions (``ntile`` carries its bucket count).
 _RANK_WINDOW_FNS = {"rank": exp.Rank, "dense_rank": exp.DenseRank, "percent_rank": exp.PercentRank}
@@ -5446,60 +5445,11 @@ class SQLGenerator:
             for term in resolve_order_term(entry=entry, env=env)
         ]
 
-    def _series_shift_cte(
-        self, *, slot, chain: ChainState, render: RenderState, chain_tail: str,
-        time_alias: str, cte_name_alias: str,
-    ) -> Tuple[str, str, List[Tuple[str, str]]]:
-        """The series regime's shifted relation: the input's materialised series read
-        off the chain tail, keyed by the unshifted bucket and projected grain."""
-        planned_query = render.planned_query
-        slots_by_id = chain.slots_by_id
-        available = chain.available_alias_by_slot_id
-        grain_sids = set(self._transform_grain_slot_ids(
-            planned_query=planned_query, slots_by_id=slots_by_id,
-        ))
-        pk_aliases: List[str] = []
-        for sid in planned_query.projection:
-            dim_slot = slots_by_id.get(sid)
-            if dim_slot is None or dim_slot.phase != Phase.ROW:
-                continue
-            if sid not in grain_sids and not isinstance(dim_slot.key, TimeTruncKey):
-                continue
-            alias = available.get(sid)
-            if alias is None:
-                raise RuntimeError(
-                    f"time_shift query dimension not materialised: slot id={slot.id!r}.",
-                )
-            if alias != time_alias and alias not in pk_aliases:
-                pk_aliases.append(alias)
-        input_sid = chain.slot_id_by_key.get(slot.key.input)
-        value_alias = (
-            available.get(input_sid) if input_sid is not None else None
-        ) or chain.cte_allocator.allocate_cte(f"{slot.declared_name}__ts")
-        value_expr = render_value_key(
-            key=slot.key.input,
-            ctx=self._alias_render_ctx(
-                slot_id_by_key=chain.slot_id_by_key,
-                available_alias_by_slot_id=available,
-            ),
-        )
-        select = exp.Select().select(
-            exp.column(time_alias, quoted=True).as_(time_alias, quoted=True),
-            *[exp.column(a, quoted=True).as_(a, quoted=True) for a in pk_aliases],
-            value_expr.as_(value_alias, quoted=True),
-        ).from_(chain_tail)
-        cte_name = cte_name_from_alias(
-            prefix="shifted_", alias=cte_name_alias, allocator=chain.cte_allocator,
-            dialect=self.dialect, limit=self._dialect.max_identifier_bytes,
-        )
-        chain.ctes.append(CteEntry(name=cte_name, query=select, depends_on=[chain_tail]))
-        return cte_name, value_alias, [(a, a) for a in [time_alias, *pk_aliases]]
-
     def _shifted_producer_cte(
         self, *, slot, chain: ChainState, render: RenderState, cte_name_alias: str,
     ) -> Tuple[str, str, List[Tuple[str, str]]]:
-        """The re-aggregation regime's shifted relation: the slot's shifted producer,
-        rendered once per identity (a base producer it interns with is read as is)."""
+        """The slot's shifted relation: its shifted producer, rendered once per identity
+        (a base producer it interns with is read as is)."""
         planned_query: PlannedQuery = render.planned_query
         attach = next(
             (a for a in planned_query.regroup_attach_plans
@@ -5628,15 +5578,9 @@ class SQLGenerator:
             list(slot.public_aliases) if slot.public_aliases
             else [chain.cte_allocator.allocate_cte(slot.declared_name)]
         )
-        if slot.series:
-            shifted_cte_name, value_alias, pairs = self._series_shift_cte(
-                slot=slot, chain=chain, render=render, chain_tail=chain_tail,
-                time_alias=time_alias, cte_name_alias=slot_aliases[0],
-            )
-        else:
-            shifted_cte_name, value_alias, pairs = self._shifted_producer_cte(
-                slot=slot, chain=chain, render=render, cte_name_alias=slot_aliases[0],
-            )
+        shifted_cte_name, value_alias, pairs = self._shifted_producer_cte(
+            slot=slot, chain=chain, render=render, cte_name_alias=slot_aliases[0],
+        )
 
         # Consumer-side lookup: total even when the calendar shift is many-to-one.
         time_type = self._bucket_type(time_key)

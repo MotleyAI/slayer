@@ -30,7 +30,7 @@ from slayer.core.keys import (
     window_kwarg_of,
 )
 from slayer.core.scope import DatasetScope
-from slayer.engine.compile.shift import _series_mode, is_placeholder
+from slayer.engine.compile.shift import is_placeholder
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
     combined_kind,
@@ -72,8 +72,6 @@ class RootDisposition(BaseModel):
     #: metrics containing that root).
     consumer_public_names: Tuple[str, ...] = ()
     declared_type: Optional[DataType] = None
-    #: ``time_shift`` candidates only: shifts its materialised series.
-    series: Optional[bool] = None
 
 
 def _is_bare_own_rows_local(k: ValueKey, *, homes: AggregateHomes) -> bool:
@@ -111,8 +109,6 @@ class TransformRouting(BaseModel):
     route: bool = True
     answers: frozenset = frozenset()
     rows_are_host_cells: bool = True
-    #: A spine plan: every ``time_shift`` reads a shifted producer over the moved spine bounds (Axiom 15).
-    spine: bool = False
 
 
 class _Walker:
@@ -157,20 +153,18 @@ class _Walker:
         )
 
     def routes(self, k: ValueKey) -> bool:
-        """Whether transform ``k`` evaluates in its own domain producer."""
+        """Whether transform ``k`` evaluates in its own domain producer; a ``time_shift`` reads its shifted producer."""
         # A dimensionless plan has one cell, the unit.
         if not (self.transforms.route and self.grain and is_transform(k)) or k in self.transforms.answers:
             return False
-        if isinstance(k, TransformKey) and k.op == "time_shift" and not _series_mode(k.input, to_original={}):
+        if isinstance(k, TransformKey) and k.op == "time_shift":
             return False
         return not (self.host_cells and self._over_host_cells(k))
 
     def emit(self, root: ValueKey, phase: RootPhase, routing: Routing, *,
-             names: Tuple[str, ...] = (), declared_type: Optional[DataType] = None,
-             series: Optional[bool] = None) -> None:
+             names: Tuple[str, ...] = (), declared_type: Optional[DataType] = None) -> None:
         d = RootDisposition(root=root, phase=phase, routing=routing,
-                            consumer_public_names=names, declared_type=declared_type,
-                            series=series)
+                            consumer_public_names=names, declared_type=declared_type)
         if d not in self.out:
             self.out.append(d)
 
@@ -278,8 +272,7 @@ class _Walker:
     ) -> None:
         k = n.key
         if isinstance(k, TransformKey) and k.op == "time_shift":
-            self.emit(k, "combined", "shifted",
-                      series=False if self.transforms.spine else _series_mode(k.input, to_original={}))
+            self.emit(k, "combined", "shifted")
         kind = combined_kind(k, homes=self.homes)
         admitted = kind is not None and self.classes.combined_admits(n, position=position, root=root)
         if self.local_broadcasts(k):

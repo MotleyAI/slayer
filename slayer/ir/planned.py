@@ -134,9 +134,6 @@ class ValueSlot(BaseModel):
     #: Whether this value must be projected as a column of its own relation for
     #: a later stage / consumer (D4); a mask-only value renders as a predicate.
     needs_field: bool = False
-    #: For a transform slot, whether it shifts its materialised series (True) or
-    #: re-aggregates (False); None for non-transform values (D6).
-    series: Optional[bool] = None
     label: Optional[str] = None
     type: DataType
     element_type: Optional[DataType] = None
@@ -625,7 +622,7 @@ class PlannedQuery(BaseModel):
 
     @model_validator(mode="after")
     def _shifted_attaches_target_shift_slots(self) -> "PlannedQuery":
-        """Each non-series ``time_shift`` slot of this plan has exactly one shifted attach."""
+        """Each ``time_shift`` slot of this plan has exactly one shifted attach."""
         by_id = {s.id: s for s in _own_slots(self)}
         seen: set = set()
         for attach in self.regroup_attach_plans:
@@ -634,7 +631,7 @@ class PlannedQuery(BaseModel):
         orphans = sorted(
             s.id for s in by_id.values()
             if isinstance(s.key, TransformKey) and s.key.op == "time_shift"
-            and s.series is False and s.id not in seen
+            and s.id not in seen
         )
         if orphans:
             raise ValueError(f"time_shift slot(s) {orphans} have no shifted attach")
@@ -711,8 +708,6 @@ def _check_shifted_attach(
         raise ValueError(
             f"shifted attach targets {attach.shift_of!r}, not a time_shift slot",
         )
-    if slot.series:
-        raise ValueError(f"shifted attach targets the series-regime slot {slot.id!r}")
     if slot.id in seen:
         raise ValueError(f"duplicate shifted attach for slot {slot.id!r}")
     if attach.substitutions:

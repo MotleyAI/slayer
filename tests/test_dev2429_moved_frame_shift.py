@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import date, datetime
 from typing import Any, Optional
 
 import pytest
 
+from slayer.core.enums import TimeGranularity
+from slayer.core.keys import ArithmeticKey, FieldKey, LiteralKey, TimeTruncKey
+from slayer.engine.compile.shift import moved_frame
 from slayer.engine.plan import plan_query
+from slayer.ir.bound import bound_filter_from_key
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, regroup_producer_identity
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -218,7 +223,7 @@ SPINE_SHAPES: dict[str, tuple[str, frozenset[str]]] = {
     "unaligned": (f"time_shift({AMOUNT}, -1, 'day')", frozenset()),
     "windowed": ("time_shift(sum(orders.amount, window='60d'), -1)", frozenset({"2024-04"})),
     "hidden": (f"{AMOUNT} - {SHIFT_RW}", frozenset()),
-    "under_transform": (f"cumsum({SHIFT_RW})", frozenset()),
+    "under_transform": (f"cumsum({SHIFT_RW})", frozenset({"2024-04", "2024-05"})),
 }
 
 
@@ -263,7 +268,7 @@ class TestProducerIdentity:
         assert len({regroup_producer_identity(a) for a in attaches}) == 2
 
     def test_equal_moved_frames_intern_to_one_producer(self) -> None:
-        attaches = _shifted(_plan(SHIFT_RW, f"change({REWRITE})"))
+        attaches = _shifted(_plan(SHIFT_RW, f"time_shift({REWRITE}, -1, 'month')"))
         assert len(attaches) == 2
         assert len({regroup_producer_identity(a) for a in attaches}) == 1
 
@@ -271,3 +276,49 @@ class TestProducerIdentity:
         attaches = _shifted(_plan(SHIFT_RW, f"time_shift({REWRITE}, -2)", date_range=None))
         assert len(attaches) == 2
         assert len({regroup_producer_identity(a) for a in attaches}) == 1
+
+
+_AT = FieldKey(path=(), leaf="ordered_at")
+
+
+def _moved(op: str, value: date, *, bucket: TimeGranularity, date_axis: bool) -> list[tuple[str, object]]:
+    """``(op, literal)`` of each frame bound ``ordered_at <op> value`` moves to under a one-``bucket`` back shift."""
+    frame = moved_frame(
+        filters=[bound_filter_from_key(ArithmeticKey(op=op, operands=(_AT, LiteralKey(value=value))))],
+        n_date_range=0, axis=TimeTruncKey(source=_AT, granularity=bucket), date_axis=date_axis, periods=-1,
+        unit=bucket,
+    )
+    assert frame.n_frame == len(frame.filters)
+    out = []
+    for bf in frame.filters:
+        assert isinstance(bf.value_key, ArithmeticKey)
+        literal = bf.value_key.operands[1]
+        assert isinstance(literal, LiteralKey)
+        out.append((bf.value_key.op, literal.value))
+    return out
+
+
+class TestStrictBoundsStepByTheAxisType:
+    def test_a_strict_lower_date_on_a_datetime_axis_keeps_its_first_bucket(self) -> None:
+        assert _moved(">", date(2024, 1, 1), bucket=TimeGranularity.DAY, date_axis=False) == [
+            (">=", date(2023, 12, 31))]
+
+    def test_an_inclusive_upper_date_on_a_datetime_axis_ends_at_midnight(self) -> None:
+        assert _moved("<=", date(2024, 1, 1), bucket=TimeGranularity.HOUR, date_axis=False) == [
+            ("<", date(2024, 1, 1))]
+
+    def test_a_strict_lower_date_on_a_date_axis_starts_the_next_day(self) -> None:
+        assert _moved(">", date(2024, 1, 31), bucket=TimeGranularity.DAY, date_axis=True) == [
+            (">=", date(2024, 1, 31))]
+
+    def test_an_inclusive_lower_instant_on_a_date_axis_starts_the_next_day(self) -> None:
+        assert _moved(">=", datetime(2024, 1, 1, 12), bucket=TimeGranularity.DAY, date_axis=True) == [
+            (">=", date(2024, 1, 1))]
+
+    def test_an_inclusive_upper_instant_on_a_date_axis_ends_with_its_day(self) -> None:
+        assert _moved("<=", datetime(2024, 1, 1, 12), bucket=TimeGranularity.DAY, date_axis=True) == [
+            ("<", date(2024, 1, 1))]
+
+    def test_a_datetime_bound_keeps_its_type(self) -> None:
+        assert _moved(">=", datetime(2024, 3, 5, 7), bucket=TimeGranularity.HOUR, date_axis=False) == [
+            (">=", datetime(2024, 3, 5, 6))]

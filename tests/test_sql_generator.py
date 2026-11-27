@@ -1796,7 +1796,7 @@ class TestFields:
         assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
 
     async def test_nested_self_join_generates(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
-        """change(time_shift(x)) nests: the outer shift reads the inner's series."""
+        """change(time_shift(x)) nests: the outer shift's producer evaluates the inner shift in its moved frame."""
         orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
@@ -1804,7 +1804,7 @@ class TestFields:
             metrics=[QueryMetric(metric="sum(orders.revenue)"), QueryMetric(metric="change(time_shift(sum(orders.revenue), -1, 'year'))", alias="x")],
         )
         sql = await _generate(generator, query, orders_dataset)
-        assert len(set(_re.findall(r"shifted_\w+", sql))) == 2, sql
+        assert len(set(_re.findall(r"shifted_\w+", sql))) == 3, sql
 
     async def test_post_filter_on_computed_column(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Filters on computed columns should be applied as post-filter wrapper."""
@@ -2261,7 +2261,7 @@ class TestNestedFields:
         assert "delta" in sql.lower()
 
     async def test_change_of_cumsum_generates(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
-        """change(cumsum(x)) shifts the cumsum series; the window renders once."""
+        """change(cumsum(x)): the window renders in the host and in the shifted producer."""
         orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
@@ -2273,7 +2273,7 @@ class TestNestedFields:
         )
         sql = await _generate(generator, query, orders_dataset)
         assert "shifted_" in sql
-        assert len(_re.findall(r"OVER\s*\(", sql)) == 1, sql
+        assert len(_re.findall(r"OVER\s*\(", sql)) == 2, sql
 
     async def test_mixed_arithmetic_with_transform(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """cumsum(revenue) / count should work."""

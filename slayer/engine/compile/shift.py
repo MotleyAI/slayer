@@ -1,70 +1,146 @@
-"""The time_shift regime classifier and per-leaf shifted-evaluation rule."""
+"""The shifted evaluation of ``time_shift``: its moved frame and per-leaf rule."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from calendar import monthrange
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional, Sequence, Tuple
 
+from pydantic import BaseModel, ConfigDict
+
+from slayer.core.enums import UNIT_MONTHS
+from slayer.core.granularity import Granularity, granularity_parts
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     FieldKey,
-    FieldSqlKey,
+    LiteralKey,
     REGROUP_LEAF_PREFIX,
-    CastKey,
-    ListSetKey,
-    ScalarCallKey,
     TimeTruncKey,
     ValueKey,
     constituent_grain,
-    is_boolean_shaped,
     is_kernel_requiring,
     is_transform,
-    source_anchor_path,
+    split_top_level_and,
 )
+from slayer.core.time_bounds import is_frame_bound
+from slayer.core.time_points import add_units, date_bound, floor_to, parse_temporal_value
+from slayer.engine.compile.regroup import substitute_in_bound_filter
+from slayer.ir.bound import BoundFilter, bound_filter_from_key
 
-__all__ = ["carried_placeholders", "is_placeholder", "_series_mode"]
+__all__ = ["MovedFrame", "carried_placeholders", "is_placeholder", "moved_frame"]
+
+_LOWER_OPS = frozenset({">", ">="})
+_MIRROR = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}
 
 
 def is_placeholder(key: ValueKey) -> bool:
     return isinstance(key, FieldKey) and key.leaf.startswith(REGROUP_LEAF_PREFIX)
 
 
-def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> Tuple[bool, bool]:
-    """(has_transform, has_cross_model_agg) over a composite; a placeholder
-    resolves to its original aggregate."""
-    has_transform = False
-    has_cross_dataset = False
-    if is_transform(node):
-        has_transform = True
-    elif isinstance(node, AggregateKey):
-        if source_anchor_path(node.source):
-            has_cross_dataset = True
-    elif is_placeholder(node):
-        original = to_original.get(node)
-        if original is None:
-            has_cross_dataset = True  # unknown placeholder — fail closed
+class MovedFrame(BaseModel):
+    """A shifted evaluation's filters: the frame bounds (moved axis bounds, then the kept date ranges) first."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    filters: List[BoundFilter]
+    n_frame: int
+
+
+def _instant(value: object) -> Tuple[datetime, bool]:
+    """``(instant, is_date)`` of a frame-bound literal."""
+    if isinstance(value, str):
+        parsed = parse_temporal_value(value)
+        if parsed is None:
+            raise ValueError(f"time_shift cannot move the frame bound {value!r}: not a time point")
+        value = parsed
+    if isinstance(value, datetime):
+        return value, False
+    assert isinstance(value, date)
+    return datetime(value.year, value.month, value.day), True
+
+
+def _side(conjunct: ArithmeticKey, field: ValueKey, *, date_axis: bool) -> Tuple[bool, datetime, bool]:
+    """``(is_lower, instant, is_date)``: an inclusive lower or exclusive upper instant, a DATE axis's in whole days."""
+    lhs, rhs = conjunct.operands
+    op = conjunct.op if lhs == field else _MIRROR[conjunct.op]
+    literal = rhs if lhs == field else lhs
+    assert isinstance(literal, LiteralKey)
+    value, is_date = _instant(literal.value)
+    if date_axis:
+        canonical = date_bound(op, value)
+        if canonical is None:
+            raise ValueError(f"time_shift cannot move the frame bound {literal.value!r}: past the last date")
+        op, day = canonical
+        value, is_date = datetime(day.year, day.month, day.day), True
+    elif op in (">", "<="):
+        value += timedelta(microseconds=1)
+    return op in _LOWER_OPS, value, is_date
+
+
+def _offset(value: datetime, unit: Granularity, n: int) -> datetime:
+    """``value`` plus ``n`` ``unit`` steps, a month step clamped to the target month's last day."""
+    base, multiple, _ = granularity_parts(unit)
+    if base not in UNIT_MONTHS:
+        return add_units(value, base, n * multiple)
+    start = add_units(value.replace(day=1), base, n * multiple)
+    return start.replace(day=min(value.day, monthrange(start.year, start.month)[1]))
+
+
+def _literal(value: datetime, *, is_date: bool) -> LiteralKey:
+    midnight = value == datetime(value.year, value.month, value.day)
+    return LiteralKey(value=value.date() if is_date and midnight else value)
+
+
+def _without_axis_bounds(
+    bf: BoundFilter, *, field: ValueKey, date_axis: bool, lowers: List[Tuple[datetime, bool]],
+    uppers: List[Tuple[datetime, bool]],
+) -> Optional[BoundFilter]:
+    """``bf`` minus its frame bounds on ``field`` (collected into ``lowers`` / ``uppers``); None when nothing remains."""
+    conjuncts = split_top_level_and(bf.value_key)
+    residual: List[ValueKey] = []
+    for conjunct in conjuncts:
+        if is_frame_bound(key=conjunct, time_fields={field}):
+            assert isinstance(conjunct, ArithmeticKey)
+            is_lower, value, is_date = _side(conjunct, field, date_axis=date_axis)
+            (lowers if is_lower else uppers).append((value, is_date))
         else:
-            return _series_flags(original, to_original=to_original)
-    elif not isinstance(node, (FieldKey, FieldSqlKey, TimeTruncKey)):
-        for child in node.children():
-            t, x = _series_flags(child, to_original=to_original)
-            has_transform = has_transform or t
-            has_cross_dataset = has_cross_dataset or x
-    return has_transform, has_cross_dataset
+            residual.append(conjunct)
+    if not residual:
+        return None
+    if len(residual) == len(conjuncts):
+        return bf
+    rest = residual[0] if len(residual) == 1 else ArithmeticKey(op="and", operands=tuple(residual))
+    return substitute_in_bound_filter(bf, {bf.value_key: rest})
 
 
-def _series_mode(inner: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> bool:
-    """Whether a transform shifts its materialised series (True) or re-aggregates
-    (False) — a nested transform, a predicate root, or a composite carrying a
-    transform or cross-dataset aggregate leaf."""
-    if is_transform(inner) or is_boolean_shaped(inner):
-        return True
-    if is_placeholder(inner) and is_transform(to_original.get(inner)):
-        return True
-    if isinstance(inner, (ArithmeticKey, ScalarCallKey, CastKey, ListSetKey)):
-        has_transform, has_cross_dataset = _series_flags(inner, to_original=to_original)
-        return has_transform or has_cross_dataset
-    return False
+def moved_frame(
+    *, filters: Sequence[BoundFilter], n_date_range: int, axis: TimeTruncKey, date_axis: bool, periods: int,
+    unit: Granularity,
+) -> MovedFrame:
+    """The frame bounds on ``axis``'s column (a DATE column iff ``date_axis``) moved to whole source buckets of the
+    visible buckets; every other filter is kept, date-range filters still leading."""
+    field, bucket = axis.source, axis.granularity
+    lowers: List[Tuple[datetime, bool]] = []
+    uppers: List[Tuple[datetime, bool]] = []
+    kept: List[BoundFilter] = []
+    n_kept_range = 0
+    for i, bf in enumerate(filters):
+        rest = _without_axis_bounds(bf, field=field, date_axis=date_axis, lowers=lowers, uppers=uppers)
+        if rest is not None:
+            kept.append(rest)
+            n_kept_range += i < n_date_range
+    moved: List[BoundFilter] = []
+    if lowers:
+        value, is_date = max(lowers)
+        start = floor_to(_offset(floor_to(value, bucket), unit, periods), bucket)
+        moved.append(bound_filter_from_key(ArithmeticKey(op=">=", operands=(field, _literal(start, is_date=is_date)))))
+    if uppers:
+        value, is_date = min(uppers)
+        last = floor_to(value - timedelta(microseconds=1), bucket)
+        end = add_units(floor_to(_offset(last, unit, periods), bucket), bucket, 1)
+        moved.append(bound_filter_from_key(ArithmeticKey(op="<", operands=(field, _literal(end, is_date=is_date)))))
+    return MovedFrame(filters=[*moved, *kept], n_frame=len(moved) + n_kept_range)
 
 
 def _re_evaluated(

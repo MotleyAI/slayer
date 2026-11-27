@@ -29,7 +29,6 @@ from slayer.engine.elaborate_env import (
     check_spine_plain_use,
     check_spine_raw_rows,
 )
-from slayer.ir.bound import BoundFilter, bound_filter_from_key
 from slayer.ir.planned import SpineFactor
 from slayer.ir.prebound import PreboundQuery, walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -243,23 +242,3 @@ def check_axis_rebucket(
         zone=bundle.time_zone, bucketed_zones=((name, zone),) if zoned and zone is not None else (),
     )
 
-
-def shifted_spine_bounds(
-    *, prebound: PreboundQuery, spine: Optional[FieldKey], periods: int, unit: Granularity,
-) -> List[BoundFilter]:
-    """The host's spine bounds moved by ``periods`` ``unit`` steps: the range a shifted
-    producer reads its buckets from."""
-    if spine is None:
-        return []
-    out: List[BoundFilter] = []
-    for bf in prebound.bound_filters:
-        for conjunct in split_top_level_and(bf.value_key):
-            if not is_frame_bound(key=conjunct, time_fields={spine}):
-                continue
-            assert isinstance(conjunct, ArithmeticKey)
-            kind, value = _bound(conjunct, spine)
-            steps = periods if kind == "lower" else periods + 1
-            moved = LiteralKey(value=add_units(floor_to(value, unit), unit, steps))
-            key = ArithmeticKey(op=">=" if kind == "lower" else "<", operands=(spine, moved))
-            out.append(bound_filter_from_key(key))
-    return out
