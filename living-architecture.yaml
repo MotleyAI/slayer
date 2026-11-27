@@ -1,5 +1,7 @@
 # Config for the la-* tools (github.com/MotleyAI/living-architecture).
-format: 0.4.0
+format: 0.14.0
+exempt:
+  - slayer/mcp/server.py
 architecture: true
 reviewers:
   sonar:
@@ -10,5 +12,3 @@ commands:
   lint: poetry run ruff check slayer/ tests/
 conventions:
   text_ratio_max: 0.15
-  exempt:
-    - slayer/mcp/server.py
