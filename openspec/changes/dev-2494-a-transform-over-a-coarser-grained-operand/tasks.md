@@ -1,14 +1,14 @@
 ## 1. Failing tests (pr-tests)
 
-- [ ] 1.1 New `tests/test_transform_domain_in_aggregation.py` executing every scenario of the `queries/transforms` delta on SQLite and DuckDB with the hand-computed values given there. City seed: `city_engine` from `tests/test_transform_operand_grain.py`; Appendix B: `seed_engine` / `run` from `tests/_dev2212_fixtures.py`. Verify the source, parameter, filter and order scenarios fail on HEAD for the reason in design.md Context, and the "already evaluated over their own cells" guards pass already. Planning probe values on `main` `3bc68c4c3`:
+- [x] 1.1 New `tests/test_transform_domain_in_aggregation.py` executing every scenario of the `queries/transforms` delta on SQLite and DuckDB with the hand-computed values given there. City seed: `city_engine` from `tests/test_transform_operand_grain.py`; Appendix B: `seed_engine` / `run` from `tests/_dev2212_fixtures.py`. Verify the source, parameter, filter and order scenarios fail on HEAD for the reason in design.md Context, and the "already evaluated over their own cells" guards pass already. Planning probe values on `main` `3bc68c4c3`:
   - issue shapes: North 3 / South 1, North 1 / South 3, North 3 / South 1;
   - finer sibling North 73;
   - `sum(rank)` North 3;
   - `max(percent_rank)` South 0.667;
   - `weight=rank(...)` with no dimensions 53.125;
   - guards already right: mixed source 70 / 140 / 50 / 60; cumsum with sibling 40, 105 / 70, 110; `time_shift` guards February 40 & 3 (North), 70 & 1 (South), January NULL; Appendix B EAST 1, NORTH 2.
-- [ ] 1.2 Parameter coverage (design decision 8). Each issue shape and `percent_rank` as `weight=` of `weighted_avg(sum(orders.amount, partition_by=[orders.region, orders.city]), weight=T)` with no dimensions, the windowed shape grouped by month over `sum(orders.amount, partition_by=[orders.region, orders.city, orders.ordered_at])`. Values: 320/6, 325/6, 55, January 25 / February 34. Verify they fail on HEAD where the transform's cells differ from the carrier's rows.
-- [ ] 1.3 Unit test of the plan-time invariant (design decision 5): a plan evaluating a transform over rows at a grain other than its operand grain raises at plan time; a plan whose grain equals the operand grain only after pruning a functionally determined member (e.g. a key determined over a to-one hop) is accepted. Verify it fails on HEAD (no invariant yet).
+- [x] 1.2 Parameter coverage (design decision 8). Each issue shape and `percent_rank` as `weight=` of `weighted_avg(sum(orders.amount, partition_by=[orders.region, orders.city]), weight=T)` with no dimensions, the windowed shape grouped by month over `sum(orders.amount, partition_by=[orders.region, orders.city, orders.ordered_at])`. Values: 320/6, 325/6, 55, January 25 / February 34. Verify they fail on HEAD where the transform's cells differ from the carrier's rows.
+- [x] 1.3 Unit test of the plan-time invariant (design decision 5): a plan evaluating a transform over rows at a grain other than its operand grain raises at plan time; a plan whose grain equals the operand grain only after pruning a functionally determined member (e.g. a key determined over a to-one hop) is accepted. Verify it fails on HEAD (no invariant yet).
 - [ ] 1.4 If any existing test pins the old carrier-row values, ASK the user's approval to align it (name each file and change) before editing — none expected: the planning probe ran the decision 1–3 rule over 183 transform / re-aggregation / golden files green.
 
 ## 2. One routing rule for transforms
