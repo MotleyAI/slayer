@@ -1,11 +1,8 @@
 """Golden SQL for a trailing ``window=`` on every aggregation (DEV-1915), over
 the seven harness dialects.
 
-On the current tree every case records the "only supported for sum and avg"
-raise, so the two invariant tests below are red; after the change the baseline
-is regenerated (``SLAYER_UPDATE_GOLDEN=1``) and only the real dialect gaps —
-``median``/``percentile`` on MySQL and T-SQL — record raises (D5: windowed gaps
-equal the plain gaps; corr/covar and BigQuery median render fine).
+No case records a raise: windowed gaps equal the plain gaps (D5), and every dialect renders
+``median``/``percentile``.
 """
 
 from __future__ import annotations
@@ -20,9 +17,6 @@ from tests._golden_harness import bind_golden_tests, record_raise, render_value
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1915_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-#: The only real render-time dialect gaps (probed on the plain forms; D5).
-AGG_UNSUPPORTED = {f"{c}::{d}" for c in ("median", "percentile_p09")
-                   for d in ("mysql", "tsql")}
 #: Cases whose emitted SQL must rank interval rows, never a plain aggregate.
 FIRST_LAST = {"first", "last", "last_explicit_time", "cross_model_last"}
 
@@ -99,13 +93,6 @@ def test_first_last_cases_rank_and_never_raise(baseline) -> None:
                 f"{key} must emit ranked SQL, not a raise: {render_value(value)}")
 
 
-def test_only_median_percentile_gaps_record_raises(baseline) -> None:
+def test_no_case_records_a_raise(baseline) -> None:
     for key, value in baseline.items():
-        if key in AGG_UNSUPPORTED:
-            assert isinstance(value, dict), (
-                f"{key} should record the plain dialect gap: {render_value(value)}")
-            assert value.get("error") == "NotImplementedError", (
-                f"{key} should record the plain dialect gap: {render_value(value)}")
-        else:
-            assert not isinstance(value, dict), (
-                f"{key} unexpectedly records a raise: {render_value(value)}")
+        assert not isinstance(value, dict), f"{key} unexpectedly records a raise: {render_value(value)}"

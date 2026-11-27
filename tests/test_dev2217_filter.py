@@ -75,6 +75,7 @@ ADMITTED = {
 
 #: Every scalar of the library → (a filter calling it, the total revenue native keeps).
 SCALARS: dict[str, tuple[str, int]] = {
+    "current_time": ("current_time() >= TIME '00:00:00'", 650),
     "nullif": ("nullif(orders.status, 'cancelled') IS NULL", 500),
     "coalesce": ("coalesce(orders.status, 'none') = 'none'", 300),
     "ifnull": ("ifnull(orders.status, 'none') = 'none'", 300),
@@ -135,6 +136,11 @@ SCALARS: dict[str, tuple[str, int]] = {
     "regexp_like": ("regexp_like(orders.status, '^can')", 200),
     "regexp_extract": ("regexp_extract(orders.status, '^c[a-z]') = 'co'", 150),
     "regexp_replace": ("regexp_replace(orders.status, 'e$', '') = 'complet'", 150),
+    "regexp_count": ("regexp_count(orders.status, 'l') = 2", 200),
+    "zeroifnull": ("zeroifnull(orders.amount) > 150", 500),
+    "nullifzero": ("nullifzero(orders.amount) > 150", 500),
+    "radians": ("radians(orders.amount) > 3", 500),
+    "degrees": ("degrees(orders.amount / 100.0) > 150", 300),
     "json_value": ("json_value(orders.payload, '$.k') = 'a'", 150),
     "like": ("like(orders.status, 'comp%')", 150),
     "ilike": ("ilike(orders.status, 'COMP%')", 150),

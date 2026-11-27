@@ -17,54 +17,74 @@ site_url = "https://docs.motley.ai/slayer/"
 
 nav = [
   { "Home" = "index.md" },
-  { "Getting Started" = [
+  { "Get started" = [
     "getting-started/index.md",
     { "MCP (AI Agents)" = "getting-started/mcp.md" },
     { "CLI (Terminal)" = "getting-started/cli.md" },
     { "REST API (Any Language)" = "getting-started/rest-api.md" },
     { "Python SDK" = "getting-started/python.md" },
   ]},
-  { "Upgrading to 2.0" = "upgrading/2.0.md" },
-  { "Concepts" = [
-    { "Terminology" = "concepts/terminology.md" },
+  { "Connect your data" = [
+    { "Datasources" = "configuration/datasources.md" },
+    { "Database Support" = "database-support.md" },
+    { "Storage Backends" = "configuration/storage.md" },
+    { "SQL Clients" = "configuration/sql-clients.md" },
+    { "Flight SQL" = "interfaces/flight-sql.md" },
+    { "SQL API" = "interfaces/pg-facade.md" },
+  ]},
+  { "Model your data" = [
     { "Datasets" = "concepts/datasets.md" },
     { "Semantic Models" = "concepts/semantic-models.md" },
+    { "Ontologies and Mappings" = "concepts/ontologies.md" },
+    { "Auto-Ingestion" = "concepts/ingestion.md" },
+    { "Schema Drift" = [
+      "concepts/schema-drift.md",
+      { "Worked example" = "examples/schema-drift.md" },
+    ]},
+    { "dbt" = [
+      { "SLayer vs dbt" = "dbt/slayer_vs_dbt.md" },
+      { "Importing dbt definitions" = "dbt/dbt_import.md" },
+      { "Tutorial" = [
+        "examples/11_dbt_metricflow/dbt_metricflow.md",
+        { "Notebook" = "examples/11_dbt_metricflow/dbt_metricflow_nb.ipynb" },
+      ]},
+    ]},
+    { "Cube" = [
+      { "Importing Cube definitions" = "cube/cube_import.md" },
+      { "Tutorial" = [
+        "examples/17_cube_import/cube_import.md",
+        { "Notebook" = "examples/17_cube_import/cube_import_nb.ipynb" },
+      ]},
+    ]},
+    { "OSI" = [
+      { "Importing Ossie documents" = "osi/osi_import.md" },
+      { "Exporting to OSI" = "osi/osi_export.md" },
+      { "Tutorial" = [
+        "examples/13_osi_import/osi_import.md",
+        { "Notebook (library)" = "examples/13_osi_import/osi_import_nb.ipynb" },
+        { "Notebook (agent: CLI + MCP)" = "examples/13_osi_import/osi_import_agent_nb.ipynb" },
+      ]},
+    ]},
+  ]},
+  { "Query your data" = [
     { "Queries" = "concepts/queries.md" },
     { "Expressions" = "concepts/expressions.md" },
     { "Time" = "concepts/time.md" },
-    { "References (SQL vs DSL)" = "concepts/references.md" },
-    { "Auto-Ingestion" = "concepts/ingestion.md" },
-    { "Schema Drift" = "concepts/schema-drift.md" },
-    { "Query Cache" = "concepts/query-cache.md" },
+    { "Filters" = "concepts/filters.md" },
+    { "Cross-Dataset Queries" = "concepts/cross-dataset-queries.md" },
+    { "Saved & Multistage Queries" = "concepts/saved-and-multistage-queries.md" },
+    { "SQL vs DSL" = "concepts/references.md" },
+  ]},
+  { "Agent context" = [
     { "Memories" = "concepts/memories.md" },
     { "Search" = "concepts/search.md" },
+  ]},
+  { "Operate" = [
     { "Row-Level Security" = "concepts/row-level-security.md" },
-  ]},
-  { "Reference" = [
-    { "MCP Server" = "reference/mcp.md" },
-    { "REST API" = "reference/rest-api.md" },
-    { "Python Client" = "reference/python-client.md" },
-    { "CLI" = "reference/cli.md" },
-    { "Usage reporting" = "reference/usage-reporting.md" },
+    { "Query Cache" = "concepts/query-cache.md" },
     { "OpenTelemetry" = "reference/opentelemetry.md" },
-    { "Database Support" = "database-support.md" },
-  ]},
-  { "Wire Protocols (BI Tools)" = [
-    { "Flight SQL" = "interfaces/flight-sql.md" },
-    { "SQL API" = "interfaces/pg-facade.md" },
-    { "Ossie Layer 3" = "interfaces/ossie-layer-3.md" },
-    { "Ossie compliance" = "interfaces/ossie-compliance.md" },
-  ]},
-  { "dbt" = [
-    { "SLayer vs dbt" = "dbt/slayer_vs_dbt.md" },
-    { "Importing dbt definitions" = "dbt/dbt_import.md" },
-  ]},
-  { "Cube" = [
-    { "Importing Cube definitions" = "cube/cube_import.md" },
-  ]},
-  { "OSI" = [
-    { "Importing Ossie documents" = "osi/osi_import.md" },
-    { "Exporting to OSI" = "osi/osi_export.md" },
+    { "Usage Reporting" = "reference/usage-reporting.md" },
+    { "Upgrading to 2.0" = "upgrading/2.0.md" },
   ]},
   { "Tutorials" = [
     { "Make it dynamic" = "examples/01_dynamic/dynamic.md" },
@@ -104,17 +124,8 @@ nav = [
     { "Row-Level Security" = [
       { "Notebook" = "examples/10_row_level_security/row_level_security_nb.ipynb" },
     ]},
-    { "dbt MetricFlow Import" = [
-      "examples/11_dbt_metricflow/dbt_metricflow.md",
-      { "Notebook" = "examples/11_dbt_metricflow/dbt_metricflow_nb.ipynb" },
-    ]},
     { "Query Cache" = [
       { "Notebook" = "examples/12_query_cache/query_cache_nb.ipynb" },
-    ]},
-    { "OSI Import" = [
-      "examples/13_osi_import/osi_import.md",
-      { "Notebook (library)" = "examples/13_osi_import/osi_import_nb.ipynb" },
-      { "Notebook (agent: CLI + MCP)" = "examples/13_osi_import/osi_import_agent_nb.ipynb" },
     ]},
     { "Variable Substitution" = [
       "examples/14_variable_substitution/variable_substitution.md",
@@ -129,18 +140,17 @@ nav = [
       "examples/16_list_fields/list_fields.md",
       { "Notebook" = "examples/16_list_fields/list_fields_nb.ipynb" },
     ]},
-    { "Cube Import" = [
-      "examples/17_cube_import/cube_import.md",
-      { "Notebook" = "examples/17_cube_import/cube_import_nb.ipynb" },
-    ]},
-    { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},
-  { "Configuration" = [
-    { "Datasources" = "configuration/datasources.md" },
-    { "Storage Backends" = "configuration/storage.md" },
-    { "SQL Clients" = "configuration/sql-clients.md" },
+  { "Reference" = [
+    { "MCP Server" = "reference/mcp.md" },
+    { "REST API" = "reference/rest-api.md" },
+    { "Python Client" = "reference/python-client.md" },
+    { "CLI" = "reference/cli.md" },
+    { "Glossary" = "concepts/terminology.md" },
+    { "Ossie Layer 3" = "interfaces/ossie-layer-3.md" },
+    { "Ossie compliance" = "interfaces/ossie-compliance.md" },
   ]},
-  { "Development" = "development.md" },
+  { "Contributing" = "development.md" },
 ]
 
 # Old URLs of pages moved off the 1.x vocabulary.

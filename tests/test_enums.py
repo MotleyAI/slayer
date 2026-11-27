@@ -47,7 +47,7 @@ class TestTypeKindValuesMatchSqlglot:
 
     @pytest.mark.parametrize(
         "name",
-        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN", "ARRAY"],
+        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "TIME", "UNKNOWN", "ARRAY"],
     )
     def test_value_equals_sqlglot_name(self, name: str) -> None:
         assert getattr(TypeKind, name).value == name
@@ -63,7 +63,7 @@ class TestDataTypeIsOpaque:
 
     @pytest.mark.parametrize(
         "dt",
-        [m for m in DataType if m not in (DataType.OPAQUE, DataType.TIME)],
+        [m for m in DataType if m is not DataType.OPAQUE],
         ids=lambda m: m.name,
     )
     def test_every_other_member_is_not_opaque(self, dt: DataType) -> None:
@@ -85,10 +85,10 @@ class TestDefaultAggregationsByType:
 
     def test_text_set_unchanged(self) -> None:
         # Mirror of the old STRING set, plus count_distinct_approx
-        # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE).
+        # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE) and percentile_disc.
         assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.STRING] == frozenset({
             "count", "count_distinct", "count_distinct_approx",
-            "first", "last", "min", "max", "collect",
+            "first", "last", "min", "max", "collect", "percentile_disc",
         })
 
     def test_no_pseudo_type_keys(self) -> None:
@@ -96,4 +96,4 @@ class TestDefaultAggregationsByType:
         for key in DEFAULT_AGGREGATIONS_BY_TYPE.keys():
             assert isinstance(key, DataType)
             assert key.name in {
-                "STRING", "INTEGER", "DECIMAL", "FLOAT", "BOOLEAN", "DATE", "DATETIME", "DATETIME_TZ", "ARRAY"}
+                "STRING", "INTEGER", "DECIMAL", "FLOAT", "BOOLEAN", "DATE", "TIME", "DATETIME", "DATETIME_TZ", "ARRAY"}

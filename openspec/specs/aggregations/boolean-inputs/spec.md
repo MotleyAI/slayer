@@ -77,8 +77,8 @@ non-aggregate position (dimension, row filter).
 #### Scenario: Emitted SQL on every dialect
 - **WHEN** SQL is generated for `sum(flag)`, `avg(flag)`, `min(flag)` and `max(flag)` on each
   supported dialect
-- **THEN** each aggregate takes the integer form of `flag` as its input (T-SQL's `avg` reads it as a
-  float, since its integer `AVG` truncates), `min` / `max` convert
+- **THEN** each aggregate takes the integer form of `flag` as its input (T-SQL's and MySQL's `avg`
+  read it as a float, since their integer `AVG` truncates or keeps only four decimals), `min` / `max` convert
   the aggregate back to the dialect's boolean type, and no aggregate receives the raw boolean
 
 #### Scenario: Boolean weight

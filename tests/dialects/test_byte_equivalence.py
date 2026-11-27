@@ -18,7 +18,6 @@ caches.
 
 from __future__ import annotations
 
-import asyncio
 import re
 
 import pytest
@@ -243,7 +242,7 @@ async def test_byte_equivalence_date_trunc_month(
 
 # ---------------------------------------------------------------------------
 # Median — sqlite/duckdb/clickhouse all use sqlglot transpilation of exp.Median;
-# postgres uses PERCENTILE_CONT(0.5) WITHIN GROUP; MySQL/T-SQL raise.
+# postgres uses PERCENTILE_CONT(0.5) WITHIN GROUP; MySQL/T-SQL read a window subquery.
 # ---------------------------------------------------------------------------
 
 
@@ -297,12 +296,87 @@ _MEDIAN_QUERY = SlayerQuery(
             "clickhouse",
             'SELECT\n'
             '  orders.status AS "orders.status",\n'
-            '  CAST(quantile(0.5)(orders.amount) AS Nullable(Float64)) AS "orders.revenue_median"\n'
+            '  CAST(CASE\n'
+            '    WHEN COUNT(orders.amount) = 0\n'
+            '    THEN NULL\n'
+            '    ELSE quantileExactInclusive(0.5)(orders.amount)\n'
+            '  END AS Nullable(Float64)) AS "orders.revenue_median"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
             '  orders.status\n'
             'ORDER BY\n'
             '  orders.status ASC',
+        ),
+        (
+            "mysql",
+            'SELECT\n'
+            '  __slayer_os.__slayer_o0 AS `orders.status`,\n'
+            '  CAST(MAX(\n'
+            '    CASE\n'
+            '      WHEN __slayer_os.__slayer_o1 = FLOOR(1 + 0.5 * (\n'
+            '        __slayer_os.__slayer_o2 - 1\n'
+            '      ))\n'
+            '      AND NOT __slayer_os.__slayer_o3 IS NULL\n'
+            '      THEN __slayer_os.__slayer_o3\n'
+            '    END\n'
+            '  ) + (\n'
+            '    1 + 0.5 * (\n'
+            '      MAX(__slayer_os.__slayer_o2) - 1\n'
+            '    ) - FLOOR(1 + 0.5 * (\n'
+            '      MAX(__slayer_os.__slayer_o2) - 1\n'
+            '    ))\n'
+            '  ) * (\n'
+            '    MAX(\n'
+            '      CASE\n'
+            '        WHEN __slayer_os.__slayer_o1 = CEIL(1 + 0.5 * (\n'
+            '          __slayer_os.__slayer_o2 - 1\n'
+            '        ))\n'
+            '        AND NOT __slayer_os.__slayer_o3 IS NULL\n'
+            '        THEN __slayer_os.__slayer_o3\n'
+            '      END\n'
+            '    ) - MAX(\n'
+            '      CASE\n'
+            '        WHEN __slayer_os.__slayer_o1 = FLOOR(1 + 0.5 * (\n'
+            '          __slayer_os.__slayer_o2 - 1\n'
+            '        ))\n'
+            '        AND NOT __slayer_os.__slayer_o3 IS NULL\n'
+            '        THEN __slayer_os.__slayer_o3\n'
+            '      END\n'
+            '    )\n'
+            '  ) AS DOUBLE) AS `orders.revenue_median`\n'
+            'FROM (\n'
+            '  SELECT\n'
+            '    orders.status AS __slayer_o0,\n'
+            '    ROW_NUMBER() OVER (\n'
+            '      PARTITION BY orders.status, CASE WHEN orders.amount IS NULL THEN 1 ELSE 0 END\n'
+            '      ORDER BY orders.amount\n'
+            '    ) AS __slayer_o1,\n'
+            '    COUNT(orders.amount) OVER (PARTITION BY orders.status) AS __slayer_o2,\n'
+            '    orders.amount AS __slayer_o3\n'
+            '  FROM public.orders AS orders\n'
+            ') AS __slayer_os\n'
+            'GROUP BY\n'
+            '  __slayer_os.__slayer_o0\n'
+            'ORDER BY\n'
+            '  CASE WHEN `orders.status` IS NULL THEN 1 ELSE 0 END ASC,\n'
+            '  `orders.status` ASC',
+        ),
+        (
+            "tsql",
+            'SELECT\n'
+            '  __slayer_os.__slayer_o0 AS [orders___status],\n'
+            '  CAST(MAX(__slayer_os.__slayer_o1) AS FLOAT) AS [orders___revenue_median]\n'
+            'FROM (\n'
+            '  SELECT\n'
+            '    orders.status AS __slayer_o0,\n'
+            '    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY\n'
+            '      orders.amount) OVER (PARTITION BY orders.status) AS __slayer_o1\n'
+            '  FROM public.orders AS orders\n'
+            ') AS __slayer_os\n'
+            'GROUP BY\n'
+            '  __slayer_os.__slayer_o0\n'
+            'ORDER BY\n'
+            '  [orders___status] ASC',
         ),
     ],
 )
@@ -313,16 +387,6 @@ async def test_byte_equivalence_median(
     assert sql == expected
 
 
-def test_byte_equivalence_median_mysql_raises(orders_dataset: SlayerDataset) -> None:
-    render = _gen("mysql", _MEDIAN_QUERY, orders_dataset)
-    with pytest.raises(NotImplementedError, match="median.*MySQL"):
-        asyncio.run(render)
-
-
-def test_byte_equivalence_median_tsql_raises(orders_dataset: SlayerDataset) -> None:
-    render = _gen("tsql", _MEDIAN_QUERY, orders_dataset)
-    with pytest.raises(NotImplementedError, match="median.*T-SQL"):
-        asyncio.run(render)
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +444,11 @@ _PCT_QUERY = SlayerQuery(
             "clickhouse",
             'SELECT\n'
             '  orders.status AS "orders.status",\n'
-            '  CAST(quantile(0.95)(orders.amount) AS Nullable(Float64)) AS "orders.revenue_percentile_p_0_95"\n'
+            '  CAST(CASE\n'
+            '    WHEN COUNT(orders.amount) = 0\n'
+            '    THEN NULL\n'
+            '    ELSE quantileExactInclusive(0.95)(orders.amount)\n'
+            '  END AS Nullable(Float64)) AS "orders.revenue_percentile_p_0_95"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
             '  orders.status\n'

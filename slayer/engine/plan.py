@@ -18,6 +18,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, extension_dataset_names, extension_variable_refs, extract_placeholder_names
 from slayer.core.syntax import text_paths
 from slayer.core.time_spine import is_spine_query, query_host
+from slayer.core.time_zones import wall_clock
 from slayer.core.scope import (
     DatasetScope,
     StageDisplay,
@@ -26,6 +27,7 @@ from slayer.core.scope import (
     collect_stale_spellings,
     stale_spelling_stage,
 )
+from slayer.engine.window_columns import with_window_fields
 from slayer.engine.compile import compile_query
 from slayer.engine.definitions import resolved_dataset
 from slayer.engine.elaborate import elaborate_query
@@ -86,9 +88,11 @@ def plan_query(
         producer_registry=producer_registry,
     )
     prebound = elaborated.prebound
-    update = {k: v for k, v in (("granularity_conflicts", prebound.granularity_conflicts),
+    update: Dict[str, Any] = {k: v for k, v in (("granularity_conflicts", prebound.granularity_conflicts),
                                 ("whole_list_reads", prebound.whole_list_reads),
                                 ("date_only_notices", prebound.date_only_notices)) if v}
+    if elaborated.bundle is not bundle:
+        update["stage_bundle"] = elaborated.bundle  # extended by the query's windowed columns
     return planned.model_copy(update=update) if update else planned
 
 
@@ -198,11 +202,15 @@ class _StagePlanner:
     before that stage (design decision 6): a stage is planned in attempts, and an
     attempt whose traversals touched an unspliced placeholder splices it and retries."""
 
-    def __init__(self, *, bundle: ResolvedSourceBundle, outer_variables: Dict[str, Any]) -> None:
+    def __init__(
+        self, *, bundle: ResolvedSourceBundle, outer_variables: Dict[str, Any], time_zone: Optional[str] = None,
+    ) -> None:
         self.bundle = bundle.model_copy(update={"referenced_datasets": [
             m for m in bundle.referenced_datasets if m.name not in bundle.query_backed
         ]})
         self.outer_variables = outer_variables
+        # The query's zone (its final stage's): every stage without its own takes it (D9).
+        self.time_zone = time_zone
         self.state = _State(displays=dict(bundle.stage_displays))
         self.inert: Set[str] = set()
         # A merely touched dataset that failed to splice: its error, raised if it is read.
@@ -219,13 +227,10 @@ class _StagePlanner:
     ) -> None:
         """Plan ``query`` after every query-backed dataset it names or reads is spliced; an inferred stage's
         ``row_supply`` rides its bundle, and each branch's cells are planned beside it. With ``variables`` (a stage's
-        own layers), every dataset the stage reads is bound under them."""
-        if variables is None:
-            self._plan_stage(query, chain=chain, stage_dataset=stage_dataset, single=single, owner=owner,
-                             row_supply=row_supply)
-            return
+        own layers), every dataset the stage reads is bound under them. The stage plans in its effective zone."""
         statement = self.bundle
-        self.bundle = bind_read_datasets(statement, layers=variables)
+        zoned = zoned_bundle(statement, zone=query.time_zone or self.time_zone)
+        self.bundle = zoned if variables is None else bind_read_datasets(zoned, layers=variables)
         try:
             self._plan_stage(query, chain=chain, stage_dataset=stage_dataset, single=single, owner=owner,
                              row_supply=row_supply)
@@ -319,6 +324,8 @@ class _StagePlanner:
         )
         stamped = stamped.model_copy(update={"row_supply": RowSupply(product=True)})
         planned = plan_query(query=query, bundle=stamped, scope=scope, stage_schemas=self.state.schemas)
+        if planned.stage_bundle is not None:
+            stamped = with_window_fields(stamped, planned=planned.stage_bundle)
         return planned.model_copy(update={"stage_bundle": stamped})
 
     def _splice_demand(self, seen: Dict[str, bool], *, chain: Tuple[str, ...]) -> bool:
@@ -407,6 +414,8 @@ class _StagePlanner:
             stamped = stamped.model_copy(update={"referenced_datasets": [
                 *stamped.referenced_datasets, *(self.bundle.query_backed[n] for n in raw),
             ]})
+        if planned.stage_bundle is not None:
+            stamped = with_window_fields(stamped, planned=planned.stage_bundle)
         update: Dict[str, Any] = {
             "stage_reads": sorted(reads, key=position.__getitem__),
             "stage_bundle": stamped.model_copy(update={
@@ -597,6 +606,14 @@ class _StagePlanner:
         ]
 
 
+def zoned_bundle(bundle: ResolvedSourceBundle, *, zone: Optional[str]) -> ResolvedSourceBundle:
+    """``bundle`` for a stage in ``zone``: its "now" is the execution's one clock reading taken there."""
+    if zone == bundle.time_zone:
+        return bundle
+    reading = bundle.clock_reading if bundle.clock_reading is not None else bundle.now
+    return bundle.model_copy(update={"time_zone": zone, "now": wall_clock(reading, zone)})
+
+
 def bind_dataset(dataset: SlayerDataset, *, layers: Mapping[str, Any], bundle: ResolvedSourceBundle) -> SlayerDataset:
     """``dataset``'s Mode-A ``{var}`` bound under its own defaults and the query's ``layers`` (never another
     dataset's defaults); rendered and query-backed datasets unchanged. A block-bearing dataset always runs, so its
@@ -686,7 +703,8 @@ def plan_stages(
     query-backed dataset a stage reads before it; each plan records its sibling reads
     and is stamped with its per-stage bundle. A named stage reads its datasets bound under its own layers."""
     ordered = topologically_order_stages(queries, displays=bundle.stage_displays)
-    planner = _StagePlanner(bundle=bundle, outer_variables=dict(ordered[-1].variables or {}))
+    planner = _StagePlanner(bundle=bundle, outer_variables=dict(ordered[-1].variables or {}),
+                            time_zone=ordered[-1].time_zone)
     for q in ordered:
         named = q.name is not None and q is not ordered[-1]
         planner.plan_stage(

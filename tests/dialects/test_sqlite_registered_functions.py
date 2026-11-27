@@ -18,6 +18,9 @@ class _Recorder:
     def create_aggregate(self, name: str, *_args: Any, **_kwargs: Any) -> None:
         self.names.add(name.lower())
 
+    def create_window_function(self, name: str, *_args: Any, **_kwargs: Any) -> None:
+        self.names.add(name.lower())
+
 
 def test_registry_is_exactly_what_a_connection_receives() -> None:
     dialect = dialect_for_ds_type("sqlite")

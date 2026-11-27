@@ -19,6 +19,8 @@ from slayer.embeddings.models import Embedding, EntityKind
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.models import Memory
 from slayer.memories.resolver import canonical_id_rooted_at
+from slayer.ontology.use import Annotations
+from slayer.search.concepts import concept_annotations
 from slayer.search.index import Corpus
 from slayer.search.render import (
     collect_dataset_entity_pairs,
@@ -354,13 +356,21 @@ class EmbeddingRetriever(Retriever):
         """
         if not await embedding_client.is_available_async():
             return []
+        return await self.refresh_concepts(
+            [dataset], concepts=await concept_annotations(self._storage, dataset.data_source))
+
+    async def refresh_concepts(self, datasets: list[SlayerDataset], *, concepts: Annotations | None) -> list[str]:
+        """Refresh ``datasets``' subtrees with their ontology ``concepts`` in one batch; unchanged text is skipped."""
+        if not await embedding_client.is_available_async():
+            return []
         pending: list[_PendingRefresh] = [
             _PendingRefresh(
                 canonical_id=re.canonical_id,
                 entity_kind=re.kind,  # type: ignore[arg-type]
                 text=re.text,
             )
-            for re in collect_dataset_entity_pairs(dataset=dataset)
+            for dataset in datasets
+            for re in collect_dataset_entity_pairs(dataset=dataset, concepts=concepts)
         ]
         return await self._apply_pending(pending)
 

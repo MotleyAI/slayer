@@ -7,7 +7,6 @@ Public surface:
 
 * ``canonicalize_sql(text, *, dialect=None) -> str``
 * ``has_window_function(text) -> bool``
-* ``assert_no_window_in_filter(text, *, source) -> None``
 
 Dialect-specific rewrites:
 
@@ -36,7 +35,6 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.errors import IllegalWindowInFilterError
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.base import cast_target, cast_type_of
 from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
@@ -44,7 +42,6 @@ from slayer.sql.render.parse import rewrite_log_aliases
 from slayer.sql.window_detect import has_window_function as _has_window_function
 
 __all__ = [
-    "assert_no_window_in_filter",
     "canonicalize_sql",
     "has_window_function",
 ]
@@ -118,29 +115,6 @@ def has_window_function(text: str) -> bool:
     Thin re-export of ``slayer/sql/window_detect.py:has_window_function``.
     """
     return _has_window_function(text)
-
-
-def assert_no_window_in_filter(text: str, *, source: str) -> None:
-    """Raise ``IllegalWindowInFilterError`` if ``text`` contains a
-    window function.
-
-    ``source`` identifies the call site (e.g. ``"DatasetField.filter on
-    orders.foo"``); it's surfaced in the exception message so the
-    binder can produce actionable errors without re-formatting.
-    """
-    if not text:
-        return
-    if _has_window_function(text):
-        raise IllegalWindowInFilterError(
-            filter_expr=text,
-            source=source,
-            suggestion=(
-                "use a rank-family transform (rank, dense_rank, "
-                "percent_rank, ntile) or move the windowed expression "
-                "into an earlier multi-stage source_query."
-            ),
-        )
-
 
 
 def build_cast_type(type_text: str, *, dialect: str) -> exp.DataType:

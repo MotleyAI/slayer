@@ -9,8 +9,11 @@ import sys
 
 import numpy as np
 import pytest
+from sqlglot import exp
 
+from slayer.core.enums import DataType
 from slayer.sql.dialects.sqlite import (
+    SqliteDialect,
     _CorrAgg,
     _CovarPopAgg,
     _CovarSampAgg,
@@ -142,6 +145,19 @@ def test_percentile_disc_invalid_p():
 
 def test_percentile_disc_empty():
     assert _run_agg(_PercentileDiscAgg, [], p=0.5) is None
+
+
+@pytest.mark.parametrize("p", ["0.30000000000000000001", "0.30000000000000000000000000001"],
+                         ids=["past-a-double", "past-a-decimal-context"])
+def test_percentile_disc_keeps_every_digit_of_p(p: str) -> None:
+    """``0.3 + ε`` of 10 values is rank ⌈3.0…01⌉ = 4; a double, or 28-digit decimal arithmetic, rounds it to rank 3."""
+    with transaction(":memory:") as conn:
+        register_sqlite_udfs(conn)
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.executemany("INSERT INTO t VALUES (?)", [(v,) for v in range(1, 11)])
+        node = SqliteDialect().build_percentile_disc(
+            p=exp.Literal.number(p), col_expr=exp.column("x"), input_type=DataType.INTEGER)
+        assert conn.execute(f"SELECT {node.sql(dialect='sqlite')} FROM t").fetchone()[0] == 4
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +426,9 @@ def test_log_udf_registered_unconditionally():
             registered.append((name, narg))
 
         def create_aggregate(self, name, narg, cls):  # noqa: ARG002
+            pass
+
+        def create_window_function(self, name, narg, cls):  # noqa: ARG002
             pass
 
     register_sqlite_udfs(_SpyConn())

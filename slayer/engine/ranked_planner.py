@@ -7,11 +7,10 @@ host-style on its own root."""
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, cast
+from typing import Optional, Sequence
 
 from slayer.core.keys import (
-    is_ranked,
-    VALUE_KEY_TYPES,
+    explicit_ranking_key,
     AggregateKey,
     TimeTruncKey,
     TransformKey,
@@ -27,19 +26,11 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 __all__ = [
     "explicit_ranking_key",
     "resolve_ranking_time_key",
+    "temporal_row_dimension_key",
 ]
 
 
-def explicit_ranking_key(key: AggregateKey) -> Optional[ValueKey]:
-    """The explicit ranking key (the first positional, a row-level expression), or ``None``."""
-    if not is_ranked(key):
-        return None
-    for arg in key.args:
-        return cast(ValueKey, arg) if isinstance(arg, VALUE_KEY_TYPES) else None
-    return None
-
-
-def _temporal_row_dimension_key(
+def temporal_row_dimension_key(
     *,
     row_keys: Sequence[ValueKey],
     source_dataset: SlayerDataset,
@@ -82,7 +73,7 @@ def resolve_ranking_time_key(
     arg = explicit_ranking_key(key)
     if arg is not None:
         return arg
-    temporal = _temporal_row_dimension_key(
+    temporal = temporal_row_dimension_key(
         row_keys=row_keys, source_dataset=root_dataset, bundle=bundle,
     )
     if temporal is not None:

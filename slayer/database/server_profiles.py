@@ -10,6 +10,8 @@ import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from sqlglot.expressions.core import Expression
+
 from slayer.sql.dialects.base import ServerProfile, SqlDialect
 
 logger = logging.getLogger(__name__)
@@ -42,8 +44,20 @@ def _profile_lock(engine: Any, factory: Callable[[], Any]) -> Any:
         return lock
 
 
-def _correlated_probe_failed(exc: Exception) -> None:
-    logger.warning("Correlated-subquery setting probe failed; treating it as unknown: %s", exc)
+def known_profile(engine: Any) -> ServerProfile | None:
+    """``engine``'s cached profile, without a connection; ``None`` until a complete fill."""
+    return _server_profiles.get(engine)
+
+
+def _setting_probe_failed(exc: Exception) -> None:
+    logger.warning("Server setting probe failed; treating it as unknown: %s", exc)
+
+
+def _setting_probes(dialect: SqlDialect, profile: ServerProfile) -> list[tuple[str, Expression]]:
+    """The follow-up setting probes of ``profile``'s server, each under the ``parse_server_profile`` row it fills."""
+    probes = (("correlated_row", dialect.correlated_setting_probe(profile)),
+              ("time_row", dialect.time_setting_probe(profile)))
+    return [(name, probe) for name, probe in probes if probe is not None]
 
 
 def cached_profile(
@@ -63,15 +77,17 @@ def cached_profile(
         profile = dialect.parse_server_profile(base_row=base_row)
         if on_base is not None:
             on_base(profile)
-        correlated = dialect.correlated_setting_probe(profile)
-        if correlated is not None:
+        rows: dict[str, FirstRow] = {}
+        complete = True
+        for name, probe in _setting_probes(dialect, profile):
             try:
-                correlated_row = first_row(correlated.sql(dialect=dialect.sqlglot_name))
+                rows[name] = first_row(probe.sql(dialect=dialect.sqlglot_name))
             except Exception as exc:  # the driver's own error types need not be DBAPI errors
-                _correlated_probe_failed(exc)
-                return profile
-            profile = dialect.parse_server_profile(base_row=base_row, correlated_row=correlated_row)
-        _server_profiles[engine] = profile
+                _setting_probe_failed(exc)
+                complete = False
+        profile = dialect.parse_server_profile(base_row=base_row, **rows)
+        if complete:
+            _server_profiles[engine] = profile
         return profile
 
 
@@ -88,13 +104,15 @@ async def cached_profile_async(
             return cached
         base_row = await first_row(profile_sql)
         profile = dialect.parse_server_profile(base_row=base_row)
-        correlated = dialect.correlated_setting_probe(profile)
-        if correlated is not None:
+        rows: dict[str, FirstRow] = {}
+        complete = True
+        for name, probe in _setting_probes(dialect, profile):
             try:
-                correlated_row = await first_row(correlated.sql(dialect=dialect.sqlglot_name))
+                rows[name] = await first_row(probe.sql(dialect=dialect.sqlglot_name))
             except Exception as exc:  # the driver's own error types need not be DBAPI errors
-                _correlated_probe_failed(exc)
-                return profile
-            profile = dialect.parse_server_profile(base_row=base_row, correlated_row=correlated_row)
-        _server_profiles[engine] = profile
+                _setting_probe_failed(exc)
+                complete = False
+        profile = dialect.parse_server_profile(base_row=base_row, **rows)
+        if complete:
+            _server_profiles[engine] = profile
         return profile

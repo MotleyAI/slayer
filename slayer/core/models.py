@@ -43,7 +43,8 @@ from slayer.core.enums import (
     builtin_empty_value,
     type_display,
 )
-from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, SpellingConflictError, UnknownKeyError
+from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldExpressionError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError, SpellingConflictError, TimeZoneError, UnknownKeyError
+from slayer.core.time_zones import check_zone
 from slayer.core.names import NAME_PATTERN, folded_collisions, match_name
 from slayer.core import vocabulary
 from slayer.core.stored_rewrites import stored_input_rewritten
@@ -61,7 +62,6 @@ from slayer.core.field_expression import (
 )
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
-from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, in_stored_document, migrate as _migrate_schema, migrating_document
 
 if TYPE_CHECKING:
@@ -341,6 +341,13 @@ class DatasetField(DatasetPart):
             "field is then a typed error."
         ),
     )
+    time_zone: str | None = Field(
+        default=None,
+        description=(
+            "The zone a DateTime column's values are stored in: an IANA name, or 'civil' for zone-free time never "
+            "converted. Overrides the datasource's time_zone; only on a DateTime field reading a plain column."
+        ),
+    )
     allowed_aggregations: list[str] | None = None
     filter: str | None = None  # Desugars to CASE WHEN (filter) THEN (value) END in every position
     meta: dict[str, Any] | None = None
@@ -355,6 +362,11 @@ class DatasetField(DatasetPart):
     # Runtime-only: the native SQL this field runs on its datasource (``with_native``); ``None`` is unresolved.
     _native: str | None = PrivateAttr(default=None)
     _resolved: bool = PrivateAttr(default=False)
+    # Runtime-only: the native SQL holds a window function (a column of the dataset's materialised relation).
+    _windowed: bool = PrivateAttr(default=False)
+    # Runtime-only: every window order item of the native SQL states its NULL placement (Mode B: Ossie's), which
+    # emission keeps written whatever the database's default.
+    _states_nulls: bool = PrivateAttr(default=False)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -422,17 +434,28 @@ class DatasetField(DatasetPart):
         """Whether this field carries the native SQL it runs on its datasource."""
         return self._resolved
 
-    def with_native(self, native: str | None) -> "DatasetField":
-        """A copy running ``native`` (``None``: the source column of its name)."""
+    def with_native(self, native: str | None, *, windowed: bool = False, states_nulls: bool = False) -> "DatasetField":
+        """A copy running ``native`` (``None``: the source column of its name); ``windowed`` when it holds a window,
+        ``states_nulls`` when its windows' NULL placement is Mode B's."""
         out = self.model_copy()
-        out._native, out._resolved = native, True
+        out._native, out._resolved, out._windowed, out._states_nulls = native, True, windowed, states_nulls
         return out
 
     def unresolved(self) -> "DatasetField":
         """A copy whose running SQL is resolved again from its forms."""
         out = self.model_copy()
-        out._native, out._resolved = None, False
+        out._native, out._resolved, out._windowed, out._states_nulls = None, False, False, False
         return out
+
+    @property
+    def states_nulls(self) -> bool:
+        """Whether every window order item of the definition states its NULL placement, kept as written."""
+        return self._states_nulls
+
+    @property
+    def windowed(self) -> bool:
+        """Whether the resolved definition holds a window function, so it is read as a materialised column."""
+        return self._windowed
 
     @property
     def definition_sql(self) -> str | None:
@@ -473,6 +496,27 @@ class DatasetField(DatasetPart):
     def _validate_element_type(self) -> "DatasetField":
         check_element_type(name=self.name, data_type=self.datatype, element_type=self.element_type)
         return self
+
+    @model_validator(mode="after")
+    def _validate_time_zone(self) -> "DatasetField":
+        self.check_time_zone()
+        return self
+
+    def check_time_zone(self) -> None:
+        """A source zone only on a ``DateTime`` field reading a plain column; else a ``TimeZoneError``."""
+        if self.time_zone is None:
+            return
+        check_zone(self.time_zone, owner=f"field {self.name!r}", civil=True)
+        if self.datatype is DataType.DATETIME_TZ:
+            reason = "it is DateTimeTz, an instant, which has no source zone"
+        elif self.datatype is not DataType.DATETIME:
+            reason = f"only a DateTime field takes one, and its type is {self.datatype.value if self.datatype else 'undeclared'}"
+        elif not self.is_base:
+            reason = "it is derived; only a field reading a plain column takes one (its reads are converted)"
+        else:
+            return
+        raise TimeZoneError(f"Field {self.name!r} cannot declare time_zone {self.time_zone!r}: {reason}.",
+                            zone=self.time_zone)
 
     @property
     def _sql_is_nontrivial(self) -> bool:
@@ -653,13 +697,6 @@ def check_metric_name(name: str, *, what: str) -> str:
     return name
 
 
-def check_metric_text(text: str, *, what: str) -> str:
-    """Reject raw ``OVER (...)`` window SQL — unparseable by the expression grammar."""
-    if has_window_function(text):
-        raise ValueError(f"{what} '{text}' {WINDOW_IN_FILTER_ERROR}")
-    return text
-
-
 class MetricBase(BaseModel):
     """A metric's substitution state: its text as written and the variables its binding reads."""
 
@@ -719,7 +756,7 @@ class DatasetMetric(MetricBase, DatasetPart):
         return check_metric_name(v, what="DatasetMetric name")
 
     @model_validator(mode="after")
-    def _reject_raw_window_function(self) -> "DatasetMetric":
+    def _require_portable_text(self) -> "DatasetMetric":
         if self.load_warning is not None:
             return self
         text = portable_text(self.expression)
@@ -727,7 +764,6 @@ class DatasetMetric(MetricBase, DatasetPart):
             carried = ", ".join(dialect_tokens(self.expression)) or "none"
             raise FieldExpressionError(owner=f"Metric {self.name!r}", reason=f"has no portable sql (dialects carried: "
                                        f"{carried}); only sql or an OSSIE_SQL_2026 entry is evaluated.")
-        check_metric_text(text, what="DatasetMetric expression")
         return self
 
     @property
@@ -1733,6 +1769,15 @@ class DatasourceConfig(AtomicAssignment):
             "at origin + k × multiple × base; usable wherever a built-in granularity is."
         ),
     )
+    time_zone: str | None = Field(
+        default=None,
+        description="The IANA zone its datasets' DateTime columns are stored in, unless a field declares its own.",
+    )
+
+    @field_validator("time_zone")
+    @classmethod
+    def _validate_time_zone(cls, v: str | None) -> str | None:
+        return check_zone(v, owner="a datasource")
 
     @model_validator(mode="before")
     @classmethod

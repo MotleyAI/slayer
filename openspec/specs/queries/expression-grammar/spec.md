@@ -169,12 +169,12 @@ A string literal SHALL be single-quoted, with `''` standing for one `'`; a backs
 
 ### Requirement: Keyword arguments versus comparison
 
-Inside an aggregation call (built-in or model-defined) or a transform call, an unparenthesised argument `name = value` whose left side is an unquoted bare name SHALL be a keyword argument exactly when `name` case-insensitively names a declared parameter of that callee: `window` and `partition_by` for every aggregation, `weight` for `weighted_avg`, `other` for `corr` / `covar_samp` / `covar_pop`, `p` for `percentile`, a model aggregation's declared parameters and formula placeholders, and a transform's parameters (`periods`, `granularity`, `n`, `direction`, `partition_by`). Otherwise it SHALL be a comparison, in any argument position. A parenthesised `(name = value)` or one with a quoted left side SHALL always be a comparison, so `sum((weight = 1))` compares a column `weight`. Duplicate keyword arguments and a positional argument after a keyword argument SHALL be judged after this classification. Inside a scalar function call and everywhere else, `=` SHALL be a comparison.
+Inside an aggregation call (built-in or model-defined) or a transform call, an unparenthesised argument `name = value` whose left side is an unquoted bare name SHALL be a keyword argument exactly when `name` case-insensitively names a declared parameter of that callee: `window` and `partition_by` for every aggregation, `weight` for `weighted_avg`, `other` for `corr` / `covar_samp` / `covar_pop`, `p` for `percentile`, `percentile_disc` and `percentile_approx`, a model aggregation's declared parameters and formula placeholders, and a transform's parameters (`periods`, `granularity`, `n`, `direction`, `partition_by`). Otherwise it SHALL be a comparison, in any argument position. A parenthesised `(name = value)` or one with a quoted left side SHALL always be a comparison, so `sum((weight = 1))` compares a column `weight`. Duplicate keyword arguments and a positional argument after a keyword argument SHALL be judged after this classification. Inside a scalar function call and everywhere else, `=` SHALL be a comparison.
 
 #### Scenario: Keyword argument
 
-- **WHEN** a measure is `percentile(amount, p=0.9)`
-- **THEN** `p` is a keyword argument
+- **WHEN** a measure is `percentile(amount, p=0.9)`, `percentile_disc(amount, p=0.9)` or `percentile_approx(amount, P=0.9)`
+- **THEN** `p` is a keyword argument in each
 
 #### Scenario: Comparison inside a scalar call
 
@@ -203,7 +203,7 @@ Inside an aggregation call (built-in or model-defined) or a transform call, an u
 
 ### Requirement: Forms rejected with a hint
 
-The following SHALL fail at parse time with an error naming the form and the remedy: `a | b` (use `||`); `a // b` (use `div(a, b)` or `floor(a / b)`); `TRIM(BOTH | LEADING | TRAILING …)`; a scalar `min(a, b)` / `max(a, b)` with two positional values (use `greatest` / `least`); `TIME '…'` literals; `SIMILAR TO`; `REGEXP` / `RLIKE` operators; raw `OVER (…)`. A syntax error SHALL report the character position where parsing failed.
+The following SHALL fail at parse time with an error naming the form and the remedy: `a | b` (use `||`); `a // b` (use `div(a, b)` or `floor(a / b)`); `TRIM(BOTH | LEADING | TRAILING …)`; a scalar `min(a, b)` / `max(a, b)` with two positional values (use `greatest` / `least`); `SIMILAR TO`; `REGEXP` / `RLIKE` operators. A syntax error SHALL report the character position where parsing failed. A `TIME '…'` literal SHALL parse (`queries/time-of-day`).
 
 #### Scenario: Bitwise-or spelling
 
@@ -224,6 +224,16 @@ The following SHALL fail at parse time with an error naming the form and the rem
 
 - **WHEN** a filter is `amount > > 5`
 - **THEN** the error names the position of the second `>`
+
+#### Scenario: OVER is not a rejected form
+
+- **WHEN** a dimension is `ROW_NUMBER() OVER (ORDER BY orders.amount)`
+- **THEN** it parses as a window function (`queries/window-functions`), with no hint to use a transform
+
+#### Scenario: TIME literal parses
+
+- **WHEN** a filter is `opened_at > TIME '10:00'`
+- **THEN** it parses
 
 ### Requirement: SQL comments
 
@@ -321,3 +331,32 @@ The right-hand side of `IN` / `NOT IN` SHALL accept a parenthesised list whose i
 #### Scenario: A list variable on a list's right-hand side
 - **WHEN** a filter is `skills IN ({wanted})` with `variables={"wanted": ["sql", "go"]}`, and another is `region IN ({regions})` with `variables={"regions": ["EU", "US"]}`
 - **THEN** the first keeps the rows whose `skills` element set is `['go', 'sql']`, and the second keeps the rows whose `region` is `EU` or `US`
+
+### Requirement: Canonical expression text keeps identifier quoting
+
+The expression text SLayer derives from a Mode-B expression, parsed or built, SHALL spell a reference segment double-quoted when it was written double-quoted, or when its bare spelling would not read back as that unquoted name in its position (it is not an identifier, or it is a reserved word such as `NULL`, `TRUE`, `FALSE` or `NOT` where the grammar reads it as a keyword); every other segment SHALL be bare. The text SHALL parse back with the same segments, a segment written quoted still quoted and one written bare still bare, so a quoted segment keeps its exact-match meaning and a quoted word stays a column rather than a unit, date part, keyword argument or literal. Telling expressions apart before binding SHALL ignore quoting, as today: expressions that differ only in which segments are quoted SHALL be one expression wherever SLayer de-duplicates a query's entries. Result keys and generated result names SHALL be unchanged by quoting.
+
+#### Scenario: A quoted segment keeps its quotes
+
+- **WHEN** the canonical texts of `lower("REGIONS".lbl)`, `"Regions"."Lbl"` and `lower(REGIONS.lbl)` are derived
+- **THEN** they are `lower("REGIONS".lbl)`, `"Regions"."Lbl"` and `lower(REGIONS.lbl)`, each parsing back with the same segments and quoting
+
+#### Scenario: A quoted word stays a column
+
+- **WHEN** the canonical texts of `date_part("year", d)`, `datediff("day", a, b)`, `lower("x" = 1)`, `"null"`, `"true"` and `not "not"` are derived
+- **THEN** each parses back to the same expression, every quoted word still a column reference
+
+#### Scenario: A built reserved-word segment is quoted only where it must be
+
+- **WHEN** SLayer derives the text of a reference to `amount` read through a relationship named `null`, and through the relationships `a` then `null`
+- **THEN** the texts are `"null".amount` and `a.null.amount`, each parsing back to that path
+
+#### Scenario: A stored extension column reading a quoted hop in the wrong case is refused
+
+- **WHEN** a store written before SLayer 2.0 holds a query whose extension columns are `Regions.lbl = upper(label)` and `customers.cl = lower("REGIONS".lbl)`, the datasource declaring only the model `Regions`
+- **THEN** loading the query fails with the error that the reference does not resolve, and the same store with `customers.cl = lower("Regions".lbl)` loads with `customers.cl` inlined through `Regions`
+
+#### Scenario: Quote-only variants are one expression
+
+- **WHEN** a query rooted at `orders` has the time dimensions `customers.created_at` and `"customers".created_at` at month granularity under one alias, and another query has the unnamed measure `count("customers".id)`
+- **THEN** the first keeps one time dimension, and the measure's result name equals that of `count(customers.id)`

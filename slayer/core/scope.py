@@ -100,6 +100,9 @@ class StageField(BaseModel):
     respellings: Tuple[str, ...] = ()
     #: Set only for an untransformed public row-level output.
     pass_through: Optional[PassThrough] = None
+    #: A timestamp output's zone state under the stage's zone: that zone, ``civil``, or ``None`` (undeclared, or no
+    #: zone); a reader in another zone converts a zoned one.
+    time_zone: Optional[str] = None
 
 
 class StageDisplay(BaseModel):

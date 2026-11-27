@@ -4,7 +4,7 @@ Mode A — SQL expression: DatasetField.sql, DatasetField.filter, SlayerDataset.
     Free SQL via sqlglot. Bare names = underlying-table columns; ``__``-paths
     = joined-dataset aliases (with the leaf following a single dot, e.g.
     ``customers__regions.name``). Rejects aggregation colon syntax, transform
-    calls, DatasetMetric refs, and (for filters) raw OVER (...).
+    calls, and DatasetMetric refs.
 
 Mode B — DSL expression: DatasetMetric.expression, SlayerQuery.{metrics,
     filters, dimensions, time_dimensions, order, main_time_dimension}.
@@ -250,7 +250,7 @@ class TestSqlModeRuntime:
 
 
 class TestSqlModeRejection:
-    """DSL constructs (aggregation colon, transforms, OVER) are rejected on
+    """DSL constructs (aggregation colon, transforms) are rejected on
     the dataset side. SQL is free, but it cannot reach into the DSL."""
 
     def test_column_filter_rejects_aggregation_colon(self) -> None:
@@ -293,26 +293,25 @@ class TestSqlModeRejection:
                 fields=columns,
             )
 
-    def test_model_filter_rejects_raw_over(self) -> None:
-        """Raw OVER (...) in a dataset filter is rejected (existing behavior preserved)."""
+    def test_model_filter_with_raw_over_constructs(self) -> None:
         columns = [DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)]
-        with pytest.raises(ValueError, match="(?i)window function|OVER"):
-            SlayerDataset(
-                name="m",
-                sql_table="t",
-                data_source="test",
-                filters=["row_number() over (order by mass desc) <= 3"],
-                fields=columns,
-            )
+        model = SlayerDataset(
+            name="m",
+            sql_table="t",
+            data_source="test",
+            filters=["row_number() over (order by mass desc) <= 3"],
+            fields=columns,
+        )
+        assert model.filters == ["row_number() over (order by mass desc) <= 3"]
 
-    def test_column_filter_rejects_raw_over(self) -> None:
-        with pytest.raises(ValueError, match="(?i)window function|OVER"):
-            DatasetField(
-                name="x",
-                expression="amount",
-                filter="row_number() over (order by mass) <= 3",
-                datatype=DataType.FLOAT,
-            )
+    def test_column_filter_with_raw_over_constructs(self) -> None:
+        column = DatasetField(
+            name="x",
+            expression="amount",
+            filter="row_number() over (order by mass) <= 3",
+            datatype=DataType.FLOAT,
+        )
+        assert column.filter == "row_number() over (order by mass) <= 3"
 
 
 # ---------------------------------------------------------------------------
@@ -366,8 +365,7 @@ class TestDslModeAcceptance:
 
 
 class TestDslModeRejection:
-    """DSL-mode rejection rules. Raw ``OVER (...)`` is rejected at
-    SlayerQuery / DatasetMetric construction (Python AST cannot parse it).
+    """DSL-mode rejection rules.
     Raw SQL function calls and unresolved bare names — including
     ``__``-prefixed tokens that don't resolve to a virtual-dataset field
     — are rejected at enrichment time, where the parser has full
@@ -416,12 +414,12 @@ class TestDslModeRejection:
         with pytest.raises(Exception, match="(?i)customers__region|unknown|not a Column"):
             await _engine_generate(query=query, dataset=model)
 
-    def test_query_filter_rejects_raw_over(self) -> None:
-        with pytest.raises(ValueError, match="(?i)window function|OVER"):
-            SlayerQuery(
-                population="orders",
-                filter=["row_number() over (order by mass) <= 3"],
-            )
+    def test_query_filter_with_raw_over_constructs(self) -> None:
+        query = SlayerQuery(
+            population="orders",
+            filter=["row_number() over (order by mass) <= 3"],
+        )
+        assert query.filter == ["row_number() over (order by mass) <= 3"]
 
     async def test_model_measure_rejects_raw_sql_function_at_enrichment(self) -> None:
         """DatasetMetric is DSL — ``json_extract`` has no place there. The
@@ -552,35 +550,24 @@ class TestStrictResolution:
 
 
 class TestPredicatePromotionRemoved:
-    """A query filter referencing a DatasetField whose `sql` contains a window
-    function used to auto-promote to a post-aggregation outer WHERE. That
-    escape hatch is dropped — users use rank-family transforms instead.
-    """
+    """A windowed DatasetField is a column of its dataset: a query filter on it generates, as does a projection."""
 
-    async def test_filter_on_windowed_column_raises_with_actionable_message(self) -> None:
+    async def test_filter_on_windowed_column_generates(self) -> None:
         model = _make_planets_dataset(with_window_field=True)
         query = SlayerQuery(
             population="planets",
             dimensions=[QueryDimension(field="planets.name")],
             filter=["planets.rn <= 3"],
         )
-        with pytest.raises(Exception) as excinfo:
-            await _engine_generate(query=query, dataset=model)
-        msg = str(excinfo.value).lower()
-        assert "window function" in msg or "rank" in msg, (
-            f"Expected message to mention 'window function' and/or 'rank' "
-            f"transform suggestion. Got: {excinfo.value}"
-        )
+        await _engine_generate(query=query, dataset=model)
 
     async def test_select_only_on_windowed_column_still_works(self) -> None:
-        """A windowed DatasetField.sql is still legal as a *projection* — only as a
-        filter target does it now error."""
+        """A windowed DatasetField.sql projects."""
         model = _make_planets_dataset(with_window_field=True)
         query = SlayerQuery(
             population="planets",
             dimensions=["planets.name", "planets.rn"],
         )
-        # Should render without error; only filter use is restricted.
         await _engine_generate(query=query, dataset=model)
 
 

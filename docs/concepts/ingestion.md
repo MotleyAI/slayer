@@ -43,7 +43,7 @@ Tables with no FK references use their plain table name with no relationships.
 
 SLayer introspects each table's column types and generates a dataset:
 
-- **One `DatasetField`** per non-joined column on the source table — name, `datatype` inferred from the database (`String` / `Integer` / `Decimal` / `Float` / `Boolean` / `Date` / `DateTime` / `DateTimeTz` — `Decimal` for an exact numeric and `DateTimeTz` for a zoned timestamp — or `Opaque` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each field is used as a group-by dimension or as an aggregation source is decided per query; a [list field](queries.md#list-fields) has rules of its own.
+- **One `DatasetField`** per non-joined column on the source table — name, `datatype` inferred from the database (`String` / `Integer` / `Decimal` / `Float` / `Boolean` / `Date` / `DateTime` / `DateTimeTz` — `Decimal` for an exact numeric and `DateTimeTz` for a column holding instants (a zoned timestamp, BigQuery and MySQL `TIMESTAMP`, ClickHouse `DateTime` / `DateTime64` naming a zone; a re-ingest re-types a stored `DateTime` field over one) — or `Opaque` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each field is used as a group-by dimension or as an aggregation source is decided per query; a [list field](filters.md#list-fields) has rules of its own.
 - **List columns** become `datatype: Array` with their `element_type`: Postgres `T[]`, BigQuery `REPEATED T` / `ARRAY<T>`, DuckDB `T[]` / `LIST`, ClickHouse `Array(T)` (`Nullable` / `LowCardinality` unwrapped), Trino `array(T)` and Snowflake `ARRAY(T)`; a nested list or a list of records gets `element_type: UNKNOWN`, and a Snowflake `ARRAY` without a declared element type has it inferred from the stored elements.
 - **`db_type`** keeps the raw database type where `datatype` loses information (`Opaque`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps, lists); a native JSON column is read natively only when it is recorded, so a dataset written by hand without it reads the field as `TEXT`.
 - **Column and table comments** stored in the database become `DatasetField.description` and `SlayerDataset.description` (see [Comments and descriptions](#comments-and-descriptions) below).
@@ -258,8 +258,9 @@ FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more relat
 `slayer serve` and `slayer mcp` both accept `--ingest-on-startup`, an
 **opt-in** flag that walks every configured datasource and runs the same
 idempotent ingestion pass described in [Idempotent
-Re-Ingestion](#idempotent-re-ingestion) **before** the port opens / before
-stdio JSON-RPC starts. Mirrors the existing `--demo` boot hook, so both
+Re-Ingestion](#idempotent-re-ingestion). `slayer serve` runs it **before**
+the port opens; `slayer mcp` runs it in the background once stdio JSON-RPC
+starts, and every tool call waits for it. Mirrors the existing `--demo` boot hook, so both
 flags compose: `--demo` runs first (creating the Jaffle Shop datasource),
 then the startup-ingest pass runs over every datasource including the
 freshly-created demo.
@@ -328,14 +329,16 @@ app = create_app(storage=storage, ingest_on_startup=True)
 mcp = create_mcp_server(storage=storage, ingest_on_startup=True)
 ```
 
-Same "datasets are fresh by the time the constructor returns" guarantee the
-CLI gets.
+`create_app` ingests before it returns, so datasets are fresh by the time the constructor returns.
+`create_mcp_server` returns at once; ingestion runs in the background while the server runs,
+and every tool call waits for it to finish.
 
 ### Error semantics
 
 - **One datasource fails** (the ingest call raises): caught, friendly-formatted, accumulated, server starts anyway.
 - **Per-table errors inside a single datasource** (`result.errors` non-empty): printed; that datasource still counts as "succeeded" because the call itself returned.
-- **`storage.list_datasources()` raises**: propagates — server does not start. Boot should not proceed with broken storage.
+- **`storage.list_datasources()` raises**: `serve` does not start, since boot should not proceed with broken storage.
+  `mcp` reports the failure on stderr and keeps running; its tools can still fail while storage stays broken.
 - **Zero datasources**: prints `Ingest-on-startup: no datasources configured` and starts normally.
 
 ### Drift handling

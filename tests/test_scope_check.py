@@ -533,3 +533,28 @@ class TestClickHouseArrayJoin:
     def test_an_array_join_alias_read_outside_its_select_is_a_leak(self) -> None:
         result = check_scope_closed(SQL_ARRAY_JOIN_ALIAS_OUTSIDE, dialect="clickhouse")
         assert [(leak.kind, leak.reference) for leak in result.leaks] == [("unbound_table", "s.value")]
+
+
+SQL_QUOTED_QUALIFIER = 'WITH _keys AS (SELECT 1 AS "k") SELECT "_keys"."k" FROM _keys'
+
+
+class TestQualifierFolding:
+    """A qualifier binds only to the relation the database resolves it to."""
+
+    def test_a_quoted_qualifier_of_an_unquoted_cte_is_a_leak_on_snowflake(self) -> None:
+        """Snowflake folds ``_keys`` to ``_KEYS``; ``"_keys"`` keeps its case."""
+        result = check_scope_closed(SQL_QUOTED_QUALIFIER, dialect="snowflake")
+        assert [(leak.kind, leak.reference) for leak in result.leaks] == [("unbound_table", "_keys.k")]
+
+    @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "tsql"])
+    def test_the_same_qualifier_binds_where_it_folds_alike(self, dialect: str) -> None:
+        assert check_scope_closed(SQL_QUOTED_QUALIFIER, dialect=dialect).closed is True
+
+    @pytest.mark.parametrize("sql", ["SELECT Orders.id FROM analytics.Orders", "SELECT orders.id FROM `analytics.Orders`"])
+    def test_a_bigquery_implicit_alias_folds_as_an_alias(self, sql: str) -> None:
+        """BigQuery table names keep their case; the implicit alias a qualifier reads does not."""
+        assert check_scope_closed(sql, dialect="bigquery").closed is True
+
+    def test_a_qualifier_of_a_quoted_table_folds_apart_on_snowflake(self) -> None:
+        result = check_scope_closed('SELECT Orders.id FROM "Orders"', dialect="snowflake")
+        assert [leak.kind for leak in result.leaks] == ["unbound_table"]

@@ -22,7 +22,7 @@ dbt supports measures like account balances where `SUM` across time is wrong —
 In SLayer this is one expression, `sum(last(account_snapshots.balance, account_snapshots.snapshot_date, partition_by=[account_snapshots.account_id, account_snapshots.customer_id, account_snapshots.snapshot_date]))` grouped by `account_snapshots.customer_id` and a month `account_snapshots.snapshot_date` time dimension (the time field in `partition_by` stands for its bucket), or equivalently a two-stage query:
 
 - **Stage 1** — group by `window_groupings` plus the time bucket, and pick the latest (or earliest) value per group using the [`first` / `last` aggregations](../examples/07_aggregations/aggregations.md#first-and-last) with an explicit time field: `last(account_snapshots.balance, account_snapshots.snapshot_date)` for `window_choice: max`, `first(account_snapshots.balance, account_snapshots.snapshot_date)` for `window_choice: min`.
-- **Stage 2** — feed stage 1 into the next query via a [query list](../concepts/queries.md#query-lists); because [any SLayer query automatically becomes a dataset](../concepts/datasets.md#creating-datasets-from-queries), the outer query can aggregate additively (`sum`, `avg`, …) across the remaining dimensions.
+- **Stage 2** — feed stage 1 into the next query via a [query list](../concepts/saved-and-multistage-queries.md#query-lists); because [any SLayer query automatically becomes a dataset](../concepts/datasets.md#creating-datasets-from-queries), the outer query can aggregate additively (`sum`, `avg`, …) across the remaining dimensions.
 
 Example — account balances rolled up to customer-level monthly totals:
 

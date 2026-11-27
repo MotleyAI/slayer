@@ -106,8 +106,9 @@ def test_percentile_without_value_clean_fails() -> None:
     assert any("p_nope" in (e.metric_name or e.message) for e in entries)
 
 
-@pytest.mark.parametrize("flag", ["use_discrete_percentile", "use_approximate_percentile"])
-def test_percentile_discrete_or_approx_flag_clean_fails(flag: str) -> None:
+@pytest.mark.parametrize(("flag", "agg"), [("use_discrete_percentile", "percentile_disc"),
+                                           ("use_approximate_percentile", "percentile_approx")])
+def test_percentile_discrete_or_approx_flag_converts(flag: str, agg: str) -> None:
     params = DbtMeasureAggParams(percentile=0.9, **{flag: True})
     project = DbtProject(
         semantic_models=[
@@ -119,8 +120,7 @@ def test_percentile_discrete_or_approx_flag_clean_fails(flag: str) -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "p_flag" for m in _dataset(result).metrics)
-    assert any("p_flag" in (e.metric_name or e.message) for e in _all_report_entries(result))
+    assert _metric(result, "p_flag").expression == f"{agg}(latency, p=0.9)"
 
 
 # ───────────────────────── Part 1.2 — ratio nullif guard ─────────────────────────
@@ -1243,11 +1243,11 @@ def test_semantic_model_label_preserved_in_meta() -> None:
     assert (_dataset(result).meta or {}).get("label") == "Customer Orders"
 
 
-# ───────────────── Part 4 — percentile dialect caveat (MySQL / T-SQL) ─────────────────
+# ───────────────── Part 4 — percentile on MySQL / T-SQL ─────────────────
 
 
 @pytest.mark.parametrize("dialect", ["mysql", "tsql"])
-def test_percentile_on_unsupported_dialect_is_dropped(dialect: str) -> None:
+def test_percentile_is_kept_on_mysql_and_sql_server(dialect: str) -> None:
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -1260,8 +1260,8 @@ def test_percentile_on_unsupported_dialect_is_dropped(dialect: str) -> None:
     result = DbtToSlayerConverter(
         project=project, data_source="test", target_dialect=dialect
     ).convert()
-    assert all(m.name != "p95" for model in result.datasets for m in model.metrics)
-    assert any("p95" in e.message and "not supported" in e.message for e in _all_report_entries(result))
+    texts = {m.name: m.text for model in result.datasets for m in model.metrics}
+    assert texts == {"p95": "percentile(latency, p=0.95)"}
 
 
 # ───────── Filtered special aggs / derived input filters ─────────
@@ -1291,8 +1291,11 @@ def test_filtered_percentile_metric_preserves_p() -> None:
     assert "region" in col.filter
 
 
-@pytest.mark.parametrize("agg", ["percentile", "median"])
-def test_filtered_metric_the_dialect_refuses_is_dropped(agg: str) -> None:
+@pytest.mark.parametrize(("agg", "measure_text", "metric_text"), [
+    ("percentile", "percentile(latency, p=0.95)", "percentile(latency_agg_filtered, p=0.95)"),
+    ("median", "median(latency)", "median(latency_agg_filtered)"),
+])
+def test_filtered_metric_is_kept_on_mysql(agg: str, measure_text: str, metric_text: str) -> None:
     params = DbtMeasureAggParams(percentile=0.95) if agg == "percentile" else None
     project = DbtProject(
         semantic_models=[DbtSemanticModel(name="orders", model="orders", measures=[
@@ -1302,10 +1305,8 @@ def test_filtered_metric_the_dialect_refuses_is_dropped(agg: str) -> None:
                            filter="{{ Dimension('orders__region') }} = 'US'")],
     )
     result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="mysql").convert()
-    assert all(m.name not in ("latency_agg", "us_latency") for model in result.datasets for m in model.metrics)
-    messages = [e.message for e in _all_report_entries(result)]
-    assert any("latency_agg" in msg and "not supported" in msg for msg in messages), messages
-    assert any("us_latency" in msg and "was dropped" in msg for msg in messages), messages
+    texts = {m.name: m.text for model in result.datasets for m in model.metrics}
+    assert texts == {"latency_agg": measure_text, "us_latency": metric_text}
 
 
 def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:

@@ -163,7 +163,7 @@ def _aggregate_at_home(
     framed = any(is_framed_path(p) for p in leaf_paths)
     own_frame = anchor_token(home.name)
     if framed and own_frame in {p[0] for p in leaf_paths if p}:
-        interior = reroot_value_key(agg.model_copy(update={"partition_keys": None}), target_path=(own_frame,))
+        interior = reroot_value_key(agg.ungrained(), target_path=(own_frame,))
     elif leaf_paths and not framed and host.name != home.name:
         interior = framed_aggregate(agg, frame=host.name)
     else:
@@ -171,7 +171,7 @@ def _aggregate_at_home(
     if agg.partition_keys is None:
         return interior
     grain = (home_read(p, home=home, host=host, datasets_by_name=datasets_by_name) or p for p in agg.partition_keys)
-    return interior.model_copy(update={"partition_keys": Grain.of(grain)})
+    return interior.model_copy(update={"partition_keys": Grain.of(grain), "grain_defaulted": agg.grain_defaulted})
 
 
 def home_read(

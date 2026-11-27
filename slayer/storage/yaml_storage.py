@@ -54,6 +54,7 @@ from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingStore,
 )
 from slayer.storage.migrations import stamp_stored
+from slayer.storage.ontology_documents import MAPPING_NAME, ONTOLOGY_NAME
 from slayer.storage.v4_migration import migrate_yaml_layout
 from slayer.storage.document_keys import keys_for
 
@@ -267,6 +268,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         self.models_dir = os.path.join(base_dir, "models")
         self.datasources_dir = os.path.join(base_dir, "datasources")
         self.semantic_models_dir = os.path.join(base_dir, "semantic_models")
+        self.ontologies_dir = os.path.join(base_dir, "ontologies")
+        self.ontology_mappings_dir = os.path.join(base_dir, "ontology_mappings")
         self._priority_path = os.path.join(base_dir, "priority.yaml")
         # Memories are one ``.md`` file per id under ``memories/``.
         # ``_memories_path`` still names the legacy flat file (used only by the
@@ -583,6 +586,79 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 text = patch(f.read())
             _atomic_write_text(path=path, text=text)
         return text
+
+    # ---- ontology and mapping documents ------------------------------------
+
+    def _ontology_path(self, name: str) -> str:
+        _validate_path_component(name, kind=ONTOLOGY_NAME)
+        return os.path.join(self.ontologies_dir, f"{name}.yaml")
+
+    def _mapping_path(self, data_source: str, name: str) -> str:
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=MAPPING_NAME)
+        return os.path.join(self.ontology_mappings_dir, data_source, f"{name}.yaml")
+
+    @staticmethod
+    def _read_text(*, dir_path: str, entry: str) -> str | None:
+        if not _exact_entry_exists(dir_path=dir_path, entry_name=entry):
+            return None
+        try:
+            with open(os.path.join(dir_path, entry), encoding="utf-8", newline="") as f:  # NOSONAR(S7493) — local read
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def _remove(*, dir_path: str, entry: str) -> bool:
+        if not _exact_entry_exists(dir_path=dir_path, entry_name=entry):
+            return False
+        os.remove(os.path.join(dir_path, entry))
+        return True
+
+    async def _save_ontology_text_impl(self, *, name: str, text: str) -> None:
+        path = self._ontology_path(name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _atomic_write_text(path=path, text=text)
+
+    async def _get_ontology_text_impl(self, *, name: str) -> str | None:
+        self._ontology_path(name)
+        return self._read_text(dir_path=self.ontologies_dir, entry=f"{name}.yaml")
+
+    async def _list_ontology_names(self) -> list[str]:
+        if not os.path.isdir(self.ontologies_dir):
+            return []
+        return sorted(f[:-5] for f in os.listdir(self.ontologies_dir) if f.endswith(".yaml"))
+
+    async def _delete_ontology_row(self, *, name: str) -> bool:
+        self._ontology_path(name)
+        return self._remove(dir_path=self.ontologies_dir, entry=f"{name}.yaml")
+
+    async def _save_ontology_mapping_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        path = self._mapping_path(data_source, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _atomic_write_text(path=path, text=text)
+
+    async def _get_ontology_mapping_text_impl(self, *, data_source: str, name: str) -> str | None:
+        self._mapping_path(data_source, name)
+        if not _exact_entry_exists(dir_path=self.ontology_mappings_dir, entry_name=data_source):
+            return None
+        return self._read_text(dir_path=os.path.join(self.ontology_mappings_dir, data_source), entry=f"{name}.yaml")
+
+    async def _list_ontology_mapping_identities(self) -> list[tuple[str, str]]:
+        if not os.path.isdir(self.ontology_mappings_dir):
+            return []
+        out: list[tuple[str, str]] = []
+        for ds in sorted(os.listdir(self.ontology_mappings_dir)):
+            ds_dir = os.path.join(self.ontology_mappings_dir, ds)
+            if os.path.isdir(ds_dir):
+                out += [(ds, f[:-5]) for f in sorted(os.listdir(ds_dir)) if f.endswith(".yaml")]
+        return out
+
+    async def _delete_ontology_mapping_row(self, *, data_source: str, name: str) -> bool:
+        self._mapping_path(data_source, name)
+        if not _exact_entry_exists(dir_path=self.ontology_mappings_dir, entry_name=data_source):
+            return False
+        return self._remove(dir_path=os.path.join(self.ontology_mappings_dir, data_source), entry=f"{name}.yaml")
 
     # ---- datasource CRUD ---------------------------------------------------
 

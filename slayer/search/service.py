@@ -32,6 +32,8 @@ from slayer.memories.resolver import (
     resolve_entity,
 )
 from slayer.search import graph as _search_graph
+from slayer.ontology.use import Annotations
+from slayer.search.concepts import CONCEPT_PREFIX, concept_annotations, concept_matches
 from slayer.search.cypher_labels import renamed_labels
 from slayer.search.cypher_naive import parse_naive_label_filter as _parse_naive_cypher
 from slayer.search.index import Corpus, build_in_memory_corpus
@@ -438,6 +440,7 @@ async def _lookup_dataset_or_leaf_canonical(
     dataset_name: str,
     leaf: str | None,
     storage: StorageBackend,
+    concepts: Annotations | None = None,
 ) -> LookupResult:
     """Render a ``<ds>.<dataset>[.<leaf>]`` canonical, or report it hidden / missing."""
     dataset = await storage.get_dataset_or_builtin(dataset_name, data_source=ds)
@@ -445,7 +448,7 @@ async def _lookup_dataset_or_leaf_canonical(
         return LookupMissing()
     if dataset.hidden:
         return LookupHidden(reason="hidden dataset")
-    for re in collect_dataset_entity_pairs(dataset=dataset):
+    for re in collect_dataset_entity_pairs(dataset=dataset, concepts=concepts):
         if re.canonical_id == canonical:
             return LookupFound(
                 kind=re.kind, text=re.text, description=re.description,
@@ -463,6 +466,7 @@ async def _lookup_named_entity(
     storage: StorageBackend,
     corpus: Corpus | None,
     failures: DocumentLoadFailures | None = None,
+    concepts: dict[str, Annotations] | None = None,
 ) -> LookupResult:
     """Resolve a canonical to its ``(kind, text, description)`` for named-entity surfacing."""
     if corpus is not None:
@@ -484,6 +488,7 @@ async def _lookup_named_entity(
         dataset_name=segments[1],
         leaf=segments[2] if len(segments) >= 3 else None,
         storage=storage,
+        concepts=(concepts or {}).get(segments[0]),
     )
 
 
@@ -603,13 +608,14 @@ class SearchService:
             dataset=dataset, fields=[col for _, _, col in hits],
             engine=self._engine, storage=self._storage,
         )
+        concepts = None if compact else await concept_annotations(self._storage, ds_name)
         scoped = self._engine.policy is not None
         for (idx, hit, col), fresh in zip(hits, outcome.fields, strict=True):
             if fresh is col and not scoped:
                 continue
             update: dict[str, Any] = {"description": fresh.description}
             if not compact:
-                update["text"] = render_field_text(dataset=dataset, field=fresh)
+                update["text"] = render_field_text(dataset=dataset, field=fresh, concepts=concepts)
             refreshed_by_idx[idx] = hit.model_copy(update=update)
 
     # --- Read side ---
@@ -650,9 +656,10 @@ class SearchService:
                 f"max_results must be >= 1; got {max_results}."
             )
         await self._validate_datasource_known(datasource)
+        concepts = await self._concepts(datasource)
 
         canonical_input_entities, warnings = await self._resolve_inputs(
-            entities=entities, query=query,
+            entities=entities, query=query, concepts=concepts, failures=failures,
         )
         channel_1_active = (
             (entities is not None and len(entities) > 0) or query is not None
@@ -723,6 +730,7 @@ class SearchService:
                 datasources=datasources,
                 datasource_descriptions=datasource_descriptions,
                 extra_pairs=await self._document_pairs(datasource),
+                concepts=concepts,
             )
 
         if candidate_ids is not None:
@@ -742,6 +750,7 @@ class SearchService:
             corpus=corpus,
             failures=failures,
             candidate_ids=candidate_ids,
+            concepts=concepts,
         )
         warnings = _dedup(warnings + entity_surfacing_warnings)
 
@@ -875,6 +884,7 @@ class SearchService:
         corpus: Corpus | None,
         failures: DocumentLoadFailures,
         candidate_ids: frozenset[str] | None = None,
+        concepts: dict[str, Annotations] | None = None,
     ) -> tuple[list[str], dict[str, tuple[str, str, str | None]], list[str]]:
         """Surface each user-named canonical as itself: ``(entity_ranking, named_kind_text, warnings)``.
 
@@ -901,7 +911,7 @@ class SearchService:
                 )
                 continue
             result = await _lookup_named_entity(
-                canonical=canonical, storage=self._storage, corpus=corpus, failures=failures,
+                canonical=canonical, storage=self._storage, corpus=corpus, failures=failures, concepts=concepts,
             )
             if isinstance(result, LookupHidden):
                 warnings.append(
@@ -956,6 +966,49 @@ class SearchService:
             hook_name="refresh_documents", invoke=lambda r: r.refresh_documents(documents),
         )
 
+    async def refresh_after_concept_change(self, data_source: str | None = None) -> list[str]:
+        """Best-effort refresh after a mapping (of ``data_source``) or ontology (every mapped datasource) change; a
+        failure becomes a warning."""
+        try:
+            sources = [data_source] if data_source else sorted(
+                {ds for ds, _ in await self._storage.list_ontology_mappings()})
+            return await self.refresh_concepts(data_sources=sources)
+        except Exception as exc:  # NOSONAR(S112) — best-effort post-save refresh
+            logger.warning("concept search refresh failed: %s", exc)
+            return [f"search refresh failed: {exc}"]
+
+    async def refresh_concepts(self, *, data_sources: list[str]) -> list[str]:
+        """Refresh every visible dataset of ``data_sources`` after a mapping or ontology change; unchanged text is
+        skipped."""
+        warnings: list[str] = []
+        for data_source in data_sources:
+            concepts = await concept_annotations(self._storage, data_source)
+            failures = DocumentLoadFailures()
+            datasets = failures.skip(await self._storage.load_datasets(data_source=data_source))
+            warnings += await self._fan_out_with_isolation(
+                hook_name="refresh_concepts",
+                invoke=lambda r, datasets=datasets, concepts=concepts: r.refresh_concepts(datasets, concepts=concepts))
+        return _dedup(warnings)
+
+    async def _concepts(self, datasource: str | None) -> dict[str, Annotations]:
+        """The concept annotations of every datasource (``datasource`` when given) holding a mapping."""
+        out: dict[str, Annotations] = {}
+        for data_source in sorted({ds for ds, _ in await self._storage.list_ontology_mappings(datasource)}):
+            found = await concept_annotations(self._storage, data_source)
+            if found is not None:
+                out[data_source] = found
+        return out
+
+    async def _concept_entities(
+        self, reference: str, *, concepts: dict[str, Annotations], failures: DocumentLoadFailures,
+    ) -> list[str]:
+        """The visible fields and datasets annotated with concept ``reference`` or a subtype."""
+        out: list[str] = []
+        for data_source, held in concepts.items():
+            datasets = failures.skip(await self._storage.load_datasets(data_source=data_source))
+            out += concept_matches(held, reference=reference, datasets=datasets)
+        return out
+
     async def refresh_documents(self, data_source: str) -> list[str]:
         """Refresh ``data_source``'s semantic models and model-scoped metrics in every retriever."""
         documents = [(canonical, kind, text) for canonical, kind, text, _ in await self._document_pairs(data_source)]
@@ -996,26 +1049,17 @@ class SearchService:
         *,
         entities: list[str] | None,
         query: SlayerQuery | dict | None,
+        concepts: dict[str, Annotations] | None = None,
+        failures: DocumentLoadFailures | None = None,
     ) -> tuple[list[str], list[str]]:
         """Resolve ``entities`` + ``query`` into deduped canonicals and warnings; per-token failures warn."""
         canonical: list[str] = []
         warnings: list[str] = []
-        if entities:
-            for raw in entities:
-                if not isinstance(raw, str):
-                    raise ValueError(
-                        f"entities list items must be strings; got "
-                        f"{type(raw).__name__}."
-                    )
-                try:
-                    result = await resolve_entity(
-                        raw=raw, storage=self._storage,
-                    )
-                except (EntityResolutionError, AmbiguousDatasetError) as exc:
-                    warnings.append(f"entity {raw!r} dropped: {exc}")
-                    continue
-                canonical.extend(result.canonical_forms)
-                warnings.extend(result.warnings)
+        for raw in entities or []:
+            found, dropped = await self._resolve_entity_token(raw, concepts=concepts or {},
+                                                              failures=failures or DocumentLoadFailures())
+            canonical.extend(found)
+            warnings.extend(dropped)
         if query is not None:
             try:
                 extraction = await extract_entities_from_query(
@@ -1027,6 +1071,27 @@ class SearchService:
                 canonical.extend(extraction.canonical_forms)
                 warnings.extend(extraction.warnings)
         return _dedup(canonical), _dedup(warnings)
+
+    async def _resolve_entity_token(self, raw: Any, *, concepts: dict[str, Annotations],
+                                    failures: DocumentLoadFailures) -> tuple[list[str], list[str]]:
+        """One ``entities`` item's canonicals and warnings; a ``concept:`` item resolves to the visible ids mapped to
+        that concept."""
+        if not isinstance(raw, str):
+            raise ValueError(
+                f"entities list items must be strings; got "
+                f"{type(raw).__name__}."
+            )
+        if raw.startswith(CONCEPT_PREFIX):
+            found = await self._concept_entities(raw[len(CONCEPT_PREFIX):], concepts=concepts, failures=failures)
+            return found, [] if found else [f"entity {raw!r} dropped: no field or dataset you can see is mapped to "
+                                            f"that concept or a subtype."]
+        try:
+            result = await resolve_entity(
+                raw=raw, storage=self._storage,
+            )
+        except (EntityResolutionError, AmbiguousDatasetError) as exc:
+            return [], [f"entity {raw!r} dropped: {exc}"]
+        return list(result.canonical_forms), list(result.warnings)
 
     async def _recency_fallback(
         self,

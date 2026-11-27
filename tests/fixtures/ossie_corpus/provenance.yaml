@@ -2,16 +2,16 @@
 # Each file maps to its upstream git blob sha; harvested/ holds documents harvested from upstream validation/tests.
 # Written by `python scripts/ossie_schema_drift.py --vendor <checkout>`.
 repository: apache/ossie
-commit: d4dca4e9f81c2a49b9e6fd568425132b0c025e3f
-committed: '2026-11-22'
+commit: c2980498a9daea7a6de379c8e8047f28e65c363a
+committed: '2026-11-26'
 harvested: harvested/
 files:
   compliance/expressions/invalid.txt: ae047f6369611bdc42197decce4be89e629366a1
   compliance/expressions/valid.txt: 598a8ec5701c10f7e120ccfc68ba4d82b1139f0a
   compliance/portability/grader/.gitignore: 7a60b85e148f80966a550e5ab6a762a907c69ca6
-  compliance/portability/grader/grade.py: 366b5cae9459d3a70e7a3bfaeee9eca7c2fb0495
+  compliance/portability/grader/grade.py: 0e6732f123abccc8ba9d3a1f9a5a3ec08c5ba784
   compliance/portability/grader/README.md: a80ebccc4980bc9c43d5bedf6740893c02c4c4a3
-  compliance/portability/grader/test_grade.py: b08938b67500eeed2dc77367fabfb8ed082f4cfe
+  compliance/portability/grader/test_grade.py: cb3b1b75fe90342a42f64c2fe46a056492cd4efa
   compliance/portability/m0/m0_ansi_qualified.ossie.yaml: 3ab09c62154a02a2935be262f522144e4521ef5a
   compliance/portability/m0/m0_ossiesql_qualified.ossie.yaml: d3de59686f9187eb04903597e7eda7c821e0923b
   compliance/portability/m0/m0_sum_bare.ossie.yaml: d45a111a684b6cc60d9ccf702ec4dd5c30509d2d
@@ -23,135 +23,68 @@ files:
   compliance/portability/m3/m3_filtered_agg_bare.ossie.yaml: 7f86740096ccf1737331a7011fe84a333d6cb15e
   compliance/portability/m3/m3_filtered_agg_qualified.ossie.yaml: 61d4d2d9a7a693d1ab41a9cbf50e50dbb06c0fb1
   compliance/portability/m4/m4_cross_dataset.ossie.yaml: 82af35afca0932d9ca0ec7b5853f549bbf513b7a
-  compliance/portability/m5/m5_metric_ref.ossie.yaml: 90e586670330f996bd7fd9b532020f8b4b5f2f08
+  compliance/portability/m5/m5_agg_ref.ossie.yaml: 02f3c5959c226647c495897f32444b8a0b382e98
+  compliance/portability/m5/m5_metric_ref.ossie.yaml: b5d1fb8890276a9f55ee676f2e97c787d3832f3e
   compliance/portability/m6/m6_date_scalars.ossie.yaml: 273a7ec9467e47f4914ecff2b578d6d7f607d0b8
-  compliance/portability/m7/m7_window_order.ossie.yaml: 6daf72f710ca7cb0438dec15f7cbf5ecb19a6fa4
+  compliance/portability/m7/m7_window_order.ossie.yaml: ad5acc17fdd30e5fbf64327971cece65d35af4d2
   compliance/portability/m8/m8_ratio_to_total.ossie.yaml: 160b402ce0febf99168cbc8add66b35bf514e370
-  compliance/portability/manifest.yaml: 1cefd8abff8f08d962d5499777caccc9b542b4d1
-  compliance/portability/README.md: dbbc414f4cda6baaf2349e265bf00003760dc1a5
+  compliance/portability/manifest.yaml: 3873f4a7a83281fa75a7bc7cece46301a7102f82
+  compliance/portability/README.md: 518725e386a11dfd9d31deb7367536733a1c0a30
   compliance/query/scott/scott.sql: 63b43bb7247a7dabc134ee8895bdbadba2d60ed0
   compliance/query/scott/scott_model.ossie.yaml: cc7ce1c453e531d80f8ce39bc3cad94ca9fb9fbd
-  compliance/wide_table/cases/a01_shared_dimension/expected.txt: b6d1577748e1116018fc969fc9e41e214911d75b
-  compliance/wide_table/cases/a01_shared_dimension/query.json: 1af10e1a6a22e9ee5347b0eef4b31047859b8559
-  compliance/wide_table/cases/a01_shared_dimension/query.ossie.sql: e456aa8f80deca97cf3815e2b639df628c4a082f
-  compliance/wide_table/cases/a02_count_empty_input/expected.txt: 55d1ae77e3ca7aed24880ceb6a56be4379036e83
-  compliance/wide_table/cases/a02_count_empty_input/query.json: 575fa1632354a29a5d560ad3fcac050215644c5a
-  compliance/wide_table/cases/a02_count_empty_input/query.ossie.sql: fa7a5c898a7a88d822d64509e479641888d8da87
-  compliance/wide_table/cases/a03_three_branches/expected.txt: 49415dc2744ad3764f580a35149cc1ec62de066b
-  compliance/wide_table/cases/a03_three_branches/query.json: b8b12d2d4bc640ea190434c87a96c59b92054602
-  compliance/wide_table/cases/a03_three_branches/query.ossie.sql: b78d1412774f2c7413e00982eae051481017b846
-  compliance/wide_table/cases/a04_filter_on_dimension/expected.txt: d88b73b0ff9a390718148cc696dcb644e6eda960
-  compliance/wide_table/cases/a04_filter_on_dimension/query.json: 293b39e5dc883f6320cc969532ec6e6377b5a246
-  compliance/wide_table/cases/a04_filter_on_dimension/query.ossie.sql: e1e55e301122d24547e0bff9c97ae03b04116d84
-  compliance/wide_table/cases/a05_groups_from_orders/expected.txt: 4236187519fec64f0a3c4479aec5640c0aff0cbb
-  compliance/wide_table/cases/a05_groups_from_orders/query.json: 50e5892bec69b6ba532e6757268b3662a934de51
-  compliance/wide_table/cases/a05_groups_from_orders/query.ossie.sql: d81d1e942fee1d0035004c3bb7ca8c875896ab45
-  compliance/wide_table/cases/a06_groups_from_returns/expected.txt: d707b0b3c9eb60d60aec2bd744e131f08feadfc9
-  compliance/wide_table/cases/a06_groups_from_returns/query.json: bd76907ec87204a66f71ea9ac2829b90645ebe01
-  compliance/wide_table/cases/a06_groups_from_returns/query.ossie.sql: 43b4f190d8b62c07f579b3ec600f10c0d96a8efa
-  compliance/wide_table/cases/a07_dimension_only/expected.txt: 1bb424d71f25d8570d2f79a0cd4b501fc34fd388
-  compliance/wide_table/cases/a07_dimension_only/query.json: 94105a805f04dd383eac8a14d79adf9e1425e579
-  compliance/wide_table/cases/a07_dimension_only/query.ossie.sql: 4e50888d52f1268e3033ad81bfa332a34148c660
-  compliance/wide_table/cases/a08_model_metric_components/expected.txt: 428bbf2b37c05f2da2d9bd3dd38f4be810a49879
-  compliance/wide_table/cases/a08_model_metric_components/query.json: e3ff7271a6435b707854c47646e50510d6eef0db
-  compliance/wide_table/cases/a08_model_metric_components/query.ossie.sql: 06431d565f8dc4a5130645fed79ab0a59b9d8026
-  compliance/wide_table/cases/a09_aliases/expected.txt: 0814939427e82270585d8c8559b18aeb4f7b0741
-  compliance/wide_table/cases/a09_aliases/query.json: ea388272abaad9073d7c7611a2ebd4c610fa7b90
-  compliance/wide_table/cases/a09_aliases/query.ossie.sql: 924b03624e406612074e279c60120f5293b9f30e
-  compliance/wide_table/cases/a10_filter_without_dimension/expected.txt: 19d2232f33614a863970c002d1290cf37116a172
-  compliance/wide_table/cases/a10_filter_without_dimension/query.json: 54c292c5fc9a2f74e8ad645004c44be11c87328e
-  compliance/wide_table/cases/a10_filter_without_dimension/query.ossie.sql: 44fb1ffd1c187ed7056b6c7bdf77449a0b162db8
-  compliance/wide_table/cases/a11_filter_on_home_dataset/expected.txt: 7440b8b1919fd0b4e3a2ac57e1c21bf44bea9e18
-  compliance/wide_table/cases/a11_filter_on_home_dataset/query.json: d475d96e209a52e96985776fbafb118014288815
-  compliance/wide_table/cases/a11_filter_on_home_dataset/query.ossie.sql: 77256055e37e22bebbce69a732be7ce22d3e07e9
-  compliance/wide_table/cases/a12_anchor_from_dimensions/expected.txt: 59c23ddaa876db0d93f191656aa7c6d80c778cec
-  compliance/wide_table/cases/a12_anchor_from_dimensions/query.json: d6bf897b995f6590938463c2ad4267eecdde94e5
-  compliance/wide_table/cases/a12_anchor_from_dimensions/query.ossie.sql: 7ed132a54237ae2f9a11af801b42e25607137d72
-  compliance/wide_table/cases/a13_filter_false_with_dimension/expected.txt: ec4a892824980107b7ae12ddd6a36130163e9a25
-  compliance/wide_table/cases/a13_filter_false_with_dimension/query.json: 6d8ccd3c50a699b9e5176dc53058f016dbd473a3
-  compliance/wide_table/cases/a13_filter_false_with_dimension/query.ossie.sql: f75a0f0951d2e93bd7e2778330a42ad1a1e7c22c
-  compliance/wide_table/cases/a14_filter_false_without_dimension/expected.txt: f8cf74ae870d96060f961e967d5ac3816f603973
-  compliance/wide_table/cases/a14_filter_false_without_dimension/query.json: 7fee684704d63004fcbca9e33021d0625e1fcb14
-  compliance/wide_table/cases/a14_filter_false_without_dimension/query.ossie.sql: 771efcd182e40668388417bff7cfce3815b02e77
-  compliance/wide_table/cases/a15_unconnected_filter_false/expected.txt: 892e1a22bd23b33ad849f0148d7ea84df6a13d15
-  compliance/wide_table/cases/a15_unconnected_filter_false/query.json: 6d298d3e519ab4581b4b547fe9fc094e7d0cdadf
-  compliance/wide_table/cases/a15_unconnected_filter_false/query.ossie.sql: 0b23c5ec2f0a3d532d76059eed7640fb47be94b3
-  compliance/wide_table/cases/a16_shared_dimensions_stores/expected.txt: ffb119c1e8f9c7f60398f9e770f9e5edbea4b10a
-  compliance/wide_table/cases/a16_shared_dimensions_stores/query.json: 46d14aa9ec6225117519da5ac011f787a6fc71a4
-  compliance/wide_table/cases/a16_shared_dimensions_stores/query.ossie.sql: 40b72d47b14c65214a49c3f19ce206d00b1cf839
-  compliance/wide_table/cases/a17_unmatched_home_null_group/expected.txt: 84cb7d61cbacc99b6d94840916bac362dc6578c3
-  compliance/wide_table/cases/a17_unmatched_home_null_group/query.json: c7a346cb6f7c804001383cd4ae20d1814aa84276
-  compliance/wide_table/cases/a17_unmatched_home_null_group/query.ossie.sql: fa6c2b486f9f8b6c67fc09e0c211c4618f7bb65b
-  compliance/wide_table/cases/a18_anchor_with_metric/expected.txt: 39a40947b4bb79d9e100e85e0e1b49f48c1b83f1
-  compliance/wide_table/cases/a18_anchor_with_metric/query.json: 4014ac8dc1d046068a88d2212e88112b6757367d
-  compliance/wide_table/cases/a18_anchor_with_metric/query.ossie.sql: d37854b7254c0c10ecfb6008121a357493b1308c
-  compliance/wide_table/cases/a19_sales_by_year/expected.txt: 215daea8e025f77ca2618ef3bddf52238f6813f7
-  compliance/wide_table/cases/a19_sales_by_year/query.json: 21dfbcf889667fc897b674e04a6cae92e27c449f
-  compliance/wide_table/cases/a19_sales_by_year/query.ossie.sql: 2d41c2877e4c8a34655698ddb62527a8ed630d7e
-  compliance/wide_table/cases/a20_filter_on_sale_year/expected.txt: 0f2e5f51b9325158cc0bff3a3ebe245e2a61430c
-  compliance/wide_table/cases/a20_filter_on_sale_year/query.json: a2a9814defe301fd308158c5b81f3e5158913223
-  compliance/wide_table/cases/a20_filter_on_sale_year/query.ossie.sql: edd51c7ffef4a259f0e4580f3504ca1ab29f0dbd
-  compliance/wide_table/cases/a21_single_path_on_ambiguous_model/expected.txt: a9a94cfe8c7ff0c56372b39253008fee377a95dd
-  compliance/wide_table/cases/a21_single_path_on_ambiguous_model/query.json: c359c4ce6ed26dbf69e52b1f3987cc56466408e8
-  compliance/wide_table/cases/a21_single_path_on_ambiguous_model/query.ossie.sql: f367d7eaa85569a2694d38d4f9e1549c5e55a77e
-  compliance/wide_table/cases/e01_invalid_query_unknown_key/expected.txt: 93fece8b1d654df62c5a75f77a16bfb91a0756d9
-  compliance/wide_table/cases/e01_invalid_query_unknown_key/query.json: 52b23749653611b4c794a27c59d512ab3904f0f6
-  compliance/wide_table/cases/e02_invalid_query_null/expected.txt: 93fece8b1d654df62c5a75f77a16bfb91a0756d9
-  compliance/wide_table/cases/e02_invalid_query_null/query.json: 9aecd47721d693539f91f5f8b2e8346dbd555e6a
-  compliance/wide_table/cases/e03_empty_aggregation_query/expected.txt: 77704e901719f1ca4d81f60173e5ddfb70a355af
-  compliance/wide_table/cases/e03_empty_aggregation_query/query.json: 31a1eb30781911de1be36863313339c49b976172
-  compliance/wide_table/cases/e04_name_not_found/expected.txt: 988671d3a8913470f5d8395c2c164c6297e35663
-  compliance/wide_table/cases/e04_name_not_found/query.json: accaeaaf290e18daae91cb30f1f9cb7c00b829e9
-  compliance/wide_table/cases/e05_metric_in_dimensions/expected.txt: a3cb9899b8886ace858733c554144eb4ebf3f6bc
-  compliance/wide_table/cases/e05_metric_in_dimensions/query.json: e4d230eb18f6e8a135d4c51c7cb2eeb1742cf9bf
-  compliance/wide_table/cases/e06_field_in_metrics/expected.txt: bd299e823b82e051858bcfb448e1fe7b52dc8cdf
-  compliance/wide_table/cases/e06_field_in_metrics/query.json: d72f3485c13d5aeae177c866220a656714ea0ebd
-  compliance/wide_table/cases/e07_aggregate_in_filter/expected.txt: 1cc6e1c68faf3d6e8b5567da4765f71b9a2f3771
-  compliance/wide_table/cases/e07_aggregate_in_filter/query.json: 7b083d7fbacbdfac7f0fa33f19a01a3dd787c258
-  compliance/wide_table/cases/e08_window_in_filter/expected.txt: b269e18e95cdf3125fb1e19a32b8cefb4358ccfe
-  compliance/wide_table/cases/e08_window_in_filter/query.json: 06998c2aa7921e74f91078be968bcecb9f2890cc
-  compliance/wide_table/cases/e09_cross_dataset_filter/expected.txt: 79a8a3e8b68c127b8d156fa51abe0e2cbcbfd1e1
-  compliance/wide_table/cases/e09_cross_dataset_filter/query.json: 8a6677f5ae692243b87c0aca02efeae1e7e52487
-  compliance/wide_table/cases/e10_name_collision/expected.txt: b4f60ba1fb3961d1450675abfe24ecc93596dc01
-  compliance/wide_table/cases/e10_name_collision/query.json: 599dc54c33cb6ef42d75c050f386dd02c395e8f7
-  compliance/wide_table/cases/e11_unaggregated_field_in_metric/expected.txt: 52ad0b4a409592fae36c2840139f0af025146050
-  compliance/wide_table/cases/e11_unaggregated_field_in_metric/query.json: 5286424a714c333bdd400a9fbff4f6e6ebdc90a4
-  compliance/wide_table/cases/e12_windowed_metric/expected.txt: 4d0f4382165e464ef7436b3668c07784c477a13f
-  compliance/wide_table/cases/e12_windowed_metric/query.json: 8f3231fb0c9d85fcbf303577e1c1f506a50af9e7
-  compliance/wide_table/cases/e13_measure_grain_two_datasets/expected.txt: 513466b6d20a572d83a9438b8a8df109163ad615
-  compliance/wide_table/cases/e13_measure_grain_two_datasets/query.json: ff64ef704383e055a3e14ab4b640571f1b7da09d
-  compliance/wide_table/cases/e14_measure_grain_no_dataset/expected.txt: 513466b6d20a572d83a9438b8a8df109163ad615
-  compliance/wide_table/cases/e14_measure_grain_no_dataset/query.json: 80ae0eb0849dcf80109b01755699a9db07013a01
-  compliance/wide_table/cases/e15_no_path/expected.txt: 3cb40b58f30d5c35f48c216e508b47203dda8c9e
-  compliance/wide_table/cases/e15_no_path/query.json: 557b9afcc27e5f77dc1624a3e986b349fa282017
-  compliance/wide_table/cases/e16_partial_dimension_reachability/expected.txt: a4b4cbba5d6513c903499ef9697c674e10f62c78
-  compliance/wide_table/cases/e16_partial_dimension_reachability/query.json: cf4bcb527febc7698d454e7799e7f345ddfd0c55
-  compliance/wide_table/cases/e17_no_anchor/expected.txt: 94c3985d6f6d308665ad62d2ce0557356db60a22
-  compliance/wide_table/cases/e17_no_anchor/query.json: 3c50ebbfa38c35c982950e98c191ee30564b8d0a
-  compliance/wide_table/cases/e18_filter_path_from_metric/expected.txt: e96c8300c4c558e1631bf0796fedb45cfb9b6ebf
-  compliance/wide_table/cases/e18_filter_path_from_metric/query.json: 3aa8b89222985d26a6b3eb3165fd8f14b4fa69a2
-  compliance/wide_table/cases/e19_filter_path_from_anchor/expected.txt: e96c8300c4c558e1631bf0796fedb45cfb9b6ebf
-  compliance/wide_table/cases/e19_filter_path_from_anchor/query.json: 93dc704920cd668dba54ae8bb35628799b9520b1
-  compliance/wide_table/cases/e20_order_invalid_before_name/expected.txt: 93fece8b1d654df62c5a75f77a16bfb91a0756d9
-  compliance/wide_table/cases/e20_order_invalid_before_name/query.json: 1a2ebd8817ed6e0425d5395ad914d994b7b0673a
-  compliance/wide_table/cases/e21_order_name_before_filter/expected.txt: 988671d3a8913470f5d8395c2c164c6297e35663
-  compliance/wide_table/cases/e21_order_name_before_filter/query.json: 0fe2c65b2f782b49517c579afd23bd8879bbbaf6
-  compliance/wide_table/cases/e22_no_path_stores/expected.txt: 5492fbdea554cd0b7b20c501ff0494d6b4e7ca2f
-  compliance/wide_table/cases/e22_no_path_stores/query.json: 41453f82c63f91068b1093eba983bf0aac601eb4
-  compliance/wide_table/cases/e23_no_anchor_stores/expected.txt: f66a4593d380d28c6a2f272a087166af64a1abdb
-  compliance/wide_table/cases/e23_no_anchor_stores/query.json: c63aba8c579eb5a0ec68a047c56aa34e42c3382c
-  compliance/wide_table/cases/e24_ambiguous_path_dimension/expected.txt: 74ec33d29f4d1a71cf689d2382513a88f6ab1cca
-  compliance/wide_table/cases/e24_ambiguous_path_dimension/query.json: 21dfbcf889667fc897b674e04a6cae92e27c449f
-  compliance/wide_table/cases/e25_ambiguous_path_filter/expected.txt: 74ec33d29f4d1a71cf689d2382513a88f6ab1cca
-  compliance/wide_table/cases/e25_ambiguous_path_filter/query.json: a2a9814defe301fd308158c5b81f3e5158913223
-  compliance/wide_table/cases/README.md: c5338ce1fc2ba0ef76952b3d52207c93ec12546f
-  compliance/wide_table/README.md: 8166f8b827fc69f46312415481c59cff2dd14927
+  compliance/wide_table/a01_shared_dimension.ost: e6f0d81c5d95af46eea2a707ac8156c351557d6f
+  compliance/wide_table/a02_count_empty_input.ost: aaeb1e831ae7a28b3846cb611f8c8ab815c18b7b
+  compliance/wide_table/a03_three_branches.ost: 9bdff0f38285b7e4a991a104cd835944742a737a
+  compliance/wide_table/a04_filter_on_dimension.ost: a5cdbec8ed93b79e5ec22a97a8542cda76d2d2c9
+  compliance/wide_table/a05_groups_from_orders.ost: 6799d56a011d871970a167797cdb128b8455af2f
+  compliance/wide_table/a06_groups_from_returns.ost: 83918075fdb4df0439eb73b1c0d0b5b991182d46
+  compliance/wide_table/a07_dimension_only.ost: 439f83822040a64fbdbe57d260dd24ce558fe638
+  compliance/wide_table/a08_model_metric_components.ost: f3d9656eb806e0f07298adfd7c89a62d9626b672
+  compliance/wide_table/a09_aliases.ost: 5f7f6658c21c3109b7ac80013459317dfa80a427
+  compliance/wide_table/a10_filter_without_dimension.ost: 68135ae5aeda1567331ee18167ac327c0f9dd4f1
+  compliance/wide_table/a11_filter_on_home_dataset.ost: 7c6c4d0ee52e8aa0da62bd6b9d4598b342e4e561
+  compliance/wide_table/a12_anchor_from_dimensions.ost: 5eef26e58c1b866a433b868aa747aa38efc4bab9
+  compliance/wide_table/a13_filter_false_with_dimension.ost: 44bd3fbd14ff5e1f274570b651fef17cb85289ce
+  compliance/wide_table/a14_filter_false_without_dimension.ost: d71c53f9857eed7d7f082005214e008b4cf6850c
+  compliance/wide_table/a15_unconnected_filter_false.ost: dbeafb62ad984a89f4960a11a75840a9b87104c1
+  compliance/wide_table/a16_shared_dimensions_stores.ost: 2e2c0f19b76826232a52fb3b898caae7fd8c4c88
+  compliance/wide_table/a17_unmatched_home_null_group.ost: 705009dbd016a8836be240501e3969a0d10bc8e6
+  compliance/wide_table/a18_anchor_with_metric.ost: a4efed6c16661fb6c1e122cf88ddc028668f8ab0
+  compliance/wide_table/a19_sales_by_year.ost: e56cd29db4313c9a2d59a0ffa5bad5029ad22303
+  compliance/wide_table/a20_filter_on_sale_year.ost: cab3ea5c80ffddba27fea39adc2435e8057c6dfa
+  compliance/wide_table/a21_single_path_on_ambiguous_model.ost: 1623ae02788835b258fc683c49beb4aa73c93137
+  compliance/wide_table/e01_invalid_query_unknown_key.ost: 777162edb5bac32aadbba907af340a70a4b51bea
+  compliance/wide_table/e02_invalid_query_null.ost: f432f548001cf90ea094a4ccab7959c233b56597
+  compliance/wide_table/e03_empty_aggregation_query.ost: 81684b12511bcfdbe0bca6ef591e1c7ef6f9da70
+  compliance/wide_table/e04_name_not_found.ost: feaf475a3c72e939ec745edc256b19ae73848a6c
+  compliance/wide_table/e05_metric_in_dimensions.ost: e3bd2fc31689ad024564be0bb812ff0ea7aa1e13
+  compliance/wide_table/e06_field_in_metrics.ost: 3deefc3962152995a5695555efd17d53952f15ca
+  compliance/wide_table/e07_aggregate_in_filter.ost: bd27a4a7991bcc4811161c0ef71045359cd15c9c
+  compliance/wide_table/e08_window_in_filter.ost: 50268048733004ad1b685c1854e7333ef4e6558a
+  compliance/wide_table/e09_cross_dataset_filter.ost: 8dcd50643660094d62ab8c5db2054c9eb3af111d
+  compliance/wide_table/e10_name_collision.ost: b311721f3c94c2bc14741ca96c0ec72e0d50e981
+  compliance/wide_table/e11_unaggregated_field_in_metric.ost: 01e323668c15c985bca47f0d20510062e95597fd
+  compliance/wide_table/e12_windowed_metric.ost: 27c06c9f47d502de895953bdd7e83ff7ae87e501
+  compliance/wide_table/e13_measure_grain_two_datasets.ost: 41ab4c96795acdeb7ded0beaa68ffcc7171a0313
+  compliance/wide_table/e14_measure_grain_no_dataset.ost: 52c2dfdc486edfaa22eb8c9d7e84f21abf781217
+  compliance/wide_table/e15_no_path.ost: c1c424c3502232b90350dd8c74547325bc1d6f37
+  compliance/wide_table/e16_partial_dimension_reachability.ost: 52822b1d0e8fde3f177eba30806d7831a17a0203
+  compliance/wide_table/e17_no_anchor.ost: 041a529c51804d2683da5b20dab9170f8ba3ad31
+  compliance/wide_table/e18_filter_path_from_metric.ost: ccde6e12bacfc1fafa9ab830fb6280d03cb5837a
+  compliance/wide_table/e19_filter_path_from_anchor.ost: cbb7c44f97b1435c748e219b9b307725a7de6926
+  compliance/wide_table/e20_order_invalid_before_name.ost: 6f75fe822d73d133092470b91a79bd765cb98ab5
+  compliance/wide_table/e21_order_name_before_filter.ost: 8c7ebdacb4884903462948bc25e9a0725aeb3bf2
+  compliance/wide_table/e22_no_path_stores.ost: e21df445b2f404ef1630e875f56113811fca82f6
+  compliance/wide_table/e23_no_anchor_stores.ost: b0401398ab9ef6df65e9085490090e2118e0f865
+  compliance/wide_table/e24_ambiguous_path_dimension.ost: 0a0fd1c8b08223349bffb2a2174088561c0cf49c
+  compliance/wide_table/e25_ambiguous_path_filter.ost: 1198a5c576e986fb2378ef56bf50ed9cc87b56de
+  compliance/wide_table/README.md: b04e9975149f512615f934cc7b5f09c548e097ee
   compliance/wide_table/retail/retail.sql: c78df7a7c5c6be5cc0fdee2f4f236f4cbcd3459b
   compliance/wide_table/retail/retail_model.ossie.yaml: bc89e2f12221f60b921b9a6435d40b2b3609dfb6
   compliance/wide_table/stores/stores.sql: 41b4889eebc4b4a0939417c55d9f042027e55a0a
   compliance/wide_table/stores/stores_ambiguous_model.ossie.yaml: 20d187ca800560b7e8ae18b4f42e3484cf9db861
   compliance/wide_table/stores/stores_model.ossie.yaml: 0de54e980536b71bdfd3c6b113968f2f071fa8d8
-  core-spec/expression_language.md: fcb4931fcfd67e9c1a7ed1788778fb09e1d5ac19
+  core-spec/expression_language.md: 7bbd21895ab33f56d581cf472d303df2e2d0645c
   core-spec/ossie-schema.json: 8c9b934034358e203825af8827657fab20c25855
   core-spec/relational_semantics.md: 3902fb635d137ecba392d0809ab9f5746f3ca159
   core-spec/spec.md: cefe33b6959de606eb0cb943eb3fea81d6e4205b
@@ -163,6 +96,9 @@ files:
   examples/flights.semantic_model.yaml: 02e548f2354fbe0874fa2e31ba3fabdf8f652ae7
   examples/flights.yaml: 7a85867dde7ae99ffc1102df8ab2a8469006752e
   examples/foaf_owl_import.yaml: 29b990d8f21ff0cc959fed79a388a14b2fa1469c
+  examples/minimal.json: 9d4199fb06b5777d3ba600672b7f90d57599a600
+  examples/minimal.yaml: 99da2e955b2c93c0c16840746fd786f8bc3300c6
+  examples/README.md: 62daf05078742274a07c12d550a2ac4d278b46da
   examples/renamed_fields.yaml: a6806f25f6d56798eca3064069c37dca5bf1ab22
   examples/sap_business_partner.mapping.yaml: 7fd4605b7696bc62ef3fcb08af0fce6254a125c6
   examples/sap_business_partner.ontology.yaml: 81c451c1bc7b1af286208c68402130b4d4fe69b4
@@ -170,5 +106,8 @@ files:
   examples/tpcds_semantic_model.yaml: daa513a21a12ed616d52cb33a4e87ae325d5ff25
   LICENSE: 261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64
   NOTICE: e4bc78e2bb5c7e6df4f7692daa419da3076a9bc5
+  ontology/mapping.json: b0471cf489ac616a6aed27a8f13ec8b531c91f47
+  ontology/ontology.json: 274a1c1e2a8bf46648196085f2c3c68c139098b6
+  ontology/ontology.md: 89dad577ad256d6432a8a832ddaabf65e4cfd75d
   python/src/ossie/_loading.py: fb889e0a4da45023d2edba1a0972ae619c552c35
-  validation/validate.py: 9af374992ab9d08ef1527d9b99e422fa4baeb6ec
+  validation/validate.py: 15ed6ee95c6ace0073ba5c2a4ae869eded5ab726

@@ -43,15 +43,12 @@ flowchart TD
   end
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
-  core__models -.-> sql__window_detect
-  core__query -.-> sql__window_detect
   core__models -.-> storage__migrations
   core__query -.-> storage__migrations
   core__models -.-> core__query
   core__query --> core__models
   core__query --> core__syntax
   sql__render --> sql__dialects
-  sql__sql_predicate --> sql__window_detect
   engine__binding --> core__syntax
   engine__bind_inputs --> engine__binding
   engine__bind_inputs --> engine__elaborate_env

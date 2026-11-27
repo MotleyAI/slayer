@@ -16,7 +16,6 @@ from pydantic import ValidationError
 from slayer.core.keys import Grain
 from slayer.core.keys import (
     AggregateKey,
-    ArithmeticKey,
     FieldKey,
     TransformKey,
 )
@@ -32,13 +31,8 @@ MONTH = FieldKey(path=(), leaf="month")
 AMOUNT = FieldKey(path=(), leaf="amount")
 
 SUM_BY_REGION = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of({REGION}))
-SUM_BY_CITY = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of({CITY}))
 BARE_SUM = AggregateKey(source=AMOUNT, agg="sum")
 WINDOW_SUM = AggregateKey(source=AMOUNT, agg="sum", kwargs=(("window", "90d"),))
-# rank(sum(partition_by=region) + sum(partition_by=city)) — union grain {region, city}.
-RANK_UNION = TransformKey(
-    op="rank", input=ArithmeticKey(op="+", operands=(SUM_BY_REGION, SUM_BY_CITY)),
-)
 # rank(sum(partition_by=region)) — fully determined by region.
 RANK_DETERMINED = TransformKey(op="rank", input=SUM_BY_REGION)
 
@@ -182,11 +176,6 @@ class TestRegroupRootGrain:
         out = regroup_root_grain(SUM_BY_REGION)
         assert type(out) is Grain
         assert out == Grain.of([REGION])
-
-    def test_transform_root_union_of_inner_grains(self) -> None:
-        out = regroup_root_grain(RANK_UNION)
-        assert type(out) is Grain
-        assert out == Grain.of([REGION, CITY])
 
     def test_unpartitioned_root_empty(self) -> None:
         out = regroup_root_grain(BARE_SUM)

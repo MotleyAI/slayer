@@ -11,7 +11,7 @@ Defines casts in Mode-B expressions: `CAST` / `::` with one meaning on every dia
 
 - To `BOOLEAN`: a number SHALL be true exactly when it is not zero, a boolean SHALL be itself, and NULL SHALL stay NULL. The result SHALL be a nullable boolean in the dialect's own representation (1 and 0 where booleans are integers).
 - To an integer type, a non-integral number SHALL round half away from zero. An exact-numeric tie SHALL round exactly so; a floating-point tie SHALL be the database's own, since a binary value is rarely an exact tie; this is documented.
-- To `DECIMAL(p, s)` or `NUMERIC(p, s)`, a number or numeric text (an optionally signed decimal with an optional fraction and exponent, surrounding spaces ignored) SHALL round to `s` fractional digits half away from zero. On Trino and SQL Server, whose own cast reads no exponent, exponent-form text is read through a double, so its digits past a double's precision are not kept; this is documented. An omitted scale SHALL be 0 and an omitted precision 38: `DECIMAL` and `NUMERIC` mean `DECIMAL(38, 0)`, and `DECIMAL(p)` means `DECIMAL(p, 0)`.
+- To `DECIMAL(p, s)` or `NUMERIC(p, s)`, a number or numeric text (an optionally signed decimal with an optional fraction and exponent, surrounding spaces ignored) SHALL keep every digit and round to `s` fractional digits half away from zero, exponent-form text included. An omitted scale SHALL be 0 and an omitted precision 38: `DECIMAL` and `NUMERIC` mean `DECIMAL(38, 0)`, and `DECIMAL(p)` means `DECIMAL(p, 0)`.
 - To `VARCHAR(n)` or `STRING(n)`, the value SHALL be the first `n` characters (Unicode code points) of its text, never an error for a longer value.
 
 Invalid input — text that is not a literal of the target type, or a value outside the target's range or precision — SHALL follow the database's own `CAST` unless a requirement below says otherwise. A type Ossie does not define SHALL keep the database's own conversion. These rules govern the casts an author writes; the casts SLayer emits itself to read or type a value SHALL keep their values. A type the target dialect cannot express SHALL be rejected at plan time with a typed query error naming the type and the dialect; a type is not expressed when the target's rendering would drop or change any part of it — its family, precision or scale, time-zone modifier, signedness, or array suffix — save a `VARCHAR` length, and on BigQuery a `DECIMAL` precision and scale, which the cast applies itself (`TRY_CAST` yields NULL past the precision). An array of arrays (`T[][]`) SHALL be rejected.
@@ -91,6 +91,11 @@ Invalid input — text that is not a literal of the target type, or a value outs
 - **WHEN** dimensions are `CAST(12.345 AS DECIMAL(10,2))`, `CAST('12.345' AS DECIMAL(10,2))` and `CAST(-12.345 AS NUMERIC(10,2))`
 - **THEN** they yield `12.35`, `12.35` and `-12.35` on every Tier-1 dialect
 
+#### Scenario: Exponent-form text casts to a decimal exactly
+
+- **WHEN** dimensions are `CAST('9007199254740993e0' AS DECIMAL(20,0))`, `CAST('12345e-2' AS DECIMAL(10,2))`, `CAST('1.2345e1' AS DECIMAL(10,3))` and `CAST('1.25e0' AS DECIMAL(5,1))`
+- **THEN** they yield `9007199254740993`, `123.45`, `12.345` and `1.3` on every Tier-1 dialect, Trino and SQL Server included
+
 #### Scenario: An omitted scale is zero
 
 - **WHEN** dimensions are `CAST(12.5 AS DECIMAL)`, `CAST(12.4 AS NUMERIC)` and `CAST(12.5 AS DECIMAL(5))`
@@ -103,7 +108,7 @@ Invalid input — text that is not a literal of the target type, or a value outs
 
 ### Requirement: A cast's result type is inferred
 
-A cast SHALL type as SLayer's data type for its target: the integer family as INT; floating-point, `REAL`, `DECIMAL` and `NUMERIC` as DOUBLE; character types as TEXT; `BOOLEAN` as BOOLEAN; `DATE` as DATE; `TIMESTAMP` and `DATETIME` as TIMESTAMP; any other type as UNKNOWN. The target SHALL be read as Postgres spells it, and as the target dialect spells it only when Postgres does not know the type (`UBIGINT`, `UInt32`), so a type word means the same on every dialect. A cast to `T[]` SHALL type as a list whose elements have `T`'s type (UNKNOWN elements when `T` maps to UNKNOWN), usable wherever a list column is. The inferred type SHALL drive checking and the query plan's types exactly as a column's declared type does.
+A cast SHALL type as SLayer's data type for its target: the integer family as INT; floating-point, `REAL`, `DECIMAL` and `NUMERIC` as DOUBLE; character types as TEXT; `BOOLEAN` as BOOLEAN; `DATE` as DATE; `TIMESTAMP` and `DATETIME` as TIMESTAMP; `TIME`, with or without a precision and without a time zone, as the time of day (`queries/time-of-day`); any other type, a time type with a time zone included, as UNKNOWN. The target SHALL be read as Postgres spells it, and as the target dialect spells it only when Postgres does not know the type (`UBIGINT`, `UInt32`), so a type word means the same on every dialect. A cast to `T[]` SHALL type as a list whose elements have `T`'s type (UNKNOWN elements when `T` maps to UNKNOWN), usable wherever a list column is. The inferred type SHALL drive checking and the query plan's types exactly as a column's declared type does.
 
 #### Scenario: Cast to DATE is a date operand
 
@@ -134,6 +139,11 @@ A cast SHALL type as SLayer's data type for its target: the integer family as IN
 
 - **WHEN** a dimension on SQL Server is `TRY_CAST(created_txt AS TIMESTAMP)`
 - **THEN** its planned type is TIMESTAMP and it converts to SQL Server's timestamp type, not its `ROWVERSION` synonym
+
+#### Scenario: Cast to TIME is a time of day
+
+- **WHEN** dimensions on Postgres are `CAST(opened_txt AS TIME)`, `CAST(opened_txt AS TIME(3))` and `CAST(opened_txt AS TIME WITH TIME ZONE)`
+- **THEN** the first two are planned as `Time` and the third as UNKNOWN
 
 ### Requirement: TRY_CAST turns invalid input into NULL on every dialect
 
@@ -221,7 +231,7 @@ A cast SHALL type as SLayer's data type for its target: the integer family as IN
 
 ### Requirement: SQLite casts to timestamp and time types
 
-SQLite has no timestamp type, so on SQLite `CAST(x AS T)` and `x::T` for a timestamp type `T` without a time-zone modifier or precision parameter (`TIMESTAMP`, `DATETIME`, `TIMESTAMP_NTZ`, `TIMESTAMP WITHOUT TIME ZONE`) SHALL yield the value `TRY_CAST(x AS T)` yields there: the ISO timestamp of ISO date or date-time input, a date at its midnight, and NULL for any other input. It SHALL never yield the numeric prefix of the input. A cast on SQLite to `TIME`, to a timestamp type with a time-zone modifier, or to a timestamp type with a precision parameter SHALL be rejected at plan time with the typed query error naming the type and the dialect, as for any type the dialect cannot express; `TRY_CAST` to those types SHALL be rejected the same way.
+SQLite has no timestamp type, so on SQLite `CAST(x AS T)` and `x::T` for a timestamp type `T` without a time-zone modifier or precision parameter (`TIMESTAMP`, `DATETIME`, `TIMESTAMP_NTZ`, `TIMESTAMP WITHOUT TIME ZONE`) SHALL yield the value `TRY_CAST(x AS T)` yields there: the ISO timestamp of ISO date or date-time input, a date at its midnight, and NULL for any other input. It SHALL never yield the numeric prefix of the input. SQLite has no time-of-day type either, so `CAST(x AS TIME)` and `x::TIME` SHALL likewise yield the value `TRY_CAST(x AS TIME)` yields there: the time of day of ISO time text or of a timestamp (`queries/time-of-day`), and NULL for any other input. A cast on SQLite to a time or timestamp type with a time-zone modifier, or to a timestamp type with a precision parameter, SHALL be rejected at plan time with the typed query error naming the type and the dialect, as for any type the dialect cannot express; `TRY_CAST` to those types SHALL be rejected the same way.
 
 #### Scenario: Timestamp cast of a date column
 
@@ -240,8 +250,13 @@ SQLite has no timestamp type, so on SQLite `CAST(x AS T)` and `x::T` for a times
 
 #### Scenario: Inexpressible types are refused
 
-- **WHEN** a dimension on SQLite is `CAST(created_at AS TIME)`, `CAST(created_at AS TIMESTAMP(3))`, `CAST(created_at AS TIMESTAMP WITH TIME ZONE)` or `TRY_CAST(created_at AS TIME)`
+- **WHEN** a dimension on SQLite is `CAST(created_at AS TIMESTAMP(3))`, `CAST(created_at AS TIMESTAMP WITH TIME ZONE)`, `CAST(created_at AS TIME WITH TIME ZONE)` or `TRY_CAST(created_at AS TIMESTAMP(3))`
 - **THEN** the query fails at plan time with the typed error naming the type and SQLite, and no SQL is executed
+
+#### Scenario: Time cast on SQLite
+
+- **WHEN** dimensions on SQLite are `CAST(created_at AS TIME)` over a row at `2024-01-15 10:30:45`, `'10:30:00'::TIME` and `CAST('bogus' AS TIME)`
+- **THEN** they yield 10:30:45, 10:30:00 and NULL
 
 ### Requirement: SQLite casts to boolean, decimal and varchar types
 

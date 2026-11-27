@@ -67,11 +67,11 @@ class TestTheMarker:
 
 class TestStoredVersion:
     def test_slayer_query_version_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerQuery"] == 19
+        assert CURRENT_VERSIONS["SlayerQuery"] == 20
 
     def test_a_v17_stored_query_loads_unmarked(self) -> None:
         loaded = SlayerQuery.model_validate({"version": 17, "population": "customers", **BY_REGION})
-        assert (loaded.population, loaded.population_inferred, loaded.version) == ("customers", False, 19)
+        assert (loaded.population, loaded.population_inferred, loaded.version) == ("customers", False, 20)
 
 
 class TestPinnedOnSave:

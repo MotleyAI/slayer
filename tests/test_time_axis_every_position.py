@@ -35,10 +35,10 @@ TIME_LESS = {
     "change_pct": "change_pct(sum(orders.amount, partition_by=orders.region))",
     "cumsum": "cumsum(sum(orders.amount, partition_by=orders.region))",
 }
-NESTED_COLLAPSE = {
-    "time_shift_last": (f"time_shift(last({KEEPS_AXIS}), -1)", "last"),
-    "cumsum_last": (f"cumsum(last({KEEPS_AXIS}))", "last"),
-    "time_shift_first": (f"time_shift(first({KEEPS_AXIS}), -1)", "first"),
+NESTED_RANKED = {
+    "time_shift_last": f"time_shift(last({KEEPS_AXIS}), -1)",
+    "cumsum_last": f"cumsum(last({KEEPS_AXIS}))",
+    "time_shift_first": f"time_shift(first({KEEPS_AXIS}), -1)",
 }
 WINDOWED = "cumsum(sum(orders.amount, window='90d', partition_by=orders.region))"
 
@@ -115,21 +115,17 @@ class TestAxisKeepingOperand:
         _assert_map(_by_region_month(resp, "y"), expected)
 
 
-class TestNestedCollapseDropsAxis:
+class TestNestedRankedAggregationDropsAxis:
     @pytest.mark.parametrize("position", ["measure", "aggregation_source", "dimension"])
-    @pytest.mark.parametrize("case", list(NESTED_COLLAPSE))
-    async def test_refused_with_collapse_remedy(self, engine, case, position) -> None:
-        expr, collapse = NESTED_COLLAPSE[case]
-        err = await _refusal(engine, _query(**POSITIONS[position](expr)))
-        assert "partition_by=" not in (err.suggestion or "")
-        assert collapse in (err.suggestion or "")
+    @pytest.mark.parametrize("case", list(NESTED_RANKED))
+    async def test_refused(self, engine, case, position) -> None:
+        await _refusal(engine, _query(**POSITIONS[position](NESTED_RANKED[case])))
 
-    # A collapsed literal-only transform must not fall back to the query grain.
+    # A nested ranked aggregation over a literal-only transform must not fall back to the query grain.
     @pytest.mark.parametrize("dimensions", [[], ["orders.region"]])
     @pytest.mark.parametrize("expr", ["time_shift(last(cumsum(1)), -1)", "cumsum(last(cumsum(1)))"])
     async def test_aggregate_free_operand_refused_at_any_grain(self, engine, expr, dimensions) -> None:
-        err = await _refusal(engine, _query(dimensions=dimensions, metrics=_metrics(expr)))
-        assert "last" in (err.suggestion or "")
+        await _refusal(engine, _query(dimensions=dimensions, metrics=_metrics(expr)))
 
 
 class TestWindowedInnerCarriesAxis:

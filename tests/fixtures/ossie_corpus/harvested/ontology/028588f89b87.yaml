@@ -1,0 +1,12 @@
+document:
+  concept_mappings:
+  - concept: OrderLineItem
+    object_mappings:
+    - referent_mappings:
+      - relationship: nr
+        expression: LINEITEMS.L_LINENUMBER
+      - relationship: order
+        referent_mappings:
+        - relationship: CustOrder.nr
+          expression: LINEITEMS.L_ORDERKEY
+files: {}

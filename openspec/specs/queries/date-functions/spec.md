@@ -53,7 +53,7 @@ The `part` argument of `date_part` and the `unit` argument of `date_diff` / `dat
 string literal (the `part` of `date_part` may instead be a bare word, below), matched
 case-insensitively, from that function's closed set:
 - `date_part`: `year`, `iso_year`, `quarter`, `month`, `week`, `day`, `day_of_week`,
-  `day_of_year`, `hour`, `minute`, `second`;
+  `day_of_year`, `hour`, `minute`, `second`, `millisecond`;
 - `date_diff` and `date_add`: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`,
   `quarter`, `year`.
 The `part` of `date_part` MAY also be written as a bare word from that set or from the date-part
@@ -68,8 +68,8 @@ Differently-cased spellings of the same unit SHALL intern to the same value.
 - **THEN** the query is rejected with an error listing the accepted `date_diff` units
 
 #### Scenario: Extraction-only part rejected as a difference unit
-- **WHEN** a filter uses `date_diff('day_of_week', created_at, shipped_at) > 1`
-- **THEN** the query is rejected with an error listing the accepted `date_diff` units
+- **WHEN** a filter uses `date_diff('day_of_week', created_at, shipped_at) > 1`, and another uses `date_add(created_at, 5, 'millisecond')`
+- **THEN** each query is rejected with an error listing the accepted units of its function
 
 #### Scenario: Column as a unit rejected
 - **WHEN** a filter uses `date_part(status, created_at) = 1`
@@ -85,10 +85,13 @@ Differently-cased spellings of the same unit SHALL intern to the same value.
 
 ### Requirement: date_part extracts calendar components with ISO week conventions
 `date_part(part, ts)` SHALL return an integer: `year`, `quarter` (1–4), `month` (1–12), `day`
-(day of month), `day_of_year` (1–366), `hour` (0–23), `minute`, `second` (whole seconds);
-`day_of_week` SHALL be ISO-8601 numbering, Monday = 1 through Sunday = 7; `week` SHALL be the
-ISO-8601 week number (weeks start Monday, week 1 contains January 4th) and `iso_year` the ISO
-year that week belongs to. Parts finer than a day on a DATE operand SHALL return 0.
+(day of month), `day_of_year` (1–366), `hour` (0–23), `minute`, `second` (whole seconds),
+`millisecond` (the millisecond component: the fractional second truncated to whole milliseconds,
+0–999, never rounded and never including the whole seconds);
+`day_of_week` SHALL be ISO-8601 numbering, Monday = 1 through Sunday = 7, whatever the database's
+session settings; `week` SHALL be the ISO-8601 week number (weeks start Monday, week 1 contains
+January 4th) and `iso_year` the ISO year that week belongs to. Parts finer than a day on a DATE
+operand SHALL return 0. Every part SHALL return the same value on every Tier-1 dialect.
 
 #### Scenario: Sunday is day 7
 - **WHEN** `date_part('day_of_week', '2024-06-02')` (a Sunday) is evaluated
@@ -100,6 +103,14 @@ year that week belongs to. Parts finer than a day on a DATE operand SHALL return
 
 #### Scenario: Hour of a DATE
 - **WHEN** `date_part('hour', order_date)` is evaluated
+- **THEN** the result is 0 for every row
+
+#### Scenario: Millisecond is the truncated component
+- **WHEN** `date_part('millisecond', created_at)` and `date_part('second', created_at)` are evaluated over rows holding `2024-12-30 10:15:42.123`, `2024-12-30 10:15:42.001999`, `2024-12-30 10:15:42.999999`, `2024-12-30 10:15:42` and `1969-07-20 20:17:40.5`
+- **THEN** the milliseconds are 123, 1, 999, 0 and 500 and the seconds 42, 42, 42, 42 and 40, on every Tier-1 dialect
+
+#### Scenario: Millisecond of a DATE
+- **WHEN** `date_part('millisecond', order_date)` is evaluated
 - **THEN** the result is 0 for every row
 
 ### Requirement: date_diff counts calendar boundaries crossed
@@ -235,7 +246,10 @@ temporal value (typed per › A bucket has one logical type on every dialect); `
 `iif` / `CASE` whose value arguments are all temporal or NULL (DATE mixed with TIMESTAMP is
 TIMESTAMP). Any other operand — a column of another or undeclared type, arithmetic, a number, a
 non-date string — SHALL be rejected with a typed query error naming the operand and suggesting a
-DATE / TIMESTAMP column type.
+DATE / TIMESTAMP column type. One exception: `date_part` with the part `hour`, `minute` or `second`,
+in every spelling (`EXTRACT`, `DATE_PART`, `HOUR()`, `MINUTE()`, `SECOND()`), SHALL also take a
+time-of-day operand (`queries/time-of-day`) and SHALL return the integer the same part of a
+timestamp at that clock time returns, on every Tier-1 dialect.
 
 #### Scenario: Text column rejected
 - **WHEN** a filter uses `date_part('month', status) = 1`
@@ -256,6 +270,10 @@ DATE / TIMESTAMP column type.
 #### Scenario: Bucket accepted
 - **WHEN** a dimension uses `date_add(date_trunc('month', order_date), 1, 'month')`
 - **THEN** it binds and returns the start of the following month, a DATE
+
+#### Scenario: Sub-day parts of a time of day
+- **WHEN** dimensions on DuckDB and on SQLite are `date_part('hour', shifts.starts_at)`, `EXTRACT(MINUTE FROM shifts.starts_at)` and `SECOND(TIME '10:30:45')` over a `Time` field holding 09:30:00
+- **THEN** they yield 9, 30 and 45, each planned as INT
 
 ### Requirement: ISO literals are typed date values in date positions
 A string literal in a temporal operand position — directly, or as a value argument of a
@@ -288,13 +306,19 @@ literal keeps its string meaning, except a time point compared with a temporal o
 - **THEN** it is the TIMESTAMP `2024-02-29 10:15:00`
 
 ### Requirement: Clock functions read the database clock
-`current_date()` SHALL return the database's current date as a DATE and `now()` its current
-timestamp as a TIMESTAMP, evaluated by the database at execution time (on SQLite, in UTC; elsewhere
-in the database session's time zone).
+Without a time zone (`queries/time-zones`), `current_date()` SHALL return the database's current
+date as a DATE and `now()` its current timestamp as a TIMESTAMP, evaluated by the database at
+execution time (on SQLite, in UTC; elsewhere in the database session's time zone). Under a stage's
+effective time zone, `now()` SHALL be the engine's one clock reading for the execution taken in the
+zone's wall clock and `current_date()` its date, each rendered as a literal.
 
 #### Scenario: Recent orders
 - **WHEN** a filter `created_at >= date_add(current_date(), -30, 'day')` runs
 - **THEN** it keeps orders created within the last 30 days by the database's date
+
+#### Scenario: Clock functions in the query zone
+- **WHEN** the clock reads the instant `2025-01-01 03:30:00Z` and a query with `time_zone: America/New_York` has the dimensions `current_date()` and `now()`
+- **THEN** they are the DATE `2024-12-31` and the TIMESTAMP `2024-12-31 22:30:00`, rendered as literals
 
 ### Requirement: Date results carry their types
 A value whose outermost operation is `date_part` or `date_diff` SHALL report type INT in the query
@@ -341,9 +365,10 @@ and Athena SHALL render every date function the way Trino does.
   promotion are those rendered for Trino
 
 ### Requirement: Clock-dependent queries bypass the result cache
-A query whose computation includes `now()` or `current_date()` in any stage SHALL neither be served
-from nor stored in the engine's result cache, including on refresh; other queries SHALL cache as
-before.
+A query whose computation includes `now()` in any stage, or `current_date()` in a stage without a
+time zone (`queries/time-zones`), SHALL neither be served from nor stored in the engine's result
+cache, including on refresh; other queries, including those with `current_date()` only under a time
+zone, SHALL cache as before.
 
 #### Scenario: Clock query not cached
 - **WHEN** a query with filter `created_at >= date_add(current_date(), -30, 'day')` is executed twice with caching enabled
@@ -352,6 +377,14 @@ before.
 #### Scenario: Plain query still cached
 - **WHEN** a query with filter `date_diff('day', created_at, shipped_at) > 3` is executed twice with caching enabled
 - **THEN** the second execution is served from the cache
+
+#### Scenario: Zoned current_date caches
+- **WHEN** a query with `time_zone: UTC` and filter `created_at >= date_add(current_date(), -30, 'day')` is executed twice with caching enabled and a clock reading the same day
+- **THEN** the second execution is served from the cache
+
+#### Scenario: Zoned now still bypasses
+- **WHEN** a query with `time_zone: UTC` and the dimension `now()` is executed twice with caching enabled
+- **THEN** both executions run against the database
 
 ### Requirement: Date function names are reserved
 A model custom aggregation or custom granularity named `date_part`, `date_diff`, `date_add`,
@@ -384,6 +417,10 @@ Each alias SHALL be accepted as a one-argument function `<alias>(x)` and as the 
 arguments, SHALL be rejected naming the function. In a `dimensions` entry an alias call SHALL be an
 ordinary expression dimension of type INT, with no warning.
 
+The part word `dayofweek` SHALL mean `day_of_week` as the part argument of `date_part` and
+`extract`, and the canonical part `millisecond` SHALL be accepted there; neither SHALL be a
+function (› Ambiguous weekday names name both conventions, › Part-only words have no function form).
+
 #### Scenario: Alias function as a dimension
 - **WHEN** a query on `orders` has the expression dimension `isodow(created_at)` named `dow` and measures `count(*)`
 - **THEN** its columns, rows and SQL equal those of the same query with `date_part('day_of_week', created_at)`
@@ -412,6 +449,10 @@ ordinary expression dimension of type INT, with no warning.
 - **WHEN** a filter uses `week(created_at) = 1`
 - **THEN** it keeps exactly the rows `date_part('week', created_at) = 1` keeps, including 2024-12-30
 
+#### Scenario: Ossie's DAYOFWEEK part is the ISO day
+- **WHEN** dimensions are `EXTRACT(DAYOFWEEK FROM created_at)`, `DATE_PART('dayofweek', created_at)` and `date_part(DAYOFWEEK, created_at)` over rows on Sunday 2024-12-29 and Monday 2024-12-30
+- **THEN** each has the result key, SQL and values of `date_part('day_of_week', created_at)`: 7 and 1, on every Tier-1 dialect
+
 ### Requirement: extract is the SQL spelling of date_part
 `extract(<part> from x)` SHALL mean exactly `date_part('<part>', x)` — same value, same result key,
 same SQL — for every canonical part and every date-part alias, the part written bare or as a string
@@ -437,11 +478,14 @@ error listing the accepted parts. Text inside string literals SHALL never be rea
 - **THEN** the literal is compared unchanged
 
 ### Requirement: Ambiguous weekday names name both conventions
-`dow`, `dayofweek` and `weekday` SHALL NOT heal: as a `date_part` or `extract` part they SHALL be
-rejected, and as a function call that resolves to no aggregation (including a model's custom
-aggregation of that name) they SHALL be rejected; in both cases the error SHALL state that the name
-has conflicting weekday numberings across databases and give `date_part('day_of_week', x)` (ISO,
-Monday = 1 … Sunday = 7) and `date_part('day_of_week', x) % 7` (Sunday = 0 … Saturday = 6).
+`dow` and `weekday` SHALL NOT heal: as a `date_part` or `extract` part they SHALL be rejected, and
+as a function call that resolves to no aggregation (including a model's custom aggregation of that
+name) they SHALL be rejected; in both cases the error SHALL state that the name has conflicting
+weekday numberings across databases and give `date_part('day_of_week', x)` (ISO, Monday = 1 …
+Sunday = 7) and `date_part('day_of_week', x) % 7` (Sunday = 0 … Saturday = 6). `dayofweek` SHALL be
+rejected the same way as a function call that resolves to no aggregation, the error also giving
+`EXTRACT(DAYOFWEEK FROM x)`; as a part it SHALL mean `day_of_week` (› Date-part aliases mean their
+date_part).
 
 #### Scenario: dow as a function
 - **WHEN** a query on `orders` has the expression dimension `dow(created_at)`
@@ -449,18 +493,26 @@ Monday = 1 … Sunday = 7) and `date_part('day_of_week', x) % 7` (Sunday = 0 …
 
 #### Scenario: dayofweek as an extract part
 - **WHEN** a filter uses `extract(dayofweek from created_at) = 1`
-- **THEN** the query is rejected with the same explanatory error
+- **THEN** it keeps exactly the Monday rows, as `date_part('day_of_week', created_at) = 1` does
 
 #### Scenario: Custom aggregation named weekday still works
 - **WHEN** a model declares a custom aggregation `weekday` and a measure uses `weekday(amount)`
 - **THEN** the measure renders the model's `weekday` aggregation
 
+#### Scenario: dayofweek as a function
+- **WHEN** a query on `orders` has the expression dimension `DAYOFWEEK(created_at)`
+- **THEN** the query is rejected with an error giving `EXTRACT(DAYOFWEEK FROM x)`, `date_part('day_of_week', x)` and `date_part('day_of_week', x) % 7`
+
+#### Scenario: weekday and dow as parts
+- **WHEN** filters use `extract(dow from created_at) = 1` and `date_part('weekday', created_at) = 1`
+- **THEN** each query is rejected with the explanatory error
+
 ### Requirement: SQL date literals and clock keywords
-`DATE '<literal>'` SHALL be a DATE value and `TIMESTAMP '<literal>'` a TIMESTAMP value, accepting
-exactly the shapes and calendar checks of ISO literals in date positions, in every position; a
-malformed or impossible value SHALL be rejected with the same typed query error. `CURRENT_DATE` SHALL
-mean `current_date()` and `CURRENT_TIMESTAMP` SHALL mean `now()`, sharing their result keys, SQL and
-result-cache bypass.
+`DATE '<literal>'` SHALL be a DATE value, and `TIMESTAMP '<literal>'` and `TIMESTAMP_NTZ '<literal>'`
+the same TIMESTAMP value, accepting exactly the shapes and calendar checks of ISO literals in date
+positions, in every position; a malformed or impossible value SHALL be rejected with the same typed
+query error. The keywords SHALL match case-insensitively. `CURRENT_DATE` SHALL mean `current_date()`
+and `CURRENT_TIMESTAMP` SHALL mean `now()`, sharing their result keys, SQL and result-cache bypass.
 
 #### Scenario: Typed literals
 - **WHEN** a filter uses `created_at >= TIMESTAMP '2024-01-01 00:00'` and a dimension uses `date_diff('day', DATE '2024-01-01', created_at)`
@@ -473,6 +525,14 @@ result-cache bypass.
 #### Scenario: Clock keywords
 - **WHEN** one filter uses `created_at >= CURRENT_DATE` and another `created_at >= current_date()`
 - **THEN** both render identical SQL and neither query is served from or stored in the result cache
+
+#### Scenario: TIMESTAMP_NTZ literal
+- **WHEN** dimensions are `TIMESTAMP_NTZ '2024-01-15 10:30:00'`, `timestamp_ntz '2024-01-15'` and `TIMESTAMP_NTZ '2024-01-15 10:30:00.25'`
+- **THEN** they have the values and SQL of the same literals spelled `TIMESTAMP`: 2024-01-15 10:30:00, 2024-01-15 00:00:00 and 2024-01-15 10:30:00.25, on every Tier-1 dialect
+
+#### Scenario: Malformed TIMESTAMP_NTZ literal
+- **WHEN** filters use `created_at >= TIMESTAMP_NTZ '2024-13-01 00:00'` and `created_at >= TIMESTAMP_NTZ 'soon'`
+- **THEN** each query is rejected with the type error naming the literal
 
 ### Requirement: date_trunc is the granularity call
 
@@ -572,3 +632,37 @@ A bucket `date_trunc(unit, x)` SHALL be a DATE when `x` is a DATE and `unit` is 
 
 - **WHEN** a query buckets a DATE column and a TIMESTAMP column by `week_sunday`
 - **THEN** each bucket starts on the Sunday on or before the value and is a DATE and a TIMESTAMP respectively
+
+### Requirement: Part-only words have no function form
+`millisecond(x)` SHALL NOT be a function: a call that resolves to no aggregation (including a
+model's custom aggregation of that name) SHALL be rejected with an error giving
+`EXTRACT(MILLISECOND FROM x)` and `date_part('millisecond', x)`. A model's custom aggregation named
+`millisecond` or `dayofweek` SHALL keep working.
+
+#### Scenario: millisecond as a function
+- **WHEN** a query on `orders` has the expression dimension `MILLISECOND(created_at)`
+- **THEN** the query is rejected with an error giving `EXTRACT(MILLISECOND FROM x)` and `date_part('millisecond', x)`
+
+#### Scenario: Custom aggregation named millisecond still works
+- **WHEN** a model declares a custom aggregation `millisecond` and a measure uses `millisecond(amount)`
+- **THEN** the measure renders the model's `millisecond` aggregation
+
+### Requirement: TO_DATE and TO_TIMESTAMP parse ISO strings
+`TO_DATE(s)` SHALL mean `CAST(s AS DATE)` and `TO_TIMESTAMP(s)` SHALL mean `CAST(s AS TIMESTAMP_NTZ)`,
+matched case-insensitively, with that cast's value, result key, SQL and errors on every dialect.
+A call with a second (format) argument, or with any other argument count, SHALL be rejected at plan
+time with the unknown-function error naming the function and the form (format parsing is Ossie
+EXPERIMENTAL). Inside a model that declares a custom aggregation of the same name, a call SHALL be
+that aggregation.
+
+#### Scenario: Parse ISO strings
+- **WHEN** dimensions are `TO_DATE('2024-01-15')` and `TO_TIMESTAMP('2024-01-15 10:30:00')`
+- **THEN** they yield the DATE 2024-01-15 and the TIMESTAMP 2024-01-15 10:30:00 on every Tier-1 dialect, as `CAST('2024-01-15' AS DATE)` and `CAST('2024-01-15 10:30:00' AS TIMESTAMP_NTZ)` do
+
+#### Scenario: Format argument refused
+- **WHEN** a dimension is `TO_DATE(code, 'YYYY-MM-DD')` or `TO_TIMESTAMP(code, 'YYYY-MM-DD HH24:MI:SS')`
+- **THEN** the query fails at plan time with the unknown-function error naming the two-argument form
+
+#### Scenario: Custom aggregation named to_date
+- **WHEN** a model declares a custom aggregation `to_date` and a measure uses `to_date(amount)`
+- **THEN** the measure renders the model's `to_date` aggregation

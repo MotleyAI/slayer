@@ -23,6 +23,7 @@ from slayer.core.keys import (
     AggregateKey,
     LiteralKey,
     TimeTruncKey,
+    TRANSFORM_KINDS,
     TransformKey,
     ValueKey,
     window_kwarg_of,
@@ -119,7 +120,7 @@ class _SlotStager:
         return max((self._transform_level_of(child) for child in key.children()), default=0)
 
     def _transform_level_of(self, node: ValueKey) -> int:
-        if isinstance(node, TransformKey):
+        if isinstance(node, TRANSFORM_KINDS):
             slot = self._by_key.get(node)
             if slot is not None:
                 return self.stage_of(slot).level
@@ -136,7 +137,7 @@ class _SlotStager:
             return self._placeholder_stage(key)
         if isinstance(key, (FieldKey, FieldSqlKey, TimeTruncKey, LiteralKey)):
             return Stage(kind=StageKind.BASE)
-        if isinstance(key, TransformKey):
+        if isinstance(key, TRANSFORM_KINDS):
             return Stage(kind=StageKind.DERIVED, level=1 + self._max_transform_level(key))
         if isinstance(key, SLOT_COMPOSITE_KINDS):
             return self._composite_stage(slot)
@@ -260,7 +261,7 @@ def _direct_deps(slot: ValueSlot, *, by_key: Dict[ValueKey, ValueSlot]) -> List[
                 seen.add(dep.id)
                 out.append(dep)
             continue
-        if isinstance(key, (TransformKey, *SLOT_COMPOSITE_KINDS)):
+        if isinstance(key, (*TRANSFORM_KINDS, *SLOT_COMPOSITE_KINDS)):
             pending.extend(reversed(list(key.children())))
     return out
 

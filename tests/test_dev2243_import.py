@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
-import shutil
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any
@@ -35,8 +34,8 @@ from tests._osi_export_fixtures import BASIC_METRICS, DATASOURCE as EXPORT_DS, E
 
 EXAMPLES = CORPUS / "examples"
 SHOP_EXAMPLE = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_import" / "shop.osi.yaml"
-CORE_EXAMPLES = ["flights.semantic_model.yaml", "renamed_fields.yaml", "sap_business_partner.semantic_model.yaml",
-                 "tpcds_semantic_model.yaml"]
+CORE_EXAMPLES = ["flights.semantic_model.yaml", "minimal.json", "minimal.yaml", "renamed_fields.yaml",
+                 "sap_business_partner.semantic_model.yaml", "tpcds_semantic_model.yaml"]
 ONTOLOGY_EXAMPLES = ["flights.yaml", "flights.ontology.yaml", "flights.mapping.yaml",
                      "sap_business_partner.ontology.yaml", "sap_business_partner.mapping.yaml", "foaf_owl_import.yaml"]
 
@@ -221,8 +220,8 @@ async def test_a_windowed_metric_is_reported_not_refused(tmp_path: Path, monkeyp
     result = await run_import(storage, path)
     assert result.stored == ["tpcds_retail_model"]
     assert await storage.get_semantic_model_text("tpcds_retail_model", DS) == path.read_text(encoding="utf-8")
-    assert {e.entity for e in kinds(result, "not_evaluable")} >= {"cumulative_sales"}
-    assert all("window" in e.message.lower() for e in kinds(result, "not_evaluable"))
+    assert not {e.entity for e in kinds(result, "not_evaluable")} & {
+        "cumulative_sales", "brand_rank_in_store", "monthly_sales_change"}
 
 
 # --------------------------------------------------------------------------- #
@@ -588,10 +587,10 @@ async def test_wrapped_0_3_document(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 async def test_ontology_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Ontology document."""
-    text_in = (EXAMPLES / "flights.ontology.yaml").read_text(encoding="utf-8")
-    _, text = await _refused_beside_a_valid_file(tmp_path, monkeypatch, text_in)
-    assert "semantic-model document" in text.lower()
-    assert "not" in text.lower()
+    _, text = await _refused_beside_a_valid_file(tmp_path, monkeypatch, {"version": "0.3.0.dev0", "name": "x"})
+    assert "semantic-model" in text.lower()
+    assert "ontology" in text.lower()
+    assert "mapping" in text.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -801,7 +800,7 @@ async def test_example_validates_and_imports(tmp_path: Path) -> None:
 # Upstream examples import
 # --------------------------------------------------------------------------- #
 def test_every_upstream_example_is_vendored() -> None:
-    assert sorted(p.name for p in EXAMPLES.iterdir()) == sorted([*CORE_EXAMPLES, *ONTOLOGY_EXAMPLES])
+    assert sorted(p.name for p in EXAMPLES.iterdir()) == sorted([*CORE_EXAMPLES, *ONTOLOGY_EXAMPLES, "README.md"])
 
 
 async def _loaded_dataset_names(storage: StorageBackend) -> list[str]:
@@ -822,17 +821,6 @@ async def test_core_example_imports_natively_and_loads(tmp_path: Path, monkeypat
     assert await _loaded_dataset_names(storage) == sorted(d["name"] for d in document["datasets"])
 
 
-@pytest.mark.parametrize("name", ONTOLOGY_EXAMPLES)
-async def test_ontology_examples(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
-    """Ontology examples."""
-    storage = await offline_storage("yaml", tmp_path, monkeypatch)
-    shutil.copy(EXAMPLES / name, tmp_path / name)
-    result = await run_import(storage, tmp_path / name)
-    assert result.stored == []
-    assert "semantic-model document" in refusal_text(result, name).lower()
-    assert await storage.list_semantic_models(DS) == []
-
-
 async def test_renamed_fields_example(tmp_path: Path) -> None:
     """Renamed-fields example."""
     async with seeded(tmp_path, statements=RENAMED_DDL, db_name="sales.duckdb") as engine:
@@ -847,8 +835,7 @@ async def test_tpcds_example(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     storage = await offline_storage("yaml", tmp_path, monkeypatch)
     result = await run_import(storage, EXAMPLES / "tpcds_semantic_model.yaml")
     assert await _loaded_dataset_names(storage) == ["customer", "date_dim", "item", "store", "store_sales"]
-    assert sorted(e.entity for e in kinds(result, "not_evaluable")) == [
-        "brand_rank_in_store", "cumulative_sales", "monthly_sales_change"]
+    assert [e.entity for e in kinds(result, "not_evaluable")] == []
 
 
 async def test_flights_semantic_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

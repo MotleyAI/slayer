@@ -1,4 +1,4 @@
-"""The Ossie compliance gaps outside Layer 1: the semantic-model format (DEV-2244) cases.
+"""The Ossie compliance gaps outside Layer 1: the semantic-model format cases.
 
 Each probe asserts Ossie's behaviour; the gap's case id and fixing issue are the compliance page's row. Layer 1 gaps
 are the gap rows of ``tests/_dev2446_required_manifest.py``.
@@ -14,8 +14,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
-    AggregationNotAllowedError, DimensionTypeError, DuplicateMetricNameError, OssieQueryError, RelationshipKeyError,
-    TimeLiteralError, UnknownReferenceError,
+    DuplicateMetricNameError, OssieQueryError, RelationshipKeyError, TimeLiteralError, UnknownReferenceError,
 )
 from slayer.facade.catalog import build_local_view
 from slayer.inspect.service import InspectService
@@ -23,8 +22,9 @@ from tests._dev2217_fixtures import DS, sql_engine, strict
 from tests._dev2243_fixtures import dataset, document_text, field, metric, relationship
 
 #: The vendored Ossie revision the compliance page and these cases are measured against.
-REVISION = "d4dca4e9"
-FORMAT = "DEV-2244"
+REVISION = "c2980498"
+#: The issue that will make every valid Ossie document load and behave.
+FORMAT = "DEV-2464"
 
 Probe = Callable[[Path], Awaitable[None]]
 
@@ -47,7 +47,7 @@ class Gap(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# DEV-2244: semantic-model format
+# Semantic-model format
 # --------------------------------------------------------------------------- #
 ORDERS_SQL = ("CREATE TABLE orders (id VARCHAR, amount DOUBLE, unit_price INTEGER, \"Order Amount\" DOUBLE);"
               "INSERT INTO orders VALUES ('O1', 10, 1, 1.5), ('O2', 20, 2, 2.5);")
@@ -162,19 +162,6 @@ async def decimal_exact(base: Path) -> None:
     assert response.data == [{"big.total": Decimal("12345678901234567.90")}]
 
 
-async def time_dimension(base: Path) -> None:
-    async with sql_engine(base, sql=TYPES_SQL, documents=[TYPES_DOC]) as engine:
-        response = await engine.execute({"population": "t", "dimensions": ["t.tod"],
-                                         "metrics": [{"metric": "count(t.*)", "alias": "n"}]})
-    assert sorted((str(r["t.tod"]), r["n"]) for r in response.data) == [("09:30:00", 2), ("17:00:00", 1)]
-
-
-async def time_aggregate(base: Path) -> None:
-    async with sql_engine(base, sql=TYPES_SQL, documents=[TYPES_DOC]) as engine:
-        response = await engine.execute({"population": "t", "metrics": [{"metric": "min(t.tod)", "alias": "v"}]})
-    assert str(response.data[0]["v"]) == "09:30:00"
-
-
 async def datetimetz_truncation(base: Path) -> None:
     async with sql_engine(base, sql=TYPES_SQL, documents=[TYPES_DOC]) as engine:
         response = await engine.execute({"population": "t", "time_dimensions": [{"field": "t.ts", "granularity": "day"}],
@@ -206,8 +193,6 @@ FORMAT_GAPS: tuple[Gap, ...] = (
     _format("format-delimited-dataset-name", delimited_dataset_name, UnknownReferenceError),
     _format("format-quoted-column-expression", quoted_column_expression, RelationshipKeyError),
     _format("format-decimal-exact", decimal_exact, AssertionError),
-    _format("format-time-dimension", time_dimension, DimensionTypeError),
-    _format("format-time-aggregate", time_aggregate, AggregationNotAllowedError),
     _format("format-datetimetz-truncation", datetimetz_truncation, AssertionError),
     _format("format-datetimetz-offset-literal", datetimetz_offset_literal, TimeLiteralError),
 )

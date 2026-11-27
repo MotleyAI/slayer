@@ -80,6 +80,11 @@ class TestParseServerProfile:
     def test_default_is_empty(self) -> None:
         assert SqlDialect().parse_server_profile(base_row=("25.4.1", 1), correlated_row=(True,)) == ServerProfile()
 
+    @pytest.mark.parametrize("dialect", [*_ALL_DIALECTS, *_DS_TYPE_ONLY_DIALECTS], ids=lambda d: type(d).__name__)
+    def test_every_dialect_takes_every_probe_row(self, dialect: SqlDialect) -> None:
+        profile = dialect.parse_server_profile(base_row=None, correlated_row=None, time_row=None)
+        assert isinstance(profile, ServerProfile)
+
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [

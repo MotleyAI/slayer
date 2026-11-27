@@ -8,7 +8,6 @@ name the implementation has not added yet fails only the tests that need it.
 from __future__ import annotations
 
 import contextlib
-import os
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import Any
@@ -19,16 +18,19 @@ import pytest
 from slayer.core import errors
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._dev2243_fixtures import CORPUS, make_storage, store_document
+from tests._dev2243_fixtures import make_storage, store_document
 from tests._engine_helpers import owned_query_engine
+from tests._ossie_gate import corpus_root
 
-WIDE_TABLE = Path(os.environ.get("SLAYER_OSSIE_CORPUS") or CORPUS) / "compliance" / "wide_table"
+WIDE_TABLE = corpus_root() / "compliance" / "wide_table"
 DS = "wide_table"
+#: A case script's ``connect`` name → upstream's SQL for that built-in ``ost`` fixture.
+DATA = {"retail": "retail/retail.sql", "stores": "stores/stores.sql"}
 #: Fixture name → (SQL, model), per upstream's wide_table README.
 FIXTURES = {
-    "retail": ("retail/retail.sql", "retail/retail_model.ossie.yaml"),
-    "stores": ("stores/stores.sql", "stores/stores_model.ossie.yaml"),
-    "stores_ambiguous": ("stores/stores.sql", "stores/stores_ambiguous_model.ossie.yaml"),
+    "retail": (DATA["retail"], "retail/retail_model.ossie.yaml"),
+    "stores": (DATA["stores"], "stores/stores_model.ossie.yaml"),
+    "stores_ambiguous": (DATA["stores"], "stores/stores_ambiguous_model.ossie.yaml"),
 }
 STRICT = "ossie-l3"
 NATIVE = "slayer"

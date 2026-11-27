@@ -55,13 +55,13 @@ population are ignored, and any other stored part (an explicit population includ
 
 The filter is an `OSSIE_SQL_2026` expression over the fields of one dataset. Admitted: comparisons, `BETWEEN`,
 `IN (…)`, `LIKE` / `ILIKE`, `IS [NOT] NULL`, `IS [NOT] DISTINCT FROM`, `CASE WHEN`, arithmetic, `CAST`, ISO-8601
-date and timestamp literals, and the Ossie scalar functions SLayer implements with Ossie's meaning, each at an
+date, time and timestamp literals, and the Ossie scalar functions SLayer implements with Ossie's meaning, each at an
 argument count Ossie defines (`LOG(base, x)` is admitted; `LOG(x)`, `ROUND(x)`, `TRUNC(x)`, `SUBSTRING(s, start)` and
 a regex function's flags argument are malformed). SLayer-only syntax
 is malformed: `~`, `->>`, `::`, `**`, list functions and list fields, `IN '…'`, `INTERVAL` literals, transforms,
 deprecated spellings, unbound `{variables}` and period or relative time strings such as `'2025-Q1'` or
 `'last month'`. An Ossie function SLayer does not implement yet is malformed too, as a property the engine does not
-support (§3.5): `PERCENTILE_DISC`, `APPROX_PERCENTILE` and `CURRENT_TIME`, an aggregate with an argument besides its
+support (§3.5): `PERCENTILE_DISC` and `APPROX_PERCENTILE`, an aggregate with an argument besides its
 value (`SUM(x, 1)`), and a call with an argument count SLayer does not take (`ABS(x, 1)`). A filter with no field references (`FALSE`) applies in every branch.
 
 ## Errors
@@ -87,6 +87,8 @@ A refusal is an `OssieQueryError` (a `SlayerError`) whose `code` is the first of
 | 15 | `E_NO_ANCHOR` | a query without metrics has no anchor |
 | 16 | `E_UNSUPPORTED_FILTER_PATH` | a metric, or the anchor, does not reach the filter's dataset |
 | 17 | `E_AMBIGUOUS_PATH` | two paths lead where the lowering joins, or several datasets qualify as the anchor |
+
+Of these codes, a window function is refused in the filter (7) and in a model-scoped metric (11); a windowed field and a dataset-scoped windowed metric evaluate unless a key is off the operand grain or the database cannot window the function, which raise `WindowFunctionError` ([database support](../database-support.md#window-functions)).
 
 Paths follow Ossie steps: from a relationship's many side to its one side. A semantic-model document's relationship
 steps from its `from` to its `to`; a SLayer relationship steps by its cardinality, else by the keys it joins.

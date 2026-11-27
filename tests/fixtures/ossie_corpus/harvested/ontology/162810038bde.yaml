@@ -1,0 +1,321 @@
+document:
+  version: 0.3.0.dev0
+  name: flights_mapping
+  description: Maps the Flights ontology onto the Flights semantic model
+  ontology_ref:
+    name: Flights
+    iri: ./flights.ontology.yaml
+  semantic_model_ref:
+    name: Flights semantic model
+    iri: ./flights.semantic_model.yaml
+  concept_mappings:
+  - concept: Runway
+    object_mappings:
+    - referent_mappings:
+      - relationship: designator
+        expression: RUNWAY.designator
+      - relationship: airport
+        referent_mappings:
+        - relationship: code
+          expression: RUNWAY.airport_code
+    link_mappings:
+    - object_mapping:
+        referent_mappings:
+        - relationship: designator
+          expression: RUNWAY.designator
+        - relationship: airport
+          referent_mappings:
+          - relationship: code
+            expression: RUNWAY.airport_code
+      children:
+      - object_mapping:
+          concept: RunwayLength
+          expression: RUNWAY.length
+        relationship: length
+      - object_mapping:
+          concept: RunwayGeometry
+          expression: RUNWAY.shape
+        relationship: geometry
+  - concept: Manufacturer
+    object_mappings:
+    - referent_mappings:
+      - relationship: name
+        expression: AIRCRAFT.manufacturer
+  - concept: Model
+    object_mappings:
+    - referent_mappings:
+      - relationship: name
+        expression: AIRCRAFT.model
+      - relationship: manufacturer
+        referent_mappings:
+        - relationship: name
+          expression: AIRCRAFT.manufacturer
+  - concept: Aircraft
+    object_mappings:
+    - referent_mappings:
+      - relationship: tailnum
+        expression: AIRCRAFT.tail_nr
+    link_mappings:
+    - object_mapping:
+        referent_mappings:
+        - relationship: tailnum
+          expression: AIRCRAFT.tail_nr
+      children:
+      - object_mapping:
+          concept: SerialNr
+          expression: AIRCRAFT.serial_nr
+        relationship: serial_number
+      - object_mapping:
+          concept: String
+          expression: AIRCRAFT.name
+        relationship: name
+      - object_mapping:
+          concept: Integer
+          expression: AIRCRAFT.nr_seats
+        relationship: number_of_seats
+      - object_mapping:
+          concept: Model
+          referent_mappings:
+          - relationship: name
+            expression: AIRCRAFT.model
+          - relationship: manufacturer
+            referent_mappings:
+            - relationship: name
+              expression: AIRCRAFT.manufacturer
+        relationship: model
+      - object_mapping:
+          concept: Year
+          expression: AIRCRAFT.year
+        relationship: year_manufactured
+      - object_mapping:
+          concept: Capacity
+          expression: AIRCRAFT.capacity
+        relationship: capacity
+      - object_mapping:
+          concept: Carrier
+          referent_mappings:
+          - relationship: code
+            expression: AIRCRAFT.carrier_code
+        relationship: carrier
+  - concept: State
+    object_mappings:
+    - referent_mappings:
+      - relationship: code
+        expression: AIRPORT.state_code
+    link_mappings:
+    - object_mapping:
+        referent_mappings:
+        - relationship: code
+          expression: AIRPORT.state_code
+      children:
+      - object_mapping:
+          concept: StateName
+          expression: AIRPORT.state_nm
+        relationship: name
+  - concept: City
+    object_mappings:
+    - referent_mappings:
+      - relationship: name
+        expression: AIRPORT.city_nm
+      - relationship: state
+        referent_mappings:
+        - relationship: code
+          expression: AIRPORT.state_code
+  - concept: Market
+    object_mappings:
+    - referent_mappings:
+      - relationship: name
+        expression: AIRPORT.market_nm
+  - concept: Airport
+    object_mappings:
+    - referent_mappings:
+      - relationship: code
+        expression: AIRPORT.code
+    link_mappings:
+    - object_mapping:
+        referent_mappings:
+        - relationship: code
+          expression: AIRPORT.code
+      children:
+      - object_mapping:
+          concept: City
+          referent_mappings:
+          - relationship: name
+            expression: AIRPORT.city_nm
+          - relationship: state
+            referent_mappings:
+            - relationship: code
+              expression: AIRPORT.state_code
+        relationship: city
+      - object_mapping:
+          concept: Market
+          referent_mappings:
+          - relationship: name
+            expression: AIRPORT.market_nm
+        relationship: serves
+      - object_mapping:
+          concept: DegreesLongitude
+          expression: AIRPORT.longitude
+        relationship: longitude
+      - object_mapping:
+          concept: AirportName
+          expression: AIRPORT.name
+        relationship: name
+      - object_mapping:
+          concept: DegreesLatitude
+          expression: AIRPORT.latitude
+        relationship: latitude
+  - concept: Flight
+    object_mappings:
+    - referent_mappings:
+      - relationship: id
+        expression: FLIGHT.id
+    link_mappings:
+    - object_mapping:
+        referent_mappings:
+        - relationship: id
+          expression: FLIGHT.id WHERE ( FLIGHT.diverted == TRUE )
+      relationship: diverted
+    - object_mapping:
+        referent_mappings:
+        - relationship: id
+          expression: FLIGHT.id WHERE ( FLIGHT.cancelled == TRUE )
+      relationship: canceled
+    - object_mapping:
+        referent_mappings:
+        - relationship: id
+          expression: FLIGHT.id
+      children:
+      - object_mapping:
+          concept: Delay
+          expression: FLIGHT.arr_delay
+        relationship: arrival_delay
+      - object_mapping:
+          concept: Delay
+          expression: FLIGHT.dep_delay
+        relationship: departure_delay
+      - object_mapping:
+          concept: FlightNr
+          expression: FLIGHT.nr
+        relationship: number
+      - object_mapping:
+          concept: DateTime
+          expression: FLIGHT.scheduled_departure
+        relationship: scheduled_departure
+      - object_mapping:
+          concept: CancelationReason
+          referent_mappings:
+          - relationship: code
+            expression: FLIGHT.cancel_code
+        relationship: canceled_due_to
+      - object_mapping:
+          concept: Distance
+          expression: FLIGHT.distance
+        relationship: distance
+      - object_mapping:
+          concept: DateTime
+          expression: FLIGHT.scheduled_arrival
+        relationship: scheduled_arrival
+      - object_mapping:
+          concept: Date
+          expression: FLIGHT.date
+        relationship: date
+      - object_mapping:
+          concept: DateTime
+          expression: FLIGHT.departure
+        relationship: departs_at
+      - object_mapping:
+          concept: DateTime
+          expression: FLIGHT.arrival
+        relationship: arrives_at
+      - object_mapping:
+          concept: Route
+          referent_mappings:
+          - relationship: id
+            expression: FLIGHT.route_id
+        relationship: route
+      - object_mapping:
+          concept: Aircraft
+          referent_mappings:
+          - relationship: tailnum
+            expression: FLIGHT.tail_nr
+        relationship: aircraft
+      - object_mapping:
+          concept: Carrier
+          referent_mappings:
+          - relationship: code
+            expression: FLIGHT.carrier_code
+        relationship: operated_by
+  - concept: Carrier
+    object_mappings:
+    - referent_mappings:
+      - relationship: code
+        expression: CARRIER.code
+    link_mappings:
+    - object_mapping:
+        referent_mappings:
+        - relationship: code
+          expression: CARRIER.code
+      children:
+      - object_mapping:
+          concept: CarrierName
+          expression: CARRIER.name
+        relationship: name
+  - concept: Route
+    object_mappings:
+    - referent_mappings:
+      - relationship: id
+        expression: ROUTE.id
+    link_mappings:
+    - object_mapping:
+        referent_mappings:
+        - relationship: id
+          expression: ROUTE.id
+      children:
+      - object_mapping:
+          concept: Distance
+          expression: ROUTE.distance
+        relationship: distance
+      - object_mapping:
+          concept: DistanceGroup
+          expression: ROUTE.dist_grp
+        relationship: lies_in
+      - object_mapping:
+          concept: String
+          expression: ROUTE.name
+        relationship: route_name
+      - object_mapping:
+          concept: Airport
+          referent_mappings:
+          - relationship: code
+            expression: ROUTE.dest_airport_code
+        relationship: destination
+      - object_mapping:
+          concept: Airport
+          referent_mappings:
+          - relationship: code
+            expression: ROUTE.orig_airport_code
+        relationship: departure
+files:
+  ./flights.ontology.yaml: "# Licensed to the Apache Software Foundation (ASF) under one\n# or more contributor license agreements.  See the NOTICE file\n# distributed with this work for additional information\n# regarding copyright ownership.  The ASF licenses this file\n# to you under the Apache License, Version 2.0 (the\n# \"License\"); you may not use this file except in compliance\n# with the License.  You may obtain a copy of the License at\n#\n#   http://www.apache.org/licenses/LICENSE-2.0\n#\n# Unless required by applicable law or agreed to in writing,\n# software distributed under the License is distributed on an\n# \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n# KIND, either express or implied.  See the License for the\n# specific language governing permissions and limitations\n# under the License.\n\nversion: 0.3.0.dev0\nname: Flights\ndescription: Ontology of flights into and out of airports.\nrequires:\n  - COUNT[Airport] > 0         # there must be at least one\
+    \ Airport\n  - COUNT[Carrier] > 0         # there must be at least one Carrier\nontology:\n- concept: NrFeet\n  description: \"Unit of measure for distance in feet\"\n  type: ValueType\n  extends: [ Decimal ]\n- concept: NrPounds\n  description: \"Unit of measure for weight in pounds\"\n  type: ValueType\n  extends: [ Integer ]\n- concept: NrMiles\n  description: \"Unit of measure for distance in miles\"\n  type: ValueType\n  extends: [ Decimal ]\n- concept: NrMinutes\n  description: \"Unit of measure for time in minutes\"\n  type: ValueType\n  extends: [ Decimal ]\n- concept: CancelationCode\n  description: \"The single character code that identifies the reason a flight is canceled\"\n  type: ValueType\n  extends: [ String ]\n  requires: [ CancelationCode == 'A' OR CancelationCode == 'B' OR CancelationCode == 'C' OR CancelationCode == 'D' ]\n- concept: Capacity\n  description: \"The capacity of an aircraft, measured in pounds.\"\n  type: ValueType\n  extends: [ NrPounds ]\n- concept:\
+    \ DegreesLatitude\n  type: ValueType\n  extends: [ Decimal ]\n  requires: [ DegreesLatitude <= 90, DegreesLatitude >= -90 ]\n- concept: DegreesLongitude\n  type: ValueType\n  extends: [ Decimal ]\n  requires: [ DegreesLongitude <= 180, DegreesLongitude >= -180 ]\n- concept: Polygon\n  description: \"A polygon represented as a list of vertices, where each vertex is a pair of latitude and longitude coordinates.\"\n  type: ValueType\n  extends: [ String ]\n- concept: CityName\n  type: ValueType\n  extends: [ String ]\n- concept: Delay\n  type: ValueType\n  extends: [ NrMinutes ]\n- concept: Distance\n  type: ValueType\n  extends: [ NrMiles ]\n- concept: DistanceGroup\n  description: \"A number used to group distances of different lengths, where 1 groups the shortest and 10 the longest.\"\n  type: ValueType\n  extends: [ Integer ]\n  requires: [ 1 <= DistanceGroup, DistanceGroup <= 10 ]\n- concept: RunwayGeometry\n  description: \"A polygon that models the shape of a runway.\"\n  type: ValueType\n\
+    \  extends: [ Polygon ]\n- concept: RunwayLength\n  description: \"The unit for measuring the lengths of runways in American airports.\"\n  type: ValueType\n  extends: [ NrFeet ]\n- concept: RunwayDesignator\n  description: \"Used to distinguish runways within a given airport.\"\n  type: ValueType\n  extends: [ String ]\n- concept: SerialNr\n  type: ValueType\n  extends: [ String ]\n- concept: StateCode\n  type: ValueType\n  extends: [ String ]\n- concept: StateName\n  type: ValueType\n  extends: [ String ]\n- concept: TailNr\n  type: ValueType\n  extends: [ String ]\n- concept: Year\n  type: ValueType\n  extends: [ String ]\n- concept: CancelationReason\n  description: \"A curated set of reasons that explain why a flight is canceled\"\n  type: EntityType\n  identify_by: [ code ]\n  relationships:\n  - name: code\n    roles:\n    - concept: CancelationCode\n    verbalizes: [ '{CancelationReason} is identified by {CancelationCode}']\n    multiplicity: OneToOne\n  - name: description\n\
+    \    roles:\n    - concept: String\n    verbalizes: [ '{CancelationReason} has description- {String}' ]  # The hyphen after \"description\" is significant when verbalizing constraints\n    multiplicity: ManyToOne                                          # Each CancelationReason has at most one description String\n- concept: State\n  type: EntityType\n  identify_by: [ code ]\n  relationships:\n  - name: code\n    roles:\n    - concept: StateCode\n    verbalizes:\n    - '{State} is identified by {StateCode}'\n    multiplicity: OneToOne\n  - name: name\n    roles:\n    - concept: StateName\n    verbalizes:\n    - '{State} has {StateName}'\n    multiplicity: ManyToOne\n- concept: City\n  type: EntityType\n  identify_by: [ name, state ]\n  relationships:\n  - name: name\n    roles:\n    - concept: CityName\n    verbalizes:\n    - '{City} has {CityName}'\n    multiplicity: ManyToOne\n  - name: state\n    roles:\n    - concept: State\n    verbalizes:\n    - '{City} is located in {State}'\n\
+    \    multiplicity: ManyToOne\n- concept: Runway\n  type: EntityType\n  identify_by: [ designator, airport ]\n  relationships:\n  - name: airport\n    roles:\n    - concept: Airport\n    verbalizes:\n    - '{Runway} belongs to {Airport}'\n    multiplicity: ManyToOne\n  - name: designator\n    roles:\n    - concept: RunwayDesignator\n    verbalizes:\n    - '{Runway} uses {RunwayDesignator}'\n    multiplicity: ManyToOne\n  - name: length\n    roles:\n    - concept: RunwayLength\n    verbalizes:\n    - '{Runway} has {RunwayLength}'\n    multiplicity: ManyToOne\n  - name: geometry\n    roles:\n    - concept: RunwayGeometry\n    verbalizes:\n    - '{Runway} has {RunwayGeometry}'\n    multiplicity: ManyToOne\n- concept: ManufacturerName\n  type: ValueType\n  extends: [ String ]\n- concept: Manufacturer\n  type: EntityType\n  identify_by: [ name ]\n  relationships:\n  - name: name\n    roles:\n    - concept: ManufacturerName\n    verbalizes:\n    - '{Manufacturer} is identified by {ManufacturerName}'\n\
+    \    multiplicity: OneToOne\n- concept: ModelName\n  type: ValueType\n  extends: [ String ]\n- concept: Model\n  type: EntityType\n  identify_by: [ name, manufacturer ]\n  relationships:\n  - name: name\n    roles:\n    - concept: ModelName\n    verbalizes:\n    - '{Model} has {ModelName}'\n    multiplicity: ManyToOne\n  - name: manufacturer\n    roles:\n    - concept: Manufacturer\n    verbalizes:\n    - '{Model} is manufactured by {Manufacturer}'\n    multiplicity: ManyToOne\n- concept: Aircraft\n  type: EntityType\n  identify_by: [ tailnum ]\n  relationships:\n  - name: serial_number\n    roles:\n    - concept: SerialNr\n    verbalizes:\n    - '{Aircraft} has {SerialNr}'\n    multiplicity: ManyToOne\n  - name: name\n    roles:\n    - concept: String\n    verbalizes:\n    - '{Aircraft} has name {String}'\n    multiplicity: ManyToOne\n  - name: number_of_seats\n    roles:\n    - concept: Integer\n    verbalizes:\n    - '{Aircraft} has {Integer} seats'\n    multiplicity: ManyToOne\n\
+    \  - name: tailnum\n    roles:\n    - concept: TailNr\n    verbalizes:\n    - '{Aircraft} is identified by {TailNr}'\n    multiplicity: OneToOne\n  - name: model\n    roles:\n    - concept: Model\n    verbalizes:\n    - '{Aircraft} has {Model}'\n    multiplicity: ManyToOne\n  - name: year_manufactured\n    roles:\n    - concept: Year\n    verbalizes:\n    - '{Aircraft} was manufactured in {Year}'\n    multiplicity: ManyToOne\n  - name: capacity\n    roles:\n    - concept: Capacity\n    verbalizes:\n    - '{Aircraft} has {Capacity}'\n    multiplicity: ManyToOne\n  - name: carrier\n    roles:\n    - concept: Carrier\n    verbalizes:\n    - '{Aircraft} is operated by {Carrier}'\n    multiplicity: ManyToOne\n- concept: AirportName\n  type: ValueType\n  extends: [ String ]\n- concept: AirportCode\n  description: \"The three-letter IATA code for the airport.\"\n  type: ValueType\n  extends: [ String ]\n- concept: AirportId\n  description: \"Five digit number used as an alternate identifier\
+    \ for airports.\"\n  type: ValueType\n  extends: [ String ]\n- concept: Airport\n  type: EntityType\n  identify_by: [ code ]\n  requires: [ Airport.latitude, Airport.longitude ]\n  relationships:\n  - name: city\n    roles:\n    - concept: City\n    verbalizes:\n    - '{Airport} is located in {City}'\n    multiplicity: ManyToOne\n  - name: serves\n    roles:\n    - concept: Market\n    verbalizes:\n    - '{Airport} serves {Market}'\n    multiplicity: ManyToOne\n  - name: average_departure_delay\n    roles:\n    - concept: Delay\n    verbalizes:\n    - '{Airport} has average- departure {Delay}'    # The hyphen after \"average\" has significance when verbalizing constraints\n    multiplicity: ManyToOne                         # Each Airport has at most one average departure Delay\n    derived_by: [ 'Delay == AVG[Flight.departure_delay WHERE Airport == Flight.route.departure GROUP BY Airport]' ]\n  - name: longitude\n    roles:\n    - concept: DegreesLongitude\n    verbalizes:\n    - '{Airport}\
+    \ centers at {DegreesLongitude}'\n    multiplicity: ManyToOne\n  - name: average_arrival_delay\n    roles:\n    - concept: Delay\n    verbalizes:\n    - '{Airport} has average- arrival {Delay}'    # The hyphen after \"average\" has significance when verbalizing constraints\n    multiplicity: ManyToOne                       # Each Airport has at most one average arrival Delay\n    derived_by: [ 'Delay == AVG[Flight.arrival_delay WHERE Airport == Flight.route.destination GROUP BY Airport]' ]\n  - name: name\n    roles:\n    - concept: AirportName\n    verbalizes:\n    - '{Airport} has {AirportName}'\n    multiplicity: ManyToOne\n  - name: code\n    roles:\n    - concept: AirportCode\n    verbalizes:\n    - '{Airport} has {AirportCode}'\n    multiplicity: OneToOne\n  - name: latitude\n    roles:\n    - concept: DegreesLatitude\n    verbalizes:\n    - '{Airport} centers at {DegreesLatitude}'\n    multiplicity: ManyToOne\n- concept: MarketName\n  type: ValueType\n  extends: [ String ]\n-\
+    \ concept: Market\n  type: EntityType\n  identify_by: [name]\n  relationships:\n    - name: name\n      roles: [ { concept: MarketName }]\n      verbalizes: [ '{Market} is identified by {MarketName}' ]\n      multiplicity: OneToOne\n- concept: FlightNr\n  description: \"The IATA flight number, which is typically a combination of the airline's IATA code and a numeric code (e.g., 'AA1234').\"\n  type: ValueType\n  extends: [ String ]\n- concept: FlightId\n  description: \"A unique identifier for an instance of a flight\"\n  type: ValueType\n  extends: [ String ]\n- concept: Flight\n  type: EntityType\n  identify_by: [ id ]\n  relationships:\n  - name: departure_delay\n    roles:\n    - concept: Delay\n    verbalizes:\n    - '{Flight} has departure- {Delay}'    # The hyphen after \"departure\" has significance when verbalizing constraints\n    multiplicity: ManyToOne                # Each Flight has at most one departure Delay\n  - name: number\n    roles:\n    - concept: FlightNr\n   \
+    \ verbalizes:\n    - '{Flight} has {FlightNr}'\n    multiplicity: ManyToOne\n  - name: scheduled_departure\n    roles: [ { concept: DateTime } ]\n    verbalizes:\n    - '{Flight} is scheduled to depart at {DateTime}'\n    multiplicity: ManyToOne\n    requires: [ Flight.scheduled_departure < Flight.scheduled_arrival ]\n  - name: arrival_delay\n    roles:\n    - concept: Delay\n    verbalizes:\n    - '{Flight} has arrival- {Delay}'    # The hyphen after \"arrival\" has significance when verbalizing constraints\n    multiplicity: ManyToOne              # Each Flight has at most one arrival Delay\n  - name: canceled\n    verbalizes:\n    - '{Flight} was canceled'\n  - name: canceled_due_to\n    roles:\n    - concept: CancelationReason\n    verbalizes:\n    - '{Flight} was canceled due to {CancelationReason}'\n    multiplicity: ManyToOne\n  - name: distance\n    roles:\n    - concept: Distance\n    verbalizes:\n    - '{Flight} spans actual- {Distance}'    # The hyphen after \"actual\" has\
+    \ significance when verbalizing constraints\n    multiplicity: ManyToOne                  # Each Flight spans at most one actual Distance\n  - name: id\n    roles:\n    - concept: FlightId\n    verbalizes:\n    - '{Flight} is identified by {FlightId}'\n    multiplicity: OneToOne\n  - name: scheduled_arrival\n    roles:\n    - concept: DateTime\n    verbalizes:\n    - '{Flight} is scheduled to arrive at {DateTime}'\n    multiplicity: ManyToOne\n  - name: registers_longitude_series\n    roles:\n    - concept: DateTime\n    - concept: DegreesLongitude\n    verbalizes:\n    - '{Flight} at {DateTime} registers {DegreesLongitude}'\n    multiplicity: ManyToOne\n  - name: registers_latitude_series\n    roles:\n    - concept: DateTime\n    - concept: DegreesLatitude\n    verbalizes:\n    - '{Flight} at {DateTime} registers {DegreesLatitude}'\n    multiplicity: ManyToOne\n  - name: date\n    roles:\n    - concept: Date\n    verbalizes:\n    - '{Flight} is scheduled to depart on {Date}'\n    multiplicity:\
+    \ ManyToOne\n  - name: departs_at\n    roles:\n    - concept: DateTime\n    verbalizes:\n    - '{Flight} departs at {DateTime}'\n    multiplicity: ManyToOne\n    requires: [ Flight.departs_at < Flight.arrives_at ]\n  - name: diverted\n    verbalizes:\n    - '{Flight} was diverted'\n  - name: arrives_at\n    roles:\n    - concept: DateTime\n    verbalizes:\n    - '{Flight} arrives at {DateTime}'\n    multiplicity: ManyToOne\n  - name: route\n    roles:\n    - concept: Route\n    verbalizes:\n    - '{Flight} traverses {Route}'\n    multiplicity: ManyToOne\n  - name: aircraft\n    roles:\n    - concept: Aircraft\n    verbalizes:\n    - '{Flight} uses {Aircraft}'\n    multiplicity: ManyToOne\n    requires: [ Flight.operated_by(Aircraft.carrier) ]\n  - name: operated_by\n    roles:\n    - concept: Carrier\n    verbalizes:\n    - '{Flight} is operated by {Carrier}'\n    multiplicity: ManyToOne\n- concept: CarrierCode\n  description: \"The two-letter IATA code for the airline carrier.\"\n \
+    \ type: ValueType\n  extends: [ String ]\n- concept: CarrierName\n  type: ValueType\n  extends: [ String ]\n- concept: Carrier\n  type: EntityType\n  identify_by: [ code ]\n  relationships:\n  - name: code\n    roles:\n    - concept: CarrierCode\n    verbalizes:\n    - '{Carrier} uses {CarrierCode}'\n    multiplicity: OneToOne\n  - name: name\n    roles:\n    - concept: CarrierName\n    verbalizes:\n    - '{Carrier} has {CarrierName}'\n    multiplicity: ManyToOne\n- concept: RouteId\n  type: ValueType\n  description: \"A unique identifier for a route between two airports. Constructed by concatenating the IATA codes of the departure and destination airports (e.g., 'ATL -> DCA')\"\n  extends: [ String ]\n- concept: Route\n  type: EntityType\n  identify_by: [ id ]\n  relationships:\n  - name: average_departure_delay\n    roles:\n    - concept: Delay\n    verbalizes:\n    - '{Route} has average- departure {Delay}'    # The hyphen after \"average\" has significance when verbalizing constraints\n\
+    \    multiplicity: ManyToOne                       # Each Route has at most one average departure Delay\n    derived_by: [ 'Delay == AVG[Flight.departure_delay WHERE Flight.route(Route) GROUP BY Route]' ]\n  - name: average_arrival_delay\n    roles:\n    - concept: Delay\n    verbalizes:\n    - '{Route} has average- arrival {Delay}'    # The hyphen after \"average\" has significance when verbalizing constraints\n    multiplicity: ManyToOne                     # Each Route has at most one average arrival Delay\n    derived_by: [ 'Delay == AVG[Flight.arrival_delay WHERE Flight.route(Route) GROUP BY Route]' ]\n  - name: distance\n    roles:\n    - concept: Distance\n    verbalizes:\n    - '{Route} spans {Distance}'\n    multiplicity: ManyToOne\n  - name: lies_in\n    roles:\n    - concept: DistanceGroup\n    verbalizes:\n    - '{Route} has {DistanceGroup}'\n    multiplicity: ManyToOne\n  - name: id\n    roles:\n    - concept: RouteId\n    verbalizes:\n    - '{Route} is identified by {RouteId}'\n\
+    \    multiplicity: OneToOne\n  - name: route_name\n    roles:\n    - concept: String\n    verbalizes:\n    - '{Route} has name- {String}'    # The hyphen after \"name\" has significance when verbalizing constraints\n    multiplicity: ManyToOne\n  - name: destination\n    roles:\n    - concept: Airport\n    verbalizes:\n    - '{Route} connects to destination- {Airport}'  # The hyphen after \"destination\" has significance when verbalizing constraints\n    multiplicity: ManyToOne                         # Each Route connects to at most one destination Airport\n    requires: [ 'NOT Route.departure(Airport)' ]\n  - name: departure\n    roles:\n    - concept: Airport\n    verbalizes:\n    - '{Route} connects to departure- {Airport}'    # The hyphen after \"departure\" has significance when verbalizing constraints\n    multiplicity: ManyToOne                         # Each Route connects to at most one departure Airport\n    requires: [ 'NOT Route.destination(Airport)' ]\n"
+  ./flights.semantic_model.yaml: "# Licensed to the Apache Software Foundation (ASF) under one\n# or more contributor license agreements.  See the NOTICE file\n# distributed with this work for additional information\n# regarding copyright ownership.  The ASF licenses this file\n# to you under the Apache License, Version 2.0 (the\n# \"License\"); you may not use this file except in compliance\n# with the License.  You may obtain a copy of the License at\n#\n#   http://www.apache.org/licenses/LICENSE-2.0\n#\n# Unless required by applicable law or agreed to in writing,\n# software distributed under the License is distributed on an\n# \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n# KIND, either express or implied.  See the License for the\n# specific language governing permissions and limitations\n# under the License.\n\nversion: 0.3.0.dev0\nname: Flights semantic model\ndatasets:\n- name: RUNWAY\n  source: DATABASE.SCHEMA.RUNWAYS\n  fields:\n  - name: airport_code\n    expression:\n\
+    \      sql: airport_code\n  - name: length\n    expression:\n      sql: length\n  - name: shape\n    expression:\n      sql: shape\n  - name: designator\n    expression:\n      sql: designator\n- name: AIRCRAFT\n  source: DATABASE.SCHEMA.AIRCRAFT\n  description: \"An airplane, helicopter, or other machine capable of flight\"\n  fields:\n  - name: serial_nr\n    expression:\n      sql: serial_nr\n  - name: name\n    expression:\n      sql: name\n  - name: nr_seats\n    expression:\n      sql: nr_seats\n  - name: tail_nr\n    expression:\n      sql: tail_nr\n  - name: carrier_code\n    expression:\n      sql: carrier_code\n  - name: manufacturer\n    expression:\n      sql: manufacturer\n  - name: model\n    expression:\n      sql: model\n  - name: year\n    expression:\n      sql: year\n  - name: capacity\n    expression:\n      sql: capacity\n- name: AIRPORT\n  source: DATABASE.SCHEMA.AIRPORTS\n  description: \"An airport that is identified by an IATA code.\"\n  fields:\n  - name: state_code\n\
+    \    expression:\n      sql: state_code\n  - name: market_nm\n    expression:\n      sql: market_nm\n  - name: longitude\n    expression:\n      sql: longitude\n  - name: opened\n    expression:\n      sql: opened\n  - name: state_nm\n    expression:\n      sql: state_nm\n  - name: city_nm\n    expression:\n      sql: city_nm\n  - name: name\n    expression:\n      sql: name\n  - name: code\n    expression:\n      sql: code\n  - name: latitude\n    expression:\n      sql: latitude\n- name: FLIGHT\n  source: DATABASE.SCHEMA.FLIGHTS\n  description: \"A commercial passenger flight.\"\n  fields:\n  - name: dep_delay\n    expression:\n      sql: dep_delay\n  - name: air_time\n    expression:\n      sql: air_time\n  - name: nr\n    expression:\n      sql: nr\n  - name: carrier_code\n    expression:\n      sql: carrier_code\n  - name: duration\n    expression:\n      sql: duration\n  - name: scheduled_departure\n    expression:\n      sql: scheduled_departure\n  - name: arr_delay\n    expression:\n\
+    \      sql: arr_delay\n  - name: cancelled\n    expression:\n      sql: cancelled\n  - name: cancel_code\n    expression:\n      sql: cancel_code\n  - name: distance\n    expression:\n      sql: distance\n  - name: id\n    expression:\n      sql: id\n  - name: scheduled_arrival\n    expression:\n      sql: scheduled_arrival\n  - name: wheels_on\n    expression:\n      sql: wheels_on\n  - name: date\n    expression:\n      sql: date\n  - name: wheels_off\n    expression:\n      sql: wheels_off\n  - name: scheduled_duration\n    expression:\n      sql: scheduled_duration\n  - name: tail_nr\n    expression:\n      sql: tail_nr\n  - name: departure\n    expression:\n      sql: departure\n  - name: route_id\n    expression:\n      sql: route_id\n  - name: diverted\n    expression:\n      sql: diverted\n  - name: arrival\n    expression:\n      sql: arrival\n- name: CARRIER\n  source: DATABASE.SCHEMA.CARRIERS\n  description: \"An airline, such as Delta, United, or American.\"\n  fields:\n\
+    \  - name: code\n    expression:\n      sql: code\n  - name: name\n    expression:\n      sql: name\n- name: ROUTE\n  source: DATABASE.SCHEMA.ROUTES\n  description: \"Represents the existence of one or more flights between a pair of departure\n    arrival airports.\"\n  fields:\n  - name: orig_airport_code\n    expression:\n      sql: orig_airport_code\n  - name: dest_airport_code\n    expression:\n      sql: dest_airport_code\n  - name: distance\n    expression:\n      sql: distance\n  - name: dist_grp\n    expression:\n      sql: dist_grp\n  - name: id\n    expression:\n      sql: id\n  - name: name\n    expression:\n      sql: name\n"

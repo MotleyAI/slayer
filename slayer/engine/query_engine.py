@@ -4,6 +4,8 @@ Flow: SlayerQuery → plan_query() → PlannedQuery → SQLGenerator → SQL →
 """
 
 import asyncio
+import concurrent.futures
+import threading
 import contextlib
 import copy
 import decimal
@@ -13,6 +15,7 @@ import warnings as _warnings_module
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from functools import partial
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Unpack
 
 from sqlglot import exp
@@ -33,6 +36,7 @@ from slayer.core.enums import (
 )
 from slayer.core.ossie_conformance import parse_conformance
 from slayer.core.errors import (
+    TimeZoneError,
     AggregationArgumentError,
     AmbiguousDatasetError,
     AssociatedGrainWarning,
@@ -122,7 +126,9 @@ from slayer.core.warnings import (
     SlayerWarning,
     SlayerWholeListWarning,
     SlayerDateOnlyMidnightWarning,
+    SlayerTimeZoneUndeclaredWarning,
     DateOnlyMidnightWarning,
+    TimeZoneUndeclaredWarning,
     SlayerWholePeriodsWarning,
     UnrelatedDatasetWarningPayload,
     WholeListWarning,
@@ -170,6 +176,8 @@ from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
     build_response_metadata,
+    time_of_day_cells,
+    time_of_day_columns,
     projection_result_keys,
 )
 from slayer.sql.definitions import with_converted_sql
@@ -183,7 +191,7 @@ from slayer.ir.source_bundle import (
     dataset_from_stage_schema,
 )
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
-from slayer.engine.statement_reads import StatementReads, statement_reads
+from slayer.engine.statement_reads import StatementReads, statement_reads, time_of_day_construct
 from slayer.engine.binding import collect_bind_records
 from slayer.engine.elaborate_env import check_result_names_case, check_stage_flatten_collision, saved_date_only_notices
 from slayer.engine.extensions import with_own_extension
@@ -210,7 +218,7 @@ from slayer.database.client import (
     render_type_probe,
     sql_dataset_trial_query,
 )
-from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, dialect_for_ds_type, get_dialect, ossie_token
 from slayer.sql.mode_a_variables import bind_mode_a, check_mode_a_placeholders, check_placeholders
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.render.library import check_library_support
@@ -219,6 +227,8 @@ from slayer.sql.render.parse import parse_table
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.database.engine_factory import ClientCacheKey, _sql_client_cache_key, client_cache_key
+from slayer.sql.zoned_reads import collect_zone_warnings
+from slayer.core.time_zones import CIVIL
 from slayer.sql.generator import (
     PlannedStatement,
     _finish_statement,
@@ -229,9 +239,12 @@ from slayer.sql.generator import (
 from slayer.sql.physical_tables import physical_tables
 from slayer.sql.session_policy import HasColumn, ScopedTable, apply_session_policy, policy_column_checks
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-from slayer.storage.base import StorageBackend, one_upgrade_pass, with_canonical_spellings
+from slayer.ontology.findings import OntologyFinding
+from slayer.ontology.use import ontology_checks
+from slayer.storage.base import StorageBackend, one_upgrade_pass, report_save_warnings, with_canonical_spellings
 from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
+from slayer.storage.dependents import database_driven
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
 from slayer.core.models import DatasetRelationship
@@ -745,6 +758,8 @@ def _emit_python_warnings(response) -> None:
             _warnings_module.warn(SlayerNameCollisionWarning(w), stacklevel=outside_stacklevel())
         elif isinstance(w, DateOnlyMidnightWarning):
             _warnings_module.warn(SlayerDateOnlyMidnightWarning(w), stacklevel=outside_stacklevel())
+        elif isinstance(w, TimeZoneUndeclaredWarning):
+            _warnings_module.warn(SlayerTimeZoneUndeclaredWarning(w), stacklevel=outside_stacklevel())
 
 
 def _projection_ordered(expected: List[str], rows: List[Dict[str, Any]]) -> List[str]:
@@ -770,6 +785,8 @@ class SlayerResponse(BaseModel):
     population_inferred: bool = False
     # The datasets supplying the rows (``["unit"]`` with no dimensions).
     row_sources: List[str] = PydanticField(default_factory=list)
+    # The query's time zone (its final stage's): the wall clock timestamps are bucketed and returned in.
+    time_zone: Optional[str] = None
     # The datasource the query ran on; never serialized.
     datasource: Optional[DatasourceConfig] = PydanticField(default=None, exclude=True, repr=False)
 
@@ -816,6 +833,8 @@ class _Prepared(BaseModel):
     resolved_data_source: Optional[str] = None
     attributes: Any
     expected_columns: List[str]
+    #: The result columns planned as a time of day.
+    time_columns: List[str] = PydanticField(default_factory=list)
     # The persisted datasets the statement reads (drift-attribution scope).
     touched: Set[str]
     # The elements of those datasets it reads (drift attribution).
@@ -825,8 +844,19 @@ class _Prepared(BaseModel):
     population: Optional[str] = None
     population_inferred: bool = False
     row_sources: List[str] = PydanticField(default_factory=list)
-    #: The SQL evaluates ``now()`` / ``current_date()``: its result must never be cached.
+    #: The SQL evaluates ``now()`` / ``current_date()`` / ``current_time()``: its result must never be cached.
     reads_clock: bool = False
+    time_zone: Optional[str] = None
+    #: The zones the statement converts between.
+    zones: List[str] = PydanticField(default_factory=list)
+
+
+def _zones_in_play(rendered: "_Rendered") -> set[str]:
+    """Every zone a statement may convert between: its stages' zones and the source zones its datasets declare."""
+    bundles = [rendered.bundle, *(p.stage_bundle for p in rendered.emitted_list if p.stage_bundle is not None)]
+    zones = {b.time_zone for b in bundles} | {rendered.datasource.time_zone}
+    zones |= {f.time_zone for b in bundles for d in b.datasets_by_name.values() for f in d.fields}
+    return {z for z in zones if z is not None and z != CIVIL}
 
 
 class _Rendered(BaseModel):
@@ -981,6 +1011,9 @@ class SlayerQueryEngine:
         self._drift_snapshots = schema_drift.LiveSnapshotCache()
         # Live source-column types a portable definition's undeclared columns read, by table.
         self._source_column_types: dict[tuple, dict[str, DataType]] = {}
+        # Per client: each zone the server was checked to resolve, with the error it raises when it cannot.
+        self._zone_checks: dict[tuple, dict[str, concurrent.futures.Future[Optional[TimeZoneError]]]] = {}
+        self._zone_lock = threading.Lock()
         self._unknown_types = UnknownTypes()
 
     async def _resolve_unknown_types(self, dataset: SlayerDataset) -> SlayerDataset:
@@ -1093,8 +1126,23 @@ class SlayerQueryEngine:
         }
         return lambda scoped, column: present.get((scoped, column))
 
+    async def _time_of_day_dialect(
+        self, sql_dialect: SqlDialect, *, datasource: DatasourceConfig, construct: str,
+    ) -> SqlDialect:
+        """``sql_dialect`` for a statement with a time of day, on a database that gates one: refused where the
+        server or the user cannot run it, else carrying the profile and whether to send the time-type setting."""
+        try:
+            profile = await self.client_for(datasource).server_profile()
+        except Exception:  # noqa: BLE001 — an unreadable profile is refused like an unknown server; the next query re-probes
+            profile = ServerProfile()
+        refusal = sql_dialect.time_of_day_refusal(profile, construct=construct)
+        if refusal is not None:
+            raise refusal
+        return sql_dialect.model_copy(update={
+            "server_profile": profile, "sends_time_setting": sql_dialect.time_setting_needed(profile)})
+
     async def _render_dialect(
-        self, *, dialect: str, datasource: DatasourceConfig, planned_list,
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list, bundle: ResolvedSourceBundle,
     ) -> "str | SqlDialect":
         """The datasource's own dialect (a MariaDB source renders through ``MariadbDialect``, not its sqlglot
         name's), carrying the server profile when rendering the plan reads it; an unreadable profile renders
@@ -1103,6 +1151,9 @@ class SlayerQueryEngine:
         if sql_dialect.sqlglot_name != dialect:
             sql_dialect = get_dialect(dialect)
         check_library_support(sql_dialect, planned_keys(planned_list))
+        construct = time_of_day_construct(plans=planned_list, bundle=bundle) if sql_dialect.time_of_day_gated else None
+        if construct is not None:
+            return await self._time_of_day_dialect(sql_dialect, datasource=datasource, construct=construct)
         if not sql_dialect.profile_needed(planned_keys(planned_list)):
             return sql_dialect
         try:
@@ -1478,6 +1529,7 @@ class SlayerQueryEngine:
             resolved_data_source=datasource.name,
             attributes=attributes,
             expected_columns=list(expected_columns),
+            time_columns=time_of_day_columns(root_planned=root_planned),
             touched=rendered.reads,
             reads=rendered.element_reads,
             dataset=rendered.dataset,
@@ -1486,6 +1538,8 @@ class SlayerQueryEngine:
             population_inferred=rendered.population_inferred,
             row_sources=rendered.row_sources,
             reads_clock=plans_read_clock(rendered.emitted_list),
+            time_zone=root_planned.stage_bundle.time_zone if root_planned.stage_bundle is not None else None,
+            zones=get_dialect(dialect).converted_zones(statement, zones=_zones_in_play(rendered)),
         )
 
     async def _plan_and_render(self, **kwargs: Any) -> _Rendered:
@@ -1637,8 +1691,9 @@ class SlayerQueryEngine:
 
         # Plan the DAG (root last) and compose the whole chain as one statement.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
-        render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
-        with collect_stale_spellings() as render_stale_spellings:
+        render_dialect = await self._render_dialect(
+            dialect=dialect, datasource=datasource, planned_list=planned_list, bundle=bundle)
+        with collect_stale_spellings() as render_stale_spellings, collect_zone_warnings() as zone_warnings:
             built = build_planned_statement(
                 planned_list, bundle=bundle, dialect=render_dialect,
                 # Plan-derived canonical projection keys drive the write-side length
@@ -1674,6 +1729,7 @@ class SlayerQueryEngine:
         warnings.extend(WholeListWarning(operation=r.operation, list=r.list)
                         for r in dict.fromkeys(r for p in plans for r in p.whole_list_reads))
         warnings.extend({n.message: n for p in plans for n in p.date_only_notices}.values())
+        warnings.extend(zone_warnings)
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
@@ -1916,6 +1972,7 @@ class SlayerQueryEngine:
                 population=prepared.population,
                 population_inferred=prepared.population_inferred,
                 row_sources=prepared.row_sources,
+                time_zone=prepared.time_zone,
             )
 
         use_cache = cache and not dry_run and not explain and not prepared.reads_clock
@@ -1935,6 +1992,7 @@ class SlayerQueryEngine:
                     "population": prepared.population,
                     "population_inferred": prepared.population_inferred,
                     "row_sources": prepared.row_sources,
+                    "time_zone": prepared.time_zone,
                     "warnings": list(prepared.slack_warnings),
                 })
 
@@ -1960,6 +2018,7 @@ class SlayerQueryEngine:
                 population=prepared.population,
                 population_inferred=prepared.population_inferred,
                 row_sources=prepared.row_sources,
+                time_zone=prepared.time_zone,
                 datasource=prepared.datasource,
             )
 
@@ -1980,6 +2039,7 @@ class SlayerQueryEngine:
             population=prepared.population,
             population_inferred=prepared.population_inferred,
             row_sources=prepared.row_sources,
+            time_zone=prepared.time_zone,
             datasource=prepared.datasource,
         )
 
@@ -1998,11 +2058,73 @@ class SlayerQueryEngine:
             await cache_obj.put(key, entry)
         return response
 
+    async def _check_zones(self, *, prepared: _Prepared, client: SqlClient) -> None:
+        """Before the statement runs, the server resolves each zone it converts to: checked once per client and zone
+        through the client (concurrent statements share the one check), a failure raised every time."""
+        dialect = get_dialect(prepared.dialect)
+        key = _sql_client_cache_key(prepared.datasource)
+        for zone in prepared.zones:
+            failure = await self._zone_check(key=key, zone=zone, dialect=dialect, client=client)
+            if failure is not None:
+                raise failure
+
+    async def _zone_check(
+        self, *, key: tuple, zone: str, dialect: SqlDialect, client: SqlClient,
+    ) -> Optional[TimeZoneError]:
+        """``zone``'s cached check, probing it when none is cached or in flight; a cancelled probe is retried."""
+        while True:
+            check, owner = self._claim_zone_check(key=key, zone=zone)
+            if owner:
+                await self._settle_zone_check(check, key=key, zone=zone, dialect=dialect, client=client)
+            try:
+                return await asyncio.shield(asyncio.wrap_future(check))
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if owner or (task is not None and task.cancelling()):
+                    raise  # this statement itself was cancelled
+
+    def _claim_zone_check(
+        self, *, key: tuple, zone: str,
+    ) -> tuple[concurrent.futures.Future[Optional[TimeZoneError]], bool]:
+        """The cached or in-flight check of ``zone``, else a new one this caller owns (and whether it does)."""
+        with self._zone_lock:
+            checks = self._zone_checks.setdefault(key, {})
+            check = checks.get(zone)
+            if check is not None:
+                return check, False
+            check = checks[zone] = concurrent.futures.Future()
+            return check, True
+
+    async def _settle_zone_check(
+        self, check: concurrent.futures.Future[Optional[TimeZoneError]], *, key: tuple, zone: str,
+        dialect: SqlDialect, client: SqlClient,
+    ) -> None:
+        """Probe ``zone`` into ``check``; on any failure uncache it (the next statement retries) and re-raise."""
+        try:
+            check.set_result(await self._probe_zone(dialect=dialect, zone=zone, client=client))
+        except BaseException as exc:
+            with self._zone_lock:
+                checks = self._zone_checks.get(key, {})
+                if checks.get(zone) is check:
+                    del checks[zone]
+            check.set_exception(exc)
+            raise
+
+    @staticmethod
+    async def _probe_zone(*, dialect: SqlDialect, zone: str, client: SqlClient) -> Optional[TimeZoneError]:
+        probe = dialect.zone_probe(ZoneInfo(zone))
+        if probe is None:
+            return None
+        result = await client.execute(sql=probe.sql(dialect=dialect.sqlglot_name))
+        value = next(iter(result.rows[0].values()), None) if result.rows else None
+        return dialect.unresolved_zone_error(ZoneInfo(zone)) if value is None else None
+
     @probes.probe(name="query.run", result=lambda executed: {"query.rows": len(executed.rows)})
     async def _run_data_query(
         self, *, prepared: _Prepared, client: SqlClient
     ) -> ExecutionResult:
         """Run the prepared data query (schema-drift attribution on error); decodes result keys."""
+        await self._check_zones(prepared=prepared, client=client)
         try:
             result = await client.execute(sql=prepared.sql)
         except Exception as exc:
@@ -2015,7 +2137,7 @@ class SlayerQueryEngine:
         rows = get_dialect(prepared.dialect).decode_result_keys(
             result.rows, aliases=prepared.expected_columns,
         )
-        return result.model_copy(update={"rows": rows})
+        return result.model_copy(update={"rows": time_of_day_cells(rows, columns=prepared.time_columns)})
 
     async def _scan_one_table_values(
         self,
@@ -2166,6 +2288,7 @@ class SlayerQueryEngine:
             population=prepared.population,
             population_inferred=prepared.population_inferred,
             row_sources=prepared.row_sources,
+            time_zone=prepared.time_zone,
             datasource=prepared.datasource,
         )
         return self._build_cache_entry(
@@ -2420,8 +2543,11 @@ class SlayerQueryEngine:
         }), datasource=datasource)
         planned = plan_stages(queries=[probe_query], bundle=bundle)
         root = planned[-1]
+        render_dialect = await self._render_dialect(
+            dialect=dialect, datasource=datasource, planned_list=planned, bundle=bundle,
+        )
         built = build_planned_statement(
-            planned, bundle=bundle, dialect=dialect,
+            planned, bundle=bundle, dialect=render_dialect,
             projection_aliases=projection_result_keys(root_planned=root), type_probe=True,
         )
         return built, dialect, root
@@ -2952,7 +3078,12 @@ class SlayerQueryEngine:
         return await self.storage.delete_dataset(dataset_name, data_source=data_source)
 
     async def apply_untyped_findings(self, findings: "Sequence[schema_drift.UntypedFinding]") -> List[str]:
-        """Write each untyped finding's live type into its document field; returns one message per failed write."""
+        """Write each untyped finding's live type into its document field (a database-driven change); returns one
+        message per failed write."""
+        with database_driven():
+            return await self._apply_untyped_findings(findings)
+
+    async def _apply_untyped_findings(self, findings: "Sequence[schema_drift.UntypedFinding]") -> List[str]:
         errors: List[str] = []
         for finding in findings:
             try:
@@ -2970,7 +3101,14 @@ class SlayerQueryEngine:
         self,
         deletes: "Sequence[schema_drift.DriftReportEntry]",
     ) -> "schema_drift.ApplyDriftResult":
-        """Apply each ``ToDeleteEntry`` → ``ApplyDriftResult``; per-entry failures land in ``errors``, ``residual`` from a re-validate."""
+        """Apply each ``ToDeleteEntry`` (a database-driven change) → ``ApplyDriftResult``; per-entry failures land in
+        ``errors``, ``residual`` from a re-validate."""
+        with database_driven():
+            return await self._apply_drift_deletes(deletes)
+
+    async def _apply_drift_deletes(
+        self, deletes: "Sequence[schema_drift.DriftReportEntry]",
+    ) -> "schema_drift.ApplyDriftResult":
         applied: List[schema_drift.AppliedEntry] = []
         errors: List[schema_drift.ApplyError] = []
         touched_ds: set[str] = set()
@@ -3134,10 +3272,7 @@ class SlayerQueryEngine:
         tgt_cols = [p[1] for p in relationship.column_pairs]
         target = by_name.get(relationship.to)
 
-        note = _detection_skip_reason(
-            dataset=dataset, target=target, src_cols=src_cols, tgt_cols=tgt_cols,
-        )
-        if note is not None:
+        def skipped(note: str) -> "tuple[RelationshipCardinalityFinding, None]":
             return RelationshipCardinalityFinding(
                 data_source=data_source, dataset=dataset.name,
                 to=relationship.to, column_pairs=pairs,
@@ -3145,14 +3280,28 @@ class SlayerQueryEngine:
                 verdict=CardinalityVerdict.SKIPPED_UNSUPPORTED, note=note,
             ), None
 
+        note = _detection_skip_reason(dataset=dataset, target=target, src_cols=src_cols, tgt_cols=tgt_cols)
+        if note is not None:
+            return skipped(note)
+        # Keys are read in the form each side runs on this datasource; no other field is resolved.
+        peers = list(by_name.values())
+        src_keyed, tgt_keyed = [
+            await self._resolved(side.model_copy(update={"fields": [f for f in side.fields if f.name in keys],
+                                                         "metrics": []}), datasource=datasource_cfg, datasets=peers)
+            for side, keys in ((dataset, src_cols), (target, tgt_cols))
+        ]
+        note = _filtered_window_key_reason(sides=((src_keyed, src_cols), (tgt_keyed, tgt_cols)), dialect=sqlglot_name)
+        if note is not None:
+            return skipped(note)
+
         src_side = await self._side_stats(
             client=client, table=dataset.sql_table,
-            key_cols=_key_reads(dataset=dataset, keys=src_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=src_keyed, keys=src_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         tgt_side = await self._side_stats(
             client=client, table=target.sql_table,
-            key_cols=_key_reads(dataset=target, keys=tgt_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
+            key_cols=_key_reads(dataset=tgt_keyed, keys=tgt_cols, dialect=sqlglot_name), sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
         # 0 == 0 reads as observed_unique, so an empty side would falsely detect
@@ -3200,8 +3349,13 @@ class SlayerQueryEngine:
     def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[exp.Select, exp.Select]:
         """(row-count, distinct-count) profiling statements reading the table and keys as SLayer reads them; NULL key
         rows excluded from both."""
-        tbl = parse_table(name=table, dialect=get_dialect(sqlglot_name))
+        tbl: Expr = parse_table(name=table, dialect=get_dialect(sqlglot_name))
         cols = [exp.column(c) if isinstance(c, exp.Identifier) else c for c in key_cols]
+        if any(c.find(exp.Window) is not None for c in cols):
+            # A windowed key is computed over the table's rows first; every key is then read as a column.
+            names = [f"__slayer_key_{i}" for i in range(len(cols))]
+            tbl = exp.select(*(exp.alias_(c.copy(), n) for c, n in zip(cols, names))).from_(tbl).subquery("__slayer_t")
+            cols = [exp.column(n) for n in names]
         predicate = None
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
@@ -3304,7 +3458,27 @@ class SlayerQueryEngine:
             for (ds_name, name), by in sorted(narrowed.items())
             if ds_name == data_source
         ]
-        return [*entries, *(schema_drift.unloadable_dataset_delete(error=e) for e in unloadable), *retypes, *findings]
+        return [*entries, *(schema_drift.unloadable_dataset_delete(error=e) for e in unloadable), *retypes, *findings,
+                *await self._ontology_findings(data_source)]
+
+    async def _ontology_findings(self, data_source: str) -> List[OntologyFinding]:
+        """``data_source``'s ontology findings: the model checks, what is not checked, and the data checks run as
+        queries under this engine's policies."""
+        if not await self.storage.list_ontology_mappings(data_source):
+            return []
+        findings, plans = ontology_checks(await self.storage.ontology_use(data_source))
+        for plan in plans:
+            try:
+                count = await self.execute(query=plan.count, data_source=data_source)
+                sample = await self.execute(query=plan.sample, data_source=data_source)
+            except Exception as exc:  # noqa: BLE001  # a check the engine or the database refuses is listed, not fatal
+                findings.append(plan.finding.model_copy(update={"check": "not_checked", "reason": str(exc)}))
+                continue
+            rows = [[row.get(f"s{i}") for i in range(plan.width)] for row in sample.data]
+            findings.append(plan.finding.model_copy(update={
+                "violations": int(count.data[0]["n"]) if count.data else 0,
+                "samples": [r[0] if plan.width == 1 else r for r in rows]}))
+        return findings
 
     def create_dataset_from_query_sync(
         self,
@@ -3571,25 +3745,20 @@ class SlayerQueryEngine:
             prior = await self.storage.get_dataset(dataset.name, data_source=prior_data_source or dataset.data_source)
         except StoredDocumentLoadError:
             prior = None
+        moved_from = prior_data_source if prior_data_source not in (None, dataset.data_source) else None
+        if moved_from is not None:
+            await self.storage.guard_dataset_deletion(name=dataset.name, data_source=moved_from)
         await self.storage.save_dataset(dataset, failures=failures)
         # Clean up the stale entry if the dataset moved datasource.
-        if (
-            prior_data_source is not None
-            and prior_data_source != dataset.data_source
-        ):
-            await self.storage.delete_dataset(
-                dataset.name, data_source=prior_data_source
-            )
+        if moved_from is not None:
+            await self.storage.delete_dataset(dataset.name, data_source=moved_from)
         payloads = await self._narrowed_access(dataset=dataset, prior=prior)
         unique = list({n.message: n for n in notices}.values())
-        if warnings_out is not None:
-            warnings_out.extend([*unique, *payloads])
-            return dataset
-        # Last, as in query(): under ``-W error`` this raises after the save.
-        for notice in unique:
-            _warnings_module.warn(SlayerDateOnlyMidnightWarning(notice), stacklevel=2)
-        for payload in payloads:
-            _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=2)
+        mismatches = await self.storage.ontology_mismatches(data_source=dataset.data_source, datasets=[dataset.name]) \
+            if dataset.data_source else []
+        _report_saved_dataset_warnings(
+            notices=unique, payloads=payloads, mismatches=mismatches, warnings_out=warnings_out,
+        )
         return dataset
 
     async def _prior_data_source(self, dataset: SlayerDataset) -> Optional[str]:
@@ -3705,11 +3874,12 @@ class SlayerQueryEngine:
         # Parse with the datasource's own dialect (matching generation), else
         # valid non-Postgres Mode-A SQL could be mis-rejected. Missing → postgres.
         datasource = await self.storage.get_datasource(dataset.data_source)
-        dialect = self._dialect_for_type(datasource.type if datasource else None)
+        ds_type = datasource.type if datasource else None
+        dialect = self._dialect_for_type(ds_type)
         datasets_by_name = {k: v for k, v in loaded.items() if v is not None}
         check_definition_reach(dataset=dataset, reachable=datasets_by_name)
         check_definition_ambiguity(dataset=dataset, reachable=datasets_by_name)
-        check_dataset_filters(dataset=dataset, reachable=datasets_by_name)
+        check_dataset_filters(dataset=dataset, reachable=datasets_by_name, dialect=ossie_token(ds_type))
 
         def _expand(sql: str) -> None:
             expand_derived_refs_sync(
@@ -3884,6 +4054,15 @@ def _detection_skip_reason(
     return None
 
 
+def _filtered_window_key_reason(*, sides, dialect: str) -> str | None:
+    """Why a windowed key of a filtered dataset can't be profiled: its values depend on the filtered rows."""
+    for dataset, keys in sides:
+        if dataset.filters and any(r.find(exp.Window) for r in _key_reads(dataset=dataset, keys=keys, dialect=dialect)):
+            return (f"a key of dataset {dataset.name!r} is windowed and the dataset has filters; cardinality profiling "
+                    f"computes windows over the unfiltered table, so it skips this relationship")
+    return None
+
+
 def _key_reads(*, dataset: SlayerDataset, keys: List[str], dialect: str) -> List[Expr]:
     """Each key as SLayer reads it from the dataset's table: its column, or a computed key's expression."""
     by_name = {c.name: c for c in dataset.fields}
@@ -3892,6 +4071,21 @@ def _key_reads(*, dataset: SlayerDataset, keys: List[str], dialect: str) -> List
         else exp.maybe_parse(f.definition_sql or f.name, dialect=dialect)
         for f in (by_name[k] for k in keys)
     ]
+
+
+def _report_saved_dataset_warnings(
+    *, notices: Sequence[DateOnlyMidnightWarning], payloads: Sequence[NarrowedAccessWarning],
+    mismatches: Sequence[SlayerWarning], warnings_out: Optional[List[SlayerWarning]],
+) -> None:
+    """A dataset save's warnings into ``warnings_out``, else emitted — last, so under ``-W error`` they raise after the save."""
+    if warnings_out is not None:
+        warnings_out.extend([*notices, *payloads, *mismatches])
+        return
+    report_save_warnings(None, mismatches)
+    for notice in notices:
+        _warnings_module.warn(SlayerDateOnlyMidnightWarning(notice), stacklevel=3)
+    for payload in payloads:
+        _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=3)
 
 
 def _validate_relationship_keys(
