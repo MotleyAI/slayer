@@ -1,11 +1,11 @@
 ## 1. Tests (pr-tests stage)
 
-- [ ] 1.1 Identity test (extend `tests/test_mcp_server_runtime.py::TestServerIdentity`): title, description, website URL; two icons, light first; each `src` strictly parsed (`data:image/png;base64,` prefix, valid base64, PNG signature, IHDR 180×160), MIME `image/png`, sizes `["180x160"]`, themes `light`/`dark`; dark payload byte-equal to `docs/SLayer.png`. Verify: fails before implementation.
-- [ ] 1.2 Pinned tool table test: `tools/list` name set == the spec table's 28 names; each tool's title and four hints equal its row, none null. Verify: fails before implementation.
-- [ ] 1.3 Registration guard test: registering through the `tool()` wrapper without `title` or `hints` fails the server build. Verify: fails before implementation.
-- [ ] 1.4 Output schema test: every tool's output schema is an object whose only property is the required string `result`. Verify: passes today (pins existing behaviour).
-- [ ] 1.5 Closed-world test: seed a datasource, table-backed and query-backed datasets, a memory, a priority list (plus an ontology and mapping where the ontology extra allows); build the server with a `client_factory` that records and raises; call each closed-world tool with valid arguments; assert the factory was never invoked and no call failed for want of a client.
-- [ ] 1.6 Read-only test: same seed; for each read-only tool (point and collection forms of `inspect`; `query` and `describe_datasource` against a working in-process SQLite/DuckDB datasource) snapshot the stored definitions (datasources, datasets minus sampled values, semantic models, ontologies, mappings, memories, priority) before and after; assert equal.
+- [x] 1.1 Identity test (extend `tests/test_mcp_server_runtime.py::TestServerIdentity`): title, description, website URL; two icons, light first; each `src` strictly parsed (`data:image/png;base64,` prefix, valid base64, PNG signature, IHDR 180×160), MIME `image/png`, sizes `["180x160"]`, themes `light`/`dark`; dark payload byte-equal to `docs/SLayer.png`. Verify: fails before implementation.
+- [x] 1.2 Pinned tool table test: `tools/list` name set == the spec table's 28 names; each tool's title and four hints equal its row, none null. Verify: fails before implementation.
+- [x] 1.3 Registration guard test: registering through the `tool()` wrapper without `title` or `hints` fails the server build. Verify: fails before implementation.
+- [x] 1.4 Output schema test: every tool's output schema is an object whose only property is the required string `result`. Verify: passes today (pins existing behaviour).
+- [x] 1.5 Closed-world test: seed a datasource, table-backed and query-backed datasets, a memory, a priority list (plus an ontology and mapping where the ontology extra allows); build the server with a `client_factory` that records and raises; call each closed-world tool with valid arguments; assert the factory was never invoked and no call failed for want of a client.
+- [x] 1.6 Read-only test: same seed; for each read-only tool (point and collection forms of `inspect`; `query` and `describe_datasource` against a working in-process SQLite/DuckDB datasource) snapshot the stored definitions (datasources, datasets minus sampled values, semantic models, ontologies, mappings, memories, priority) before and after; assert equal.
 
 ## 2. Server metadata
 
