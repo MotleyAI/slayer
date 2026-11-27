@@ -228,6 +228,7 @@ principles every layer obeys.
     [enforced: test:tests/test_dev2218_transform_domain.py]
     [enforced: test:tests/test_dev2457_measure_windows.py]
     [enforced: test:tests/test_transform_operand_grain.py]
+    [enforced: test:tests/test_transform_domain_in_aggregation.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw rows are 12.5; spec: `queries/semantics` › Grain guarantee)
@@ -314,7 +315,7 @@ enforced test ids as its instances land.
    measure-typed filters and order entries. [review]
 4. **Position parity**: the same expression yields the same value as a
    measure, a filter, or an order key — positions differ only in what happens
-   to the value. [review] [enforced: test:tests/test_dev2218_transform_domain.py]
+   to the value. [review] [enforced: test:tests/test_dev2218_transform_domain.py] [enforced: test:tests/test_transform_domain_in_aggregation.py]
 5. **Dice–slice**: filtering to `d = v` equals slicing the `v` cell of a groupby on `d` — exact for every aggregation under the default, associate and error; the deprecated broadcast mode trades it away and warns.
    [enforced: test:tests/test_law_dice_slice.py]
    [enforced: test:tests/test_dev1935_boolean_lowering.py]

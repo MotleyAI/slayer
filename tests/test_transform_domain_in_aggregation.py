@@ -158,8 +158,9 @@ def _check_in_place(elab: ElaboratedStage) -> None:
 
 
 def test_a_transform_over_rows_finer_than_its_operand_is_refused_at_plan_time() -> None:
+    elab = _elaborated(RANK, R, C)
     with pytest.raises(ValueError) as ei:
-        _check_in_place(_elaborated(RANK, R, C))
+        _check_in_place(elab)
     assert not isinstance(ei.value, SlayerError), "an internal invariant, not a user-facing error"
 
 
