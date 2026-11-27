@@ -194,8 +194,9 @@ class TestAsAPartitionKeyOnOneDataset:
     async def test_defaulted_outer_grain_stays_a_typed_refusal(self, invoices: SlayerQueryEngine) -> None:
         defaulted = dim(f"CASE WHEN max(sum({INV}fee, partition_by=[{INV}account_id, {INV}state])) > 5 THEN 1 ELSE 0 END",
                         "band")
+        body = query("invoices", [f"{INV}account_id", defaulted], f"sum({INV}fee, partition_by=band)")
         with pytest.raises(ComputedDimensionError):
-            await invoices.execute(query("invoices", [f"{INV}account_id", defaulted], f"sum({INV}fee, partition_by=band)"))
+            await invoices.execute(body)
 
     async def test_beside_its_own_driving_reaggregation(self, invoices: SlayerQueryEngine) -> None:
         # The metric's producer drives on the same operand the dimension attaches.
@@ -318,9 +319,9 @@ class TestUnattributableFromThePopulation:
         assert tier_band(resp) == tier_band(plain) == ASSOCIATED
 
     async def test_refused_in_error_mode(self, orders: SlayerQueryEngine) -> None:
+        body = query("customers", ["customers.tier", OBAND], "count(customers.*)", to_many_handling="error")
         with pytest.raises(SlayerError, match=r"unattributable dimension\(s\) band\b"):
-            await orders.execute(query("customers", ["customers.tier", OBAND], "count(customers.*)",
-                                       to_many_handling="error"))
+            await orders.execute(body)
 
     async def test_windowed_home_associates_like_the_plain_dimension(self, orders: SlayerQueryEngine) -> None:
         tds = [{"field": "customers.signup_at", "granularity": "month"}]
@@ -332,9 +333,10 @@ class TestUnattributableFromThePopulation:
 
     async def test_windowed_home_refused_in_error_mode(self, orders: SlayerQueryEngine) -> None:
         tds = [{"field": "customers.signup_at", "granularity": "month"}]
+        body = query("customers", [OBAND], "sum(customers.spend, window='60d')", time_dimensions=tds,
+                     to_many_handling="error")
         with pytest.raises(SlayerError, match=r"unattributable dimension\(s\) band\b"):
-            await orders.execute(query("customers", [OBAND], "sum(customers.spend, window='60d')",
-                                       time_dimensions=tds, to_many_handling="error"))
+            await orders.execute(body)
 
     @pytest.mark.parametrize("dialect", BACKENDS)
     async def test_through_a_derived_grain_member(self, dialect: str) -> None:
@@ -348,9 +350,9 @@ class TestUnattributableFromThePopulation:
             resp = await e.execute(query("customers", ["customers.tier", zband], "count(customers.*)",
                                          "sum(customers.spend)"))
             assert tier_band(resp) == ASSOCIATED
+            body = query("customers", ["customers.tier", zband], "count(customers.*)", to_many_handling="error")
             with pytest.raises(SlayerError, match=r"unattributable dimension\(s\) band\b"):
-                await e.execute(query("customers", ["customers.tier", zband], "count(customers.*)",
-                                      to_many_handling="error"))
+                await e.execute(body)
 
 
 #: Per contractor, the max id among its assignments > 2: Ann (1, 2) → 0; Bob, Cid, Eve → 1; Dee has none.
@@ -366,8 +368,9 @@ class TestUnattributableAcrossAListChildHome:
         assert got == plain == {(0,): 3.0, (1,): 2.0}
 
     async def test_refused_in_error_mode(self, lists: SlayerQueryEngine) -> None:
+        body = query("contractors", [ABAND], f"count({C}skills.*)", to_many_handling="error")
         with pytest.raises(SlayerError, match=r"unattributable dimension\(s\) band\b"):
-            await lists.execute(query("contractors", [ABAND], f"count({C}skills.*)", to_many_handling="error"))
+            await lists.execute(body)
 
 
 TWIN_REFS = SlayerDataset(
@@ -390,8 +393,9 @@ class TestUnattributableOverAKeylessDataset:
 
     async def test_refused_in_error_mode(self) -> None:
         async with contractors_engine("duckdb", datasets=[*all_datasets(), TWIN_REFS], extra=TWIN_EXTRA) as e:
+            body = query("twin_refs", [TBAND], "count(twin_refs.*)", to_many_handling="error")
             with pytest.raises(SlayerError, match=r"unattributable dimension\(s\) band\b"):
-                await e.execute(query("twin_refs", [TBAND], "count(twin_refs.*)", to_many_handling="error"))
+                await e.execute(body)
 
 
 # --------------------------------------------------------------------------- #

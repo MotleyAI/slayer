@@ -10,7 +10,7 @@ rather than only by an executed-value diff.
 
 from __future__ import annotations
 
-from slayer.core.keys import AggregateKey, FieldKey, TransformKey
+from slayer.core.keys import AggregateKey, AttachedKey, TransformKey
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
@@ -87,8 +87,7 @@ class TestGuardOwnership:
         out_slot = next(s for s in _all_slots(planned) if s.id in layer.slot_ids)
         assert isinstance(out_slot.key, TransformKey), out_slot.key
         inner = out_slot.key.input
-        assert isinstance(inner, FieldKey), inner
-        assert inner.leaf.startswith("__regroup__"), inner
+        assert isinstance(inner, AttachedKey), inner
         attach = next(
             a for a in planned.regroup_attach_plans
             if any(sub.placeholder == inner for sub in a.substitutions)
@@ -108,8 +107,7 @@ class TestGuardOwnership:
         out_slot = next(s for s in _all_slots(planned) if s.id in layer.slot_ids)
         assert isinstance(out_slot.key, TransformKey), out_slot.key
         inner = out_slot.key.input
-        assert isinstance(inner, FieldKey), inner
-        assert inner.leaf.startswith("__regroup__"), inner
+        assert isinstance(inner, AttachedKey), inner
 
     def test_a_local_inner_stays_inline(self) -> None:
         """(a) ``time_shift(sum(amount))`` beside a cross-dataset sibling — the shift's

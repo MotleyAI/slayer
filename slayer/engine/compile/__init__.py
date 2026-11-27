@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Dict, Hashable, Optional
 
 from slayer.core.keys import TimePointCmpKey, walk_value_keys
+from slayer.engine.compile.regroup import AttachTable
 from slayer.engine.compile.stages import compile_stage
 from slayer.ir.elaborated import ElaboratedStage
 from slayer.ir.planned import PlannedQuery
@@ -29,8 +30,9 @@ def compile_query(
     *,
     elaborated: ElaboratedStage,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
+    attaches: Optional[AttachTable] = None,
 ) -> PlannedQuery:
-    """Compile an elaborated stage to a ``PlannedQuery``."""
+    """Compile an elaborated stage to a ``PlannedQuery``, its attached values in its statement's ``attaches``."""
     if not isinstance(elaborated, ElaboratedStage):
         raise ValueError(
             "compile_query needs an environment produced by elaborate_query "
@@ -38,4 +40,4 @@ def compile_query(
         )
     if _has_unresolved_time_point(elaborated.prebound):
         raise RuntimeError("An unresolved time-point comparison reached compilation.")
-    return compile_stage(elaborated, producer_registry=producer_registry)
+    return compile_stage(elaborated, producer_registry=producer_registry, attaches=attaches)

@@ -16,6 +16,7 @@ from slayer.core.keys import (
     NULL_SAFE_COMPARISON_OPS,
     AggregateKey,
     ArithmeticKey,
+    AttachedKey,
     ArrayLiteralKey,
     CastKey,
     FieldKey,
@@ -390,7 +391,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if ctx.dimension_values is not None and key in ctx.dimension_values:
         return ctx.dimension_values[key].copy()
 
-    if isinstance(key, (FieldKey, SqlFragmentKey)):
+    if isinstance(key, (FieldKey, AttachedKey, SqlFragmentKey)):
         return _require_scope(ctx, key).resolve(key, consumer=ctx.consumer)
 
     if isinstance(key, FieldSqlKey):

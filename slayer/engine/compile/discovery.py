@@ -3,7 +3,8 @@ its phase (from the consumer position) and routing (from its resolved home)."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Literal, Optional, Sequence, Tuple
+from types import MappingProxyType
+from typing import Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
@@ -11,6 +12,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
 from slayer.core.keys import (
     AggregateKey,
+    AttachedKey,
     ConsumerNode,
     FieldKey,
     FieldSqlKey,
@@ -30,7 +32,7 @@ from slayer.core.keys import (
     window_kwarg_of,
 )
 from slayer.core.scope import DatasetScope
-from slayer.engine.compile.shift import _series_mode, is_placeholder
+from slayer.engine.compile.shift import _series_mode
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
     combined_kind,
@@ -74,6 +76,11 @@ class RootDisposition(BaseModel):
     declared_type: Optional[DataType] = None
     #: ``time_shift`` candidates only: shifts its materialised series.
     series: Optional[bool] = None
+
+
+def _routes_reaggregation(k: ValueKey) -> bool:
+    """A re-aggregation whose operand a producer computes; one over attached values only aggregates them in place."""
+    return is_reaggregation_key(k) and bool(attached_inputs(k))
 
 
 def _is_bare_own_rows_local(k: ValueKey, *, homes: AggregateHomes) -> bool:
@@ -122,8 +129,10 @@ class _Walker:
         self, *, prebound: PreboundQuery, scope: DatasetScope,
         bundle: ResolvedSourceBundle, homes: AggregateHomes,
         transforms: TransformRouting = TransformRouting(),
+        originals: Mapping[ValueKey, ValueKey] = MappingProxyType({}),
     ) -> None:
         self.out: List[RootDisposition] = []
+        self.originals = originals
         self.homes = homes
         n_grain = prebound.n_dims + prebound.n_time_dimensions
         self.classes = position_classes(prebound.declared_metrics, n_grain=n_grain)
@@ -142,7 +151,7 @@ class _Walker:
         """An aggregate computed over the plan's host rows at the plan grain (inline, or host-rooted across its
         inputs' hops)."""
         return (
-            a.written_grain is None and not attached_inputs(a) and not is_reaggregation_key(a)
+            a.written_grain is None and not attached_inputs(a) and not _routes_reaggregation(a)
             and not self.homes.target_rooted(a) and not _is_bare_own_rows_local(a, homes=self.homes)
             and not self.local_broadcasts(a)
         )
@@ -161,7 +170,7 @@ class _Walker:
         # A dimensionless plan has one cell, the unit.
         if not (self.transforms.route and self.grain and is_transform(k)) or k in self.transforms.answers:
             return False
-        if isinstance(k, TransformKey) and k.op == "time_shift" and not _series_mode(k.input, to_original={}):
+        if isinstance(k, TransformKey) and k.op == "time_shift" and not _series_mode(k.input, to_original=self.originals):
             return False
         return not (self.host_cells and self._over_host_cells(k))
 
@@ -181,7 +190,7 @@ class _Walker:
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
             or self.homes.target_rooted(k) or k.locus == "host" or self.crossing(k)
-            or any(is_placeholder(r) for r in walk_value_keys(k.source))  # a lowered re-aggregation outer
+            or any(isinstance(r, AttachedKey) for r in walk_value_keys(k.source))  # a lowered re-aggregation outer
         ):
             return False
         written = k.written_grain
@@ -223,7 +232,7 @@ class _Walker:
 
     def dimension(self, vk: ValueKey, *, name: Optional[str], declared: Optional[DataType]) -> None:
         for k in dimension_nodes(vk):
-            if is_reaggregation_key(k):
+            if _routes_reaggregation(k):
                 self.emit_named(k, "row", "reaggregation", top=k == vk, name=name,
                                 declared=declared)
                 continue
@@ -263,7 +272,7 @@ class _Walker:
             return
         if base is not None and base(n.key):
             return
-        if is_reaggregation_key(n.key):
+        if _routes_reaggregation(n.key):
             if self.classes.combined_admits(n, position=position, root=root):
                 self.emit_named(n.key, "combined", "reaggregation", top=top, name=name, declared=declared)
             return
@@ -279,7 +288,7 @@ class _Walker:
         k = n.key
         if isinstance(k, TransformKey) and k.op == "time_shift":
             self.emit(k, "combined", "shifted",
-                      series=False if self.transforms.spine else _series_mode(k.input, to_original={}))
+                      series=False if self.transforms.spine else _series_mode(k.input, to_original=self.originals))
         kind = combined_kind(k, homes=self.homes)
         admitted = kind is not None and self.classes.combined_admits(n, position=position, root=root)
         if self.local_broadcasts(k):
@@ -317,9 +326,11 @@ def discover_roots(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
     scope: DatasetScope, bundle: ResolvedSourceBundle, homes: AggregateHomes,
     transforms: TransformRouting = TransformRouting(route=False),
+    originals: Mapping[ValueKey, ValueKey] = MappingProxyType({}),
 ) -> List[RootDisposition]:
-    """Every producer root of ``prebound``, one disposition per consumer occurrence, routed by its home."""
-    w = _Walker(prebound=prebound, scope=scope, bundle=bundle, homes=homes, transforms=transforms)
+    """Every producer root of ``prebound``, one disposition per consumer occurrence, routed by its home; an attached
+    value's original from ``originals``."""
+    w = _Walker(prebound=prebound, scope=scope, bundle=bundle, homes=homes, transforms=transforms, originals=originals)
     metric_typed = frozenset(
         i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.METRIC
     )

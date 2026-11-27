@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 from slayer.core.enums import UNIT_MONTHS, UNIT_SECONDS, DataType, TimeGranularity
 from slayer.core.granularity import Granularity, granularity_parts, nests_into, resolve_granularity
 from slayer.core.keys import (
-    AggregateKey, ArithmeticKey, FieldKey, FieldSqlKey, LiteralKey, TimeTruncKey, TransformKey, ValueKey, source_anchor_path,
+    AggregateKey, ArithmeticKey, AttachedKey, FieldKey, FieldSqlKey, LiteralKey, TimeTruncKey, TransformKey, ValueKey, source_anchor_path,
     is_attached_source, split_top_level_and,
     field_leaf, walk_value_keys,
 )
@@ -19,7 +19,7 @@ from slayer.core.relationship_walker import SPINE_TOKEN, reaches_spine, spine_to
 from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
 from slayer.core.time_points import add_units, floor_to
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, check_default_time_dimension, is_spine
-from slayer.engine.compile.shift import is_placeholder
+
 from slayer.core.time_zones import CIVIL
 from slayer.engine.elaborate_env import (
     check_time_dimension_field,
@@ -51,7 +51,8 @@ def spine_field(dataset: Optional[SlayerDataset], *, bundle: ResolvedSourceBundl
 
 
 def _mentions(key: ValueKey, spine: FieldKey) -> bool:
-    return any(k == spine for k in walk_value_keys(key))
+    """``spine`` occurs in ``key`` (an attached value's join, checked where it was minted, aside)."""
+    return key == spine or (not isinstance(key, AttachedKey) and any(_mentions(c, spine) for c in key.children()))
 
 
 def _reads_spine(key: ValueKey, spine: FieldKey) -> bool:
@@ -64,7 +65,7 @@ def _reads_spine(key: ValueKey, spine: FieldKey) -> bool:
 
 def _bare(key: ValueKey, spine: FieldKey) -> bool:
     """``spine`` occurs outside a bucket of it."""
-    if isinstance(key, TimeTruncKey) and key.source == spine:
+    if (isinstance(key, TimeTruncKey) and key.source == spine) or isinstance(key, AttachedKey):
         return False
     return key == spine or any(_bare(c, spine) for c in key.children())
 
@@ -75,7 +76,7 @@ def _spine_aggregate(
     for k in walk_value_keys(key):
         # A re-aggregation reads its operand's cells, never the spine's rows.
         if not isinstance(k, AggregateKey) or is_attached_source(k.source) or any(
-                is_placeholder(r) for r in walk_value_keys(k.source)):
+                isinstance(r, AttachedKey) for r in walk_value_keys(k.source)):
             continue
         home = walk_key_path(dataset=host, path=source_anchor_path(k.source), bundle=bundle)
         if _mentions(k.source, spine) or (home is not None and is_spine(home)):

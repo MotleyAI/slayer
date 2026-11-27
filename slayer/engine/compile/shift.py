@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import List, Mapping, Optional, Tuple
 
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    AttachedKey,
     FieldKey,
     FieldSqlKey,
-    REGROUP_LEAF_PREFIX,
     CastKey,
     ListSetKey,
     ScalarCallKey,
@@ -22,15 +22,11 @@ from slayer.core.keys import (
     source_anchor_path,
 )
 
-__all__ = ["carried_placeholders", "is_placeholder", "_series_mode"]
+__all__ = ["carried_placeholders", "_series_mode"]
 
 
-def is_placeholder(key: ValueKey) -> bool:
-    return isinstance(key, FieldKey) and key.leaf.startswith(REGROUP_LEAF_PREFIX)
-
-
-def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> Tuple[bool, bool]:
-    """(has_transform, has_cross_model_agg) over a composite; a placeholder
+def _series_flags(node: ValueKey, *, to_original: Mapping[ValueKey, ValueKey]) -> Tuple[bool, bool]:
+    """(has_transform, has_cross_model_agg) over a composite; an attached value
     resolves to its original aggregate."""
     has_transform = False
     has_cross_dataset = False
@@ -39,10 +35,10 @@ def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> T
     elif isinstance(node, AggregateKey):
         if source_anchor_path(node.source):
             has_cross_dataset = True
-    elif is_placeholder(node):
+    elif isinstance(node, AttachedKey):
         original = to_original.get(node)
         if original is None:
-            has_cross_dataset = True  # unknown placeholder — fail closed
+            has_cross_dataset = True  # unknown attached value — fail closed
         else:
             return _series_flags(original, to_original=to_original)
     elif not isinstance(node, (FieldKey, FieldSqlKey, TimeTruncKey)):
@@ -53,13 +49,13 @@ def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> T
     return has_transform, has_cross_dataset
 
 
-def _series_mode(inner: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> bool:
+def _series_mode(inner: ValueKey, *, to_original: Mapping[ValueKey, ValueKey]) -> bool:
     """Whether a transform shifts its materialised series (True) or re-aggregates
     (False) — a nested transform, a predicate root, or a composite carrying a
     transform or cross-dataset aggregate leaf."""
     if is_transform(inner) or is_boolean_shaped(inner):
         return True
-    if is_placeholder(inner) and is_transform(to_original.get(inner)):
+    if isinstance(inner, AttachedKey) and is_transform(to_original.get(inner)):
         return True
     if isinstance(inner, (ArithmeticKey, ScalarCallKey, CastKey, ListSetKey)):
         has_transform, has_cross_dataset = _series_flags(inner, to_original=to_original)
@@ -81,17 +77,17 @@ def _re_evaluated(
 
 
 def carried_placeholders(
-    inner: ValueKey, *, axis: ValueKey, to_original: Dict[ValueKey, ValueKey],
+    inner: ValueKey, *, axis: ValueKey, to_original: Mapping[ValueKey, ValueKey],
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
 ) -> List[ValueKey]:
-    """Consumer-level placeholders of ``inner`` read at their in-frame value: an
+    """Consumer-level attached values of ``inner`` read at their in-frame value: an
     axis-free leaf is constant along the axis; one whose grain holds the axis, or a
     ranked / windowed one, is re-evaluated instead."""
     carried: List[ValueKey] = []
 
     def visit(node: ValueKey) -> None:
-        if is_placeholder(node):
+        if isinstance(node, AttachedKey):
             original = to_original.get(node)
             if original is not None and node not in carried and not _re_evaluated(
                 original, axis=axis, dim_keys=dim_keys, td_keys=td_keys,

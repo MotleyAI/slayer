@@ -34,7 +34,7 @@ from slayer.core.keys import (
     substitute_value_keys,
     SqlFragmentKey,
 )
-from slayer.core.keys import Grain
+from slayer.core.keys import AttachedKey, Grain
 
 CITY = FieldKey(path=(), leaf="city")
 AMOUNT = FieldKey(path=(), leaf="amount")
@@ -126,6 +126,7 @@ class TestTotality:
             CastKey: CastKey(source=CITY, type_text="TEXT", data_type=DataType.STRING),
             ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
             ListSetKey: ListSetKey(source=CITY),
+            AttachedKey: AttachedKey(attach="a0", on=(("s0", CITY),)),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)

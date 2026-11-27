@@ -14,6 +14,7 @@ from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     ArrayLiteralKey,
+    AttachedKey,
     FieldKey,
     FieldSqlKey,
     InKey,
@@ -327,7 +328,7 @@ def _iter_slot_deps(key: ValueKey):
         for child in key.children():
             yield from _iter_slot_deps(child)
         return
-    if isinstance(key, (FieldKey, FieldSqlKey, TimeTruncKey)):
+    if isinstance(key, (FieldKey, FieldSqlKey, TimeTruncKey, AttachedKey)):
         yield key
         return
     if isinstance(key, (StarKey, LiteralKey, ArrayLiteralKey)):
@@ -343,17 +344,13 @@ def _iter_slot_deps(key: ValueKey):
     )
 
 
-def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]:
-    """AGGREGATE phase for a composite whose every leaf is a regroup placeholder (reads only ``_cm_`` values, so it renders at the combined SELECT), else None."""
+def _attached_composite_phase(value_key: ValueKey) -> Optional[Phase]:
+    """AGGREGATE phase for a composite reading only attached values (it renders at the combined SELECT), else None."""
     if not isinstance(value_key, SLOT_COMPOSITE_KINDS):
         return None
     deps = list(_iter_slot_deps(value_key))
-    if not deps:
+    if not deps or not all(isinstance(dep, AttachedKey) for dep in deps):
         return None
-    for dep in deps:
-        if not (isinstance(dep, FieldKey)
-                and dep.leaf.startswith(REGROUP_LEAF_PREFIX)):
-            return None
     return Phase.AGGREGATE
 
 
@@ -400,7 +397,7 @@ class ProjectionPlanner:
             phase = m.bound.phase
             if not m.is_dimension:
                 phase = (
-                    _regroup_substituted_composite_phase(m.bound.value_key)
+                    _attached_composite_phase(m.bound.value_key)
                     or phase
                 )
             sid = registry.intern(
@@ -454,6 +451,8 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
     """Best-effort canonical name for a hidden slot (``sum(revenue)`` → ``revenue_sum``, ``customers.regions.name`` → ``customers__regions__name``)."""
     if isinstance(key, FieldKey):
         return "__".join(key.path + (key.leaf,))
+    if isinstance(key, AttachedKey):
+        return f"{REGROUP_LEAF_PREFIX}{key.attach}"
     if isinstance(key, FieldSqlKey):
         prefix = "__".join(key.path) + "__" if key.path else ""
         return f"{prefix}{key.field_name}"

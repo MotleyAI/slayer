@@ -204,42 +204,45 @@ class TestPlanTimeInvariant:
     def test_one_value_read_at_two_phases_needs_an_edge_at_each(self) -> None:
         key = attached(("team", TEAM))
         reads = [(key, Phase.ROW), (key, Phase.AGGREGATE)]
-        check_planned(reads, reads, grains={"a0": frozenset({"team"})})
+        grains = {"a0": frozenset({"team"})}
+        check_planned(reads, reads, grains=grains)
         with pytest.raises(RuntimeError, match="a0"):
-            check_planned(reads, reads[:1], grains={"a0": frozenset({"team"})})
+            check_planned(reads, reads[:1], grains=grains)
 
     def test_an_unattached_read_is_refused(self) -> None:
-        key = attached(("team", TEAM))
+        key, grains = attached(("team", TEAM)), {"a0": frozenset({"team"})}
         with pytest.raises(RuntimeError, match="a0"):
-            check_planned([(key, Phase.ROW)], [], grains={"a0": frozenset({"team"})})
+            check_planned([(key, Phase.ROW)], [], grains=grains)
 
     def test_a_duplicate_edge_is_refused(self) -> None:
-        key = attached(("team", TEAM))
+        key, grains = attached(("team", TEAM)), {"a0": frozenset({"team"})}
         with pytest.raises(RuntimeError, match="a0"):
-            check_planned([(key, Phase.ROW)], [(key, Phase.ROW)] * 2, grains={"a0": frozenset({"team"})})
+            check_planned([(key, Phase.ROW)], [(key, Phase.ROW)] * 2, grains=grains)
 
     @pytest.mark.parametrize("grain", [frozenset({"team", "name"}), frozenset()], ids=["uncovered", "extra"])
     def test_the_pairs_cover_the_producer_grain_exactly(self, grain: frozenset[str]) -> None:
         key = attached(("team", TEAM))
+        reads = [(key, Phase.ROW)]
         with pytest.raises(RuntimeError, match="a0"):
-            check_planned([(key, Phase.ROW)], [(key, Phase.ROW)], grains={"a0": grain})
+            check_planned(reads, reads, grains={"a0": grain})
 
     def test_an_unknown_producer_is_refused(self) -> None:
         key = attached(("team", TEAM), attach="a9")
+        reads = [(key, Phase.ROW)]
         with pytest.raises(RuntimeError, match="a9"):
-            check_planned([(key, Phase.ROW)], [(key, Phase.ROW)], grains={})
+            check_planned(reads, reads, grains={})
 
     def test_a_member_unresolved_in_the_reader_is_refused(self) -> None:
         key = attached(("team", TEAM), ("name", NAME))
+        reads, grains = [(key, Phase.ROW)], {"a0": frozenset({"team", "name"})}
         with pytest.raises(RuntimeError, match="a0"):
-            check_planned([(key, Phase.ROW)], [(key, Phase.ROW)], grains={"a0": frozenset({"team", "name"})},
-                          resolves=lambda member: member != NAME)
+            check_planned(reads, reads, grains=grains, resolves=lambda member: member != NAME)
 
     def test_a_missing_answer_slot_is_refused(self) -> None:
         key = attached(("team", TEAM))
+        reads, grain = [(key, Phase.ROW)], frozenset({"team"})
         with pytest.raises(RuntimeError, match="a0"):
-            check_planned([(key, Phase.ROW)], [(key, Phase.ROW)], grains={"a0": frozenset({"team"})},
-                          slots={"a0": frozenset({"team"})})
+            check_planned(reads, reads, grains={"a0": grain}, slots={"a0": grain})
 
 
 class TestRetired:

@@ -6,17 +6,16 @@ decorate live in ``slayer.ir.prebound``.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Callable, Generator, Mapping, Optional, Tuple
+from typing import Callable, Mapping, Optional, Tuple
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
     AggregateKey,
+    AttachedKey,
     CastKey,
     FieldElementFn,
     FieldKey,
@@ -31,7 +30,6 @@ from slayer.core.keys import (
     aggregation_source_type,
     list_element_type,
     list_valued,
-    prepend_value_key,
     value_type,
     walk_value_keys,
 )
@@ -61,9 +59,8 @@ from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.naming import expression_source_leaf
 
 __all__ = [
-    "PlaceholderTypes",
+    "AttachedTyping",
     "SlotTyping",
-    "minted_placeholders",
     "dimension_key_format_description",
     "field_aggregate_type",
     "key_element_type",
@@ -72,74 +69,47 @@ __all__ = [
     "scope_field_type",
 ]
 
-_NO_PLACEHOLDERS: Mapping[ValueKey, ValueKey] = MappingProxyType({})
-# A minted regroup placeholder's type in the plan that minted it, by leaf.
-PlaceholderTypes = Mapping[str, Callable[[], Optional[DataType]]]
-#: The placeholders minted by each enclosing plan still compiling, innermost last.
-_MINTED: ContextVar[Tuple[PlaceholderTypes, ...]] = ContextVar("_MINTED", default=())
+class AttachedTyping:
+    """An attached value's types: its original's, as the plan that minted it types it."""
 
+    def __init__(self, *, original: ValueKey, typing: "SlotTyping") -> None:
+        self.original = original
+        self._typing = typing
 
-@contextmanager
-def minted_placeholders(types: PlaceholderTypes) -> Generator[None]:
-    """Make ``types`` (a live mapping) visible to every plan compiled inside the block."""
-    token = _MINTED.set((*_MINTED.get(), types))
-    try:
-        yield
-    finally:
-        _MINTED.reset(token)
+    def value(self) -> Optional[DataType]:
+        return self._typing.value_type(self.original)
 
-
-def _minted_type(leaf: str) -> Optional[Callable[[], Optional[DataType]]]:
-    for types in reversed(_MINTED.get()):
-        found = types.get(leaf)
-        if found is not None:
-            return found
-    return None
+    def element(self) -> Optional[DataType]:
+        typing = self._typing
+        return list_element_type(self.original, field_type=typing.field_type, field_element=typing.field_element)
 
 
 class SlotTyping:
-    """The one derivation of a key's type over a scope: field leaves through the bundle (a regroup placeholder by
-    its original key), expression aggregations by their definition."""
+    """The one derivation of a key's type over a scope: field leaves through the bundle, an attached value by its
+    statement's ``attached`` typings, expression aggregations by their definition."""
 
     def __init__(
         self, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
-        placeholders: Mapping[ValueKey, ValueKey] = _NO_PLACEHOLDERS,
+        attached: Mapping[str, AttachedTyping] = MappingProxyType({}),
     ) -> None:
         self._base_type = scope_field_type(scope=scope, bundle=bundle)
         self._base_element = scope_field_element(scope=scope, bundle=bundle)
-        self._placeholders = placeholders
+        self._attached = attached
         self._population = scope.population
         self._datasets = bundle.datasets_by_name
         self._dialect = bundle.dialect
 
-    def with_placeholders(self, placeholders: Mapping[ValueKey, ValueKey]) -> "SlotTyping":
-        """This typing, regroup placeholders resolving to their original keys."""
-        typing = object.__new__(SlotTyping)
-        typing.__dict__.update(self.__dict__, _placeholders={**self._placeholders, **placeholders})
-        return typing
-
-    def _original(self, key: object) -> Optional[ValueKey]:
-        """A placeholder's original key, re-anchored at the path it is read through."""
-        if not isinstance(key, FieldKey):
-            return None
-        found = self._placeholders.get(key)
-        if found is None and key.path:
-            local = self._placeholders.get(FieldKey(leaf=key.leaf))
-            found = None if local is None else prepend_value_key(local, host_path=key.path)
-        return found
-
     def field_type(self, key: object) -> Optional[DataType]:
-        original = self._original(key)
-        if original is not None:
-            return self.value_type(original)
-        minted = _minted_type(key.leaf) if isinstance(key, FieldKey) else None
-        return minted() if minted is not None else self._base_type(key)
+        if isinstance(key, AttachedKey):
+            found = self._attached.get(key.attach)
+            return None if found is None else found.value()
+        return self._base_type(key)
 
     def field_element(self, key: object) -> Optional[DataType]:
-        original = self._original(key)
-        if original is None:
-            return self._base_element(key)
-        return list_element_type(original, field_type=self.field_type, field_element=self.field_element)
+        if isinstance(key, AttachedKey):
+            found = self._attached.get(key.attach)
+            return None if found is None else found.element()
+        return self._base_element(key)
 
     def value_type(self, key: object) -> Optional[DataType]:
         """``key``'s type (a cast's target, opaque ones included); ``None`` only for NULL or an unresolvable field."""
@@ -195,6 +165,12 @@ class SlotTyping:
                 dataset=self._population, datasets_by_name=self._datasets, key=k), "db_type", None))
             for k in walk_value_keys(key) if isinstance(k, (FieldKey, FieldSqlKey))
         )
+
+    def list_element(self, key: ValueKey) -> Optional[DataType]:
+        """The element type of a list-valued ``key`` (``OPAQUE`` when it cannot be told); ``None`` for a scalar."""
+        if not list_valued(key, field_type=self.field_type):
+            return None
+        return list_element_type(key, field_type=self.field_type, field_element=self.field_element) or DataType.OPAQUE
 
     def element_type_of(self, key: ValueKey, data_type: Optional[DataType]) -> Optional[DataType]:
         """A list's element type (OPAQUE when it cannot be told); ``None`` for a scalar."""

@@ -138,6 +138,9 @@ broadcast semantics.
 An aggregate partitioned by another computed dimension — even one carrying an
 attached aggregate — compiles as a nested producer
 ([re-aggregation](expressions.md#re-aggregation-aggregate-over-an-attached-value)).
+A dimension expression may itself hold a re-aggregation
+(`CASE WHEN max(sum(orders.amount, partition_by=[orders.region, orders.city]), partition_by=orders.region) > 45 THEN 1 ELSE 0 END`):
+it composes with every metric, `partition_by=` key and measure a plain dimension over `orders.region` does.
 
 Ill-typed shapes (raise a clear error naming the remedy, by design): a bare
 aggregate without `partition_by=` — the ungrained default would include the

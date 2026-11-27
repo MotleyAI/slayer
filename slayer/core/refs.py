@@ -11,6 +11,8 @@ from typing import Any, Callable, cast
 from slayer.core.enums import GRANULARITY_NAMES
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
+    REGROUP_LEAF_PREFIX,
+    AttachedKey,
     display_token,
     MIRRORED_TIME_POINT_OP,
     OPTIONAL_KEY_FIELDS,
@@ -343,6 +345,8 @@ def _leaf_display(key: ValueKey) -> str | None:
         return ".".join((*map(display_token, key.path), "*"))
     if isinstance(key, LiteralKey):
         return _scalar_display(key.value)
+    if isinstance(key, AttachedKey):
+        return f"{REGROUP_LEAF_PREFIX}{key.attach}"
     return None
 
 
@@ -438,6 +442,8 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return ".".join((*map(display_token, value.path), value.leaf if isinstance(value, FieldKey) else value.field_name))
     if isinstance(value, AggregateKey):
         return _agg_key_canonical_str(value)
+    if isinstance(value, AttachedKey):
+        return key_display(value)
     if isinstance(value, TransformKey):
         return _transform_key_canonical_str(value)
     if isinstance(value, SqlFragmentKey):

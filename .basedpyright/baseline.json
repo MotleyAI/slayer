@@ -7356,24 +7356,6 @@
                 }
             }
         ],
-        "./tests/test_dev1825_regroup_planner.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 42,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 43,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/test_dev1825_substitute_keys.py": [
             {
                 "code": "reportArgumentType",
