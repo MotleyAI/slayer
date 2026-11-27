@@ -125,7 +125,7 @@ async def test_an_unquoted_dataset_name_matches_case_insensitively(tmp_path: Pat
     async with fixture_engine(tmp_path, "retail") as engine:
         response = await strict(engine, {"dimensions": ["CUSTOMERS.region"], "metrics": ["Orders.total_revenue"]})
         assert rows(response) == [("EAST", 350.0), ("WEST", 300.0)]
-        await strict_error(engine, {"dimensions": ['"CUSTOMERS".region']}, "E_NAME_NOT_FOUND")
+        await strict_error(engine, {"dimensions": ['"Customers".region']}, "E_NAME_NOT_FOUND")
 
 
 class _Identities:

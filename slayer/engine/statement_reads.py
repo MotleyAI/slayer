@@ -79,7 +79,7 @@ def _time_field_read(*, plans: list[PlannedQuery], bundle: ResolvedSourceBundle)
         datasets = _universe(plan.stage_bundle or bundle)
         for dataset_name, field_name in sorted(statement_reads(plans=[plan], bundle=bundle).fields):
             host = datasets.get(dataset_name)
-            field = host.get_field(field_name, quoted=True) if host is not None else None
+            field = host.get_field(field_name, exact=True) if host is not None else None
             if field is not None and field.datatype is DataType.TIME:
                 return f"The Time field {dataset_name}.{field_name}"
     return None
@@ -124,7 +124,7 @@ def _close_fields(reads: StatementReads, *, datasets: dict[str, SlayerDataset]) 
     while pending:
         dataset_name, field_name = pending.pop()
         host = datasets.get(dataset_name)
-        field = host.get_field(field_name, quoted=True) if host is not None else None
+        field = host.get_field(field_name, exact=True) if host is not None else None
         if host is None or field is None:
             continue
         for read in definition_reads(field=field, host=host, reachable=datasets):

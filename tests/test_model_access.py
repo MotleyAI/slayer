@@ -232,3 +232,35 @@ class TestModelsReadBy:
     async def test_path_reaching_a_placeholder_reads_it(self, datasets: dict[str, SlayerDataset], sql: str) -> None:
         stand_in = placeholder((DS, UNLOADABLE))
         assert dataset_ids(datasets_read_by(_unloadable_reader(sql), datasets=[*datasets.values(), stand_in])) == {UNLOADABLE}
+
+
+def _linked(name: str, *, to: str, fields: list[DatasetField]) -> SlayerDataset:
+    return SlayerDataset(
+        name=name, sql_table=name, data_source=DS,
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), *fields],
+        relationships=[DatasetRelationship(to=to, from_columns=["id"], to_columns=["id"],
+                                           cardinality=RelationshipCardinality.ONE_TO_ONE)],
+    )
+
+
+@pytest.mark.parametrize("leaf", ['"TOTAL"', "TOTAL", "Total"])
+def test_a_derived_field_reached_in_another_spelling_reads_what_it_reads(leaf: str) -> None:
+    hr = SlayerDataset(name="hr", sql_table="hr", data_source=DS,
+                       fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                               DatasetField(name="salary", datatype=DataType.INTEGER)])
+    mid = _linked("mid", to="hr", fields=[DatasetField(name="total", datatype=DataType.INTEGER, expression="hr.salary")])
+    reader = _linked("reader", to="mid", fields=[DatasetField(name="leak", datatype=DataType.INTEGER,
+                                                              expression=f"mid.{leaf}")])
+    assert dataset_ids(datasets_read_by(reader, datasets=[hr, mid, reader])) == {"mid", "hr"}
+
+
+def test_a_leaf_reaching_several_case_variants_reads_what_each_reads() -> None:
+    hr = SlayerDataset(name="hr", sql_table="hr", data_source=DS,
+                       fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                               DatasetField(name="salary", datatype=DataType.INTEGER)])
+    mid = _linked("mid", to="hr", fields=[DatasetField(name="total", datatype=DataType.INTEGER, expression="id"),
+                                          DatasetField(name="Total", datatype=DataType.INTEGER,
+                                                       expression="hr.salary")])
+    reader = _linked("reader", to="mid", fields=[DatasetField(name="leak", datatype=DataType.INTEGER,
+                                                              expression="mid.TOTAL")])
+    assert dataset_ids(datasets_read_by(reader, datasets=[hr, mid, reader])) == {"mid", "hr"}
