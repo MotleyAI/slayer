@@ -561,4 +561,15 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="The window `…` reads `…` per cell, but it is neither aggregate-valued nor a member of the "
          "window's operand grain." + SUGGEST + "Add `…` as a dimension, or aggregate it.",
          category="checker", family="windows", user=True, owner="checker"),
+    _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
+         message="…() does not take `…`: it is a time of day (Time), which only hour, minute and second read."
+         + SUGGEST + "Read a part with date_part('hour' | 'minute' | 'second', x), or pass a DATE / TIMESTAMP value.",
+         category="checker", family="time-of-day", user=True, owner="checker"),
+    _row(module=_EE, function="_refuse_time_of_day", exc="ScalarOperandTypeError",
+         message="`…` …: `…` is a time of day (Time)." + SUGGEST + "A time of day compares with another time of day "
+         "(or a 'HH:MM:SS' string) and takes no arithmetic; read its parts with hour(), minute() and second().",
+         category="checker", family="time-of-day", user=True, owner="checker"),
+    _row(module=_EE, function="_time_literal", exc="TimeLiteralError",
+         message="'…' is not a time of day." + AT + "comparison with `…`" + SUGGEST + "Write ….",
+         category="checker", family="time-of-day", user=True, owner="checker"),
 )
