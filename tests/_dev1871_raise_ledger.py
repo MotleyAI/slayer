@@ -354,10 +354,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="compiler", family="population", user=True, owner="compiler", sites=2),
     _row(module=_SP, function="_operand_supply", exc="PopulationInferenceError", message="",
          category="compiler", family="population", user=True, owner="compiler"),
-    _row(module=_EE, function="check_reserved_regroup_prefix", exc="NameCollisionError",
-         message="Field(s) … use the reserved '__regroup__' prefix, which collides with the regroup primitive's placeholders."
-         + SUGGEST + "Rename them.",
-         category="checker", family="regroup-roots", user=True, owner="checker"),
     _row(module=_EE, function="check_raw_rows_no_aggregate_slots", exc="DistinctDimensionValuesError",
          message="distinct_dimension_values=False rejects metric references, but this query references the aggregation … in its filters or order."
          + SUGGEST + "…",

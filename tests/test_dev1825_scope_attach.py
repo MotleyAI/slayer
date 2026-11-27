@@ -11,7 +11,7 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.keys import FieldKey
+from slayer.core.keys import AttachedKey, FieldKey
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
@@ -42,7 +42,7 @@ def _scope(*, attached=None) -> ScopeFrame:
     )
 
 
-PLACEHOLDER = FieldKey(path=(), leaf="__regroup__0__amount_sum_partition_by_city")
+PLACEHOLDER = AttachedKey(attach="a0", on=(("city", FieldKey(leaf="city")),))
 
 
 class TestAttachedColumnAnchor:
@@ -59,10 +59,10 @@ class TestAttachedColumnAnchor:
         assert "amount" in sql
         assert "__regroup__" not in sql
 
-    def test_unregistered_prefixed_leaf_raises(self) -> None:
+    def test_unregistered_attached_value_raises(self) -> None:
         scope = _scope(attached={PLACEHOLDER: exp.column("x", table="_cm_x")})
-        missing = FieldKey(path=(), leaf="__regroup__9__not_registered")
-        with pytest.raises(ValueError, match=r"__regroup__"):
+        missing = AttachedKey(attach="a9", on=(("city", FieldKey(leaf="city")),))
+        with pytest.raises(ValueError, match=r"a9"):
             scope.resolve(missing)
 
     def test_prefixed_leaf_without_active_regroup_anchors_normally(self) -> None:

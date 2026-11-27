@@ -178,12 +178,9 @@ class TestResponseContractNoLeak:
 
 
 class TestReservedPrefixAcrossStages:
-    """A downstream stage's regroup guard must scan the upstream StageSchema's
-    columns — an upstream ``__regroup__*`` column would otherwise shadow a
-    placeholder at render (CR). Two-stage: stage1 emits a reserved-prefix column,
-    stage2's computed-dimension regroup must reject it at plan time."""
+    """An upstream ``__regroup__*`` column is an ordinary column beside a downstream regroup."""
 
-    async def test_upstream_reserved_prefix_column_rejected(self, tmp_path) -> None:
+    async def test_upstream_reserved_prefix_column_accepted(self, tmp_path) -> None:
         db_path = os.path.join(tmp_path, "t.db")
         with transaction(db_path) as con:
             con.execute("CREATE TABLE orders (region TEXT, amount REAL)")
@@ -205,8 +202,6 @@ class TestReservedPrefixAcrossStages:
             ),
             _validate=False,
         )
-        # stage1 emits a column whose name collides with the reserved regroup
-        # prefix; it flows through untouched (stage1 has no regroup).
         stage1 = SlayerQuery(
             name="stage1", population="orders", dimensions=["orders.region"],
             metrics=[
@@ -214,8 +209,6 @@ class TestReservedPrefixAcrossStages:
                 QueryMetric(metric="sum(orders.amount)", alias="total"),
             ],
         )
-        # stage2's computed dimension activates the regroup desugar, whose
-        # reserved-prefix guard must see stage1's StageSchema column.
         root = SlayerQuery(
             population="stage1",
             dimensions=[
@@ -227,5 +220,4 @@ class TestReservedPrefixAcrossStages:
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1},
         )
-        with pytest.raises(ValueError, match=r"reserved '__regroup__' prefix"):
-            plan_stages(queries=[stage1, root], bundle=bundle)
+        assert plan_stages(queries=[stage1, root], bundle=bundle)

@@ -6,8 +6,8 @@ pins for plain ``window=`` metrics moved to the lifted direction
 (tests/test_dev1835_guard_dissolution.py).
 
 The lifted-direction tests live in tests/test_dev1824_partitioned_execution.py
-and tests/test_dev1824_computed_dim_execution.py; the reserved-prefix and
-raw-rows guards stay pinned by the regroup-planner suites.
+and tests/test_dev1824_computed_dim_execution.py; the raw-rows guard stays
+pinned by the regroup-planner suites.
 """
 
 from __future__ import annotations

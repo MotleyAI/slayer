@@ -9,6 +9,7 @@ from slayer.core.enums import DataType
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    AttachedKey,
     FieldKey,
     LiteralKey,
     Phase,
@@ -31,7 +32,7 @@ _PRODUCER = Stage(kind=StageKind.PRODUCER)
 
 _SPEND = AggregateKey(source=FieldKey(path=("customers",), leaf="spend"), agg="sum")
 _GT0 = LiteralKey(value=Decimal(0))
-_PLACEHOLDER = FieldKey(path=(), leaf="__regroup__0__spend_sum")
+_PLACEHOLDER = AttachedKey(attach="a0", on=())
 
 
 def _plan_with_mask(

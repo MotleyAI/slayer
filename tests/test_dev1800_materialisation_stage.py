@@ -25,8 +25,8 @@ from pydantic import ValidationError
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.enums import DataType
 from slayer.core.keys import (
-    REGROUP_LEAF_PREFIX,
     AggregateKey,
+    AttachedKey,
     ArithmeticKey,
     FieldKey,
     LiteralKey,
@@ -243,7 +243,7 @@ class TestConcreteStages:
         assert attach.attach_phase == "combined"
         placeholders = [
             s for s in _all_slots(pq)
-            if isinstance(s.key, FieldKey) and s.key.leaf.startswith(REGROUP_LEAF_PREFIX)
+            if isinstance(s.key, AttachedKey)
         ]
         assert placeholders
         for ph in placeholders:
@@ -349,7 +349,7 @@ class TestNeedsColumn:
             assert s.needs_field is True
         placeholders = [
             s for s in _all_slots(pq)
-            if isinstance(s.key, FieldKey) and s.key.leaf.startswith(REGROUP_LEAF_PREFIX)
+            if isinstance(s.key, AttachedKey)
         ]
         for ph in placeholders:
             assert ph.needs_field is True

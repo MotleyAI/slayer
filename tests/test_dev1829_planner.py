@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 
-from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, FieldKey, Grain
+from slayer.core.keys import AggregateKey, AttachedKey, FieldKey, Grain
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
@@ -104,10 +104,8 @@ class TestCombinedAttachReplacesCrossModelPlan:
         assert sub.original_key.partition_keys == Grain.of(
             {FieldKey(path=(), leaf="region")}
         )
-        # ...swapped for a reserved-leaf placeholder ColumnKey...
-        assert isinstance(sub.placeholder, FieldKey)
-        assert sub.placeholder.path == ()
-        assert sub.placeholder.leaf.startswith(REGROUP_LEAF_PREFIX)
+        # ...swapped for an attached value...
+        assert isinstance(sub.placeholder, AttachedKey)
         # ...that resolves to an aggregate slot inside the producer.
         producer_agg_ids = {s.id for s in rap.producer_plan.aggregate_slots}
         assert sub.producer_slot_id in producer_agg_ids

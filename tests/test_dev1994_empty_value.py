@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 from pydantic import ValidationError
 
-from slayer.core.keys import AggregateKey, FieldKey
+from slayer.core.keys import AggregateKey, AttachedKey, FieldKey
 from slayer.core.models import Aggregation
 from slayer.ir.planned import RegroupSubstitution
 from tests._dev1994_fixtures import (
@@ -313,7 +313,7 @@ class TestNegatedJoinedFilter:
 # IR: every synthesiser decides the empty value.
 # --------------------------------------------------------------------------- #
 _KEY = AggregateKey(source=FieldKey(path=("orders",), leaf="id"), agg="count")
-_PLACEHOLDER = FieldKey(path=(), leaf="__regroup__0__id_count")
+_PLACEHOLDER = AttachedKey(attach="a0", on=())
 
 
 class TestRegroupSubstitutionIR:
