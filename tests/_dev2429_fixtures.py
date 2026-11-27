@@ -8,7 +8,8 @@ days after it is ordered.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
+from datetime import datetime
 from typing import Any, Optional
 
 from slayer.core.enums import DataType
@@ -73,9 +74,12 @@ def datasets() -> list[SlayerDataset]:
 
 
 @contextlib.asynccontextmanager
-async def moved_frame_engine(backend: str) -> AsyncGenerator[SlayerQueryEngine]:
+async def moved_frame_engine(
+    backend: str, *, clock: Optional[Callable[[], datetime]] = None,
+) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, [CUSTOMERS, ORDERS]), datasets=datasets(),
+        clock=clock,
     ) as (engine, _db):
         yield engine
 

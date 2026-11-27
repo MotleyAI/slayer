@@ -29,6 +29,7 @@ from slayer.engine.elaborate_env import (
     check_spine_plain_use,
     check_spine_raw_rows,
 )
+from slayer.ir.bound import BoundFilter, bound_filter_from_key
 from slayer.ir.planned import SpineFactor
 from slayer.ir.prebound import PreboundQuery, walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -139,6 +140,13 @@ def plan_spine(
         granularity=granularity, lower=lower, upper=upper,
         size=_series_size(granularity=granularity, lower=lower, upper=upper), path=tuple(spine.path),
     )
+
+
+def spine_upper_bound(factor: SpineFactor, *, spine: FieldKey) -> BoundFilter:
+    """``factor``'s upper bound on ``spine``, explicit even when ``now`` implies it."""
+    upper = factor.upper
+    point = upper.date() if upper == datetime(upper.year, upper.month, upper.day) else upper
+    return bound_filter_from_key(ArithmeticKey(op="<", operands=(spine, LiteralKey(value=point))))
 
 
 def _checked_spine_time_dimensions(

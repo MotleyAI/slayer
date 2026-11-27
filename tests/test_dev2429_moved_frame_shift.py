@@ -249,6 +249,17 @@ class TestSpineAgrees:
 
     # Order position: spine queries refuse transform order keys until DEV-2506.
 
+    @pytest.mark.parametrize("backend", BACKENDS)
+    async def test_the_upper_bound_from_now_moves_like_an_explicit_one(self, backend: str) -> None:
+        metric = f"time_shift(lead({AMOUNT}), -1)"
+        lower = "time_spine.timestamp >= '2024-02-01'"
+        async with moved_frame_engine(backend, clock=lambda: datetime(2024, 5, 15)) as eng:
+            [implicit] = await _run(eng, metric, date_range=None, spine=True, filter=[lower])
+            [explicit] = await _run(eng, metric, date_range=None, spine=True,
+                                    filter=[lower, "time_spine.timestamp < '2024-06-01'"])
+        assert implicit == explicit
+        assert implicit["2024-05"] is None  # April is the moved frame's end
+
 
 def _plan(*metrics: str, date_range: Any = FEB_MAY) -> PlannedQuery:
     models = datasets()

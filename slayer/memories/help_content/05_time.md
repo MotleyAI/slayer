@@ -26,7 +26,7 @@ already has its comparison.
 Never widen the range to feed them.
 
 `cumsum` accumulates from the first returned bucket; a shifted running total reads the
-moved range's, so `time_shift(cumsum(x), -1, 'year')` is the prior year's YTD. A running total since the first
+moved range's, so under a year-to-date range `time_shift(cumsum(x), -1, 'year')` is the prior year's YTD. A running total since the first
 row, in two stages:
 
 ```json

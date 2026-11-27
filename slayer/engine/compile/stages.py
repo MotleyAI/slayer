@@ -88,7 +88,7 @@ from slayer.sql.naming import (
     ROW_IDENTITY_FIELD, canonical_aggregate_alias, flat_name, identified_datasets, pick_slot_alias, slot_result_key,
 )
 from slayer.sql.dialects.base import LIST_POSITION
-from slayer.core.time_bounds import strip_frame_bounds
+from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import DatasetScope, PassThrough, StageField, StageSchema, host_dataset_name
 from slayer.engine.elaborate_env import (
@@ -166,6 +166,7 @@ from slayer.engine.compile.projection import (
 )
 from slayer.engine.compile.spine import (
     check_axis_rebucket, check_off_spine_order_keys, host_mask, is_spine_bound, plan_spine, spine_field,
+    spine_upper_bound,
 )
 from slayer.engine.compile.shift import carried_placeholders, is_placeholder, moved_frame
 from slayer.engine.compile.staging import stage_slots
@@ -1233,6 +1234,7 @@ def _plan_shifted_attaches(
     population: "Population",
     homes: AggregateHomes,
     candidates: AbstractSet[ValueKey],
+    spine_upper: Optional[BoundFilter],
 ) -> List[RegroupAttachPlan]:
     """One producer per ``time_shift`` slot over its moved frame, each leaf at its own
     grain (carried or re-evaluated), looked up by the slot on the shifted bucket."""
@@ -1284,8 +1286,10 @@ def _plan_shifted_attaches(
         )
         aliases, alias_hint = _shifted_answer_aliases(answer=answer, public_alias=public_alias)
         periods, shift_unit = shift_offset_of(key)
+        spine_frame = [spine_upper] if spine_upper is not None and is_frame_bound(
+            key=spine_upper.value_key, time_fields={key.time_key.source}) else []
         frame = moved_frame(
-            filters=inherited, n_date_range=n_inherited_range, axis=key.time_key, periods=periods,
+            filters=[*inherited, *spine_frame], n_date_range=n_inherited_range, axis=key.time_key, periods=periods,
             date_axis=axis_typing.value_type(key.time_key.source) is DataType.DATE,
             unit=shift_unit or key.time_key.granularity,
         )
@@ -5215,6 +5219,8 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         producer_source_dataset=_producer_source_dataset_name,
         producer_registry=producer_registry, population=population,
         candidates=routed.shift_candidates, homes=routed.homes,
+        spine_upper=spine_upper_bound(spine_factor, spine=spine)
+        if spine_factor is not None and spine is not None else None,
     )]
     # Assign every slot its materialisation stage / needs-field fact;
     # producer bodies were staged by their own compilation.
