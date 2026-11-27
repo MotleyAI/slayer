@@ -70,6 +70,13 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestStoredSourcePaths::test_no_unique_spelling": 1,
     }),
     *_allow("test_column_dependency.py", _STORED, {"test_save_model_migration_writeback_does_not_validate": 3}),
+    *_allow("test_storage_upgrade.py", _STORED, {
+        "test_a_legacy_cycle_is_upgraded_not_refused": 2,
+        "test_a_legacy_fanning_reference_is_upgraded_not_refused": 1,
+        "test_a_pre_v8_model_without_a_reachable_datasource_is_refused": 1,
+    }),
+    *_allow("test_storage_upgrade_documents.py", _STORED, {"test_a_pre_v8_document_is_refused": 1}),
+    *_allow("test_upgrade_datasets_refusals.py", _STORED, {"<module>": 1}),
     *_allow("test_dev1743_migration.py", _STORED, {"_orders_v8": 1, "_orders_v8_dual": 1}),
     *_allow("test_dev1902_join_key_migration.py", _STORED, {
         "TestLeftAlone::test_declared_name_wins_over_a_rename": 1,
@@ -87,6 +94,8 @@ ALLOWLIST: list[AllowlistEntry] = [
         "TestQualification::test_an_alias_qualifies_the_expression": 1,
         "TestQualification::test_an_owner_qualified_reference_reads_the_owners_column": 1,
         "TestQualification::test_an_unquoted_reference_matches_the_column_in_any_case": 1,
+        "TestQualification::test_an_extension_column_reading_a_quoted_hop_in_its_exact_spelling_is_inlined": 1,
+        "TestQualification::test_an_extension_column_reading_a_quoted_hop_in_another_case_does_not_resolve": 1,
         "TestColumnShapes::test_a_declared_type_is_kept_as_a_cast": 1,
         "TestColumnShapes::test_a_label_carries_over_where_the_position_holds_one": 1,
         "TestUnconvertible::test_an_extension_of_a_name_several_models_match_fails_to_load": 1,

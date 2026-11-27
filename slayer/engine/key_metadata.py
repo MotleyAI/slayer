@@ -41,6 +41,7 @@ from slayer.core.relationship_walker import (
     dataset_field_element,
     dataset_field_type,
     follow,
+    resolved_terminal,
 )
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
@@ -313,13 +314,22 @@ def bundle_dialect(bundle: ResolvedSourceBundle) -> SqlDialect:
 
 
 def scope_zoned_timestamp(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Callable[[object], bool]:
-    """Whether a dataset field leaf holds a zoned instant on the bundle's dialect."""
+    """Whether a dataset field leaf holds an instant the bundle's dialect reads naive; never under a zone, where every
+    read is that zone's wall clock."""
     dialect = bundle_dialect(bundle)
-    if not dialect.zoned_timestamp_db_types or scope.population is None:
+    if not dialect.naive_instant_reads or bundle.time_zone is not None or scope.population is None:
         return lambda _key: False
     dataset, datasets_by_name = scope.population, bundle.datasets_by_name
-    return lambda key: dialect.is_zoned_db_type(
-        getattr(dataset_field(dataset=dataset, datasets_by_name=datasets_by_name, key=key), "db_type", None))
+
+    def holds(key: object) -> bool:
+        path = tuple(getattr(key, "path", ()))
+        owner = resolved_terminal(root=dataset, path=path, datasets_by_name=datasets_by_name) if path else dataset
+        if owner is None or owner.name in bundle.stage_displays:
+            return False  # a stage's output is already naive
+        field = dataset_field(dataset=dataset, datasets_by_name=datasets_by_name, key=key)
+        return field is not None and dialect.holds_instant(datatype=field.datatype, db_type=field.db_type)
+
+    return holds
 
 
 def metric_key_preserves_native_type(*, dataset: SlayerDataset, key: ValueKey) -> bool:

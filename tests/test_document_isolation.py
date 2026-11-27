@@ -27,7 +27,7 @@ from slayer.memories.resolver import resolve_entity
 from slayer.search.retrievers.bm25 import BM25Retriever
 from slayer.search.service import SearchService
 from slayer.database import engine_factory
-from slayer.storage.base import StorageBackend
+from slayer.storage.base import LiveRefinementRequiredError, StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -117,7 +117,8 @@ def _is_value_error(text: str) -> Callable[[BaseException], bool]:
 _LOAD_FAILURES: dict[str, tuple[Callable[[], dict], Any, Callable[[BaseException], bool]]] = {
     "migration": (_orders_v1_colliding, "live", _is_value_error("collision")),
     "refinement-missing-datasource": (
-        _orders_v5_double, None, _is_value_error("unavailable for type refinement")),
+        _orders_v5_double, None,
+        lambda cause: isinstance(cause, LiveRefinementRequiredError) and "unavailable for type refinement" in str(cause)),
     "refinement-driver-error": (
         _orders_v5_double, _UNREACHABLE_PG,
         lambda cause: isinstance(cause, DatabaseUnavailable)

@@ -46,7 +46,7 @@ from slayer.sql.dialects import SnowflakeDialect
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._cast_fixtures import check_try_cast_targets
+from tests._cast_fixtures import check_author_casts, check_try_cast_targets
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
@@ -68,6 +68,7 @@ from tests._dev2018_fixtures import (
 from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests.integration._one_request import MARKERS, PATHS, assert_one_request_each, run_three
+from tests.integration import _dev2458_matrix as dev2458
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
     keyword_universe,
@@ -377,6 +378,10 @@ def test_basic_query(sf_storage_with_datasets) -> None:
 
 def test_try_cast_integer_targets(sf_storage_with_datasets) -> None:
     run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_datasets), dataset="orders"))
+
+
+def test_author_casts(sf_storage_with_datasets) -> None:
+    run_sync(check_author_casts(SlayerQueryEngine(storage=sf_storage_with_datasets), dataset="orders"))
 
 
 def test_functional_aggregation(sf_storage_with_datasets) -> None:
@@ -1342,3 +1347,35 @@ def test_join_cardinality_profiles_snowflake_keys(sf_storage_with_datasets) -> N
         engine.close()
     (finding,) = [f for f in report.findings if f.to == "customers"]
     assert finding.detected is RelationshipCardinality.MANY_TO_ONE
+
+
+# --------------------------------------------------------------------------- #
+# Spec: aggregations/distinct-and-percentiles — native PERCENTILE_DISC and APPROX_PERCENTILE.
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def _sf_dev2458_tables(sf_transient_schema: str):
+    conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"USE SCHEMA {sf_transient_schema}")
+        for stmt in dev2458.statements(dialect="snowflake"):
+            cur.execute(stmt)
+        conn.commit()
+        yield
+    finally:
+        try:
+            for table in ("pq", "pq_items"):
+                cur.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+
+@pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_types], ids=lambda c: c.__name__)
+def test_distinct_and_percentiles(_sf_dev2458_tables, sf_datasource: DatasourceConfig, tmp_path, check) -> None:
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    run_sync(storage.save_datasource(sf_datasource))
+    for model in dev2458.datasets(data_source="sf_test", explicit_sql=True):
+        run_sync(storage.save_dataset(model))
+    run_sync(dev2458.run_check(check, storage=storage))

@@ -135,9 +135,11 @@ def memory_bytes(*, backend: str, base: str, storage: StorageBackend, memory_id:
 
 
 def test_versions_bumped() -> None:
-    # Later bumps: SlayerQuery 18 stamps ``population_inferred``; 29/19/14 trust stored relationships.
+    # Later bumps: SlayerQuery 18 stamps ``population_inferred``; 29/19/14 trust stored relationships; SlayerModel 30
+    # unwraps AGG in field expressions; 31 types BigQuery TIMESTAMP fields DateTimeTz; 32/20/15 stamp the Ossie function
+    # and aggregate reservations.
     assert {entity: CURRENT_VERSIONS[entity] for entity in UPGRADED_AT} == {
-        "SlayerModel": 29, "SlayerQuery": 19, "Memory": 14}
+        "SlayerModel": 32, "SlayerQuery": 20, "Memory": 15}
 
 
 # --------------------------------------------------------------------------- #
@@ -158,12 +160,13 @@ class TestRewrites:
         resp = await run(storage, {"population": "sq", "dimensions": ["sq.status", "sq.amount_sum"]})
         assert table(resp, "sq.status", "sq.amount_sum") == {("completed", 150.0), ("open", 200.0)}
 
-    async def test_a_saved_query_is_written_back(self, tmp_path: Path, seed_ds, backend: str) -> None:
+    async def test_a_saved_query_is_persisted_by_a_save(self, tmp_path: Path, seed_ds, backend: str) -> None:
         sq = saved_doc("sq", stage(population="orders", dimensions=["status"], metrics=["count(*)"]))
         storage = await store(tmp_path, seed_ds, backend=backend, models=(sq,))
-        await load(storage, "sq")
+        dataset, _ = await load(storage, "sq")
+        await storage.save_dataset(dataset)
         raw = await raw_doc(storage, "sq")
-        assert raw["version"] == 29
+        assert raw["version"] == CURRENT_VERSIONS["SlayerModel"]
         (written,) = raw["source_queries"]
         assert written["dimensions"] == ["orders.status"]
         assert written["metrics"] == ["count(orders.*)"]

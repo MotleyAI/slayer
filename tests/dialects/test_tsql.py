@@ -6,8 +6,10 @@ import re
 import tempfile
 from unittest.mock import patch
 
+import duckdb
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 import pytest
 
@@ -16,8 +18,10 @@ from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.engine_factory import client_cache_key
-from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name
+from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name, cast_target
+from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.dialects.tsql import TsqlDialect
+from slayer.sql.render.parse import parse_expression
 from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -120,22 +124,21 @@ def test_tsql_build_date_add_quarter_and_week_sunday_are_native_units() -> None:
     assert _date_add(-1, "week_sunday") == "DATEADD(WEEK, -1, CREATED_AT)"
 
 
-# Median / percentile — not supported on T-SQL
+# Median / percentile: the ordered-set aggregate, split into a window subquery at render
 
 
-def test_tsql_build_median_raises_not_implemented() -> None:
+def test_tsql_build_median_is_percentile_cont_at_half() -> None:
+    median = TsqlDialect().build_median(exp.column("amount"))
+    assert isinstance(median, exp.WithinGroup)
+    assert median.this.this.name == "0.5"
+
+
+def test_tsql_render_reads_percentile_cont_only_as_a_window() -> None:
     d = TsqlDialect()
-    inner = sqlglot.parse_one("amount", dialect="tsql")
-    with pytest.raises(NotImplementedError, match="median.*T-SQL"):
-        d.build_median(inner)
-
-
-def test_tsql_build_percentile_raises_not_implemented() -> None:
-    d = TsqlDialect()
-    p = exp.Literal.number("0.5")
-    col_expr = exp.column("amount")
-    with pytest.raises(NotImplementedError, match="percentile.*T-SQL"):
-        d.build_percentile(p=p, col_expr=col_expr)
+    select = exp.select(d.build_percentile(p=exp.Literal.number("0.9"), col_expr=exp.column("amount"))).from_("t")
+    within = list(d.rewrite_statement(select).find_all(exp.WithinGroup))
+    assert within
+    assert all(isinstance(w.parent, exp.Window) for w in within)
 
 
 # Stat aggs — T-SQL canonical names via exp.Anonymous
@@ -605,3 +608,75 @@ async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() 
         f"T-SQL ORDER BY must reference the SELECT alias as a top-level "
         f"expression:\n{sql}"
     )
+
+
+# A GROUP BY key reading no column (SQL Server error 164)
+
+_ORDERS = "(VALUES (1, 'a'), (2, 'b'), (3, 'a')) AS orders(id, status)"
+
+
+def _parsed(sql: str) -> Expression:
+    tree = sqlglot.parse_one(sql, dialect="duckdb")
+    assert isinstance(tree, Expression)
+    return tree
+
+
+def _rewritten(sql: str) -> Expression:
+    return TsqlDialect().rewrite_statement(_parsed(sql))
+
+
+@pytest.mark.parametrize("where", ["orders.id = 3", "orders.id = 99"], ids=["rows", "no rows"])
+@pytest.mark.parametrize("select", ["LOWER('AbC') AS v", "LOWER('AbC') AS v, COUNT(*) AS n"],
+                         ids=["dimension only", "with a metric"])
+def test_tsql_constant_group_keys_become_a_nonempty_having(where: str, select: str) -> None:
+    """One row where a row passes the filter, none where none does: what ``GROUP BY <constant>`` returns."""
+    query = f"SELECT {select} FROM {_ORDERS} WHERE {where} GROUP BY LOWER('AbC')"
+    rewritten = _rewritten(query)
+    assert rewritten.args.get("group") is None
+    assert rewritten.args["having"].this.sql() == "COUNT(*) > 0"
+    assert duckdb.sql(rewritten.sql(dialect="duckdb")).fetchall() == duckdb.sql(query).fetchall()
+
+
+def test_tsql_drops_a_constant_key_beside_a_column_key() -> None:
+    rewritten = _rewritten(f"SELECT orders.status, 'x' AS v FROM {_ORDERS} GROUP BY orders.status, 'x'")
+    assert [k.sql() for k in rewritten.args["group"].expressions] == ["orders.status"]
+    assert rewritten.args.get("having") is None
+
+
+def test_tsql_nonempty_condition_joins_an_existing_having() -> None:
+    rewritten = _rewritten(f"SELECT 'x' AS v FROM {_ORDERS} GROUP BY 'x' HAVING SUM(orders.id) > 1")
+    assert rewritten.args["having"].this.sql() == "SUM(orders.id) > 1 AND COUNT(*) > 0"
+
+
+@pytest.mark.parametrize(("literal", "bit"), [("TRUE", "1"), ("FALSE", "0")])
+def test_tsql_boolean_literal_in_a_value_position_is_a_bit(literal: str, bit: str) -> None:
+    rewritten = TsqlDialect().rewrite_statement(_parsed(f"SELECT CAST({literal} AS BIT) AS v"))
+    assert rewritten.sql(dialect="tsql") == f"SELECT CAST({bit} AS BIT) AS v"
+
+
+@pytest.mark.parametrize(("author", "tsql"), [
+    ("TIMESTAMP", "DATETIME2"), ("TIMESTAMP(3)", "DATETIME2(3)"), ("TIMESTAMP WITH TIME ZONE", "DATETIMEOFFSET"),
+])
+def test_tsql_timestamp_cast_is_a_time_never_a_rowversion(author: str, tsql: str) -> None:
+    assert cast_target(author, dialect=TsqlDialect()).sql(dialect="tsql") == tsql
+
+
+@pytest.mark.parametrize("key", ["NEWID()", "RAND()"])
+def test_tsql_keeps_a_volatile_group_key(key: str) -> None:
+    """Column-free but per-row: it still splits groups."""
+    rewritten = _rewritten(f"SELECT COUNT(*) AS n FROM {_ORDERS} GROUP BY {key}")
+    assert rewritten.args["group"] is not None
+
+
+def test_a_nested_substring_inside_length_keeps_its_length() -> None:
+    tree = parse_expression(sql="LENGTH(SUBSTRING(x, 2))", target_dialect=TsqlDialect(), parse_dialect=PostgresDialect())
+    (inner,) = tree.find_all(exp.Substring)
+    assert inner.args.get("length") is not None
+
+
+def test_a_nested_round_inside_power_gets_its_digits() -> None:
+    parsed = sqlglot.parse_one("POWER(ROUND(x), 2)")
+    assert isinstance(parsed, Expression)
+    tree = TsqlDialect().rewrite_library_ast(parsed)
+    (inner,) = tree.find_all(exp.Round)
+    assert inner.args.get("decimals") is not None

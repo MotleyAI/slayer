@@ -1,6 +1,6 @@
 # Importing Ossie (OSI) Documents
 
-SLayer imports [Ossie / Open Semantic Interchange](https://github.com/apache/ossie) (OSI) semantic-model documents natively: each valid document is stored as written, as a [semantic model](../concepts/semantic-models.md) of the datasource, and its datasets, relationships and metrics are queryable at once. Nothing is converted.
+SLayer imports [Ossie / Open Semantic Interchange](https://github.com/apache/ossie) (OSI) semantic-model documents natively: each valid document is stored as written, as a [semantic model](../concepts/semantic-models.md) of the datasource, and its datasets, relationships and metrics are queryable at once. Nothing is converted. Ossie [ontology and mapping documents](../concepts/ontologies.md) import too.
 
 ## Quick Start
 
@@ -18,7 +18,9 @@ From Python:
 from slayer.osi.importer import import_osi
 
 result = await import_osi(storage=storage, path="./osi_configs", data_source="my_postgres", engine=engine)
-result.stored           # names of the stored documents
+result.stored           # names of the stored semantic models
+result.ontologies       # names of the stored ontologies
+result.mappings         # names of the stored mappings
 print(result.render_report())
 ```
 
@@ -32,12 +34,16 @@ print(result.render_report())
 
 **Legacy `custom_extensions`.** Entries under `custom_extensions`, whose `data` is a JSON string (SLayer 1.8 exports), are read at every level as `nonportable_extensions` entries with the decoded object, after the entity's own entries. The report holds one entry per document.
 
+**Ontology and mapping documents.** An ontology (root `ontology`) is stored once per store, whatever `--datasource` names; a mapping (root `concept_mappings`, `ontology_ref` and `semantic_model_ref`) is stored in `--datasource`. Within one import, ontologies are imported first, semantic models next and mappings last, so a mapping resolves against the documents of the same import whatever the file order; a mapping whose ontology or semantic model was refused in the same import is refused too. Each is checked and stored as described in [Ontologies and mappings](../concepts/ontologies.md).
+
+**Embedded `ontology_mappings`.** An ontology carrying the deprecated `ontology_mappings` is upgraded: each entry's inline semantic model is imported into `--datasource`, each entry becomes a standalone mapping named by the entry's `name`, and the ontology is stored without them. The report holds one `upgraded` entry. When any part is refused, nothing of the document is stored.
+
 ## Refused Documents
 
 A document that is not valid Ossie stores nothing and is refused with every reason, each naming its entity:
 
 - YAML or JSON text repeating a mapping key at any depth (each repeat named with its line; repeated `<<` merge directives are allowed), or holding a scalar YAML cannot build, such as `2024-02-30` (these are then the only reasons reported);
-- a root mixing the flat and wrapper shapes, or holding neither (an Ossie ontology or mapping document);
+- a root mixing the flat and wrapper shapes, or holding none of a semantic-model, ontology or mapping document's root keys;
 - an empty `semantic_model`, or a wrapper declaring `0.3.0.dev0` (whose documents are flat);
 - a key Ossie does not define, or an unknown version;
 - a duplicate name, compared as Ossie compares identifiers;
@@ -63,8 +69,9 @@ Each report entry names its document and entity:
 | `moved_metric` | a 1.x-imported metric anchored on a dataset is now the document's model-scoped metric |
 | `unexpressed` | a field of a replaced 1.x dataset that the document no longer declares; its settings were not carried |
 | `standalone` | a dataset of a merged export stored as a standalone dataset |
+| `not_checked` | a mapping's expressions whose type is unknown, so not checked against their concepts |
 
-Whether SLayer can evaluate an entity is never checked at import: upstream's TPC-DS example, for instance, is stored whole, with its window-function metrics reported as `not_evaluable`.
+Whether SLayer can evaluate an entity is never checked at import: upstream's TPC-DS example, for instance, is stored whole, and its window-function metrics evaluate. A `FIRST_VALUE` / `LAST_VALUE` window keeps its form: it is never rewritten into SLayer's `first` / `last`, which skip NULL ranking keys.
 
 ## Re-importing a 1.x Import
 

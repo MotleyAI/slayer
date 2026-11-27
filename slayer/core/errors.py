@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, List, Literal, Sequence, Tuple
 
+from pydantic import BaseModel
 from typing_extensions import deprecated
 
 from slayer.core.enums import StrEnum, TimeGranularity
@@ -154,12 +155,15 @@ class DatasetFieldCycleError(SlayerError, ValueError):
 class DatasetFilterCycleError(SlayerError, ValueError):
     """A dataset's filters read its own dataset; carries the ordered dataset ``cycle``."""
 
-    def __init__(self, cycle: Sequence[str]) -> None:
+    def __init__(self, cycle: Sequence[str], *, windowed: str | None = None) -> None:
         self.cycle: list[str] = list(cycle)
+        self.windowed = windowed
+        through = (f" The windowed column {windowed!r} reads every row of {self.cycle[-1]!r}." if windowed is not None
+                   else "")
         super().__init__(
             f"Circular dataset filters: {' → '.join(self.cycle)}. A dataset's filters read the "
             f"filtered rows of every dataset they reach through a relationship, so these datasets' filtered rows depend on "
-            f"themselves; drop the filter that closes the cycle."
+            f"themselves; drop the filter that closes the cycle.{through}"
         )
 
 
@@ -527,6 +531,11 @@ class PositionTypingError(QueryTypeError):
     """A filter conjunct / order target is valid as neither field nor metric."""
 
 
+class WindowFunctionError(QueryTypeError):
+    """A window function SLayer cannot evaluate: a function Ossie does not window, a row-level window naming no
+    dataset, a key off a measure-level window's operand grain, or a construct the database cannot run."""
+
+
 class DateOperandTypeError(QueryTypeError):
     """A date function operand that is not DATE/TIMESTAMP, or a ``date_add`` count that is not numeric."""
 
@@ -536,7 +545,8 @@ class TimeLiteralError(QueryTypeError):
 
 
 class DistinctDimensionValuesError(QueryTypeError):
-    """``distinct_dimension_values=False`` (raw rows) conflicts with an aggregation or an empty projection."""
+    """``distinct_dimension_values=False`` (raw rows) conflicts with an aggregation, an empty projection, or a
+    dimension the population does not determine."""
 
 
 class UnknownGranularityError(QueryTypeError):
@@ -583,6 +593,19 @@ class UnsupportedServerFunctionError(QueryTypeError):
     """A library function the connected database cannot yet run with its portable meaning."""
 
 
+class TimeOfDayValueError(SlayerError):
+    """A result cell of a time-of-day column holding a value that is no time of day."""
+
+    def __init__(self, *, column: str, value: str) -> None:
+        self.column = column
+        self.value = value
+        super().__init__(
+            f"{type(self).__name__}: column {column!r} is a time of day (Time), but the database returned "
+            f"{value!r}, which is not one (00:00:00 to 23:59:59.999999). Fix the stored value, or type the field "
+            f"String."
+        )
+
+
 class UnreachableDefinitionError(SlayerError, ValueError):
     """A stored ``DatasetField.sql`` / ``DatasetField.filter`` / dataset filter naming a dataset no relationship path reaches from its dataset."""
 
@@ -617,6 +640,21 @@ class GranularityDefinitionError(SlayerError):
         self.name = name
         self.rule = rule
         super().__init__(f"Granularity {name!r}: {rule}.")
+
+
+class TimeZoneError(SlayerError):
+    """A time zone that cannot apply: unknown, misplaced, or not convertible on the backend."""
+
+    def __init__(self, message: str, *, zone: str | None = None) -> None:
+        self.zone = zone
+        super().__init__(message)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _rebuild_time_zone_error, (str(self), self.zone)
+
+
+def _rebuild_time_zone_error(message: str, zone: str | None) -> TimeZoneError:
+    return TimeZoneError(message, zone=zone)
 
 
 class ReservedDatasetNameError(SlayerError):
@@ -861,15 +899,17 @@ class AmbiguousReferenceError(SlayerError, ValueError):
 
 
 class AmbiguousHopError(AmbiguousReferenceError):
-    """A hop segment names an edge of its dataset and the target of a different edge of it."""
+    """A hop segment names an edge of its dataset and the target of a different edge of it (``other_edge``: that
+    edge's name, ``None`` when it has none)."""
 
-    def __init__(self, *, dataset: str, segment: str, edge: str, other_edge: str) -> None:
+    def __init__(self, *, dataset: str, segment: str, edge: str, other_edge: str | None) -> None:
         self.dataset = dataset
         self.segment = segment
         super().__init__(
             name=f"{dataset}.{segment}",
-            candidates=[f"edge {edge!r}", f"edge {other_edge!r} (into {segment!r})"],
-            suggestion=f"spell the hop into {segment!r} by its edge name {other_edge!r}",
+            candidates=[f"edge {edge!r}",
+                        f"edge {other_edge!r} (into {segment!r})" if other_edge else f"the edge into {segment!r}"],
+            suggestion=f"spell the hop into {segment!r} by its edge name {other_edge!r}" if other_edge else None,
         )
 
 
@@ -917,7 +957,7 @@ class IllegalScopeReferenceError(SlayerError, ValueError):
 
 
 class IllegalWindowInFilterError(SlayerError, ValueError):
-    """A filter contains a raw ``OVER(...)`` window (directly or via a ``DatasetField.sql``); use a rank-family transform instead."""
+    """A window refused in a filter; kept public, no longer raised now that Mode B reads windows everywhere."""
 
     def __init__(
         self,
@@ -1245,6 +1285,20 @@ class AggFilterError(SlayerError, ValueError):
             summary=f"{expression}: AGG takes no FILTER clause.",
             suggestion="Define a dataset metric with the filter and evaluate that.",
         ))
+
+
+def agg_in_field_text(subject: str) -> str:
+    """Why ``subject``, a field, may not call ``AGG`` (the Ossie-document rule's wording)."""
+    return (f"{subject} calls AGG in a field expression. This version allows AGG only in metrics, as "
+            "AGG(dataset.metric) in a model-scoped metric and AGG(source.measure) in a dataset-scoped metric.")
+
+
+class AggInFieldError(SlayerError, ValueError):
+    """A field's Mode-B ``expression`` calls ``AGG``."""
+
+    def __init__(self, *, field: str) -> None:
+        self.field = field
+        super().__init__(agg_in_field_text(f"Field {field!r}"))
 
 
 class CaseCollisionError(SlayerError, ValueError):
@@ -1576,6 +1630,78 @@ class UnevaluableEntityError(SlayerError):
         self.entity = entity
         self.reason = reason
         super().__init__(_format_error_message(cls_name=type(self).__name__, summary=f"{entity} {reason}."))
+
+
+def _listed(reasons: Sequence[str]) -> str:
+    return "\n".join(f"  - {r}" for r in reasons)
+
+
+class OntologiesUnsupportedError(SlayerError):
+    """A storage backend that does not implement the ontology and mapping hooks."""
+
+    def __init__(self, *, backend: str) -> None:
+        self.backend = backend
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Storage backend {backend} does not support ontology documents.",
+            suggestion="Implement its ontology storage hooks, or use YAML or SQLite storage.",
+        ))
+
+
+class OntologyDocumentInvalidError(SlayerError):
+    """An ontology document refused when saved; ``reasons`` lists every problem."""
+
+    def __init__(self, *, name: str, reasons: Sequence[str]) -> None:
+        self.name = name
+        self.reasons = list(reasons)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__, summary=f"Ontology {name!r} is refused:\n{_listed(self.reasons)}"))
+
+
+class OntologyMappingInvalidError(SlayerError):
+    """A mapping document refused when saved; ``reasons`` lists every problem."""
+
+    def __init__(self, *, name: str, data_source: str, reasons: Sequence[str]) -> None:
+        self.name = name
+        self.data_source = data_source
+        self.reasons = list(reasons)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Mapping {name!r} of datasource {data_source!r} is refused:\n{_listed(self.reasons)}"))
+
+
+class BrokenDependent(BaseModel):
+    """A stored mapping or model-scoped metric an explicit change would break, with its problems. A mapping's
+    ``entries`` are the ``concept_mappings`` entries the problems sit in (``None`` for the document level); a metric's
+    ``reads`` are the datasets and metrics it reads, transitively, case-folded."""
+
+    kind: Literal["mapping", "metric"] = "mapping"
+    data_source: str
+    name: str
+    problems: list[str]
+    entries: list[int | None] = []
+    semantic_model: str | None = None
+    reads: list[str] = []
+
+    @property
+    def label(self) -> str:
+        if self.kind == "metric":
+            return f"model-scoped metric {self.name!r} of semantic model {self.semantic_model!r}"
+        return f"mapping {self.name!r} of datasource {self.data_source!r}"
+
+
+class StoredDependentBreakError(SlayerError):
+    """An explicit change refused because it would break stored dependents; ``reasons`` names each and its problems."""
+
+    def __init__(self, *, change: str, broken: Sequence[BrokenDependent], own: Sequence[str] = ()) -> None:
+        self.change = change
+        self.broken = list(broken)
+        self.reasons = [f"{b.label}: {p}" for b in self.broken for p in b.problems] + list(own)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"{change} would break {len(self.broken)} stored dependent(s):\n{_listed(self.reasons)}",
+            suggestion="Change or delete the dependent first.",
+        ))
 
 
 class HiddenContentConflictError(SlayerError):

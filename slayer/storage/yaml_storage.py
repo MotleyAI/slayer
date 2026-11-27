@@ -35,7 +35,7 @@ try:  # POSIX-only; Windows users get the no-op fallback.
 except ImportError:  # pragma: no cover — Windows
     _fcntl = None  # type: ignore[assignment]
 
-from slayer.core.errors import StoredDocumentLoadError
+from slayer.core.errors import StoredDocumentLoadError, UnreadableDocumentError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.atomic_write import _atomic_write_text, _atomic_write_yaml
@@ -54,6 +54,7 @@ from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingStore,
 )
 from slayer.storage.migrations import stamp_stored
+from slayer.storage.ontology_documents import MAPPING_NAME, ONTOLOGY_NAME
 from slayer.storage.v4_migration import migrate_yaml_layout
 from slayer.storage.document_keys import keys_for
 
@@ -94,6 +95,11 @@ def _memory_to_md(memory: Memory) -> str:
         without_none(data), sort_keys=True, default_flow_style=False, allow_unicode=True,
     )
     return f"{_MD_FENCE}{fm}{_MD_FENCE}{learning}"
+
+
+def _decoded_text(raw: bytes) -> str:
+    """A memory file's bytes as UTF-8 text with universal newlines, as a text-mode read gives it."""
+    return raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _md_to_memory_dict(memory_id: str, text: str) -> dict[str, Any]:
@@ -262,6 +268,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         self.models_dir = os.path.join(base_dir, "models")
         self.datasources_dir = os.path.join(base_dir, "datasources")
         self.semantic_models_dir = os.path.join(base_dir, "semantic_models")
+        self.ontologies_dir = os.path.join(base_dir, "ontologies")
+        self.ontology_mappings_dir = os.path.join(base_dir, "ontology_mappings")
         self._priority_path = os.path.join(base_dir, "priority.yaml")
         # Memories are one ``.md`` file per id under ``memories/``.
         # ``_memories_path`` still names the legacy flat file (used only by the
@@ -386,7 +394,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             try:
                 with open(self._memory_md_path(memory_id), encoding="utf-8") as f:  # NOSONAR(S7493) — local read
                     out[memory_id] = _md_to_memory_dict(memory_id, f.read())
-            except (OSError, yaml.YAMLError):
+            except (OSError, UnicodeDecodeError, yaml.YAMLError):
                 continue
         return out
 
@@ -453,15 +461,11 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                     f"invalid YAML in {path} — {exc}. Delete the file and re-run "
                     f"`slayer ingest` to recreate it."
                 ) from exc
-            dataset = await self._migrate_and_refine_on_load(
-                name=name, data=data, data_source=data_source,
-            )
-        # Admit only a stable read. A legacy migration write-back rewrites the
-        # file, so its first load is (correctly) not cached — the next load
-        # reads the now-current file and caches it normally. A field sql waiting
-        # for its datasource's dialect converts on a later load, so is never cached.
+            dataset, changes = await self._loaded_dataset(name=name, data=data, data_source=data_source)
+        # Admit only a stable read of a current document: an older one upgrades in
+        # memory on every load until it is stored upgraded.
         admit = _cache_admit(path=path, key_before=key_before)
-        if admit is not None and not any(c.sql is not None for c in dataset.fields):
+        if admit is not None and not changes and not any(c.sql is not None for c in dataset.fields):
             self._dataset_cache[path] = (admit, dataset)
         return dataset.model_copy(deep=True)
 
@@ -553,6 +557,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 return f.read()
         except FileNotFoundError:
             return None
+        except UnicodeDecodeError as exc:
+            raise UnreadableDocumentError(reasons=[f"it is not UTF-8 text: {exc}"], name=name) from exc
 
     async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
         if not os.path.isdir(self.semantic_models_dir):
@@ -580,6 +586,79 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 text = patch(f.read())
             _atomic_write_text(path=path, text=text)
         return text
+
+    # ---- ontology and mapping documents ------------------------------------
+
+    def _ontology_path(self, name: str) -> str:
+        _validate_path_component(name, kind=ONTOLOGY_NAME)
+        return os.path.join(self.ontologies_dir, f"{name}.yaml")
+
+    def _mapping_path(self, data_source: str, name: str) -> str:
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=MAPPING_NAME)
+        return os.path.join(self.ontology_mappings_dir, data_source, f"{name}.yaml")
+
+    @staticmethod
+    def _read_text(*, dir_path: str, entry: str) -> str | None:
+        if not _exact_entry_exists(dir_path=dir_path, entry_name=entry):
+            return None
+        try:
+            with open(os.path.join(dir_path, entry), encoding="utf-8", newline="") as f:  # NOSONAR(S7493) — local read
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def _remove(*, dir_path: str, entry: str) -> bool:
+        if not _exact_entry_exists(dir_path=dir_path, entry_name=entry):
+            return False
+        os.remove(os.path.join(dir_path, entry))
+        return True
+
+    async def _save_ontology_text_impl(self, *, name: str, text: str) -> None:
+        path = self._ontology_path(name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _atomic_write_text(path=path, text=text)
+
+    async def _get_ontology_text_impl(self, *, name: str) -> str | None:
+        self._ontology_path(name)
+        return self._read_text(dir_path=self.ontologies_dir, entry=f"{name}.yaml")
+
+    async def _list_ontology_names(self) -> list[str]:
+        if not os.path.isdir(self.ontologies_dir):
+            return []
+        return sorted(f[:-5] for f in os.listdir(self.ontologies_dir) if f.endswith(".yaml"))
+
+    async def _delete_ontology_row(self, *, name: str) -> bool:
+        self._ontology_path(name)
+        return self._remove(dir_path=self.ontologies_dir, entry=f"{name}.yaml")
+
+    async def _save_ontology_mapping_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        path = self._mapping_path(data_source, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _atomic_write_text(path=path, text=text)
+
+    async def _get_ontology_mapping_text_impl(self, *, data_source: str, name: str) -> str | None:
+        self._mapping_path(data_source, name)
+        if not _exact_entry_exists(dir_path=self.ontology_mappings_dir, entry_name=data_source):
+            return None
+        return self._read_text(dir_path=os.path.join(self.ontology_mappings_dir, data_source), entry=f"{name}.yaml")
+
+    async def _list_ontology_mapping_identities(self) -> list[tuple[str, str]]:
+        if not os.path.isdir(self.ontology_mappings_dir):
+            return []
+        out: list[tuple[str, str]] = []
+        for ds in sorted(os.listdir(self.ontology_mappings_dir)):
+            ds_dir = os.path.join(self.ontology_mappings_dir, ds)
+            if os.path.isdir(ds_dir):
+                out += [(ds, f[:-5]) for f in sorted(os.listdir(ds_dir)) if f.endswith(".yaml")]
+        return out
+
+    async def _delete_ontology_mapping_row(self, *, data_source: str, name: str) -> bool:
+        self._mapping_path(data_source, name)
+        if not _exact_entry_exists(dir_path=self.ontology_mappings_dir, entry_name=data_source):
+            return False
+        return self._remove(dir_path=os.path.join(self.ontology_mappings_dir, data_source), entry=f"{name}.yaml")
 
     # ---- datasource CRUD ---------------------------------------------------
 
@@ -612,8 +691,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             else:
                 with open(path) as f:  # NOSONAR(S2083,S8707,S7493) — path from _datasource_path, which validates the name; sync I/O by design
                     data = yaml.safe_load(f)
-                data = await self._with_library_granularities_renamed(name=name, data=data)
-                ds = DatasourceConfig.model_validate(data)
+                ds = await self._datasource_from_stored(name=name, data=data)
                 admit = _cache_admit(path=path, key_before=key)  # skip if changed mid-read
                 if admit is not None:
                     self._datasource_cache[path] = (admit, ds)
@@ -775,11 +853,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         ):
             return None
         try:
-            with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-                text = f.read()
+            with open(path, "rb") as f:  # NOSONAR(S7493) — sync I/O in async by design
+                raw = f.read()
         except FileNotFoundError:
             return None
-        return await self._memory_from_stored(memory_id=memory_id, decode=lambda: _md_to_memory_dict(memory_id, text))
+        return await self._memory_from_stored(
+            memory_id=memory_id, decode=lambda: _md_to_memory_dict(memory_id, _decoded_text(raw)))
 
     async def _memory_ids(self) -> list[str]:
         return self._memory_ids_on_disk()

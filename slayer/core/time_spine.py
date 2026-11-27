@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from slayer.core.enums import RelationshipCardinality, JoinType
+from slayer.core.enums import TEMPORAL_DATATYPES, RelationshipCardinality, JoinType
+from slayer.core.errors import DefaultTimeDimensionTypeError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import DatasetExtension, OrderItem, QueryDimension, QueryMetric, SlayerQuery, map_filter
 from slayer.core.spine_names import TIME_SPINE_FIELD, TIME_SPINE_FIELD_TYPE, TIME_SPINE_DATASET
@@ -123,6 +124,18 @@ def axis_field(dataset: SlayerDataset) -> Optional[str]:
     """``dataset``'s axis, a P factor's included: its default time field, else its sole one."""
     axis = None if is_spine(dataset) else dataset.effective_default_time_dimension
     return axis if axis is not None and dataset.get_field(axis) is not None else None
+
+
+def default_time_field(dataset: SlayerDataset) -> Optional[DatasetField]:
+    """The field ``dataset``'s ``default_time_dimension`` names, if any."""
+    return dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
+
+
+def check_default_time_dimension(dataset: SlayerDataset) -> None:
+    """A declared ``default_time_dimension`` must name a date or timestamp field: it is the dataset's time axis."""
+    field = default_time_field(dataset)
+    if field is not None and field.datatype is not None and field.datatype not in TEMPORAL_DATATYPES:
+        raise DefaultTimeDimensionTypeError(dataset=dataset.name, field=field.name, field_type=field.datatype)
 
 
 def axis_relationship(dataset: SlayerDataset) -> Optional[DatasetRelationship]:

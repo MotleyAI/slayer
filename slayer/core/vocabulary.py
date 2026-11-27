@@ -28,7 +28,8 @@ __all__ = [
     "TIME_DIMENSION_KEYS", "WARNING_KEYS",
     "SpellingConflictError", "Spellings", "aggregation", "attribute_used", "bridge_renamed_hooks", "camel_healed",
     "converted_document", "converted_input", "current_spellings", "dataset", "deprecated_spelling", "dimension_entry",
-    "extension", "extension_keys", "field", "input_object", "method_twin", "metric", "name_twins", "one_document", "order_item", "query",
+    "extension", "extension_keys", "field", "input_object", "method_twin", "metric", "name_twins", "old_keywords",
+    "one_document", "order_item", "query",
     "query_metric", "refinement",
     "relationship", "renamed_arguments", "renamed_input", "renamed_name", "respelled_token", "same_ignoring_deprecations",
     "stored_dataset", "stored_query", "time_dimension",
@@ -125,6 +126,22 @@ def _with_keywords(fn: _F, renames: Mapping[str, str]) -> _F:
         return fn(*args, **renamed_arguments(kwargs, renames=renames))
 
     return cast(_F, wrapper)
+
+
+def old_keywords(renames: Mapping[str, str]) -> Callable[[_F], _F]:
+    """A function also taking its pre-2.0 keywords of ``renames``: one deprecation per call that uses any."""
+    def decorate(fn: _F) -> _F:
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            used = [old for old in renames if old in kwargs]
+            if used:
+                _deprecation(f"{fn.__name__}({', '.join(f'{old}=' for old in used)})",
+                             f"{fn.__name__}({', '.join(f'{renames[old]}=' for old in used)})")
+            return fn(*args, **renamed_arguments(kwargs, renames=renames))
+
+        return cast(_F, wrapper)
+
+    return decorate
 
 
 def method_twin(new: str, *, arguments: Mapping[str, str] | None = None) -> Callable[[_F], _F]:
@@ -416,9 +433,11 @@ def dataset(data: Any, spellings: Spellings) -> Any:
 
 
 def _reference_text(data: dict[str, Any]) -> Any:
-    """The dotted text of a pre-2.0 field-reference object (``name``, ``model``, ``quoted``); only a ``name``-only
-    object may carry an expression, any other names a field by valid names."""
-    name, model = data.get("name"), data.get("model")
+    """The dotted text of a pre-2.0 field-reference object (``name``, ``model`` or ``dataset``, ``quoted``); only a
+    ``name``-only object may carry an expression, any other names a field by valid names."""
+    if "model" in data and "dataset" in data:
+        raise SpellingConflictError(old="model", new="dataset")
+    name, model = data.get("name"), data.get("model", data.get("dataset"))
     if not isinstance(name, str) or not (model is None or isinstance(model, str)):
         return name
     parts = [*model.split("."), *name.split(".")] if model else name.split(".")
@@ -482,6 +501,14 @@ def _field_text(data: Any, table: Mapping[str, str], spellings: Spellings, *, la
         return data
     olds = [old for old in table if old in data and table[old] == "field"]
     data = spellings.rename(data, table)
+    reference = data.get("field")
+    text = getattr(reference, "field", None) if isinstance(reference, BaseModel) else None
+    if olds and isinstance(text, str):
+        # A pre-2.0 column-reference object, i.e. a query dimension entry.
+        label = getattr(reference, "label", None)
+        if labelled and label is not None and "label" not in data:
+            data = {**data, "label": label}
+        data = {**data, "field": text}
     if olds and _reference_object(data.get("field")):
         if labelled and "label" in data["field"] and "label" not in data:
             data = {**data, "label": data["field"]["label"]}

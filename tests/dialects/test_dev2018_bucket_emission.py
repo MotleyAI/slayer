@@ -337,7 +337,8 @@ async def test_spine_over_a_date_axis(dialect, granularity) -> None:
 
 def _zoned(model: SlayerDataset) -> SlayerDataset:
     return model.model_copy(update={"fields": [
-        c.model_copy(update={"db_type": "TIMESTAMP"}) if c.name == "ts" else c for c in model.fields]})
+        c.model_copy(update={"db_type": "TIMESTAMP", "datatype": DataType.DATETIME_TZ}) if c.name == "ts" else c
+        for c in model.fields]})
 
 
 @pytest.mark.parametrize("query", [

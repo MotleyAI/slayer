@@ -10,11 +10,10 @@ import pytest
 
 from slayer.core import syntax
 from slayer.core.enums import DataType
-from slayer.core.errors import IllegalWindowInFilterError
 from slayer.core.keys import AggregateKey, FieldKey, Grain, TransformKey, ValueKey
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
 from slayer.core.scope import DatasetScope
-from slayer.core.syntax import AggCall, Cast, DottedRef, Literal, Ref, ScalarCall, TransformCall, parse_expr
+from slayer.core.syntax import AggCall, Cast, DottedRef, Literal, Ref, ScalarCall, TransformCall, WindowCall, parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -58,8 +57,9 @@ def rejected(text: str, *needles: str, exc: type[Exception] = ValueError) -> str
 
 class TestOneParser:
     def test_parser_lives_in_core(self) -> None:
-        with pytest.raises(ImportError, match="slayer.core.syntax"):
-            importlib.import_module("slayer.engine.syntax")
+        module = importlib.import_module("slayer.engine.syntax")
+        with pytest.raises(AttributeError, match="slayer.core.syntax"):
+            getattr(module, "parse_expr")
 
     def test_no_filter_only_entry_point(self) -> None:
         assert not hasattr(syntax, "parse_filter_expr")
@@ -379,9 +379,6 @@ class TestRejectionsWithHints:
     def test_trim_keyword_forms(self, text: str) -> None:
         rejected(text, "TRIM")
 
-    def test_time_literal(self) -> None:
-        rejected("created_at > TIME '10:00'", "TIME")
-
     def test_similar_to(self) -> None:
         rejected("status SIMILAR TO 'p%'", "SIMILAR TO")
 
@@ -389,9 +386,9 @@ class TestRejectionsWithHints:
     def test_regex_operators(self, op: str) -> None:
         rejected(f"status {op} '^p'", op)
 
-    def test_raw_over(self) -> None:
-        with pytest.raises(IllegalWindowInFilterError):
-            parse_expr("sum(amount) OVER (PARTITION BY region)")
+    def test_raw_over_parses_as_a_window(self) -> None:
+        assert parse_expr("sum(amount) OVER (PARTITION BY region)") == WindowCall(
+            function=AggCall(source=Ref(name="amount"), agg="sum"), partition=(Ref(name="region"),))
 
     def test_over_inside_string_is_text(self) -> None:
         same("status = 'OVER('", "status == 'OVER('")

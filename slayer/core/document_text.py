@@ -12,13 +12,13 @@ from typing import Any
 
 import yaml
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedSeq
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.util import load_yaml_guess_indent
 from yaml.constructor import ConstructorError
 
 from slayer.core.errors import UnreadableDocumentError
 
-__all__ = ["edit_text", "parse_document_text", "plain", "without_vendor"]
+__all__ = ["edit_list_items", "edit_text", "parse_document_text", "plain", "without_vendor"]
 
 _MERGE_TAG = "tag:yaml.org,2002:merge"
 _VALUE_TAG = "tag:yaml.org,2002:value"
@@ -135,6 +135,13 @@ def parse_document_text(text: str) -> Any:
     """A document's YAML or JSON text as data, read as Ossie's loader reads it; raises ``UnreadableDocumentError``
     listing every repeated key and unbuildable scalar."""
     try:
+        return _parsed(text)
+    except RecursionError as exc:
+        raise UnreadableDocumentError(reasons=["the document is too deeply nested"]) from exc
+
+
+def _parsed(text: str) -> Any:
+    try:
         loader = _Loader(text)
     except yaml.YAMLError as exc:
         raise UnreadableDocumentError(reasons=[f"the document is not valid YAML or JSON: {exc}"]) from exc
@@ -187,27 +194,31 @@ def plain(node: Any) -> Any:
     return node
 
 
-def _named(items: list[Any]) -> bool:
-    names = [i.get("name") for i in items if isinstance(i, MutableMapping)]
+_ITEM_KEYS = ("name", "concept")
+
+
+def _named(items: list[Any], key: str) -> bool:
+    names = [i.get(key) for i in items if isinstance(i, MutableMapping)]
     return len(names) == len(items) and all(isinstance(n, str) for n in names) and len(set(names)) == len(names)
 
 
-def _apply_named_list(node: list[Any], desired: list[Any]) -> None:
-    wanted = {d["name"]: d for d in desired}
+def _apply_named_list(node: list[Any], desired: list[Any], key: str) -> None:
+    wanted = {d[key]: d for d in desired}
     for i in reversed(range(len(node))):
-        if node[i]["name"] not in wanted:
+        if node[i][key] not in wanted:
             del node[i]
-    held = {item["name"]: item for item in node}
+    held = {item[key]: item for item in node}
     for item in desired:
-        if item["name"] in held:
-            _apply(held[item["name"]], item)
+        if item[key] in held:
+            _apply(held[item[key]], item)
         else:
             node.append(item)
 
 
 def _apply_list(node: list[Any], desired: list[Any]) -> None:
-    if node and desired and _named(node) and _named(desired):
-        _apply_named_list(node, desired)
+    key = next((k for k in _ITEM_KEYS if node and desired and _named(node, k) and _named(desired, k)), None)
+    if key is not None:
+        _apply_named_list(node, desired, key)
         return
     kept = _subsequence(node, desired)
     if kept is not None:
@@ -338,12 +349,145 @@ def edit_text(text: str, edit: Callable[[dict[str, Any]], dict[str, Any]]) -> st
         indent = found.group(1) if found else None
         newline = "\n" if text.endswith("\n") else ""
         base = json.dumps(data, indent=indent, ensure_ascii=False) + newline
-        _apply(data, edit(json.loads(text)))
-        return _splice(ours=text, base=base, theirs=json.dumps(data, indent=indent, ensure_ascii=False) + newline)
-    yaml = _yaml(text)
-    tree = yaml.load(text)
-    base, theirs = io.StringIO(), io.StringIO()
-    yaml.dump(tree, base)
-    _apply(tree, edit(plain(tree)))
-    yaml.dump(tree, theirs)
-    return _splice(ours=text, base=base.getvalue(), theirs=theirs.getvalue())
+        desired = edit(json.loads(text))
+        try:
+            _apply(data, desired)
+            theirs = json.dumps(data, indent=indent, ensure_ascii=False) + newline
+        except RecursionError:
+            return _as_json(desired, indent=indent) + newline
+        return _faithful(ours=text, base=base, theirs=theirs)
+    loaded = _round_trip(text)
+    if loaded is None:
+        desired = edit(parse_document_text(text))
+        return text if desired == parse_document_text(text) else _re_emitted(desired)
+    rt, tree, base = loaded
+    desired = edit(plain(tree))
+    try:
+        _apply(tree, desired)
+        theirs = io.StringIO()
+        rt.dump(tree, theirs)
+    except RecursionError:
+        return _re_emitted(desired)
+    return _faithful(ours=text, base=base, theirs=theirs.getvalue())
+
+
+def _round_trip(text: str) -> tuple[YAML, Any, str] | None:
+    """``text``'s round-trip loader, tree and re-emitted text; ``None`` when its nesting exceeds ruamel's recursion."""
+    try:
+        rt = _yaml(text)
+        tree = rt.load(text)
+        base = io.StringIO()
+        rt.dump(tree, base)
+    except RecursionError:
+        return None
+    return rt, tree, base.getvalue()
+
+
+def _re_emitted(data: Any) -> str:
+    """``data`` as block YAML, or as JSON (also YAML) when too deep for the YAML emitter and JSON holds it exactly;
+    ``UnreadableDocumentError`` when the text would not read back."""
+    try:
+        text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=1 << 16)
+    except RecursionError:
+        return _as_json(data, indent="  ") + "\n"
+    parse_document_text(text)
+    return text
+
+
+def _as_json(data: Any, *, indent: str | None) -> str:
+    """``data`` as JSON; ``UnreadableDocumentError`` when JSON cannot hold it exactly."""
+    try:
+        text = json.dumps(data, indent=indent, ensure_ascii=False)
+    except (TypeError, ValueError, RecursionError):
+        text = None
+    if text is None or parse_document_text(text) != data:
+        raise UnreadableDocumentError(reasons=["the document is too deeply nested"])
+    return text
+
+
+def _faithful(*, ours: str, base: str, theirs: str) -> str:
+    """``_splice``'s text when it reads as ``theirs`` does, else ``theirs`` itself; ``UnreadableDocumentError`` when
+    ``theirs`` does not read back."""
+    wanted = parse_document_text(theirs)
+    spliced = _splice(ours=ours, base=base, theirs=theirs)
+    try:
+        if parse_document_text(spliced) == wanted:
+            return spliced
+    except UnreadableDocumentError:
+        pass
+    return theirs
+
+
+def _item_spans(text: str, *, key: str) -> tuple[list[str], list[int], int, int] | None:
+    """Block YAML ``text``'s lines, the first line of each item of its top-level block list ``key``, the end of the
+    list and the column of its dashes; ``None`` for any other layout."""
+    loaded = None if _is_json(text) else _round_trip(text)
+    if loaded is None:
+        return None
+    tree = loaded[1]
+    if not isinstance(tree, CommentedMap):
+        return None
+    seq = tree.get(key)
+    if not isinstance(seq, CommentedSeq) or not seq or seq.fa.flow_style():
+        return None
+    lines = text.splitlines(keepends=True)
+    starts: list[int] = []
+    dashes: set[int] = set()
+    for i in range(len(seq)):
+        line, col = seq.lc.item(i)
+        before = lines[line][:col].rstrip()
+        if not before.endswith("-") or before[:-1].strip():
+            return None
+        starts.append(line)
+        dashes.add(len(before) - 1)
+    keys = list(tree)
+    following = keys[keys.index(key) + 1:]
+    end = tree.lc.key(following[0])[0] if following else len(lines)
+    return (lines, starts, end, dashes.pop()) if len(dashes) == 1 else None
+
+
+def _item_text(item_lines: list[str], *, dash: int, desired: dict[str, Any]) -> str:
+    """One list item's text edited to ``desired``, its unchanged parts kept as written."""
+    body = [line[dash + 2:] if i == 0 or not line[:dash + 2].strip() else line.lstrip(" ")
+            for i, line in enumerate(item_lines)]
+    edited = edit_text("".join(body), lambda _doc: desired)
+    out = edited.splitlines(keepends=True)
+    return "".join(f"{' ' * dash}{'- ' if i == 0 else '  '}{line}" if line.strip() else line
+                   for i, line in enumerate(out))
+
+
+def _new_item_text(desired: dict[str, Any], *, dash: int) -> str:
+    dumped = yaml.safe_dump(desired, sort_keys=False, allow_unicode=True, width=1 << 16).splitlines(keepends=True)
+    return "".join(f"{' ' * dash}{'- ' if i == 0 else '  '}{line}" for i, line in enumerate(dumped))
+
+
+def edit_list_items(text: str, *, key: str, item_key: str, desired: list[dict[str, Any]]) -> str:
+    """``text`` with its top-level list ``key`` rewritten to ``desired``, items matched by ``item_key``: an unchanged
+    item keeps its text, a changed one is edited within its own span, a new one is written in the list's style."""
+    spans = _item_spans(text, key=key)
+    held = parse_document_text(text)
+    if spans is None or not isinstance(held, dict):
+        return edit_text(text, lambda doc: {**doc, key: desired})
+    lines, starts, end, dash = spans
+    items = held[key]
+    chunks = {str(item.get(item_key)): (item, lines[start:stop]) for item, start, stop in
+              zip(items, starts, [*starts[1:], end]) if isinstance(item, dict)}
+    out: list[str] = []
+    for item in desired:
+        found = chunks.get(str(item.get(item_key)))
+        if found is None:
+            out.append(_new_item_text(item, dash=dash))
+        elif found[0] == item:
+            out.append("".join(found[1]))
+        else:
+            out.append(_item_text(found[1], dash=dash, desired=item))
+    if out and not out[-1].endswith("\n"):
+        out[-1] += "\n"
+    result = "".join(lines[:starts[0]] + out + lines[end:])
+    expected = {**held, key: desired}
+    try:
+        if parse_document_text(result) == expected:
+            return result
+    except UnreadableDocumentError:
+        pass
+    return edit_text(text, lambda doc: {**doc, key: desired})

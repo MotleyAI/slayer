@@ -23,8 +23,8 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import open_connection
 from tests._dev1737_fixtures import TableSpec
 from tests._dev2243_fixtures import (
-    DS, SALES, STORAGES, dataset, document_engine, document_path, document_text, error, field, make_storage, metric,
-    place_document, relationship, store_document,
+    DS, SALES, STORAGES, dataset, document_engine, document_path, document_text, error, field, importer_module,
+    make_storage, metric, place_document, relationship, store_document,
 )
 from tests._dev2277_fixtures import by, managers_dataset, returns_dataset
 from tests._engine_helpers import owned_query_engine
@@ -219,6 +219,17 @@ async def test_an_unloadable_document_leaves_standalone_datasets_loading(tmp_pat
     loaded, errs = await storage.load_datasets(data_source=DS)
     assert {d.name for d in loaded} == {"returns"}
     assert set(failed(errs, "semantic_model")) == {"sales"}
+
+
+async def test_an_undecodable_document_leaves_standalone_datasets_loading(tmp_path: Path) -> None:
+    place_document(tmp_path, "", name="sales").write_bytes(b"\xff\xfe not utf-8")
+    storage = await yaml_storage_with_datasource(tmp_path)
+    returns = returns_dataset().model_copy(update={"data_source": DS, "relationships": []})
+    await storage.save_dataset(returns, _validate=False)
+    loaded, errs = await storage.load_datasets(data_source=DS)
+    assert {d.name for d in loaded} == {"returns"}
+    assert set(failed(errs, "semantic_model")) == {"sales"}
+    assert await storage.get_dataset("returns", data_source=DS) is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -536,42 +547,75 @@ WINDOWED = document_text(
                                        field("order_date", datatype="Date"),
                                        field("running_total", "SUM(amount) OVER (ORDER BY order_date)",
                                              datatype="Float")])],
-    metrics=[metric("total", "SUM(sales.amount)"), metric("running", "SUM(sales.amount) OVER ()")],
+    metrics=[metric("total", "SUM(sales.amount)"), metric("running", "SUM(SUM(sales.amount)) OVER ()")],
+)
+#: Entities that stay unevaluable: an unparseable field, and metrics reading a field outside an aggregate.
+UNEVALUABLE = document_text(
+    name="ledger",
+    datasets=[dataset("sales", fields=[field("order_id"), field("amount", datatype="Float"),
+                                       field("order_date", datatype="Date"),
+                                       field("flag", "(SELECT 1)", datatype="Integer")])],
+    metrics=[metric("total", "SUM(sales.amount)"), metric("bare", "sales.amount * 2"),
+             metric("row_window", "SUM(sales.amount) OVER ()")],
 )
 
 
 async def test_a_windowed_field_loads_and_fails_only_when_read() -> None:
-    """Spec scenario: A windowed field loads and fails only when read."""
+    """Spec scenario: A windowed field and metric load and evaluate."""
     async with document_engine(documents=(WINDOWED,), tables=[SALES_TABLE]) as engine:
-        _, errs = await engine.storage.load_datasets(data_source=DS)
+        datasets, errs = await engine.storage.load_datasets(data_source=DS)
         assert errs == []
+        [sales] = [d for d in datasets if d.name == "sales"]
+        assert {f.name: f.load_warning for f in sales.fields}["running_total"] is None
+        metrics = {m.name: m for m in await engine.storage.list_model_scoped_metrics(DS)}
+        assert metrics["running"].load_warning is None
         inspected = await mcp_text(engine.storage, "inspect", reference=f"{DS}.sales.running_total", entity_type="field")
-        assert "window" in inspected.lower()
+        assert "cannot evaluate" not in inspected.lower()
         assert await single(engine, population="sales", metric_expr="sum(sales.amount)") == 35.0
-        with pytest.raises(error("UnevaluableEntityError"), match="running_total"):
-            await engine.execute({"population": "sales", "dimensions": ["sales.running_total"]})
+        resp = await engine.execute({"population": "sales", "dimensions": ["sales.order_id", "sales.running_total"]})
+        assert {k: float(v) for k, v in by(resp, "sales.order_id", "sales.running_total").items()} == {
+            "S1": 10.0, "S2": 30.0, "S3": 35.0}
+        resp = await engine.execute({"population": "sales", "metrics": ["running"]})
+        assert [float(r["running"]) for r in resp.data] == [35.0]
+        resp = await engine.execute({"population": "sales", "dimensions": ["sales.order_id"], "metrics": ["running"]})
+        assert {k: float(v) for k, v in by(resp, "sales.order_id", "running").items()} == {
+            "S1": 35.0, "S2": 35.0, "S3": 35.0}
+
+
+async def test_import_osi_reports_no_windowed_entity_as_not_evaluable(tmp_path: Path) -> None:
+    """Spec scenario: A windowed field and metric load and evaluate (import report)."""
+    storage = await yaml_storage_with_datasource(tmp_path)
+    path = tmp_path / "ledger.yaml"
+    path.write_text(WINDOWED, encoding="utf-8")
+    result = await importer_module().import_osi(storage=storage, path=path, data_source=DS)
+    assert result.stored == ["ledger"]
+    assert [e.entity for e in result.entries if e.kind == "not_evaluable"] == []
 
 
 async def test_an_unevaluable_entitys_warning_shows_on_summary_and_search() -> None:
-    async with document_engine(documents=(WINDOWED,), tables=[SALES_TABLE]) as engine:
+    async with document_engine(documents=(UNEVALUABLE,), tables=[SALES_TABLE]) as engine:
+        sales = await engine.storage.get_dataset("sales", data_source=DS)
+        assert sales is not None
+        warning = {f.name: f.load_warning for f in sales.fields}["flag"]
+        assert warning
         summary = await mcp_text(engine.storage, "datasets_summary", datasource_name=DS, compact=False)
-        assert "running_total" in summary
-        assert "window" in summary.lower()
-        hits = await SearchService(storage=engine.storage).search(question="running_total", compact=False,
-                                                                  max_results=20)
-        [hit] = [h for h in hits.results if h.id == f"{DS}.sales.running_total"]
-        assert "window" in f"{hit.text} {hit.description or ''}".lower()
+        assert "flag" in summary
+        assert warning in summary
+        hits = await SearchService(storage=engine.storage).search(question="flag", compact=False, max_results=20)
+        [hit] = [h for h in hits.results if h.id == f"{DS}.sales.flag"]
+        assert warning in f"{hit.text} {hit.description or ''}"
 
 
 async def test_an_unevaluable_model_scoped_metric_loads_and_fails_only_when_read() -> None:
-    async with document_engine(documents=(WINDOWED,), tables=[SALES_TABLE]) as engine:
+    async with document_engine(documents=(UNEVALUABLE,), tables=[SALES_TABLE]) as engine:
         metrics = {m.name: m for m in await engine.storage.list_model_scoped_metrics(DS)}
         assert metrics["total"].load_warning is None
-        assert "window" in (metrics["running"].load_warning or "").lower()
         resp = await engine.execute({"population": "sales", "metrics": ["total"]})
         assert [float(r["total"]) for r in resp.data] == [35.0]
-        with pytest.raises(error("UnevaluableEntityError"), match="running"):
-            await engine.execute({"population": "sales", "metrics": ["running"]})
+        for name in ("bare", "row_window"):
+            assert "outside an aggregate" in (metrics[name].load_warning or ""), name
+            with pytest.raises(error("UnevaluableEntityError"), match=name):
+                await engine.execute({"population": "sales", "metrics": [name]})
 
 
 # --------------------------------------------------------------------------- #
@@ -866,8 +910,21 @@ async def test_a_model_scoped_metric_in_the_datasources_own_dialect_runs_unchang
     assert document_path(tmp_path, name="parity").read_text(encoding="utf-8") == doc
 
 
+async def test_a_window_inside_an_aggregates_filter_evaluates(tmp_path: Path) -> None:
+    """The row with the smallest amount (5) is the one numbered 1."""
+    sql = "SUM(amount) FILTER (WHERE ROW_NUMBER() OVER (ORDER BY amount) = 1)"
+    doc = parity_doc(extra={"orders": {"metrics": [metric("smallest", sql), metric("ok", "SUM(amount)")]}})
+    async with ddl_engine(tmp_path, doc) as engine:
+        _, errs = await engine.storage.load_datasets(data_source=DS)
+        assert errs == []
+        orders = await engine.storage.get_dataset("orders", data_source=DS)
+        assert orders is not None
+        assert {m.name: m.load_warning for m in orders.metrics} == {"smallest": None, "ok": None}
+        assert await single(engine, population="orders", metric_expr="orders.ok") == 22.0
+        assert await single(engine, population="orders", metric_expr="orders.smallest") == 5.0
+
+
 @pytest.mark.parametrize("bad", [
-    pytest.param(metric("bad", "SUM(amount) FILTER (WHERE ROW_NUMBER() OVER (ORDER BY amount) = 1)"), id="window"),
     pytest.param({"name": "bad", "expression": {"dialects": [{"dialect": "MDX", "expression": "[Measures].[Amount]"}]}},
                  id="no-sql-dialect"),
 ])

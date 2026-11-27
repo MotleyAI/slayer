@@ -1,5 +1,5 @@
 """Stored datasets, queries and memories in the pre-2.0 vocabulary load as their Ossie twins, silently, nested
-queries included with or without a version of their own; a migrated dataset is written back.
+queries included with or without a version of their own; a save persists a migrated dataset in the new vocabulary.
 
 The pre-2.0 spellings below are deliberate: keep this file out of the vocabulary respelling pass.
 
@@ -32,7 +32,7 @@ from tests._upgrade_corpus import MEMORY_PREFIX, Corpus, load_all, offline, onli
 from tests._upgrade_corpus import run as run_recorded
 
 PRE = {"SlayerModel": 25, "SlayerQuery": 15, "Memory": 11, "Embedding": 1}
-CURRENT = {"SlayerModel": 29, "SlayerQuery": 19, "Memory": 14, "Embedding": 2}
+CURRENT = {"SlayerModel": 32, "SlayerQuery": 20, "Memory": 15, "Embedding": 2}
 CORPORA = {
     "v0_10_2": Corpus.load(release="v0_10_2", datasources=("shop", "cube", "lite"),
                            data_files=("data.duckdb", "data.sqlite")),
@@ -184,12 +184,14 @@ class TestStores:
         assert_migrated_orders(dataset)
         assert by_dimension(response, dim_suffix="region") == AMOUNT_BY_REGION
 
-    async def test_a_migrated_dataset_is_written_back(self, backend: str, tmp_path: Path) -> None:
+    async def test_a_migrated_dataset_is_saved_in_the_new_vocabulary(self, backend: str, tmp_path: Path) -> None:
         nested = {"name": "by_region", "data_source": DS, "source_queries": [stored_query()]}
         storage = await shop_store(backend=backend, base=str(tmp_path),
                                    datasets=[stored(shop_customers("old")), stored_orders(), stored(nested)])
-        await storage.get_dataset("orders", data_source=DS)
-        await storage.get_dataset("by_region", data_source=DS)
+        for name in ("orders", "by_region"):
+            loaded = await storage.get_dataset(name, data_source=DS)
+            assert loaded is not None
+            await storage.save_dataset(loaded)
         for name in ("orders", "by_region"):
             doc = stored_document(backend=backend, base=str(tmp_path), name=name)
             assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]

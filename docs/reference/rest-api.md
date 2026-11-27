@@ -76,10 +76,11 @@ presence of a field:
 The body accepts the same fields as a `SlayerQuery`, plus `dry_run`, `explain`, and `variables`. Notable optional fields:
 
 - `whole_periods_only` (bool) — snap time bounds to bucket boundaries; see [Time](../concepts/time.md#whole_periods_only).
+- `time_zone` (str, optional) — IANA zone timestamps are bucketed, filtered and returned in; the response reports it as `time_zone`. See [Time zones](../concepts/time.md#time-zones).
 - `distinct_dimension_values` (bool, default `true`) — set `false` to emit raw rows (no top-level `GROUP BY`); rejects any metric reference in `metrics` / `filter` / `order`.
-- `to_many_handling` (str, optional) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/queries.md#cross-dataset-metrics): omitted or `associate` (per-cell value over the distinct associated rows) or `error` (refuse); `broadcast` is deprecated, removed in 3.0 — give each aggregate `partition_by=` instead. Rejected at the top level of run-by-name bodies (`{"name": ...}`) — put it in `refine` instead.
+- `to_many_handling` (str, optional) — how an aggregate resolves query dimensions [unattributable from its root](../concepts/cross-dataset-queries.md#cross-dataset-metrics): omitted or `associate` (per-cell value over the distinct associated rows) or `error` (refuse); `broadcast` is deprecated, removed in 3.0 — give each aggregate `partition_by=` instead. Rejected at the top level of run-by-name bodies (`{"name": ...}`) — put it in `refine` instead.
 
-Run-by-name bodies (`{"name": ...}`) run a query-backed dataset's stored query and allow only `name`, `variables`, `dry_run`, `explain` and `refine`; query clauses go inside `refine`, which merges them into the saved query's final stage ([Refining a saved query](../concepts/queries.md#refining-a-saved-query)).
+Run-by-name bodies (`{"name": ...}`) run a query-backed dataset's stored query and allow only `name`, `variables`, `dry_run`, `explain` and `refine`; query clauses go inside `refine`, which merges them into the saved query's final stage ([Refining a saved query](../concepts/saved-and-multistage-queries.md#refining-a-saved-query)).
 
 ```bash
 curl -X POST http://localhost:5143/query \
@@ -134,6 +135,8 @@ A query-backed dataset's `fields` are generated at save, so supplying them retur
 
 A dataset of a semantic model is updated and deleted inside its document.
 
+A delete that would break a stored model-scoped metric or ontology mapping returns 400 listing each one, or, when one is hidden from the caller, a 400 hidden-content conflict naming none; see [Semantic models](../concepts/semantic-models.md#editing).
+
 ### Semantic models
 
 ```
@@ -144,13 +147,30 @@ PUT    /semantic-models/{data_source}/{name}   # Replace the document's text
 DELETE /semantic-models/{data_source}/{name}   # Delete it and its datasets
 ```
 
-`POST` takes `{"data_source", "name", "content"}`, where `content` is an Ossie `0.3.0.dev0` document as YAML/JSON text or an object, or `{"data_source", "name", "datasets": [...]}` to move standalone datasets into a new document. `PUT` takes `{"content"}`. A refused document returns 400 with the reasons; an unknown document returns 404. See [Semantic models](../concepts/semantic-models.md).
+`POST` takes `{"data_source", "name", "content"}`, where `content` is an Ossie `0.3.0.dev0` document as YAML/JSON text or an object, or `{"data_source", "name", "datasets": [...]}` to move standalone datasets into a new document. `PUT` takes `{"content"}`. A refused document, or a delete that would break a stored dependent, returns 400 with the reasons; an unknown document returns 404. See [Semantic models](../concepts/semantic-models.md).
 
 ```bash
 curl -X POST http://localhost:5143/semantic-models \
   -H "Content-Type: application/json" \
   -d '{"data_source": "mydb", "name": "sales", "datasets": ["orders", "customers"]}'
 ```
+
+### Ontologies and mappings
+
+```
+GET    /ontologies                                # List: [{"name"}]
+GET    /ontologies/{name}                         # {"name", "text"}: the stored text
+POST   /ontologies                                # Create, under the document's own name
+PUT    /ontologies/{name}                         # Replace; the document must declare {name}
+DELETE /ontologies/{name}                         # Delete; 400 while a mapping resolves against it
+GET    /ontology-mappings                         # List: [{"data_source", "name"}]; ?data_source= filters
+GET    /ontology-mappings/{data_source}/{name}    # {"data_source", "name", "text"}
+POST   /ontology-mappings                         # Create: {"data_source", "content"}
+PUT    /ontology-mappings/{data_source}/{name}    # Replace: {"content"}, declaring {name}
+DELETE /ontology-mappings/{data_source}/{name}    # Delete
+```
+
+`content` is an Ossie `0.3.0.dev0` document as YAML/JSON text or an object. A refused document returns 400 listing every problem; an unknown one returns 404. Mapping saves return `notes`, such as the expressions whose type is unknown; ontology, mapping and semantic-model saves return `warnings`, the identifier and multiplicity mismatches they touch. See [Ontologies and mappings](../concepts/ontologies.md).
 
 ### Datasources
 
@@ -180,11 +200,11 @@ A bare dataset name that exists in several datasources resolves to the first lis
 
 ### Validate datasets
 
-`POST /validate-datasets` with body `{"data_source": null}` (or a datasource name) diffs the stored datasets against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype`, `narrowed_access` and `untyped` entries; an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
+`POST /validate-datasets` with body `{"data_source": null}` (or a datasource name) diffs the stored datasets against the live schemas, read-only, and returns the drift findings: the deletes needed to keep them valid plus report-only `retype`, `narrowed_access`, `untyped` and `ontology` entries ([Ontologies](../concepts/ontologies.md)); an unknown datasource returns 404 and an introspection failure 422. See [Schema Drift](../concepts/schema-drift.md).
 
 ### Recommend a population
 
-`POST /recommend-population` with body `{"items": [...], "data_source": null, "root_hint": null}` returns the recommended query root and each item's reference path from it; unresolvable, wrong-kind or cross-datasource items return 400. See [Choosing a root dataset](../concepts/queries.md#choosing-a-root-dataset).
+`POST /recommend-population` with body `{"items": [...], "data_source": null, "root_hint": null}` returns the recommended query root and each item's reference path from it; unresolvable, wrong-kind or cross-datasource items return 400. See [Choosing a root dataset](../concepts/cross-dataset-queries.md#choosing-a-root-dataset).
 
 ### Ingestion
 

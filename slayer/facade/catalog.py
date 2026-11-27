@@ -19,7 +19,7 @@ import logging
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.relationship_search import paths_from, unaddressable_pairs
-from slayer.core.relationship_walker import OrientedRelationship, OrientedLike, neighbors
+from slayer.core.relationship_walker import OrientedRelationship, OrientedLike, neighbors, provably_to_one
 from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     DataType,
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # skip these for built-ins. Custom aggs with non-empty ``params`` are
 # also skipped per rule 4 for the same reason.
 _PARAMETRIC_BUILTIN_AGGS: frozenset[str] = frozenset({
-    "weighted_avg", "percentile", "corr", "covar_samp", "covar_pop",
+    "weighted_avg", "percentile", "percentile_disc", "percentile_approx", "corr", "covar_samp", "covar_pop",
 })
 
 DEFAULT_BFS_DEPTH = 3
@@ -69,7 +69,7 @@ class FacadeDimension(BaseModel):
     data_type: DataType
     is_time: bool
     dimension_ref: str
-    # False when the relationship path fans out: excluded from SELECT * expansion.
+    # False unless every hop is provably to-one: resolvable, but never advertised or star-expanded.
     row_preserving: bool = True
 
 
@@ -180,6 +180,11 @@ def local_dimensions(table: FacadeTable) -> list[FacadeDimension]:
     every dimension IS a ``DatasetField`` the user defined on the dataset.
     See :func:`local_metrics` for the leak-path rationale."""
     return [d for d in table.dimensions if "." not in d.name]
+
+
+def advertised_dimensions(table: FacadeTable) -> list[FacadeDimension]:
+    """The dimensions a wire catalog advertises: those a plain raw-row ``SELECT`` can list (semantics Axiom 12.5)."""
+    return [d for d in table.dimensions if d.row_preserving]
 
 
 def build_catalog(
@@ -381,21 +386,15 @@ def _walk_relationship_paths(
     ``row_preserving`` is True iff every hop keeps the root grain."""
     return [
         (list(r.tokens), datasets_by_name[r.edges[-1].to],
-         all(_hop_preserves_grain(edge=e) for e in r.edges))
+         all(_hop_preserves_grain(edge=e, datasets_by_name=datasets_by_name) for e in r.edges))
         for r in paths_from(root=root, datasets_by_name=datasets_by_name, depth=max_depth,
                             passable=lambda m: not m.hidden)
     ]
 
 
-def _hop_preserves_grain(*, edge: OrientedRelationship) -> bool:
-    """True when traversing ``edge`` cannot fan out the root's rows. An
-    unknown cardinality passes only in the declared direction (the prior
-    star-expansion surface); inverted-unknown fails safe."""
-    if edge.cardinality in (RelationshipCardinality.MANY_TO_ONE, RelationshipCardinality.ONE_TO_ONE):
-        return True
-    if edge.cardinality is None:
-        return edge.declaring_dataset == edge.source_dataset
-    return False
+def _hop_preserves_grain(*, edge: OrientedRelationship, datasets_by_name: dict[str, SlayerDataset]) -> bool:
+    """True when ``edge`` is provably to-one, the raw-row determination test."""
+    return provably_to_one(edge=edge, target_dataset=datasets_by_name[edge.to])
 
 
 def _path_dotted(path: list[str]) -> str:

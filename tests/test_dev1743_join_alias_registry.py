@@ -23,7 +23,8 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.models import SlayerDataset
+from slayer.core.enums import DataType
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 
 from tests._dev1743_fixtures import (
@@ -161,6 +162,49 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
             f"host-grain agg reads the WRONG table (direct dataset alias "
             f"{direct_alias!r}):\n{sql}"
         )
+
+
+def _root_folding_datasets() -> tuple[SlayerDataset, SlayerDataset]:
+    """``orders`` relating to ``customers`` by ``Orders`` (case-folds onto the root); ``customers`` has derived
+    fields ``region_up`` and ``signed_up_day``."""
+    customers = SlayerDataset(name="customers", sql_table="customers", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="region", datatype=DataType.STRING),
+        DatasetField(name="signed_up_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="region_up", datatype=DataType.STRING, expression="UPPER(region)"),
+        DatasetField(name="signed_up_day", datatype=DataType.DATE, expression="CAST(signed_up_at AS DATE)"),
+    ])
+    orders = SlayerDataset(
+        name="orders", sql_table="orders", data_source="test",
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+        ],
+        relationships=[DatasetRelationship(name="Orders", to="customers", from_columns=["customer_id"],
+                                           to_columns=["id"])],
+    )
+    return orders, customers
+
+
+class TestDerivedFieldBareReadsUseEmittedAlias:
+    """A relationship named like its root in another case is minted a suffixed alias; a derived field's bare column
+    reads follow that alias, never the raw relationship name (which binds to the root)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("body", "column"), [
+        ({"dimensions": ["customers.region_up"]}, "region"),
+        ({"time_dimensions": [{"field": "customers.signed_up_day", "granularity": "month"}]}, "signed_up_at"),
+    ])
+    async def test_a_relationship_folding_onto_the_root_reads_its_own_join(self, body: dict, column: str) -> None:
+        orders, customers = _root_folding_datasets()
+        sql = await _engine_generate(
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(orders.amount)"], **body}),
+            dataset=orders, extra_datasets=[customers],
+        )
+        alias = _join_table_to_alias(sql)["customers"]
+        tree = sqlglot.parse_one(sql, dialect="postgres")
+        assert {c.table for c in tree.find_all(exp.Column) if c.name == column} == {alias}, sql
 
 
 class TestPlainChainSpellingIsStable:

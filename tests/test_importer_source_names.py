@@ -360,9 +360,11 @@ class _ProbeRecorder(DelegatingSqlClient):
 
 
 def _probe_statements(live: Live, probe: TypeProbe, *, columns: list[str]) -> list[str]:
-    """``probe`` run verbatim, followed on SQLite by exactly its integer-certifying census."""
-    census = probe.census_sql(columns, dialect=SqliteDialect()) if live.engine.dialect.name == "sqlite" else None
-    return [probe.sql, *([census] if census is not None else [])]
+    """``probe`` run verbatim, followed on SQLite by exactly its integer-certifying census and its declared types."""
+    if live.engine.dialect.name != "sqlite":
+        return [probe.sql]
+    followers = (probe.census_sql(columns, dialect=SqliteDialect()), probe.declared_sql(dialect=SqliteDialect()))
+    return [probe.sql, *(s for s in followers if s is not None)]
 
 
 class _Collected:

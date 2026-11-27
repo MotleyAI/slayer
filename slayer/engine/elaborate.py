@@ -15,12 +15,13 @@ from slayer.core.keys import AggregateKey, TransformKey, ValueKey, split_top_lev
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import key_display
-from slayer.core.scope import DatasetScope, StageSchema
+from slayer.core.scope import DatasetScope, StageSchema, root_spelling
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.field_dependency import check_dataset_filters
 from slayer.engine.elaborate_env import (
     build_environment,
     check_combined_partition_keys,
+    check_raw_row_determined,
     check_row_expression_home,
     check_unrelated_filter_sides,
     check_unrelated_row_read,
@@ -28,9 +29,10 @@ from slayer.engine.elaborate_env import (
     position_typing_context,
     type_and_split_filters,
 )
-from slayer.engine.population.home import resolve_aggregate_homes, row_expression_home
+from slayer.engine.population.home import population_crossing, resolve_aggregate_homes, row_expression_home
 from slayer.engine.cardinality.relationship_safety import crossing_local_root_predicate
 from slayer.engine.dataset_reads import datasets_read_closure
+from slayer.engine.window_columns import lift_row_windows
 from slayer.engine.cardinality.unrelated import ProductSides
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.planned import MaskTyping
@@ -58,6 +60,7 @@ def elaborate_query(
         scope = resolve_scope(bundle=bundle)
     if prebound is None:
         prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
+    prebound, bundle, scope = lift_row_windows(prebound, bundle=bundle, scope=scope)
     if scope.population is not None:
         datasets = bundle.datasets_by_name
         with unobserved():
@@ -78,7 +81,7 @@ def elaborate_query(
         _check_product_hops(prebound, filter_typings=filter_typings, sides=sides,
                             product_anchor=bundle.row_supply is not None and bundle.row_supply.product)
     if scope.population is not None:
-        _check_row_expression_homes(prebound, host=scope.population, bundle=bundle)
+        _check_population_entries(prebound, query=query, scope=scope, population=scope.population, bundle=bundle)
     check_combined_partition_keys(
         prebound, filter_typings=filter_typings,
         order_texts=[o.raw_expression or o.field for o in query.order or []],
@@ -142,6 +145,42 @@ def _check_row_expression_homes(prebound: PreboundQuery, *, host: SlayerDataset,
             key=key, host_dataset=host, bundle=bundle,
             dim_keys=dim_keys, td_keys=td_keys, active_bucket=prebound.main_time_key,
         ))
+
+
+def _check_population_entries(
+    prebound: PreboundQuery, *, query: SlayerQuery, scope: DatasetScope, population: SlayerDataset,
+    bundle: ResolvedSourceBundle,
+) -> None:
+    """Every entry has a home (Axiom 2.2) and, in raw rows, the population determines it (Axiom 12.5)."""
+    _check_row_expression_homes(prebound, host=population, bundle=bundle)
+    if not query.distinct_dimension_values:
+        _check_raw_rows_determined(prebound, scope=scope, population=population, bundle=bundle)
+
+
+def _check_raw_rows_determined(
+    prebound: PreboundQuery, *, scope: DatasetScope, population: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    """Raw rows: the population determines every dimension, time dimension and row-level order key (Axiom 12.5)."""
+    dim_dms, td_dms, _ = partition_declared_metrics(
+        declared_metrics=prebound.declared_metrics,
+        n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,
+    )
+    spelling = root_spelling(scope) or population.name
+    entries: List[Tuple[str, str, ValueKey]] = [
+        *(("dimension", dm.public_name or key_display(dm.bound.value_key), dm.bound.value_key) for dm in dim_dms),
+        *(("time dimension", dm.public_name or key_display(dm.bound.value_key), dm.bound.value_key) for dm in td_dms),
+    ]
+    grain = {k for _, _, k in entries}
+    entries += [
+        ("order key", key_display(sp.bound.value_key), sp.bound.value_key) for sp in prebound.order_specs
+        if sp.bound.value_key not in grain
+        and not any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(sp.bound.value_key))
+    ]
+    for kind, name, key in entries:
+        check_raw_row_determined(
+            kind=kind, name=name, population=spelling,
+            crossing=population_crossing(source=key, population=population, bundle=bundle),
+        )
 
 
 def elaborate_synthesized(

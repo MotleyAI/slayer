@@ -1,0 +1,33 @@
+document:
+  version: 0.3.0.dev0
+  name: sales
+  ai_context:
+    instructions: Use for sales analysis
+  ontology:
+  - concept: Order
+    type: EntityType
+  ontology_mappings:
+  - semantic_model:
+      version: 0.3.0.dev0
+      name: m
+      datasets:
+      - name: orders
+        source: sales.public.orders
+        primary_key:
+        - not_a_field
+        fields:
+        - name: order_id
+          expression:
+            sql: o_orderkey
+      - name: orders
+        source: sales.public.orders
+      relationships: []
+      metrics:
+      - name: dropped
+        expression:
+          sql: DROP TABLE x
+      - name: missing
+        expression:
+          sql: SUM(no_such_field)
+    concept_mappings: []
+files: {}

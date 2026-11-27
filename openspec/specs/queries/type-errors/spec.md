@@ -25,7 +25,7 @@ Every query type error the checker raises SHALL be an instance of a concrete rul
 - **THEN** construction fails
 
 ### Requirement: The time-axis violation is a type error, not an unimplemented feature
-A time-ordered transform (`cumsum`, `lag`, `lead`, `time_shift`, `change`, `change_pct`, `consecutive_periods`, `first`, `last`) whose operand grain does not contain its time axis — the query's active time bucket — SHALL fail with a `TimeAxisError`, never a `NotImplementedError`, in every position: dimension, measure, filter, order key, aggregation-source constituent and aggregation parameter, nested inside arithmetic, a scalar call or another transform included. The operand grain SHALL be the union of the operand's inner grains: an aggregate's explicit `partition_by=` (a raw time column naming the active bucket's column counts as that bucket), else the query grain; a windowed aggregate adding the active time bucket; a nested `first` / `last` transform contributing its own operand grain minus its time axis; a nested preserving transform contributing its own operand grain. The error's suggestion SHALL name including the time key in the inner aggregate's `partition_by=`, except when the axis is missing only because a nested `first` / `last` dropped it, where it SHALL instead name applying the time-ordered transform to that `first` / `last`'s operand, or an axis-preserving operand. The REST query endpoint SHALL answer it with HTTP 400 carrying the error text, and the Flight SQL server SHALL report it as an invalid-argument error, not as unimplemented.
+A time-ordered transform (`cumsum`, `lag`, `lead`, `time_shift`, `change`, `change_pct`, `consecutive_periods`) whose operand grain does not contain its time axis — the query's active time bucket — SHALL fail with a `TimeAxisError`, never a `NotImplementedError`, in every position: dimension, measure, filter, order key, aggregation-source constituent and aggregation parameter, nested inside arithmetic, a scalar call or another transform included. The operand grain SHALL be the union of the operand's inner grains: an aggregate's explicit `partition_by=` (a raw time column naming the active bucket's column counts as that bucket), else the query grain; a windowed aggregate adding the active time bucket; a nested `first` / `last` over an aggregate contributing its own grain, its ranking key dropped (`queries/semantics` › A ranked aggregation's grain drops its ranking key); a nested transform contributing its own operand grain. A `first` / `last` over an aggregate whose defaulted ranking key, the active time bucket, is not in its operand grain SHALL fail with the same `TimeAxisError` in every position (`aggregations/functional-form` › Default ranking key). The error's suggestion SHALL name including the time key in the inner aggregate's `partition_by=`. The REST query endpoint SHALL answer it with HTTP 400 carrying the error text, and the Flight SQL server SHALL report it as an invalid-argument error, not as unimplemented.
 
 #### Scenario: Time axis missing from an aggregated transform's grain
 - **WHEN** a measure aggregates a time-ordered transform (such as `cumsum`) over an inner aggregate whose `partition_by=` omits the query's time dimension
@@ -41,7 +41,7 @@ A time-ordered transform (`cumsum`, `lag`, `lead`, `time_shift`, `change`, `chan
 
 #### Scenario: A nested first/last drops the axis in every position
 - **WHEN** a query by `region` over a month time dimension uses `time_shift(last(sum(amount, partition_by=[region, ordered_at])), -1)` or `cumsum(last(sum(amount, partition_by=[region, ordered_at])))` as a measure, as the source of `max(…)`, or inside a dimension expression
-- **THEN** every query fails with a `TimeAxisError` whose suggestion names applying the time-ordered transform to the `last`'s operand and does not offer the `partition_by=` remedy
+- **THEN** every query fails with a `TimeAxisError` that is not a `NotImplementedError` — the `last` drops its ranking key, the month bucket, from its grain
 
 #### Scenario: A windowed inner carries the axis in every position
 - **WHEN** a query by `region` over a month time dimension uses `cumsum(sum(amount, window='90d', partition_by=region))` as a measure, as the source of `max(…)`, and inside a dimension expression `CASE WHEN … > 0 THEN 1 ELSE 0 END`
@@ -58,6 +58,13 @@ A time-ordered transform (`cumsum`, `lag`, `lead`, `time_shift`, `change`, `chan
 #### Scenario: Flight SQL reports the violation as invalid argument
 - **WHEN** a type error is raised while planning a Flight SQL query
 - **THEN** the client receives an invalid-argument error carrying the error text, not an unimplemented error
+
+#### Scenario: A ranked aggregation over an operand without the axis fails in every position
+- **WHEN** a query on `orders` by `region` over a month time dimension uses
+  `last(sum(amount, partition_by=region))` as a measure, in a filter, as an order key or as
+  the source of `max(…)`, and a query with no time dimension selects `last(sum(amount))`
+- **THEN** every query fails with a `TimeAxisError`, never a `NotImplementedError` or a
+  value
 
 ### Requirement: Malformed window durations raise one typed error
 Every malformed `window=` duration — a non-string value, an empty string, a malformed or gapped string, or a non-positive part — SHALL fail with a `WindowDurationError`, whether it reaches the query or the duration parser directly.

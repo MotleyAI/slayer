@@ -121,17 +121,18 @@ class TestDimension:
         assert _rows(resp, "rev_by_tier.customers__tier_label", "t") == [("NORTH", 120.0), ("SOUTH", 90.0)]
 
     @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_a_converted_model_is_written_back(self, tmp_path, shop_ds, backend: str) -> None:
+    async def test_a_converted_model_is_persisted_by_a_save(self, tmp_path, shop_ds, backend: str) -> None:
         storage = await _store(tmp_path, shop_ds, backend, _qb("rev_by_tier", _TIER))
         model, _ = await _load(storage, "rev_by_tier")
+        again, caught = await _load(storage, "rev_by_tier")
+        assert again == model
+        assert _conversion_warnings(caught, document="rev_by_tier", column="tier_label") != []
+        await storage.save_dataset(model)
         doc = await raw_doc(storage, "rev_by_tier")
         assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
         [stage] = doc["source_queries"]
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
         assert all("columns" not in e for e in stage.get("extensions") or [])
-        again, caught = await _load(storage, "rev_by_tier")
-        assert again == model
-        assert _conversion_warnings(caught, document="rev_by_tier", column="tier_label") == []
         async with owned_query_engine(storage=storage) as engine:
             by_name = await engine.execute("rev_by_tier")
         key = next(k for k in by_name.columns if k.endswith("tier_label"))
@@ -244,12 +245,29 @@ class TestQualification:
         storage = await _quoted_hop_store(tmp_path, shop_ds, written='customers."REGIONS".lbl')
         with pytest.raises(StoredDocumentLoadError, match="does not resolve"):
             await storage.get_dataset("quoted_hop", data_source=DS)
-    # A quoted hop inside an extension field's own sql: DEV-2438.
+
+    async def test_an_extension_column_reading_a_quoted_hop_in_its_exact_spelling_is_inlined(
+            self, tmp_path, shop_ds) -> None:
+        storage = await _quoted_hop_store(tmp_path, shop_ds, written="customers.cl",
+                                          columns=({"name": "cl", "sql": 'lower("Regions".lbl)'},))
+        model, _ = await _load(storage, "quoted_hop")
+        [field] = [d.field for d in _stage_of(model).dimensions or []]
+        assert field.replace('"', "") == "lower(upper(customers.Regions.label))"
+
+    async def test_an_extension_column_reading_a_quoted_hop_in_another_case_does_not_resolve(
+            self, tmp_path, shop_ds) -> None:
+        storage = await _quoted_hop_store(tmp_path, shop_ds, written="customers.cl",
+                                          columns=({"name": "cl", "sql": 'lower("REGIONS".lbl)'},))
+        with pytest.raises(StoredDocumentLoadError, match="does not resolve"):
+            await storage.get_dataset("quoted_hop", data_source=DS)
 
 
-async def _quoted_hop_store(tmp_path, ds: DatasourceConfig, *, written: str) -> StorageBackend:
-    stage = _stage(extensions=[_ext("Regions", {"name": "lbl", "sql": "upper(label)"})],
-                   dimensions=[written], measures=[_REV])
+async def _quoted_hop_store(tmp_path, ds: DatasourceConfig, *, written: str,
+                            columns: tuple[dict, ...] = ()) -> StorageBackend:
+    extensions = [_ext("Regions", {"name": "lbl", "sql": "upper(label)"})]
+    if columns:
+        extensions.append(_ext("customers", *columns))
+    stage = _stage(extensions=extensions, dimensions=[written], measures=[_REV])
     return await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=ds, models=[
         orders_v10(), customers_v10(joins=[region_join("Regions")]), regions_v10(name="Regions"),
         _qb("quoted_hop", stage)])

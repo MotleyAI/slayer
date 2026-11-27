@@ -1,31 +1,32 @@
 """Jaffle Shop demo dataset — bundled, one-command setup.
 
-Generates ~2 years of synthetic coffee-shop data via ``jafgen``, loads it into
+Generates ~2 years of seeded synthetic coffee-shop data via ``jafgen``, loads it into
 a DuckDB file under the storage directory, registers a ``jaffle_shop``
 datasource, and (optionally) auto-ingests SLayer datasets enriched with curated
-labels, descriptions, formats, and example metrics (``DEMO_ENRICHMENT``). The default is kept
-small so ``slayer serve --demo`` / ``slayer mcp --demo`` finish quickly enough
-to fit inside MCP-client startup timeouts; bump ``--years`` for a richer
-dataset (only the first four jafgen stores open within the first 2 years).
+labels, descriptions, formats, and example metrics (``DEMO_ENRICHMENT``). Bump
+``--years`` for a richer dataset (only the first four jafgen stores open within the first 2 years).
 
 All operations are idempotent: re-running with the same storage path reuses
-an up-to-date DuckDB file and rebuilds one whose schema is stale.
+an up-to-date DuckDB file and rebuilds one whose schema or generator stamp is stale.
 """
 
 import datetime as dt
 import os
-import shutil
+import random
 import subprocess
 import sys
 import tempfile
+import uuid
 from collections import deque
 from functools import lru_cache
+from importlib.metadata import version
 from importlib.util import find_spec
 from typing import IO
 
 import duckdb
+import numpy as np
 import sqlglot
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
@@ -43,10 +44,22 @@ from slayer.core.models import (
 from slayer.core.errors import SlayerError
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
+from slayer.live_schema.schema_drift import IdempotentIngestResult
 from slayer.storage.base import StorageBackend, storage_base_dir
 from slayer.storage.document_loading import DocumentLoadFailures
 
 DEMO_NAME = "jaffle_shop"
+DEFAULT_DEMO_YEARS = 2
+
+_JAFGEN_SEED = 20180901
+_JAFGEN_UUID_SEED = 1879
+# Bump whenever the seeding or the generated data changes for the same jafgen/Faker versions.
+DEMO_SEED_RECIPE = 1
+_STAMP_MACRO = "_slayer_demo_stamp"
+_SEEDED_JAFGEN = (
+    "from slayer.demo.jaffle_shop import seed_jafgen_generators; seed_jafgen_generators(); "
+    "from jafgen.cli import app; app()"
+)
 
 DEFAULT_TIME_DIMENSIONS = {
     "orders": "ordered_at",
@@ -634,22 +647,19 @@ def _stream_fileno(stream) -> int | None:
         return None
 
 
-def _jafgen_cmd(years: int) -> list[str]:
-    """Build the jafgen invocation without relying on PATH exposure.
+def seed_jafgen_generators() -> None:
+    """Seed every RNG jafgen draws from; UUIDs get their own RNG so they never shift jafgen's ``random`` stream."""
+    random.seed(_JAFGEN_SEED)
+    np.random.seed(_JAFGEN_SEED)
+    uuid_rng = random.Random(_JAFGEN_UUID_SEED)
+    uuid.uuid4 = lambda: uuid.UUID(int=uuid_rng.getrandbits(128), version=4)
 
-    ``uv tool install motley-slayer`` (and pipx) link only slayer's own entry
-    points onto PATH; the ``jafgen`` console script of the dependency stays
-    inside the tool venv's ``bin/``, so a bare ``jafgen`` subprocess fails
-    with FileNotFoundError. Since jafgen is a core dependency, prefer running
-    its CLI through the current interpreter; fall back to a PATH lookup for
-    environments where the package somehow isn't importable.
-    """
+
+def _jafgen_cmd(years: int) -> list[str]:
+    """Run jafgen's CLI, seeded, through the current interpreter (its console script may not be on PATH)."""
     years_arg = str(max(1, years))
     if find_spec("jafgen") is not None:
-        return [sys.executable, "-c", "from jafgen.cli import app; app()", years_arg]
-    exe = shutil.which("jafgen")
-    if exe is not None:
-        return [exe, years_arg]
+        return [sys.executable, "-c", _SEEDED_JAFGEN, years_arg]
     raise RuntimeError(
         "jafgen is required to generate the demo data but was not found. "
         "It ships with motley-slayer — reinstall the package, or run "
@@ -680,7 +690,7 @@ def generate_data(
     # default stdio encoding is the ANSI code page (cp1252), which can't encode
     # them, so jafgen would die with UnicodeEncodeError and exit 1. PYTHONUTF8=1
     # switches its stdio to UTF-8 regardless of the host code page.
-    child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONHASHSEED": "0"}
     if _stream_fileno(out) is not None:
         try:
             subprocess.run(
@@ -766,8 +776,16 @@ def shift_dates_to_today(conn: "duckdb.DuckDBPyConnection") -> None:
             conn.execute(update.sql(dialect="duckdb"))
 
 
-def _require_store_regions(conn: "duckdb.DuckDBPyConnection", *, view: str) -> None:
-    query = exp.select("name").distinct().from_(exp.table_(view))
+def _csv_source(path: str, *, alias: str) -> exp.Table:
+    """``read_csv_auto('<path>') AS <alias>``; the path is a SQL string literal, not a bound parameter."""
+    return exp.Table(
+        this=exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(path)]),
+        alias=exp.TableAlias(this=exp.to_identifier(alias)),
+    )
+
+
+def _require_store_regions(conn: "duckdb.DuckDBPyConnection", *, csv_source: exp.Table) -> None:
+    query = exp.select("name").distinct().from_(csv_source)
     names = {name for (name,) in conn.execute(query.sql(dialect="duckdb")).fetchall()}
     unmapped = sorted(names - STORE_REGIONS.keys())
     if unmapped:
@@ -809,45 +827,35 @@ def load_data(
 
         cents_cols = CENTS_FIELDS.get(csv_name, [])
         renames = FIELD_RENAMES.get(csv_name, {})
-        view = f"_{table}_raw"
-        # read_csv_auto takes a SQL string literal, not a bound parameter.
-        csv_source = exp.Table(this=exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(csv_path)]))
-        create = exp.Create(
-            this=exp.table_(view), kind="VIEW", expression=exp.select("*").from_(csv_source),
-            properties=exp.Properties(expressions=[exp.TemporaryProperty()]),
+        csv_source = _csv_source(csv_path, alias=f"_{table}_raw")
+        describe = exp.Describe(this=exp.select("*").from_(csv_source.copy()))
+        csv_columns = [row[0] for row in conn.execute(describe.sql(dialect="duckdb")).fetchall()]
+        select_parts = []
+        target_columns = []
+        for col in csv_columns:
+            target_col = renames.get(col, col)
+            target_columns.append(target_col)
+            value: Expr = exp.column(col)
+            if col in cents_cols:
+                cents = exp.cast(value, to="DECIMAL(18,0)")
+                value = exp.cast(exp.Mul(this=cents, expression=exp.Literal.number("0.01")), to=MONEY_DB_TYPE)
+            select_parts.append(exp.alias_(value, target_col))
+        declared = _declared_fields(conn, table)
+        derived: dict[str, Expr] = {
+            c: sqlglot.parse_one(e, dialect="duckdb")
+            for c, e in DERIVED_FIELDS.get(csv_name, {}).items() if c in declared
+        }
+        derived |= _list_expressions(csv_name, declared=declared, data_dir=data_dir, prefix=prefix)
+        for target_col, derived_expr in derived.items():
+            target_columns.append(target_col)
+            select_parts.append(exp.alias_(derived_expr, target_col))
+        if csv_name == "stores" and "region_id" in derived:
+            _require_store_regions(conn, csv_source=csv_source.copy())
+        insert = exp.insert(
+            expression=exp.select(*select_parts).from_(csv_source), into=exp.table_(table),
+            columns=[exp.to_identifier(c) for c in target_columns],
         )
-        conn.execute(create.sql(dialect="duckdb"))
-        try:
-            describe = exp.Describe(this=exp.table_(view))
-            csv_columns = [row[0] for row in conn.execute(describe.sql(dialect="duckdb")).fetchall()]
-            select_parts = []
-            target_columns = []
-            for col in csv_columns:
-                target_col = renames.get(col, col)
-                target_columns.append(target_col)
-                value: Expr = exp.column(col)
-                if col in cents_cols:
-                    cents = exp.cast(value, to="DECIMAL(18,0)")
-                    value = exp.cast(exp.Mul(this=cents, expression=exp.Literal.number("0.01")), to=MONEY_DB_TYPE)
-                select_parts.append(exp.alias_(value, target_col))
-            declared = _declared_fields(conn, table)
-            derived: dict[str, Expr] = {
-                c: sqlglot.parse_one(e, dialect="duckdb")
-                for c, e in DERIVED_FIELDS.get(csv_name, {}).items() if c in declared
-            }
-            derived |= _list_expressions(csv_name, declared=declared, data_dir=data_dir, prefix=prefix)
-            for target_col, derived_expr in derived.items():
-                target_columns.append(target_col)
-                select_parts.append(exp.alias_(derived_expr, target_col))
-            if csv_name == "stores" and "region_id" in derived:
-                _require_store_regions(conn, view=view)
-            insert = exp.insert(
-                expression=exp.select(*select_parts).from_(exp.table_(view)), into=exp.table_(table),
-                columns=[exp.to_identifier(c) for c in target_columns],
-            )
-            conn.execute(insert.sql(dialect="duckdb"))
-        finally:
-            conn.execute(exp.Drop(this=exp.table_(view), kind="VIEW").sql(dialect="duckdb"))
+        conn.execute(insert.sql(dialect="duckdb"))
 
     shift_dates_to_today(conn)
 
@@ -935,6 +943,67 @@ def _bundled_schema_projection() -> tuple[tuple, ...]:
         conn.close()
 
 
+class DemoSetupError(SlayerError):
+    """The demo could not be set up; ``reason`` says why."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"Failed to set up the Jaffle Shop demo: {reason}")
+
+
+class DemoStamp(BaseModel):
+    """What built a demo database: generator versions, seed recipe and years."""
+
+    jafgen_version: str
+    faker_version: str
+    recipe: int
+    years: int
+
+    def same_generator(self, other: "DemoStamp") -> bool:
+        return self.model_dump(exclude={"years"}) == other.model_dump(exclude={"years"})
+
+
+def current_demo_stamp(*, years: int) -> DemoStamp:
+    """The stamp this environment would write for a ``years``-year demo."""
+    return DemoStamp(
+        jafgen_version=version("jafgen"), faker_version=version("Faker"), recipe=DEMO_SEED_RECIPE, years=years,
+    )
+
+
+def write_demo_stamp(conn: "duckdb.DuckDBPyConnection", stamp: DemoStamp) -> None:
+    """Store ``stamp`` as a scalar macro: persisted, yet neither a table nor a view."""
+    create = exp.Create(
+        kind="MACRO", replace=True,
+        this=exp.UserDefinedFunction(this=exp.table_(_STAMP_MACRO), wrapped=True),
+        expression=exp.Literal.string(stamp.model_dump_json()),
+    )
+    conn.execute(create.sql(dialect="duckdb"))
+
+
+def read_demo_stamp(conn: "duckdb.DuckDBPyConnection") -> DemoStamp | None:
+    """The database's stamp, or ``None`` when it has none (or an unreadable one)."""
+    found = conn.execute(
+        "SELECT count(*) FROM duckdb_functions() WHERE database_name = current_database() AND function_name = ?",
+        [_STAMP_MACRO],
+    ).fetchone()
+    if not found or not found[0]:
+        return None
+    row = conn.execute(exp.select(exp.Anonymous(this=_STAMP_MACRO)).sql(dialect="duckdb")).fetchone()
+    try:
+        return DemoStamp.model_validate_json(row[0]) if row else None
+    except ValidationError:
+        return None
+
+
+def _is_up_to_date(conn: "duckdb.DuckDBPyConnection", *, years: int | None) -> bool:
+    if tuple(_schema_projection(conn)) != _bundled_schema_projection():
+        return False
+    stamp = read_demo_stamp(conn)
+    if stamp is None or not stamp.same_generator(current_demo_stamp(years=stamp.years)):
+        return False
+    return years is None or stamp.years == years
+
+
 def _release_factory_engine(db_path: str) -> None:
     """Have ``engine_factory`` dispose its cached engine on ``db_path``, if any."""
     engine_factory.invalidate_engine(
@@ -961,37 +1030,42 @@ def _remove_db_files(path: str) -> None:
 def build_jaffle_shop(
     db_path: str,
     *,
-    years: int = 2,
+    years: int | None = None,
     force: bool = False,
     stream: IO[str] | None = None,
 ) -> bool:
     """Generate the Jaffle Shop DuckDB at ``db_path`` unless an up-to-date one exists.
 
     Returns ``True`` when generated: the file is missing, its schema differs from
-    ``JAFFLE_SCHEMA_SQL``, or ``force``. A reused DB has its dates re-shifted so
-    ``MAX(orders.ordered_at) == today``. A rebuild is written to a sibling file and
-    then replaces ``db_path``, so the demo is never left without a complete DB.
+    ``JAFFLE_SCHEMA_SQL``, its generator stamp is missing or from another generator,
+    explicit ``years`` differ from the stamp's, or ``force``. ``years=None`` reuses a
+    demo of any years and builds ``DEFAULT_DEMO_YEARS``. A reused DB has its dates
+    re-shifted so ``MAX(orders.ordered_at) == today``. A rebuild is written to a sibling
+    file and then replaces ``db_path``, so the demo is never left without a complete DB.
     ``stream`` is forwarded to ``generate_data`` so jafgen's progress stays visible.
     """
+    if years is not None:
+        years = max(1, years)  # what jafgen builds, so the stamp matches the data
     if os.path.exists(db_path):
         conn = _connect_existing(db_path)
         try:
-            current = tuple(_schema_projection(conn)) == _bundled_schema_projection()
-            if current and not force:
+            if _is_up_to_date(conn, years=years) and not force:
                 shift_dates_to_today(conn)
                 return False
         finally:
             conn.close()
 
+    build_years = DEFAULT_DEMO_YEARS if years is None else years
     sibling = f"{db_path}.building"
     _remove_db_files(sibling)
     try:
         with tempfile.TemporaryDirectory(prefix="jaffle_") as tmpdir:
-            data_dir = generate_data(output_dir=tmpdir, years=years, stream=stream)
+            data_dir = generate_data(output_dir=tmpdir, years=build_years, stream=stream)
             conn = duckdb.connect(sibling)
             try:
                 create_schema(conn)
                 load_data(conn=conn, data_dir=data_dir)
+                write_demo_stamp(conn, current_demo_stamp(years=build_years))
             finally:
                 conn.close()
         _release_factory_engine(db_path)
@@ -1003,8 +1077,15 @@ def build_jaffle_shop(
     return True
 
 
-def ingest_demo_datasets(*, storage: StorageBackend, datasource: DatasourceConfig) -> list[SlayerDataset]:
-    """Idempotently ingest the demo datasets, then apply the curated enrichment; returns the stored demo datasets.
+class DemoIngestResult(BaseModel):
+    """The demo's ingest result and its enriched stored datasets."""
+
+    ingest: IdempotentIngestResult
+    datasets: list[SlayerDataset]
+
+
+def ingest_demo_datasets(*, storage: StorageBackend, datasource: DatasourceConfig) -> DemoIngestResult:
+    """Idempotently ingest the demo datasets, then apply the curated enrichment.
 
     Creates missing datasets and additively merges existing ones (missing relationships
     reconciled in), so every user edit survives.
@@ -1030,7 +1111,7 @@ def ingest_demo_datasets(*, storage: StorageBackend, datasource: DatasourceConfi
         if apply_demo_enrichment(dataset):
             run_sync(storage.save_dataset(dataset))
         datasets.append(dataset)
-    return datasets
+    return DemoIngestResult(ingest=result, datasets=datasets)
 
 
 def ensure_demo_datasource(
@@ -1038,7 +1119,7 @@ def ensure_demo_datasource(
     *,
     storage_path: str,
     name: str = DEMO_NAME,
-    years: int = 2,
+    years: int | None = None,
     ingest_datasets: bool = True,
     assume_yes: bool = True,
     stream: IO[str] | None = None,
@@ -1050,7 +1131,7 @@ def ensure_demo_datasource(
       record is overwritten only with ``assume_yes``.
     - Optionally ingests the datasets through ``ingest_demo_datasets``.
 
-    Returns ``(datasource, jaffle_models, db_built)``: the Jaffle Shop datasets now in
+    Returns ``(datasource, jaffle_datasets, db_built)``: the Jaffle Shop datasets now in
     storage, and whether the DuckDB file was generated this call.
     """
     db_path = resolve_demo_db_path(storage_path)
@@ -1071,4 +1152,4 @@ def ensure_demo_datasource(
 
     if not ingest_datasets:
         return ds, [], db_built
-    return ds, ingest_demo_datasets(storage=storage, datasource=ds), db_built
+    return ds, ingest_demo_datasets(storage=storage, datasource=ds).datasets, db_built

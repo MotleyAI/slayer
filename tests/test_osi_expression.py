@@ -151,10 +151,10 @@ def test_percentile_cont_half_is_median():
     )
 
 
-def test_percentile_disc_clean_fails():
+def test_percentile_disc_converts():
     r = _run("PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY amount)")
-    assert not r.ok
-    assert "PERCENTILE_DISC" in (r.reason or "")
+    assert r.ok
+    assert r.expression == "percentile_disc(amount, p=0.9)"
 
 
 def test_percentile_out_of_range_clean_fails():
@@ -178,7 +178,7 @@ def test_array_length_with_a_dimension_clean_fails(sql: str):
 @pytest.mark.parametrize("formula", [
     "sum(length(tags))", "count(*) FILTER (WHERE contains(tags, 'a'))",
     "count(*) FILTER (WHERE contains_any(tags, tags))", "count(*) FILTER (WHERE contains_all(tags, tags))",
-    "collect(status)", "median(amount)", "percentile(amount, p=0.9)",
+    "collect(status)",
 ])
 def test_library_call_refused_by_the_target(formula: str):
     assert expression_refusal(formula, dialect=dialect_for_ds_type("mysql"))
@@ -186,10 +186,10 @@ def test_library_call_refused_by_the_target(formula: str):
 
 
 @pytest.mark.parametrize("ds_type", ["mysql", "mssql"])
-def test_percentile_on_a_refusing_dialect_clean_fails(ds_type: str):
+def test_percentile_converts_on_mysql_and_sql_server(ds_type: str):
     r = _run("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)", sql_dialect=dialect_for_ds_type(ds_type))
-    assert not r.ok
-    assert "not supported" in (r.reason or "")
+    assert r.ok
+    assert r.expression == "percentile(amount, p=0.9)"
 
 
 # ───────────────────────────── clean-fails ─────────────────────────────────
@@ -226,10 +226,9 @@ def test_non_passthrough_function_clean_fails():
     assert not r.ok
 
 
-def test_sum_distinct_clean_fails():
-    # Only COUNT(DISTINCT) is supported; SUM/AVG/MIN/MAX DISTINCT clean-fail.
-    assert not _run("SUM(DISTINCT amount)").ok
-    assert not _run("AVG(DISTINCT amount)").ok
+def test_sum_and_avg_distinct_convert():
+    assert _run("SUM(DISTINCT amount)").expression == "sum_distinct(amount)"
+    assert _run("AVG(DISTINCT amount)").expression == "avg_distinct(amount)"
 
 
 # ───────────────────────── cross-dataset refs ────────────────────────────────

@@ -1,7 +1,7 @@
 """Removal tripwire: compatibility code tagged for removal fails the suite once its major version ships.
 
-The tag is a call to ``slayer.core.deprecation.warn_deprecated``, ``raise_moved``, ``deprecated_input`` or
-``scheduled_notice`` (any import spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
+The tag is a call to ``slayer.core.deprecation.warn_deprecated``, ``raise_moved``, ``deprecated_input``,
+``deprecated_spelling`` or ``scheduled_notice`` (any import spelling) with a string-literal ``removal``. Spec: compatibility/removal-tripwire.
 """
 
 from __future__ import annotations
@@ -21,11 +21,23 @@ SLAYER = REPO / "slayer"
 HELPERS = frozenset({
     "slayer.core.deprecation.warn_deprecated", "slayer.core.deprecation.raise_moved",
     "slayer.core.deprecation.deprecated_input", "slayer.core.deprecation.scheduled_notice",
+    "slayer.core.deprecation.deprecated_spelling",
 })
 HELPER_MODULE = "slayer/core/deprecation.py"
 
-#: The deprecated Mode-B spellings, each warned with a message spelling its token literally.
-MODE_B_SPELLING_TOKENS = ("==", "is None", "is not None", "bare None", "list after IN", "method-call")
+#: Moved paths that keep the names a known 1.8.4 integrator imports (compatibility/integrator-1x-calls).
+INTEGRATOR_KEPT_NAMES: dict[str, tuple[str, ...]] = {
+    "core.formula": ("parse_formula", "AggregatedMeasureRef", "ArithmeticField", "MixedArithmeticField", "TransformField"),
+    "engine.syntax": (
+        "AggCall", "Arith", "ArrayLit", "BoolOp", "Cmp", "DottedRef", "Literal", "Placeholder", "Ref", "ScalarCall",
+        "StarSource", "TransformCall", "TupleLit", "UnaryOp", "parse_filter_expr",
+    ),
+    "engine.schema_drift": (
+        "EditModelDelete", "LiveTable", "WholeModelDelete", "compute_datasource_drops", "data_type_bucket",
+        "diff_sql_table_model", "retype_findings",
+    ),
+    "sql.column_expansion": ("resolve_ref_target",),
+}
 
 #: Every covered workaround: (file, a token its message spells literally) -> removal version.
 PINNED: dict[tuple[str, str], str] = {
@@ -43,12 +55,19 @@ PINNED: dict[tuple[str, str], str] = {
             "osi.dialects", "osi.source",
         )
     },
+    # The names a known 1.8.4 integrator imports from four moved paths, one site each.
+    **{
+        (f"slayer/{old.replace('.', '/')}.py", f"slayer.{old}.{name}"): "3.0"
+        for old, names in INTEGRATOR_KEPT_NAMES.items()
+        for name in names
+    },
     ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
     ("slayer/core/query.py", "strict"): "3.0",
     ("slayer/core/query.py", "An extension object in `population`"): "3.0",
     ("slayer/core/query.py", "broadcast"): "3.0",
-    **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
+    # Every deprecated Mode-B spelling: one door.
+    ("slayer/core/legacy_spellings.py", ""): "3.0",
     ("slayer/engine/elaborate_env.py", "midnight"): "3.0",
     ("slayer/core/vocabulary.py", ""): "3.0",
     # Root-relative reference spellings: one door for a bare name, `count(*)` and a non-dataset first segment.
@@ -143,8 +162,10 @@ def _problems(sites: list[Site], *, version: str) -> list[str]:
 
 
 def _feature(site: Site) -> tuple[str, str] | None:
+    """The one pinned workaround a site's message names: its most specific matching token."""
     matches = [(f, token) for f, token in PINNED if f == site.file and token in site.message]
-    return matches[0] if len(matches) == 1 else None
+    specific = [m for m in matches if all(other[1] in m[1] for other in matches)]
+    return specific[0] if len(specific) == 1 else None
 
 
 def test_no_tagged_code_outlives_its_removal_version() -> None:

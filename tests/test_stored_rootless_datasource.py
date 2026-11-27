@@ -354,4 +354,4 @@ async def test_missing_explicit_population_gets_no_fallback(tmp_path: Path, back
         await storage.get_memory("m")
     stored = raw_documents(backend=backend, base=str(tmp_path / f"gstore-{backend}"))
     assert "left_granularity" not in stored["memories/m"]
-    assert "left_granularity" in stored[f"datasources/{GDS}"]
+    assert "left_granularity" not in stored[f"datasources/{GDS}"]

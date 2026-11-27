@@ -16,7 +16,7 @@ import pytest
 import sqlglot
 from pydantic import BaseModel
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.facade.catalog import (
     FacadeCatalog,
@@ -1069,6 +1069,28 @@ def test_executor_for_returns_same_instance_for_identical_catalog() -> None:
     assert a is b
 
 
+def _cardinality_catalog(cardinality: RelationshipCardinality | None) -> FacadeCatalog:
+    orders = SlayerDataset(
+        name="orders", data_source="jaffle", sql_table="orders",
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["code"],
+                                           cardinality=cardinality)],
+    )
+    customers = SlayerDataset(
+        name="customers", data_source="jaffle", sql_table="customers",
+        fields=[DatasetField(name="code", datatype=DataType.INTEGER), DatasetField(name="region", datatype=DataType.STRING)],
+    )
+    return build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
+
+
+def test_executor_for_invalidates_when_only_a_hops_determination_changes() -> None:
+    """Same names and types; only whether ``customers.region`` is advertised differs."""
+    a = executor_for(_cardinality_catalog(None))
+    b = executor_for(_cardinality_catalog(RelationshipCardinality.MANY_TO_ONE))
+    assert a is not b
+
+
 def test_executor_for_invalidates_on_catalog_change() -> None:
     cat1 = _demo_catalog()
     a = executor_for(cat1)
@@ -1191,7 +1213,7 @@ def test_pg_attribute_oids_match_datatype() -> None:
 def test_pg_type_covers_six_oids() -> None:
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
     oids = {r["oid"] for r in relations["pg_type"].rows}
-    assert oids == {16, 20, 25, 701, 1082, 1114}
+    assert oids == {16, 20, 25, 701, 1082, 1083, 1114}
     by_oid = {r["oid"]: r for r in relations["pg_type"].rows}
     assert by_oid[25]["typname"] == "text"
     assert by_oid[20]["typname"] == "int8"

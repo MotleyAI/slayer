@@ -1,11 +1,11 @@
-"""Detect SQL window functions (`OVER (...)`) in field SQL or filter strings.
-
-A window function cannot appear in a WHERE clause on most dialects: a filter on a windowed
-`DatasetField.sql` auto-promotes to a post-aggregation outer WHERE, and a raw window in a filter or
-metric expression gets an actionable error.
-"""
+"""Detect SQL window functions: a field whose native SQL holds one is read as a column its dataset's relation
+materialises, and a dataset filter holding one is a filter cycle."""
 
 import re
+
+import sqlglot
+import sqlglot.errors
+from sqlglot import exp
 
 _OVER_RE = re.compile(r"\bover\s*\(", re.IGNORECASE)
 
@@ -24,11 +24,10 @@ def has_window_function(sql: str) -> bool:
     return bool(_OVER_RE.search(sql))
 
 
-WINDOW_IN_FILTER_ERROR = (
-    "contains a window function (OVER clause). Window functions are not "
-    "allowed in WHERE on SQLite or most dialects. Either: (a) use a SLayer "
-    "transform — rank(), first(), last(), lag(), lead() — e.g. "
-    "`rank(<metric>, direction='desc') <= 3`; (b) define the window expression as a "
-    "DatasetField.sql on the dataset and filter on the field; or (c) compute it "
-    "in an earlier stage of a multi-stage dataset."
-)
+def holds_window(sql: str, *, dialect: str | None = None) -> bool:
+    """Whether native ``sql`` parses holding a window function (an ``OVER (`` inside a string literal is not one)."""
+    try:
+        parsed = sqlglot.parse_one(sql, dialect=dialect)
+    except sqlglot.errors.ParseError:
+        return False
+    return parsed.find(exp.Window) is not None

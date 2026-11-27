@@ -9,8 +9,8 @@ load them through the real backends.
 Fail-first:
 * ``CURRENT_VERSIONS['SlayerModel']`` reaches 9 and the step is registered;
 * a legacy ``customers__regions.name`` Mode-A qualifier is rewritten to the
-  dotted ``customers.regions.name`` on load (YAML and SQLite), and the file is
-  written back at version 9.
+  dotted ``customers.regions.name`` on load (YAML and SQLite); a save persists
+  it at the current version.
 
 Invariant locks:
 * an unresolvable ``__`` qualifier (a CTE alias, a physical table) is preserved
@@ -176,15 +176,18 @@ class TestLegacyAliasRewrittenOnLoad:
             assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
     @pytest.mark.asyncio
-    async def test_yaml_writes_back_migrated_form(self) -> None:
+    async def test_yaml_save_persists_migrated_form(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(d, [
                 _orders_v8(region_sql="customers__regions.name"),
                 _customers_v8(), _regions_v8(),
             ])
-            await storage.get_dataset("orders", data_source="ds")
-            on_disk = yaml.safe_load(
-                open(os.path.join(d, "models", "ds", "orders.yaml")).read())
+            path = os.path.join(d, "models", "ds", "orders.yaml")
+            loaded = await storage.get_dataset("orders", data_source="ds")
+            assert loaded is not None
+            assert yaml.safe_load(open(path).read())["version"] == 8
+            await storage.save_dataset(loaded)
+            on_disk = yaml.safe_load(open(path).read())
             assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
             region_col = next(c for c in on_disk["fields"]
                               if c["name"] == "region_name")

@@ -25,7 +25,7 @@ Every column a stage emits carries the type the query plan gives its value (an e
 
 Combined with another powerful SLayer feature — [inline relationships and dimensions](../../concepts/queries.md#query-extensions) — this makes multi-stage queries a natural, effortless thing.
 
-For the first example above, all you need to do is use the (revenue by store and month) query as the root dataset of a second query. Pass both as a [query list](../../concepts/queries.md#query-lists):
+For the first example above, all you need to do is use the (revenue by store and month) query as the root dataset of a second query. Pass both as a [query list](../../concepts/saved-and-multistage-queries.md#query-lists):
 
 ```json
 [

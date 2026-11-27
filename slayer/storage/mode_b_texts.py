@@ -62,11 +62,10 @@ def bucket_calls_as_date_trunc(text: str, *, units: frozenset[str]) -> str:
     cursor = 0
     for call in call_spans(text):
         unit = call.callee.casefold()
-        if unit not in units or call.arguments != 1:
+        if call.quoted or unit not in units or call.arguments != 1:
             continue
-        paren = text.index("(", call.start + len(call.callee))
         out.append(text[cursor:call.start] + f"date_trunc('{unit}', ")
-        cursor = paren + 1
+        cursor = call.paren + 1
     return "".join(out) + text[cursor:]
 
 
@@ -85,7 +84,7 @@ def renamed_calls(text: str, *, old: str, new: str) -> str:
     out: list[str] = []
     cursor = 0
     for call in call_spans(text):
-        if call.callee.casefold() == old:
+        if not call.quoted and call.callee.casefold() == old:
             out.append(text[cursor:call.start] + new)
             cursor = call.start + len(call.callee)
     return "".join(out) + text[cursor:]

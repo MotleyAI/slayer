@@ -18,6 +18,7 @@ _KIND_TO_JDBC: dict[TypeKind, str] = {
     TypeKind.BOOLEAN: "BOOLEAN",
     TypeKind.DATE: "DATE",
     TypeKind.TIMESTAMP: "TIMESTAMP",
+    TypeKind.TIME: "TIME",
     # Opaque columns travel as text over the wire — the value is whatever the
     # driver stringified, and no client-side type claim would be honest.
     TypeKind.UNKNOWN: "VARCHAR",

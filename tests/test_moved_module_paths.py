@@ -22,7 +22,6 @@ MOVED_MODULES: dict[str, str] = {
     "slayer.sql.sqlite_introspect": "slayer.database.sqlite_introspect",
     "slayer.sql.conformance": "slayer.database.conformance",
     "slayer.engine.ingestion": "slayer.live_schema.ingestion",
-    "slayer.engine.schema_drift": "slayer.live_schema.schema_drift",
     "slayer.engine.schema_scope": "slayer.live_schema.schema_scope",
     "slayer.engine.introspect_utils": "slayer.live_schema.introspect_utils",
     "slayer.engine.broken_dependents": "slayer.live_schema.broken_dependents",
@@ -34,10 +33,11 @@ MOVED_MODULES: dict[str, str] = {
     "slayer.engine.filter_reachability": "slayer.engine.population.filter_reachability",
     "slayer.engine.join_safety": "slayer.engine.cardinality.relationship_safety",
     "slayer.engine.unrelated": "slayer.engine.cardinality.unrelated",
-    "slayer.engine.syntax": "slayer.core.syntax",
-    "slayer.core.formula": "slayer.core.syntax",
     "slayer.osi.expression": "slayer.importers.aggregates",
 }
+
+#: Moved paths kept for a known 1.8.4 integrator: they import (compatibility/integrator-1x-calls).
+KEPT_MODULES: tuple[str, ...] = ("slayer.engine.schema_drift", "slayer.engine.syntax", "slayer.core.formula")
 
 #: Old module paths that are now packages: (package, the moved module's new path, its public names).
 MOVED_NAMES: dict[str, tuple[str, frozenset[str]]] = {
@@ -107,6 +107,7 @@ def outcomes() -> dict[str, Outcome]:
     statements = [
         *(_old_module_statement(old) for old in MOVED_MODULES),
         *(_old_name_statement(pkg, name) for pkg, (_, names) in MOVED_NAMES.items() for name in sorted(names)),
+        *(_old_module_statement(old) for old in KEPT_MODULES),
         *NEW_IMPORTS,
     ]
     proc = subprocess.run(
@@ -153,3 +154,8 @@ def test_every_moved_module_path_is_covered(outcomes: dict[str, Outcome], old: s
 def test_every_moved_public_name_is_covered(outcomes: dict[str, Outcome], package: str, name: str) -> None:
     new_module, _ = MOVED_NAMES[package]
     _assert_located(outcomes[_old_name_statement(package, name)], old=name, new=new_module)
+
+
+@pytest.mark.parametrize("old", KEPT_MODULES)
+def test_a_kept_path_imports(outcomes: dict[str, Outcome], old: str) -> None:
+    assert outcomes[_old_module_statement(old)].error is None, outcomes[_old_module_statement(old)].error

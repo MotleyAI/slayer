@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine.url import URL, make_url
 from sqlglot import exp
+from sqlglot.dialects.trino import Trino
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
@@ -18,7 +21,12 @@ from slayer.sql.dialects.base import (
     LIST_POSITION, PORTABLE_LIBRARY,
     NativeFn, ListRelation, SqlDialect, TrimFn, anon, any_null, case, element_lambda, is_not_null, lit,
     non_null_elements, text_try_cast, unnest_elements,
+    as_text,
+    iso_text,
+    trimmed_fraction,
+    zone_name,
 )
+from slayer.sql.dialects._ordered_set_split import ranked_percentiles, split_percentile_selects
 from slayer.sql.dialects.patterns import JAVA, RegexFlavour
 
 if TYPE_CHECKING:
@@ -66,6 +74,10 @@ def _presto_path(path: JsonPath) -> str:
     return "".join(out)
 
 
+# Trino reads ``value AT TIME ZONE zone`` natively; sqlglot otherwise writes the Presto function ``AT_TIMEZONE``.
+Trino.Generator.TRANSFORMS.pop(exp.AtTimeZone, None)
+
+
 class PrestoFamilyDialect(SqlDialect):
     """Grammar and portable library shared by Trino, Presto and Athena."""
     enforces_unique_keys: ClassVar[bool] = False
@@ -77,12 +89,17 @@ class PrestoFamilyDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = None  # unbounded
     approx_count_distinct_native: bool = True
+    approx_percentile_native: bool = True
     native_lists: ClassVar[bool] = True
     regex_flavour: ClassVar[Optional[RegexFlavour]] = JAVA
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "CHR", "PI", "CBRT", "GREATEST", "LEAST",
     })
     extremum_propagates_null: ClassVar[bool] = True
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """Both percentiles exactly: sqlglot would emit the approximate ``APPROX_PERCENTILE``."""
+        return split_percentile_selects(statement.copy(), columns=ranked_percentiles)
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
@@ -120,8 +137,16 @@ class PrestoFamilyDialect(SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern, case_insensitive=case_insensitive))
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_EXTRACT_SCALAR", value, lit(_presto_path(path)))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        """The JSON text keeps a string's quotes, so only a number reads as one."""
+        found = anon("JSON_FORMAT", anon("JSON_EXTRACT", value, lit(_presto_path(path))))
+        return exp.TryCast(this=found, to=exp.DataType.build("DOUBLE"))
 
     def list_length(self, values: Expression) -> Expression:
         return anon("CARDINALITY", values)
@@ -168,6 +193,14 @@ class PrestoFamilyDialect(SqlDialect):
         DatePart.ISO_YEAR: "YEAR_OF_WEEK", DatePart.DAY_OF_WEEK: "DAY_OF_WEEK",
         DatePart.DAY_OF_YEAR: "DAY_OF_YEAR",
     }
+
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:
+        """``TRUNCATE(x, d)`` takes only a DECIMAL."""
+        return self.rounded_trunc(value, digits, integer=integer)
+
+    def millisecond_part(self, expr: Expression) -> Expression:
+        """``EXTRACT`` has no sub-second field; ``MILLISECOND`` truncates."""
+        return exp.Cast(this=anon("MILLISECOND", expr), to=exp.DataType.build("INT"))
 
     def _interval(self, amount: int, unit: exp.Var) -> exp.Interval:
         """The count is a quoted string: ``INTERVAL '1' DAY``."""
@@ -226,12 +259,31 @@ class PrestoFamilyDialect(SqlDialect):
 class TrinoDialect(PrestoFamilyDialect):
     enforces_unique_keys: ClassVar[bool] = False
     sqlglot_name: str = "trino"
+    decimal_text_exponent: ClassVar[bool] = False
+    number_cast_rounds: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"trino"})
     sa_backend_names: frozenset[str] = frozenset({"trino"})
     url_scheme: str | None = "trino"
     install_extra: str | None = "trino"
     database_name: ClassVar[str] = "Trino"
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
+    # A bare ``TIME`` is ``TIME(3)`` here.
+    time_of_day_precision: ClassVar[Optional[int]] = 6
+
+    def build_time_text(self, value: Expression) -> Expression:
+        return trimmed_fraction(as_text(exp.Cast(this=value, to=self.time_of_day_type())))
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``CAST(with_timezone(v, S) AT TIME ZONE Q AS TIMESTAMP(6))``; an instant: ``CAST(v AT TIME ZONE Q AS
+        TIMESTAMP(6))``; microseconds kept (a bare ``TIMESTAMP`` rounds to milliseconds)."""
+        instant = value if source is None else exp.Anonymous(this="with_timezone", expressions=[value, zone_name(source)])
+        return exp.Cast(this=exp.AtTimeZone(this=instant, zone=zone_name(target)),
+                        to=exp.DataType.build("TIMESTAMP(6)", dialect="trino"))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"),
+                        to=exp.DataType.build("TIMESTAMP(6) WITH TIME ZONE", dialect="trino"))
 
     def set_connection_timeout(self, dbapi_connection: Any, timeout_seconds: int) -> object:
         """``query_max_run_time`` as a client-session property: sent with the next statement only."""

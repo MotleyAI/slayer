@@ -1,0 +1,76 @@
+document:
+  version: 0.3.0.dev0
+  name: sales
+  ai_context:
+    instructions: Use for sales analysis
+  ontology:
+  - concept: Order
+    type: EntityType
+  ontology_mappings:
+  - semantic_model:
+      version: 0.3.0.dev0
+      name: m
+      datasets:
+      - name: orders
+        source: db.s.orders
+        fields:
+        - name: customer_id
+          expression:
+            dialects:
+            - dialect: ANSI_SQL
+              expression: customer_id
+        - name: product_id
+          expression:
+            dialects:
+            - dialect: ANSI_SQL
+              expression: product_id
+        - name: variant_id
+          expression:
+            dialects:
+            - dialect: ANSI_SQL
+              expression: variant_id
+      relationships: []
+    concept_mappings: []
+  - semantic_model:
+      version: 0.3.0.dev0
+      name: m
+      datasets:
+      - name: orders
+        source: db.s.orders
+        fields:
+        - name: customer_id
+          expression:
+            dialects:
+            - dialect: ANSI_SQL
+              expression: customer_id
+        - name: product_id
+          expression:
+            dialects:
+            - dialect: ANSI_SQL
+              expression: product_id
+        - name: variant_id
+          expression:
+            dialects:
+            - dialect: ANSI_SQL
+              expression: variant_id
+      - name: orders
+        source: db.s.orders
+        fields:
+        - name: customer_id
+          expression:
+            dialects:
+            - dialect: ANSI_SQL
+              expression: customer_id
+        - name: product_id
+          expression:
+            dialects:
+            - dialect: ANSI_SQL
+              expression: product_id
+        - name: variant_id
+          expression:
+            dialects:
+            - dialect: ANSI_SQL
+              expression: variant_id
+      relationships: []
+    concept_mappings: []
+files: {}

@@ -115,7 +115,7 @@ Substitution applies to every dataset a query reads, each with its own defaults
 under the query's variables.
 
 See [Variables in dataset SQL](../../concepts/datasets.md#variables-in-dataset-sql) and
-[Variables](../../concepts/queries.md#variables) for the reference
+[Variables](../../concepts/filters.md#variables) for the reference
 details.
 
 ---

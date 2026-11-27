@@ -301,7 +301,9 @@ def _substituted_fields(
             updates["filter"] = sub(col.filter, f"Field {col.name!r} filter")
         copy = col.model_copy(update=updates)
         native = col.definition_sql if col.resolved else None
-        out.append(copy.with_native(sub(native, f"Field {col.name!r} expression")) if native is not None else copy)
+        out.append(copy.with_native(sub(native, f"Field {col.name!r} expression"), windowed=col.windowed,
+                                    states_nulls=col.states_nulls)
+                   if native is not None else copy)
     return out
 
 

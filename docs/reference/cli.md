@@ -54,8 +54,8 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
-| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
-| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo in the background (idempotent); tool calls wait for it. |
+| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion in the background, after the demo; tool calls wait for it. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 | `--always-load-query` | off | Mark the MCP `query` tool with Claude Code's `anthropic/alwaysLoad` flag so it is never deferred behind tool search. Also enabled by `SLAYER_MCP_ALWAYS_LOAD_QUERY=1`. |
 
 ### `slayer pg-serve`
@@ -268,7 +268,7 @@ obvious rather than silent.
 
 ### `slayer validate-datasets`
 
-Diff persisted datasets against the live database schemas (read-only) and, optionally, profile each relationship's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Relationship cardinality](../concepts/datasets.md#relationship-cardinality).
+Diff persisted datasets against the live database schemas (read-only), check them and their data against the stored [ontologies](../concepts/ontologies.md) (`ONTOLOGY …` lines), and, optionally, profile each relationship's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Relationship cardinality](../concepts/datasets.md#relationship-cardinality).
 
 ```bash
 slayer validate-datasets                                   # every datasource
@@ -286,7 +286,7 @@ slayer validate-datasets --datasource jaffle_shop --force-clean --yes
 | `--cardinality` | off | Also profile each relationship's arity from the data. Full-scans both sides of every relationship, so it is opt-in. |
 | `--persist-cardinality` | off | Write the detected `cardinality` back onto each matching relationship (identified by target dataset + key pairs). Implies `--cardinality`. |
 | `--format` | `text` | `text`, or `json` for one `{"drift": [...], "join_safety": [...], "cardinality": {...}}` document. Cannot be combined with `--force-clean`. |
-| `--force-clean` | off | After printing the diff, prompt to apply each delete and write each [untyped](../concepts/schema-drift.md#untyped-findings) semantic-model field's live type into its document. Destructive; opt-in only. |
+| `--force-clean` | off | After printing the diff, prompt to apply each delete and write each [untyped](../concepts/schema-drift.md#untyped-findings) semantic-model field's live type into its document. Never acts on an [ontology finding](../concepts/ontologies.md). Destructive; opt-in only. |
 | `-y` / `--yes` | off | With `--force-clean`, skip the confirmation prompt. |
 
 Without a cardinality flag the output is the drift diff, plus a `Join safety` section whenever unproven-relationship findings exist. With one, the report gains labelled `Schema drift` and `Join cardinality` sections (with `Join safety` between them), and any `--force-clean` apply happens *before* profiling, so it reads the repaired datasets.
@@ -301,7 +301,7 @@ Exit code is `0` for any report about the data, including `contradicts_hard` —
 | `confirms` | Detected value matches what was stored. |
 | `refines` | Differs from the stored value, but the data does not disprove it — "no duplicates observed" only *suggests* uniqueness. |
 | `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
-| `skipped_unsupported` | Not profilable — a non-`sql_table` dataset (sql-mode / query-backed) or an expression-valued join key. |
+| `skipped_unsupported` | Not profilable — a non-`sql_table` dataset (sql-mode / query-backed), a join key reading beyond its own dataset's source, or a windowed join key on a dataset with filters. |
 | `no_evidence` | Profiled fine, but one side had no non-null key rows. An empty scan says nothing about arity, so nothing is detected or written. Worth re-running once data lands — unlike `skipped_unsupported`, which never becomes profilable. |
 | `scan_failed` | The scan itself raised; the message is in `note`. Contained per relationship, so one unreadable table costs one finding rather than the whole report — but the command still exits 1, since that relationship was not profiled. |
 
@@ -312,7 +312,7 @@ Detection is a strong guess, not a guarantee: a duplicate disproves uniqueness w
 
 ### `slayer recommend-population`
 
-Recommend the query root (population) for a set of `dataset.field` / `dataset.metric` items, with each item's reference path from it. See [Choosing a root dataset](../concepts/queries.md#choosing-a-root-dataset).
+Recommend the query root (population) for a set of `dataset.field` / `dataset.metric` items, with each item's reference path from it. See [Choosing a root dataset](../concepts/cross-dataset-queries.md#choosing-a-root-dataset).
 
 ```bash
 slayer recommend-population customers.name products.category
@@ -376,7 +376,7 @@ slayer import-osi ./model.yaml --datasource my_postgres
 | `--datasource` | Yes | Configured SLayer datasource the documents belong to; it must be reachable only to upgrade a legacy `semantic_model` wrapper document |
 | `--storage` | No | Storage path |
 
-Prints each stored semantic model and the import report. Exits 1 when any file is refused, after storing the others.
+Imports semantic-model, [ontology and mapping](../concepts/ontologies.md) documents. Prints each stored document and the import report. Exits 1 when any file is refused, after storing the others.
 
 ### `slayer ossie-roundtrip`
 
@@ -402,7 +402,9 @@ slayer export-osi --datasource my_postgres --datasets orders customers --out sho
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--datasource` | Yes | SLayer datasource whose datasets to export |
+| `--datasource` | Yes, unless `--ontology` | SLayer datasource whose datasets (or, with `--mapping`, whose mapping) to export |
+| `--ontology` | No | Export this stored ontology's text instead; takes no `--datasource` or `--datasets` |
+| `--mapping` | No | Export this stored mapping of `--datasource` instead |
 | `--out` | Yes | Output file; JSON when it ends in `.json`, YAML otherwise |
 | `--datasets` | No | Export only these datasets (an unknown name fails with no file written) |
 | `--no-extensions` | No | Omit the `SLAYER` non-portable extensions; SLayer-only content is reported instead of exported |
@@ -438,6 +440,27 @@ slayer semantic-models delete sales --datasource shop --yes
 | `delete <name> [--datasource X] [--yes]` | Delete the document and its datasets, after a confirmation prompt that `--yes` skips |
 
 `--datasource` is needed for `show` and `delete` when the name exists in several datasources. An unknown document fails with an `Error:` line and exit code 1.
+
+### `slayer ontologies` / `slayer ontology-mappings`
+
+Manage [ontologies and mappings](../concepts/ontologies.md). Ontologies are stored once per store; mappings per datasource, so every `ontology-mappings` subcommand but `list` needs `--datasource`.
+
+```bash
+slayer ontologies create flights.ontology.yaml
+slayer ontologies show Flights
+slayer ontology-mappings create flights.mapping.yaml --datasource flights
+slayer ontology-mappings list --datasource flights
+```
+
+| Subcommand | Description |
+|------|-------------|
+| `list` | One name per line; a mapping that no longer resolves is listed with its problems |
+| `show <name>` | Print the stored text |
+| `create <file>` | Store the document under its own `name`; prints the identifier and multiplicity mismatches it touches as `Warning:` lines |
+| `replace <name> <file>` | Replace the stored document |
+| `delete <name> [--yes]` | Delete it, after a confirmation prompt that `--yes` skips |
+
+A refused document fails with one `Error:` line listing every problem and exit code 1.
 
 ### `slayer datasources`
 
@@ -488,7 +511,7 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
 | `--no-views` | No | (with `--ingest`) Skip views and materialized views (ingested by default) |
 | `--surface-internals` | No | (with `--ingest`) Ingest recognised ELT/migration internals visible instead of hidden |
-| `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
+| `--years` | No | (demo only) Years of synthetic data (default: reuse the existing demo, else 2); differing from the existing demo's years rebuilds it |
 | `-y`, `--yes` | No | Overwrite an existing datasource without prompting |
 | `--storage` | No | Storage path |
 
@@ -508,7 +531,7 @@ references to inspect several entities of the **same kind** in one call:
 the output is one `## <canonical>` block per reference, in input
 order (a JSON array under `--format json`), with per-reference error isolation.
 **Omit the reference entirely** to list the whole **collection** at
-`--type` — supported for `dataset` and `datasource` only. `--type dataset` lists all
+`--type` — supported for `dataset` and `datasource` only. `--type` also takes `semantic_model`, `ontology` (its concept graph) and `ontology_mapping`; datasets and fields show their [ontology concepts](../concepts/ontologies.md). `--type dataset` lists all
 datasets grouped by datasource (a terse one line per dataset by default; `--no-compact`
 gives the full per-dataset tables); `--type datasource` lists all datasources.
 
@@ -526,7 +549,7 @@ slayer inspect --type datasource    # collection: all datasources
 | Flag | Required | Description |
 |------|----------|-------------|
 | `reference` | No | Zero or more entity references: canonical id, bare name, relationship path (resolved to the owning dataset), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`dataset` or `datasource` only). |
-| `--type` | Yes | Entity kind: `datasource`, `dataset`, `field`, `metric`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
+| `--type` | Yes | Entity kind: `datasource`, `dataset`, `field`, `metric`, `aggregation`, `memory`, `semantic_model`, `ontology`, or `ontology_mapping`. Disambiguates same-named entities and asserts the kind. |
 | `--no-compact` | No | Return the full render. The compact default is description-only for field/metric/aggregation/datasource/memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does), and a cheap **schema skeleton** (field/metric/aggregation names + relationship targets, zero DB calls) for `--type dataset`; `--no-compact` on a datasource renders a per-dataset skeleton for each visible dataset. |
 | `--format` | No | `markdown` (default) or `json`. |
 | `--num-rows` | No | (dataset only) Sample-data rows. Ignored with a warning for other kinds. |
@@ -614,7 +637,21 @@ slayer memory forget kb.brooklyn-pos
 
 ### `slayer storage`
 
-Storage maintenance. `migrate-types` introspects each dataset's datasource and refines `Float` to `Integer` on base fields whose live SQL type is integer (on SQLite, whose stored values probe as integers, and there it also widens an `Integer` field to `Float` or `String` whose values are not); it fails if a datasource is unreachable.
+Storage maintenance. `upgrade` stores every dataset, saved query, memory and datasource that loads in an older format in the current one; loads upgrade them in memory and never write. It prints one line per document (`upgraded`, `current`, `would upgrade`, `not upgraded: <reason>` or `conflict`) and exits 1 when a document is left behind. A document changed in the store while the command runs is a conflict and stays as it is; datasource priority and embeddings are never touched.
+
+```bash
+slayer storage upgrade --dry-run
+slayer storage upgrade --data-source warehouse --datasource-type warehouse=duckdb
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data-source X` | all | Limit to one datasource |
+| `--dry-run` | off | Print each document's difference without writing anything |
+| `--datasource-type NAME=TYPE` | none | The dialect of a datasource the store holds no config for (repeatable) |
+| `--storage` | [platform default](../configuration/storage.md) | Storage path |
+
+`migrate-types` introspects each dataset's datasource and refines `Float` to `Integer` on base fields whose live SQL type is integer (on SQLite, whose stored values probe as integers, and there it also widens an `Integer` field to `Float` or `String` whose values are not); it fails if a datasource is unreachable.
 
 ```bash
 slayer storage migrate-types --dry-run

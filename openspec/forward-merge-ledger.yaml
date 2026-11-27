@@ -30,7 +30,7 @@
   one_x_hash: f0a4c287d9ab88aeaa6ab1422222825312b96ed6f116933dc2ed11a2fb0ec724
   reason: "main keeps its own wording: `slayer.ingest.datasets` counts ingested datasets, not models."
 - title: datasources create --ingest runs the idempotent ingest
-  one_x_hash: b187d3b691f0b7ca6699252e30846dacc585ebac304259b361c4c02157cb9b01
+  one_x_hash: 78adb7e762f709ac222cca9ec52a3d07269f392f67319e790f8ab09fa1097222
   reason: "main keeps its own wording: datasets where 1.x says models, and the printed sections include main's failed-key-read section."
 - title: The empty-ingest message needs an empty result
   one_x_hash: bb2356376e15674635f9e3804578351da2495bb37eec28a2ec750e22906c80c3
@@ -38,3 +38,24 @@
 - title: create_datasource auto-ingest runs the idempotent ingest
   one_x_hash: 80998e6c6ef5f2cc4fa4323ae41d28d59a38874e6cc80e6875c9ef9862ba1f8e
   reason: "main keeps its own wording: MCP `ingest_datasource` and datasets where 1.x says `ingest_datasource_models` and models, failed key reads included."
+- title: Home dataset of a row-level aggregation source
+  one_x_hash: 17d0fd5a85d332f8281aee89405b86fbfff9510828a8d1089ba3592367cd5f19
+  reason: "main keeps its own wording: an aggregation binds from its own anchor and fields read as query references; same anchor-first homing."
+- title: The home, not the query root, decides where an aggregation is computed
+  one_x_hash: e5c8272460eb34e72c768bd30fbcbcc8b0bb879488b111a8234a8c3cb973a452
+  reason: "main keeps its own scenarios (list elements across a relationship); same body. 1.x's invoices/lines scenarios live in tests/test_dev2406_home_routing.py."
+- title: Single-string in tests period membership
+  one_x_hash: 2cd70240cc8fef0150205bcf2198b63f8f2b0ca12dd8018099aaa0551d02600a
+  reason: "main's grammar reads a parenthesised single literal as the one-element tuple, against a temporal operand too; 1.x keeps the period reading there. Pinned by tests/test_dev2406_parenthesised_in.py."
+- title: A column reference renders the same in every clause
+  one_x_hash: 36aaf6f28ad5454ef9e9c9966fec899769797f4d30ca048ba0404c7cf6ee136a
+  reason: "main keeps its own wording, added by the DEV-2469 change: fields, datasets and relationship paths where 1.x says columns, models and joins; adds the untrusted hop's distinct projection, semi-join, aggregate-argument and same-leaf scenarios."
+- title: CLI errors are one line on stderr
+  one_x_hash: 9b9e0f14bddece0a2c32eb4390a83ff1d548ef71ac4ed1bf64051d8f4983cace
+  reason: "main keeps its own wording: main's query syntax in the scenarios, a strict refusal prints as its own message, and an entry with no location prints as its reason alone."
+- title: Demo data is deterministic
+  one_x_hash: e0aa5dc451b6e05553012fcfbe7c9f3bab2a4055b2f71f1824bdcc6147eafc5a
+  reason: "main keeps its own wording: the CLI guide's count query uses main's `population` / `metrics` syntax."
+- title: A stale demo database is rebuilt
+  one_x_hash: fd5d12fdac0bb772cbe2128ab0515ab751aa60eb8f3442aa7dc78c447fd1ae31
+  reason: "main keeps its own wording: datasets where 1.x says models."

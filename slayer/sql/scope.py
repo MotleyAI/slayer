@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import ParseError
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
@@ -47,14 +48,16 @@ from slayer.core.keys import (
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.field_expansion import (
     collect_root_scope_joined_paths,
-    expand_field_definition_sync,
-    expand_derived_refs_sync,
+    expand_field_definition_ast,
+    ExpansionSinks,
+    expand_derived_refs_ast,
 )
+from slayer.sql.zoned_reads import STORED, VALUE, Context, ReadSite, apply_reads, mark_read, read_column, zone_setting
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import SQLGLOT_NAMES
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import AliasAllocator, quote_mixed_case_identifiers
-from slayer.sql.render.parse import parse_expression, parse_predicate
+from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate
 from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.sql_template import sql_template
 from slayer.sql.reserved_keywords import (
@@ -138,6 +141,10 @@ class ScopeFrame(BaseModel):
     placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
     #: Element types of the list-valued ones.
     placeholder_elements: Dict[Any, DataType] = Field(default_factory=dict)
+    #: The context the frame's column reads take (system principle 12).
+    context: Context = VALUE
+    #: A semi-join group's tree-node path → its dataset name; such paths are not root relationship paths.
+    node_datasets: Dict[Tuple[str, ...], str] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
@@ -152,7 +159,7 @@ class ScopeFrame(BaseModel):
         template = self._anchor(ref)
         return self._close(template, consumer=consumer)
 
-    def _register_path_prefixes(self, path: Tuple[str, ...]) -> None:
+    def register_path_prefixes(self, path: Tuple[str, ...]) -> None:
         """Register every relationship-path prefix of ``path`` into this scope."""
         for i in range(1, len(path) + 1):
             self.relationship_paths.add(path[:i])
@@ -244,7 +251,7 @@ class ScopeFrame(BaseModel):
                 root=self.root_relation, path=owner_path,
                 limit=self.dialect.max_identifier_bytes,
             )
-            self._register_path_prefixes(owner_path)
+            self.register_path_prefixes(owner_path)
         else:
             owner_dataset = self.root_dataset
             alias_path = self.root_relation
@@ -264,27 +271,38 @@ class ScopeFrame(BaseModel):
             owner_path=owner_path,
         )
 
+        # A predicate defining the dataset (a field or dataset filter) reads stored values.
         try:
-            expanded = expand_derived_refs_sync(
-                sql=prequoted,
-                dataset=owner_dataset,
-                alias_path=alias_path,
-                datasets_by_name=self._datasets_by_name(),
-                dialect=self.dialect.sqlglot_name,
-                owner_path=owner_path,
-                alias_resolver=self._alias_resolver(),
-                crossed_paths=self.relationship_paths,
+            expanded = self._expand(
+                prequoted, dataset=owner_dataset, alias_path=alias_path, owner_path=owner_path,
+                context=STORED if grammar == _PREDICATE else self.context,
             )
         except UnreachableDefinitionError as exc:
             raise exc.labelled(f"definition {sql!r}") from None
-        if expanded is None or expanded == prequoted:
-            final = raw_ast
-        else:
-            final = self._parse_mode_a(
-                expanded, grammar=grammar, fragment=sql, location=location,
-            )
+        return self._close(expanded if expanded is not None else raw_ast, consumer=consumer)
 
-        return self._close(final, consumer=consumer)
+    def _expand(
+        self, sql: str, *, dataset: SlayerDataset, alias_path: str, owner_path: Tuple[str, ...], context: Context,
+    ) -> Optional[Expression]:
+        """``sql`` expanded at ``alias_path`` and parsed as SLayer parses a fragment, its column reads through the read
+        path in ``context``; ``None`` when it reads as written."""
+        return self._read(expand_derived_refs_ast(
+            sql=sql,
+            dataset=dataset,
+            alias_path=alias_path,
+            datasets_by_name=self._datasets_by_name(),
+            dialect=self.dialect.sqlglot_name,
+            owner_path=owner_path,
+            alias_resolver=self._alias_resolver(),
+            sinks=ExpansionSinks(crossed=self.relationship_paths, read=mark_read, context=context),
+        ))
+
+    def _read(self, marked: Optional[Expression]) -> Optional[Expression]:
+        """``marked`` (an expansion, its reads marked) with SLayer's parse rewrites, its reads through the read path."""
+        if marked is None:
+            return None
+        tree = apply_ast_rewrites(tree=marked, target_dialect=self.dialect, parse_dialect=self.dialect)
+        return apply_reads(tree, dialect=self.dialect, setting=zone_setting(self.bundle))
 
     def _parse_mode_a(
         self,
@@ -406,21 +424,31 @@ class ScopeFrame(BaseModel):
                     f"through the attach registry; reaching field anchoring "
                     f"means the placeholder escaped its producer's join scope.",
                 )
+            declared = self._plain_field(ref)
+            if declared is None:
+                raise UnknownReferenceError(
+                    name=".".join((*ref.path, ref.leaf)),
+                    scope_kind="ScopeFrame",
+                    scope_summary=f"scope rooted at dataset {self.root_dataset.name!r}",
+                    suggestion="A plain field reference must name a field its relationship path's terminal dataset declares.",
+                )
             # The allocator is the single join-alias authority
             # (dotted-canonical); it also registers the crossed path prefixes.
             alias = self.allocator.alias_for(
                 root=self.root_relation, path=ref.path,
                 limit=self.dialect.max_identifier_bytes,
             )
-            self._register_path_prefixes(ref.path)
+            self.register_path_prefixes(ref.path)
             column = quote_mixed_case_identifiers(exp.Column(
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
             ))
-            declared = dataset_field(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name(), key=ref)
-            return self.dialect.read_column(
-                column, zoned=self.dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
-            )
+            owner = self._plain_owner(ref)
+            if owner is None or not isinstance(column, exp.Column):
+                return column
+            site = ReadSite(dataset=owner, field=declared, column=ref.leaf, path=tuple(ref.path),
+                            context=self.context)
+            return read_column(column, site=site, dialect=self.dialect, setting=zone_setting(self.bundle))
         if isinstance(ref, FieldSqlKey):
             dataset = self._dataset_for(ref.dataset)
             col = next(
@@ -441,19 +469,14 @@ class ScopeFrame(BaseModel):
                 )
             else:
                 alias_path = self.root_relation
-            self._register_path_prefixes(owner_path)
+            self.register_path_prefixes(owner_path)
             if col is None:
-                expanded = expand_derived_refs_sync(
-                    sql=ref.field_name, dataset=dataset, alias_path=alias_path,
-                    datasets_by_name=self._datasets_by_name(),
-                    dialect=self.dialect.sqlglot_name, owner_path=owner_path,
-                    alias_resolver=self._alias_resolver(),
-                    crossed_paths=self.relationship_paths,
-                )
-                return self._parse(expanded or ref.field_name)
-            # A ``DatasetField.filter`` desugars to CASE WHEN here — the value
-            # and filter expand through the same door at ``owner_path``.
-            expanded = expand_field_definition_sync(
+                expanded = self._expand(ref.field_name, dataset=dataset, alias_path=alias_path,
+                                        owner_path=owner_path, context=self.context)
+                return expanded if expanded is not None else self._parse(ref.field_name)
+            # A ``DatasetField.filter`` desugars to CASE WHEN here — the value (in this frame's context)
+            # and the filter (stored) expand through the same door at ``owner_path``.
+            expanded = expand_field_definition_ast(
                 field=col,
                 dataset=dataset,
                 alias_path=alias_path,
@@ -462,8 +485,14 @@ class ScopeFrame(BaseModel):
                 owner_path=owner_path,
                 alias_resolver=self._alias_resolver(),
                 crossed_paths=self.relationship_paths,
+                read=mark_read,
+                context=self.context,
             )
-            return self.dialect.read_column(self._parse(expanded), zoned=self.dialect.is_zoned_db_type(col.db_type))
+            instant = self.dialect.holds_instant(datatype=col.datatype, db_type=col.db_type) \
+                and self.dialect.time_zone is None
+            read = self._read(expanded)
+            assert read is not None
+            return self.dialect.read_column(read, zoned=instant)
         if isinstance(ref, SqlFragmentKey):
             # A bound parameter expression: each typed ref anchors (and registers
             # its relationship paths) here, substituted into the parsed template.
@@ -482,17 +511,9 @@ class ScopeFrame(BaseModel):
             prequoted = prequote_reserved_identifiers(
                 ref, dialect=self.dialect.sqlglot_name,
             )
-            expanded = expand_derived_refs_sync(
-                sql=prequoted,
-                dataset=self.root_dataset,
-                alias_path=self.root_relation,
-                datasets_by_name=self._datasets_by_name(),
-                dialect=self.dialect.sqlglot_name,
-                owner_path=(),
-                alias_resolver=self._alias_resolver(),
-                crossed_paths=self.relationship_paths,
-            )
-            return self._parse(expanded or prequoted)
+            expanded = self._expand(prequoted, dataset=self.root_dataset, alias_path=self.root_relation,
+                                    owner_path=(), context=self.context)
+            return expanded if expanded is not None else self._parse(prequoted)
         raise NotImplementedError(
             f"ScopeFrame.resolve does not yet handle ref type {type(ref).__name__}",
         )
@@ -512,6 +533,22 @@ class ScopeFrame(BaseModel):
     def field(self, ref: FieldKey | FieldSqlKey) -> Optional[DatasetField]:
         """The dataset field ``ref`` names, or ``None`` when unresolvable."""
         return dataset_field(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name(), key=ref)
+
+    def _plain_owner(self, ref: FieldKey) -> Optional[SlayerDataset]:
+        """The dataset declaring ``ref``'s field: a semi-join node dataset first, else the relationship graph."""
+        node_dataset = self.node_datasets.get(ref.path)
+        if node_dataset is not None:
+            return self._datasets_by_name()[node_dataset]
+        if not ref.path:
+            return self.root_dataset
+        return resolved_terminal(root=self.root_dataset, path=tuple(ref.path), datasets_by_name=self._datasets_by_name())
+
+    def _plain_field(self, ref: FieldKey) -> Optional[DatasetField]:
+        """The field ``ref`` names: through a semi-join node dataset first, else the relationship graph."""
+        node_dataset = self.node_datasets.get(ref.path)
+        if node_dataset is None:
+            return self.field(ref)
+        return self._datasets_by_name()[node_dataset].get_field(ref.leaf)
 
     def _dataset_for(self, name: str) -> SlayerDataset:
         """Resolve a dataset name against the scope root, then the bundle.

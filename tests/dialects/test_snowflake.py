@@ -415,7 +415,7 @@ def test_statement_timeout_zero_seconds() -> None:
         (9, DataType.STRING),        # OBJECT
         (10, DataType.ARRAY),      # ARRAY
         (11, DataType.STRING),       # BINARY
-        (12, DataType.DATETIME),  # TIME
+        (12, DataType.TIME),  # TIME
         (13, DataType.BOOLEAN),    # BOOLEAN
     ],
 )

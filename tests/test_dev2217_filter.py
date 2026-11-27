@@ -14,6 +14,7 @@ import pytest
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.keys import SCALAR_SPECS
 from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
+from slayer.core.syntax import call_spans
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2217_fixtures import DS, fixture_engine, rows, sql_engine, strict, strict_error
 
@@ -74,6 +75,7 @@ ADMITTED = {
 
 #: Every scalar of the library → (a filter calling it, the total revenue native keeps).
 SCALARS: dict[str, tuple[str, int]] = {
+    "current_time": ("current_time() >= TIME '00:00:00'", 650),
     "nullif": ("nullif(orders.status, 'cancelled') IS NULL", 500),
     "coalesce": ("coalesce(orders.status, 'none') = 'none'", 300),
     "ifnull": ("ifnull(orders.status, 'none') = 'none'", 300),
@@ -134,6 +136,11 @@ SCALARS: dict[str, tuple[str, int]] = {
     "regexp_like": ("regexp_like(orders.status, '^can')", 200),
     "regexp_extract": ("regexp_extract(orders.status, '^c[a-z]') = 'co'", 150),
     "regexp_replace": ("regexp_replace(orders.status, 'e$', '') = 'complet'", 150),
+    "regexp_count": ("regexp_count(orders.status, 'l') = 2", 200),
+    "zeroifnull": ("zeroifnull(orders.amount) > 150", 500),
+    "nullifzero": ("nullifzero(orders.amount) > 150", 500),
+    "radians": ("radians(orders.amount) > 3", 500),
+    "degrees": ("degrees(orders.amount / 100.0) > 150", 300),
     "json_value": ("json_value(orders.payload, '$.k') = 'a'", 150),
     "like": ("like(orders.status, 'comp%')", 150),
     "ilike": ("ilike(orders.status, 'COMP%')", 150),
@@ -201,9 +208,10 @@ async def test_native_answers_every_scalar_case(engine: SlayerQueryEngine, name:
 
 @pytest.mark.parametrize("name", sorted(SCALARS))
 async def test_a_scalar_is_admitted_exactly_when_flagged_ossie(engine: SlayerQueryEngine, name: str) -> None:
-    """Each scalar Ossie defines with SLayer's meaning is admitted; every other one is ``E_INVALID_QUERY``."""
+    """A scalar at an argument count Ossie defines with SLayer's meaning is admitted; any other is ``E_INVALID_QUERY``."""
     filter_text, expected = SCALARS[name]
-    if SCALAR_SPECS[name].ossie:
+    count = next(c.arguments for c in call_spans(filter_text) if c.callee.lower() == name)
+    if count in SCALAR_SPECS[name].ossie_arg_counts:
         assert rows(await strict(engine, _query(filter_text))) == [(float(expected),)]
     else:
         await strict_error(engine, _query(filter_text), "E_INVALID_QUERY")

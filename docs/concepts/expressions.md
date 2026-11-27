@@ -1,6 +1,6 @@
 # Expressions
 
-SLayer uses expression strings in two places: **metrics** (data columns returned by a query) and **filters** (conditions). Both are compiled to SQL — everything runs in the database. Metric expressions are documented below; filter expressions are in [Queries — Filters](queries.md#filters).
+SLayer uses expression strings in two places: **metrics** (data columns returned by a query) and **filters** (conditions). Both are compiled to SQL — everything runs in the database. Metric expressions are documented below; filter expressions are in [Queries — Filters](filters.md#filters).
 
 ---
 
@@ -24,7 +24,7 @@ avg(customers.score)  — cross-dataset: AVG of "score" from the joined "custome
 collect(customers.name)      — the names as a list
 ```
 
-Aggregations are used everywhere metrics appear: in `metrics`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax). `count(distinct x)` is the same as `count_distinct(x)`. `collect` is specified in [List fields](queries.md#list-fields). The pre-2.0 colon spelling of aggregations and granularities is refused with its functional twin; stored text written in it is upgraded on load.
+Aggregations are used everywhere metrics appear: in `metrics`, in arithmetic expressions, in transform function arguments, and in filters. The same call is valid in every position, with the author's text preserved on save. The `first`/`last` disambiguation rules are in [Reference semantics → Aggregation syntax](references.md#aggregation-syntax). `count(distinct x)` is the same as `count_distinct(x)`. `collect` is specified in [List fields](filters.md#list-fields). The pre-2.0 colon spelling of aggregations and granularities is refused with its functional twin; stored text written in it is upgraded on load.
 
 A metric may combine query-dimension values with aggregates (`orders.quantity * count(orders.*)` by `orders.quantity`, `iif(orders.region == 'North', sum(orders.amount), 0)` by `orders.region`), reading each dimension's value per result row; a row-level field that is not a query dimension (`orders.amount + sum(orders.amount)` by `orders.region`) is a typing error.
 
@@ -59,7 +59,7 @@ same key). Every operand is named by its expression text — date comparisons, n
 keys collide (`sum(orders.amount - orders.cost)` and `sum(orders.amount + orders.cost)`) fail with a
 duplicate-key error asking for a rename.
 
-Expression sources also accept joined-dataset refs (`sum(orders.amount - customers.discount)`, homed on the source's own dataset when that determines every operand, else the deepest dataset that does — see [cross-dataset metrics](queries.md#cross-dataset-metrics)), operands whose field carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) - 1)`, aggregated over the transform's own cells). A re-aggregation constituent mixed with a row-level field (`sum(orders.amount * last(X))`) executes at its own grain and broadcasts per partition onto the rows, and one query may select the same re-aggregation both on its own and inside a mixed source; a windowed inner under a transform constituent (`sum(rank(sum(orders.revenue, window='90d', partition_by=orders.region), direction='desc'))`) is a second-order aggregation over the operand cells (COMBINED phase, not a row broadcast); a target-homed inner whose `partition_by=` names the host's time axis stays a typed error.
+Expression sources also accept joined-dataset refs (`sum(orders.amount - customers.discount)`, homed on the source's own dataset when that determines every operand, else the deepest dataset that does — see [cross-dataset metrics](cross-dataset-queries.md#cross-dataset-metrics)), operands whose field carries a `filter` (which masks that operand's value), and nested transforms (`sum(cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) - 1)`, aggregated over the transform's own cells). A re-aggregation constituent mixed with a row-level field (`sum(orders.amount * last(X))`) executes at its own grain and broadcasts per partition onto the rows, and one query may select the same re-aggregation both on its own and inside a mixed source; a windowed inner under a transform constituent (`sum(rank(sum(orders.revenue, window='90d', partition_by=orders.region), direction='desc'))`) is a second-order aggregation over the operand cells (COMBINED phase, not a row broadcast); a target-homed inner whose `partition_by=` names the host's time axis stays a typed error.
 
 A source mixing row-level fields with attached values
 (`sum(orders.quantity * avg(orders.price, partition_by=orders.product))`) is a row-grain aggregation
@@ -160,7 +160,7 @@ A time bound narrows which buckets come back, not which rows a trailing window o
 A windowed metric (`sum(orders.revenue, window=…)`, `sum(customers.revenue, window=…)`)
 works when the query's active time dimension is *attributable* from the
 aggregation's home dataset — reachable from it over provably many-to-one relationship hops (see
-[cross-dataset metrics](queries.md#cross-dataset-metrics)); the window buckets by
+[cross-dataset metrics](cross-dataset-queries.md#cross-dataset-metrics)); the window buckets by
 that time dimension inside the metric's sub-query. When it is not
 attributable, the query errors naming the time dimension and the remedy.
 
@@ -218,7 +218,7 @@ the finer-grain freedom; a filter over, or `order` by the *name* of, that dimens
 own aggregate is a row-scope reference that stays legal at any partition grain.
 For a cross-dataset source, every explicit partition key must additionally be
 *attributable* from the metric's own dataset (see
-[cross-dataset metrics](queries.md#cross-dataset-metrics)) — an unprovable key
+[cross-dataset metrics](cross-dataset-queries.md#cross-dataset-metrics)) — an unprovable key
 errors naming the relationship remedy rather than fanning the value.
 
 Combining aggregates at **different** grains in one expression is well-defined:
@@ -270,7 +270,7 @@ Metric expressions define what aggregated values a query returns. They go in the
 
 The `name` is optional — if omitted, an expression that is more than a plain aggregate reference derives it from its references' common dataset and its sanitized text (`"sum(orders.revenue) / count(orders.*)"` → `orders.revenue_sum_count`; very long names hash-fold), while plain references keep their usual keys (`count(orders.*)` → `orders._count`). The `label` is an optional human-readable display name for the field.
 
-When a metric is renamed via `name`, query filters and ORDER BY entries in the same node accept either form — the raw aggregation expression or the user alias. See [Filters → Filtering on Computed Metrics](queries.md#filtering-on-computed-metrics).
+When a metric is renamed via `name`, query filters and ORDER BY entries in the same node accept either form — the raw aggregation expression or the user alias. See [Filters → Filtering on Computed Metrics](filters.md#filtering-on-computed-metrics).
 
 ### Arithmetic Operators
 
@@ -288,7 +288,7 @@ Parentheses work as expected: `"(sum(orders.revenue) - sum(orders.cost)) / count
 Precedence, tightest first: `::`, `**`, unary `-` / `+`, `*` / `/` / `%`, `+` / `-`, `||` / `->` / `->>`, comparisons (`=`, `<`, `IN`, `BETWEEN`, `LIKE`, `IS`, `~`, …), `NOT`, `AND`, `OR` — so `NOT a = b` is `NOT (a = b)` and `'a' || 'b' = 'ab'` is true.
 `**` is right-associative and binds tighter than a sign (`2 ** 3 ** 2` is 512, `-2 ** 2` is -4), and `%` takes the sign of its left operand (`-7 % 3` is -1, `7 % -3` is 1).
 
-Every reference in a query expression starts at its dataset (`count(orders.*)` counts rows), joined datasets included: `"avg(customers.score)"`, or with an explicit route: `"sum(customers.regions.population)"`. The population reaches each dataset by walking the relationship graph. See [Cross-Dataset Metrics](queries.md#cross-dataset-metrics).
+Every reference in a query expression starts at its dataset (`count(orders.*)` counts rows), joined datasets included: `"avg(customers.score)"`, or with an explicit route: `"sum(customers.regions.population)"`. The population reaches each dataset by walking the relationship graph. See [Cross-Dataset Metrics](cross-dataset-queries.md#cross-dataset-metrics).
 
 ### Saved Expressions (Named Metrics)
 
@@ -313,7 +313,7 @@ All three forms below — plain reference, transform, arithmetic — work as que
 
 A saved metric reused by name — bare `aov` or another dataset's `customers.aov` — expands to the same SQL as its longhand expression and is legal only in a metric expression or computed-dimension expression (see [Datasets → Reusing another dataset's saved metric](datasets.md#reusing-another-datasets-saved-metric-customersaov)).
 
-Transforms work on cross-dataset metrics: `"cumsum(avg(customers.score))"`, `"first(avg(customers.score))"`, `"last(avg(customers.score))"`. The cross-dataset metric is computed first (as a sub-query CTE), then the transform is applied on the joined result.
+Transforms work on cross-dataset metrics: `"cumsum(avg(customers.score))"`, `"lag(avg(customers.score))"`. The cross-dataset metric is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
 Inside any expression or field definition, dotted references to fields on joined datasets can target *derived* fields (fields whose own `expression` is itself an expression). The engine recursively inlines those references at query time, so `"sum(B.foo_normalized)"` — where `B.foo_normalized` is `"foo_raw / 100.0"` — emits `SUM(B.foo_raw / 100.0)`. See [Datasets → Derived fields referencing other fields](datasets.md#derived-fields-referencing-other-fields) for the full chaining behaviour and cycle-detection semantics.
 
@@ -335,12 +335,10 @@ Functions apply window operations to metrics:
 | `percent_rank(x[, partition_by=...])` | Relative rank in [0, 1] (ascending) | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x ASC)` |
 | `dense_rank(x, direction='asc'\|'desc'[, partition_by=...])` | Ranking with no gaps after ties, in the required direction | `DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY x ASC\|DESC)` |
 | `ntile(x, n=N[, partition_by=...])` | Bucket the rows into N equal groups (ascending) | `NTILE(N) OVER ([PARTITION BY ...] ORDER BY x ASC)` |
-| `first(x)` | Earliest time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time ASC ...)` |
-| `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
-**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the dataset's `default_time_dimension` is used if it's among the query's time dimensions. A downstream stage's own time dimension counts, so these transforms work over a re-bucketed stage column too. A stage has no dataset-level default, so set `main_time_dimension` when a stage has 2+ time dimensions. In every position, the operand grain must contain the time axis: by month, `time_shift(sum(orders.amount, partition_by=orders.region), -1)` is a `TimeAxisError` (add the time key: `partition_by=[orders.region, orders.ordered_at]`), and a nested `first` / `last` drops the axis. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
+**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the dataset's `default_time_dimension` is used if it's among the query's time dimensions. A downstream stage's own time dimension counts, so these transforms work over a re-bucketed stage column too. A stage has no dataset-level default, so set `main_time_dimension` when a stage has 2+ time dimensions. In every position, the operand grain must contain the time axis: by month, `time_shift(sum(orders.amount, partition_by=orders.region), -1)` is a `TimeAxisError` (add the time key: `partition_by=[orders.region, orders.ordered_at]`), and a nested `first` / `last` over an aggregate ranked by the time bucket (its default key) consumes it. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
 
-**Transforms read their operand's cells.** A transform evaluates over its operand's own cells — the cells its inner aggregates have at the operand grain (a dimension-anchor cell when it has no aggregate) — and its result attaches to the query's rows; a row outside those cells reads NULL. Another measure that adds rows never changes a transform's values: `lag` and `lead` step over the operand's present cells (a month with no rows is a gap, never a neighbour), and a rank-family transform or `first` / `last` ranks or picks among those cells only. A NULL time bucket is adjacent to no bucket: it is a running total of its own, `lag` reads NULL there, and `first` / `last` skip it. Over the [time spine](time.md#time-spine) the cells are filled: every bucket in range for each of the operand's tuples.
+**Transforms read their operand's cells.** A transform evaluates over its operand's own cells — the cells its inner aggregates have at the operand grain (a dimension-anchor cell when it has no aggregate) — and its result attaches to the query's rows; a row outside those cells reads NULL. Another measure that adds rows never changes a transform's values: `lag` and `lead` step over the operand's present cells (a month with no rows is a gap, never a neighbour), and a rank-family transform ranks among those cells only. A NULL time bucket is adjacent to no bucket: it is a running total of its own and `lag` reads NULL there. Over the [time spine](time.md#time-spine) the cells are filled: every bucket in range for each of the operand's tuples.
 
 Time-ordered window transforms partition by **every** projected non-time
 dimension — plain fields, joined and derived fields, and
@@ -415,7 +413,7 @@ Use `show_sql=True` on the query to see what SQL is generated for complex expres
 
 ### Rank-family transforms
 
-The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timeless window-function transforms that order rows by the inner value and emit a per-row rank value. They do not need a time dimension and, unlike the time-ordered transforms (`cumsum`, `lag`, `lead`, `first`, `last`, …), they default to **no `PARTITION BY`** — every cell of the operand is ranked against every other cell. `rank(sum(orders.revenue, partition_by=orders.region), direction='desc')` grouped by `orders.region` and `orders.city` ranks the regions by their totals, each city row carrying its region's rank.
+The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timeless window-function transforms that order rows by the inner value and emit a per-row rank value. They do not need a time dimension and, unlike the time-ordered transforms (`cumsum`, `lag`, `lead`, …), they default to **no `PARTITION BY`** — every cell of the operand is ranked against every other cell. `rank(sum(orders.revenue, partition_by=orders.region), direction='desc')` grouped by `orders.region` and `orders.city` ranks the regions by their totals, each city row carrying its region's rank.
 
 `rank` and `dense_rank` take a **required** `direction=` keyword: `direction='desc'` ranks the highest value 1, `direction='asc'` the lowest (`ascending` / `descending` and any case are accepted too). Leaving it out is an error that shows both spellings. The inner value may be any orderable type, so `rank(min(orders.created_at), direction='asc')` ranks the earliest first. `ntile` and `percent_rank` take no `direction=` and always order ascending: bucket `1` holds the lowest values and the lowest value has `percent_rank` `0`.
 
@@ -470,11 +468,34 @@ Multiple partition fields: `partition_by=[orders.region, orders.channel]`. Joine
 
 The rank family's `partition_by=` may name a computed dimension, as an aggregation's can (one that itself wraps an aggregation is for now accepted only in filters and order). Each key must be a member of the transform's operand grain — the union of its inner aggregates' grains (an ungrained inner contributes the query's dimensions) — so `rank(sum(orders.revenue, partition_by=[orders.city, orders.region]), partition_by=orders.product, direction='desc')` is an error naming the remedy.
 
-> **Note:** SLayer's expression grammar rejects raw `OVER (...)` SQL in `DatasetMetric.expression` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it as a field's dialect entry (e.g., `{"name": "rn", "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "row_number() over (order by mass desc)"}]}, "datatype": "Integer"}`) and filter on the field — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
+### SQL window functions (`OVER`)
 
-### First and Last Functions
+Every Mode B position reads Ossie's window syntax: `function(args) OVER ([PARTITION BY …] [ORDER BY … [ASC|DESC] [NULLS FIRST|LAST]] [ROWS|RANGE frame])`. The function is a ranking function (`ROW_NUMBER`, `RANK`, `DENSE_RANK`, `PERCENT_RANK`, `CUME_DIST`, `NTILE(n)`), an offset function (`LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`) or an Ossie aggregation (`SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, `STDDEV`, `VARIANCE`, …, with or without `FILTER (WHERE …)`); `first`, `last`, `collect` and custom aggregations are refused under `OVER`.
 
-`first(x)` and `last(x)` are window-function transforms that take an aggregated metric and **broadcast a single time bucket's value to every row** in the result. `first()` broadcasts the **earliest** bucket's value; `last()` broadcasts the **most recent** bucket's value.
+A window whose arguments and keys hold no aggregate is **row-level**: a column of the dataset its references are anchored at, computed over that dataset's filtered rows before any join, query filter or aggregation, exactly as a field declared with the same text. So a query's filters do not change it:
+
+```json
+{
+  "population": "orders",
+  "distinct_dimension_values": false,
+  "dimensions": ["orders.id", {"field": "ROW_NUMBER() OVER (PARTITION BY orders.region ORDER BY orders.ordered_at)", "alias": "rn"}],
+  "filter": ["orders.id > 1"]
+}
+```
+
+returns each order's number among all orders of its region, the filtered-out order 1 included. Filter on the window (`ROW_NUMBER() OVER (…) = 1`) to keep the first rows.
+
+A window with an aggregate among its arguments or keys is **measure-level**: a transform over its operand's cells, with SQL's meaning. Its keys are aggregates or query dimensions; dimensions it does not name do not partition it, and measure filters apply afterwards:
+
+```json
+{"dimensions": ["orders.ordered_at"], "metrics": ["SUM(SUM(orders.amount)) OVER (ORDER BY orders.ordered_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"]}
+```
+
+An order item without `NULLS FIRST|LAST` sorts NULL as the largest value — last ascending, first descending — on every database; a window in a field's dialect entry or `filter` keeps the database's own placement. `COUNT(DISTINCT …)`, `MEDIAN` and `PERCENTILE_CONT` under `OVER` run only where the database windows them ([database support](../database-support.md#window-functions)).
+
+### First and last over an aggregate
+
+`first` and `last` are aggregations (see [the `first` and `last` aggregations](datasets.md#the-first-and-last-aggregations)). Over an aggregate they rank that aggregate's **cells** and pick the value of the earliest or latest one, ranked by the query's time bucket unless a ranking key is given:
 
 ```json
 {
@@ -488,11 +509,9 @@ The rank family's `partition_by=` may name a computed dimension, as an aggregati
 }
 ```
 
-This returns monthly revenue with extra columns showing the first and last month's revenue on every row — useful for comparisons like "this month vs initial/latest" or for filtering: `"last(change(sum(orders.revenue))) < 0"` keeps rows only if the trend is negative.
+This returns monthly revenue with the first and last month's revenue on every row. The ranking key is consumed: the pick's grain is the operand's grain without it, so `last(sum(orders.revenue))` by store and month is one value per store, repeated on each month. A cell with a NULL bucket is never picked; a picked NULL value is returned as is. Without the bucket in the operand's grain (`last(sum(orders.revenue, partition_by=orders.store))`) or without a time dimension, the query fails with a `TimeAxisError`.
 
-Both `first()` and `last()` require a time dimension with granularity in the query (same resolution as `time_shift`).
-
-Not to be confused with the [`first`/`last` aggregation types](datasets.md#the-first-and-last-aggregations), which are per-group aggregates returning the earliest/latest *record's* value within each bucket.
+Any field of the operand dataset ranks too — a grain member, a field the grain determines (`customers.signup_ts` when the grain holds `customers.id`) or an aggregate grained within it: `last(sum(orders.revenue), sum(orders.units), partition_by=orders.store)` by store and product is the revenue of each store's best-selling product. As an aggregation, the pick works in every position — measure, filter (`"last(change(sum(orders.revenue))) < 0"`), order key, aggregation source and parameter — and takes `partition_by=`; `window=` and `FILTER` on it are refused like any re-aggregation's.
 
 ---
 
@@ -509,14 +528,14 @@ In Mode-A SQL (a field's dialect entry, `Aggregation.expression`) any database f
 | `exp(x)` | 1 | `e^x` |
 | `sqrt(x)` | 1 | Square root |
 | `pow(x, n)` / `power(x, n)` | 2 | `x^n`. Both spellings are accepted (sqlglot may emit either depending on origin dialect). |
-| `round(x[, ndigits])` | 1–2 | Round to `ndigits` decimal places (default 0). `ndigits` must be an integer literal. |
+| `round(x[, ndigits])` | 1–2 | Round to `ndigits` decimal places (default 0); a negative `ndigits` rounds left of the point (`round(1250, -2)` is `1300`). `ndigits` must be a whole number: a literal or an integer value. |
 | `abs(x)` | 1 | Absolute value. |
 | `floor(x)` / `ceil(x)` | 1 | Round down / up to an integer value (`ceiling` is `ceil`). |
-| `trunc(x)` | 1 | Round toward zero. |
+| `trunc(x[, ndigits])` | 1–2 | Cut toward zero to `ndigits` decimal places (default 0), as `round` takes them (`trunc(2.789, 1)` is `2.7`); `truncate` is the same. |
 | `sign(x)` | 1 | -1, 0 or 1. |
 | `mod(a, b)` | 2 | Remainder, with the sign of `a` (as `a % b`). |
 
-Query and metric expressions also take `div`, `pi`, `sin` … `atan2` and `cbrt` from the [portable function library](references.md#the-portable-function-library).
+Query and metric expressions also take `div`, `pi`, `sin` … `atan2`, `cbrt`, `radians`, `degrees`, `zeroifnull` and `nullifzero` from the [portable function library](references.md#the-portable-function-library), and Ossie's spellings such as `NVL` and `IF` ([Ossie spellings](references.md#ossie-spellings)).
 
 Any scalar function can wrap aggregates as the **top-level** form of a query metric or `DatasetMetric.expression` (`ln(sum(x))`, `coalesce(sum(a), 0)`, `greatest(sum(a), 1)`):
 

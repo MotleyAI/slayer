@@ -10,20 +10,20 @@ import signal
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from importlib.metadata import PackageNotFoundError, version
 from types import FrameType
 from typing import Any, ClassVar, Literal, NoReturn, TypedDict, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from slayer import usage_reporting
 from slayer import otel
 from slayer.async_utils import run_sync
 from slayer.core.enums import Conformance
-from slayer.core.deprecation import deprecations_on_one_line
+from slayer.core.deprecation import deprecations_on_one_line, unshown
 from slayer.core.document_text import parse_document_text
 from slayer.core.errors import OssieQueryError, SlayerError, UnreadableDocumentError
 from slayer.core.models import DatasourceConfig, SlayerDataset
@@ -31,7 +31,7 @@ from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.time_points import host_clock
 from slayer.core.vocabulary import ENTITY_KINDS, respelled_token
-from slayer.core.warnings import DeprecatedInputWarning
+from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.parser import parse_cube_project
 from slayer.cube.report import CubeConversionIssue, CubeConversionResult, CubeIssueCategory
@@ -40,6 +40,7 @@ from slayer.dbt.parser import parse_dbt_project
 from slayer.importers.physical import UndecidableIdentifierCaseError
 from slayer.demo import (
     DEMO_NAME,
+    DemoSetupError,
     build_jaffle_shop,
     ensure_demo_datasource,
     ingest_demo_datasets,
@@ -50,8 +51,7 @@ from slayer.live_schema import ingestion as engine_ingestion
 from slayer.live_schema.ingestion import (
     _empty_ingest_message,
     _ingest_result_is_empty,
-    _print_ingest_addition,
-    _print_ingest_drift_and_errors,
+    print_ingest_result,
 )
 from slayer.engine.cardinality.relationship_safety import RelationshipSafetyFinding, audit_relationship_safety
 from slayer.flight.cli import add_flight_serve_subparser, run_flight_serve
@@ -71,8 +71,10 @@ from slayer.live_schema.schema_drift import (
 )
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
-from slayer.osi.exporter import OsiExportError, export_osi
+from slayer.osi.exporter import OsiExportError, export_ontology, export_ontology_mapping, export_osi
 from slayer.osi.importer import import_osi
+from slayer.ontology.documents import document_name
+from slayer.ontology.findings import OntologyFinding
 from slayer.osi.yaml_writer import dump_yaml
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.pg_facade.cli import add_pg_serve_subparser
@@ -82,6 +84,7 @@ from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import StorageBackend, default_storage_path, resolve_storage
 from slayer.storage.document_loading import DocumentLoadFailures
+from slayer.storage.upgrade import upgrade_store
 from slayer.live_schema.type_refinement import (
     has_refineable_fields,
     has_sqlite_widenable_fields,
@@ -92,6 +95,8 @@ from slayer.otel import control as otel_control
 
 _DATASOURCE_NAME_HELP = "Datasource name"
 _FORMAT_HELP = "Output format (default: text)."
+_ABORTED = "Aborted; storage unchanged."
+_JSON_SUFFIX = ".json"
 _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
     "(default: $SLAYER_STORAGE, else the platform data directory)"
@@ -146,7 +151,9 @@ class _RefreshSamplesArgs(argparse.Namespace):
 class _ExportOsiArgs(argparse.Namespace):
     """Parsed ``slayer export-osi`` arguments."""
 
-    datasource: str
+    datasource: str | None
+    ontology: str | None
+    mapping: str | None
     datasets: list[str] | None
     out: str
     no_extensions: bool
@@ -155,6 +162,31 @@ class _ExportOsiArgs(argparse.Namespace):
 def _add_storage_arg(parser):
     """Add the --storage flag to a parser."""
     parser.add_argument("--storage", default=None, help=_STORAGE_HELP)
+
+
+def _add_document_commands(subparsers, *, command: str, kind: str, per_datasource: bool, epilog: str) -> None:
+    """The ``list|show|create|replace|delete`` group of Ossie ontology or mapping documents."""
+    parser = subparsers.add_parser(command, help=f"Manage Ossie {kind} documents", epilog=epilog,
+                                   formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="document_command")
+    commands = {
+        "list": sub.add_parser("list", help=f"List stored {kind} documents"),
+        "show": sub.add_parser("show", help=f"Print a stored {kind}'s text"),
+        "create": sub.add_parser("create", help=f"Store a {kind} document under its own name"),
+        "replace": sub.add_parser("replace", help=f"Replace a stored {kind}"),
+        "delete": sub.add_parser("delete", help=f"Delete a stored {kind}"),
+    }
+    for name in ("show", "replace", "delete"):
+        commands[name].add_argument("name", help=f"The {kind}'s name")
+    for name in ("create", "replace"):
+        commands[name].add_argument("file", help=f"The {kind} document (YAML or JSON)")
+    commands["delete"].add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    for name, parser_ in commands.items():
+        if per_datasource:
+            parser_.add_argument("--datasource", required=name != "list", default=None,
+                                 help="The datasource the mapping belongs to" + (" (list: only its)" if name == "list"
+                                                                                  else ""))
+        _add_storage_arg(parser_)
 
 
 def _storage_path(args) -> str:
@@ -199,11 +231,35 @@ def _one_line(text: str) -> str:
     return " ".join(line.strip() for line in text.splitlines() if line.strip())
 
 
+def _escaped(text: str) -> str:
+    """``text`` with control characters escaped as in a JSON string, so it stays on one line."""
+    return json.dumps(text, ensure_ascii=False)[1:-1]
+
+
+_MAX_VALIDATION_FIELDS = 10
+
+
+def _validation_error_line(exc: ValidationError) -> str:
+    """``Error: <n> validation error(s) for <model>: <loc>: <reason>; …`` — never the rejected values."""
+    errors = exc.errors(include_input=False, include_url=False, include_context=False)
+    fields = [
+        ".".join(_escaped(str(part)) for part in err["loc"]) + ": " + _one_line(err["msg"]) if err["loc"]
+        else _one_line(err["msg"])
+        for err in errors[:_MAX_VALIDATION_FIELDS]
+    ]
+    if len(errors) > _MAX_VALIDATION_FIELDS:
+        fields.append(f"…and {len(errors) - _MAX_VALIDATION_FIELDS} more")
+    noun = "error" if len(errors) == 1 else "errors"
+    return f"Error: {len(errors)} validation {noun} for {exc.title}: " + "; ".join(fields)
+
+
 def _error_line(exc: Exception) -> str:
-    """One stderr line: a strict refusal as its own message, a SLayer error's message after ``Error:``, else class +
-    message + the ``--debug`` hint."""
+    """One stderr line: a strict refusal as its own message, a validation error's fields, a SLayer error's message
+    after ``Error:``, else class + message + the ``--debug`` hint."""
     if isinstance(exc, OssieQueryError):
         return _one_line(str(exc))
+    if isinstance(exc, ValidationError):
+        return _validation_error_line(exc)
     if isinstance(exc, SlayerError):
         return "Error: " + _one_line(str(exc))
     first = next((line.strip() for line in str(exc).splitlines() if line.strip()), "")
@@ -251,21 +307,19 @@ def main():
     _assign_usage_tokens(parser)
     _add_debug_flags(parser)
     with deprecations_on_one_line():
-        argv = _respelled_argv(sys.argv[1:])
-    args = parser.parse_args(argv)
-    token = getattr(args, "usage_token", None)
-    guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
-    try:
-        with deprecations_on_one_line():
+        args = parser.parse_args(_respelled_argv(sys.argv[1:]))
+        token = getattr(args, "usage_token", None)
+        guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
+        try:
             _run_command(parser, args, token=token, guard=guard)
-    except Exception as exc:
-        if args.debug:
-            raise
-        print(_error_line(exc), file=sys.stderr)
-        sys.exit(1)
-    finally:
-        if guard is not None:
-            guard.restore()
+        except Exception as exc:
+            if args.debug:
+                raise
+            print(_error_line(exc), file=sys.stderr)
+            sys.exit(1)
+        finally:
+            if guard is not None:
+                guard.restore()
 
 
 def _run_command(
@@ -914,10 +968,16 @@ examples:
 examples:
   slayer export-osi --datasource my_postgres --out shop.osi.yaml
   slayer export-osi --datasource my_pg --datasets orders customers --out shop.osi.json --no-extensions
+  slayer export-osi --ontology Flights --out flights.ontology.yaml
+  slayer export-osi --mapping flights_mapping --datasource flights --out flights.mapping.yaml
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    export_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource whose datasets to export")
+    export_osi_parser.add_argument("--datasource", default=None,
+                                   help="SLayer datasource whose datasets (or, with --mapping, whose mapping) to export")
+    export_osi_parser.add_argument("--ontology", default=None, help="Export this stored ontology instead")
+    export_osi_parser.add_argument("--mapping", default=None,
+                                   help="Export this stored mapping of --datasource instead")
     export_osi_parser.add_argument("--datasets", nargs="+", default=None,
                                    help="Export only these datasets (default: all of the datasource's datasets)")
     export_osi_parser.add_argument("--out", required=True,
@@ -978,6 +1038,22 @@ examples:
     semantic_models_delete_parser.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
     for sub in (semantic_models_list_parser, semantic_models_show_parser, semantic_models_delete_parser):
         _add_storage_arg(sub)
+
+    # ── ontologies / ontology-mappings ────────────────────────────────
+    _add_document_commands(subparsers, command="ontologies", kind="ontology", per_datasource=False, epilog="""\
+examples:
+  slayer ontologies create flights.ontology.yaml
+  slayer ontologies show Flights
+  slayer ontologies replace Flights flights.ontology.yaml
+  slayer ontologies delete Flights --yes
+""")
+    _add_document_commands(subparsers, command="ontology-mappings", kind="mapping", per_datasource=True, epilog="""\
+examples:
+  slayer ontology-mappings create flights.mapping.yaml --datasource flights
+  slayer ontology-mappings list --datasource flights
+  slayer ontology-mappings show flights_mapping --datasource flights
+  slayer ontology-mappings delete flights_mapping --datasource flights --yes
+""")
 
     # ── datasources ───────────────────────────────────────────────────
     datasources_parser = subparsers.add_parser(
@@ -1047,6 +1123,10 @@ examples:
         ),
     )
     datasources_create_parser.add_argument(
+        "--time-zone", default=None,
+        help="IANA zone its DateTime columns are stored in, e.g. UTC; a field's own time_zone wins",
+    )
+    datasources_create_parser.add_argument(
         "--ingest",
         action="store_true",
         help="Run auto-ingestion immediately after creating the datasource",
@@ -1099,8 +1179,11 @@ examples:
     datasources_create_parser.add_argument(
         "--years",
         type=int,
-        default=2,
-        help="(demo only) Years of synthetic data to generate (default: 2)",
+        default=None,
+        help=(
+            "(demo only) Years of synthetic data (default: reuse the existing demo, else 2); "
+            "differing from the existing demo's years rebuilds it"
+        ),
     )
     datasources_create_parser.add_argument(
         "-y",
@@ -1213,10 +1296,32 @@ examples:
     # ── storage ──────────────────────────────────────────────────────
     storage_parser = subparsers.add_parser(
         "storage",
-        help="Storage maintenance (migrate-types refines DOUBLE→INT for legacy datasets)",
+        help="Storage maintenance (upgrade stores every document in the current format; migrate-types refines "
+             "DOUBLE→INT for legacy datasets)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     storage_subparsers = storage_parser.add_subparsers(dest="subcommand")
+
+    upgrade_parser = storage_subparsers.add_parser(
+        "upgrade",
+        help=(
+            "Store every dataset, saved query, memory and datasource that loads in an older format in the current "
+            "one (loads upgrade in memory and never write)."
+        ),
+    )
+    upgrade_parser.add_argument(
+        "--data-source", default=None, dest="data_source",
+        help="Optional datasource filter; defaults to all datasources.",
+    )
+    upgrade_parser.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="Print each document's difference without writing anything.",
+    )
+    upgrade_parser.add_argument(
+        "--datasource-type", action="append", default=[], dest="datasource_types", metavar="NAME=TYPE",
+        help="The dialect of a datasource the store holds no config for (repeatable), e.g. warehouse=duckdb.",
+    )
+    _add_storage_arg(upgrade_parser)
 
     migrate_types_parser = storage_subparsers.add_parser(
         "migrate-types",
@@ -1264,7 +1369,7 @@ examples:
         dest="entity_type",
         choices=[
             "datasource", "dataset", "field", "metric", "aggregation",
-            "memory",
+            "memory", "semantic_model", "ontology", "ontology_mapping",
         ],
         help="Required. The entity kind to inspect.",
     )
@@ -1498,6 +1603,8 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
         _run_datasets(args)
     elif args.command == "semantic-models":
         _run_semantic_models(args)
+    elif args.command in ("ontologies", "ontology-mappings"):
+        _run_ontology_documents(args)
     elif args.command == "datasources":
         _run_datasources(args)
     elif args.command == "memory":
@@ -1624,7 +1731,7 @@ def _print_search_response_text(response) -> None:
     the restored body; fall back to ``description`` for compact
     responses.
     """
-    for w in response.warnings:
+    for w in unshown(response.warnings):
         print(f"[warning] {w}")
     if response.resolved_input_entities:
         print(
@@ -1673,10 +1780,41 @@ def _run_search_query(args, storage) -> None:
 def _run_storage(args) -> None:
     """Dispatch the ``slayer storage <subcommand>`` group."""
     subcommand = getattr(args, "subcommand", None)
-    if subcommand == "migrate-types":
+    if subcommand == "upgrade":
+        _run_storage_upgrade(args)
+    elif subcommand == "migrate-types":
         _run_storage_migrate_types(args)
     else:
-        _fail("usage: slayer storage <subcommand>; available: migrate-types")
+        _fail("usage: slayer storage <subcommand>; available: upgrade, migrate-types")
+
+
+def _datasource_types(values: list[str]) -> dict[str, str]:
+    """``--datasource-type NAME=TYPE`` options as a mapping."""
+    out: dict[str, str] = {}
+    for value in values:
+        name, sep, ds_type = value.partition("=")
+        if not sep or not name.strip() or not ds_type.strip():
+            _fail(f"--datasource-type takes NAME=TYPE (e.g. warehouse=duckdb), got {value!r}")
+        out[name.strip()] = ds_type.strip()
+    return out
+
+
+def _run_storage_upgrade(args) -> None:
+    """Store every in-scope document in the current format; exit 1 when one is left behind."""
+    datasource_types = _datasource_types(args.datasource_types)
+    inner = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=inner)
+    try:
+        report = engine.run_sync(upgrade_store(
+            inner, data_source=args.data_source, dry_run=bool(args.dry_run), datasource_types=datasource_types,
+            client_source=engine.client_for,
+        ))
+    finally:
+        engine.close()
+    for outcome in report.outcomes:
+        print(outcome.line())
+    if not report.complete:
+        sys.exit(1)
 
 
 def _run_storage_migrate_types(args) -> None:
@@ -1844,8 +1982,8 @@ def _print_query_warnings(result) -> None:
     Stderr specifically, so a piped ``slayer query`` keeps emitting clean data
     on stdout while the operator still sees the advisories.
     """
-    for w in (getattr(result, "warnings", None) or []):
-        print(f"warning: {w.human_message()}", file=sys.stderr)
+    for line in unshown(getattr(result, "warnings", None) or []):
+        print(f"warning: {line}", file=sys.stderr)
 
 
 def _read_at_file(value: str, *, label: str) -> tuple[str, bool]:
@@ -1927,7 +2065,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
 
 
 def _prepare_demo(args, storage, *, stream=None):
-    """Ensure the Jaffle Shop demo is set up before a long-running server starts.
+    """Ensure the Jaffle Shop demo is set up for a long-running server; raises ``DemoSetupError``.
 
     Writes status messages to ``stream`` (default: stderr) so stdio-based
     transports (``slayer mcp``) remain protocol-safe.
@@ -1943,7 +2081,7 @@ def _prepare_demo(args, storage, *, stream=None):
             stream=out,
         )
     except Exception as e:
-        _fail(f"Failed to set up the Jaffle Shop demo: {e}")
+        raise DemoSetupError(str(e)) from e
 
     state = "generated" if db_built else "reused"
     print(
@@ -1975,9 +2113,8 @@ def _run_mcp(args):
     from slayer.mcp.server import create_mcp_server  # ALLOW(import-not-top): boot-path seam — tests inject fakes via sys.modules at call time; keeps the mcp SDK off non-mcp commands
 
     storage = _resolve_storage(args)
-    if getattr(args, "demo", False):
-        _prepare_demo(args, storage)
-    mcp = create_mcp_server(storage=storage, **_server_flags(args))
+    demo_setup = (lambda: _prepare_demo(args, storage)) if getattr(args, "demo", False) else None
+    mcp = create_mcp_server(storage=storage, demo_setup=demo_setup, **_server_flags(args))
     _serve_until_terminated(run=mcp.run, stop=None)
 
 
@@ -2034,13 +2171,12 @@ async def _ingest_and_print(*, engine: SlayerQueryEngine, ds: DatasourceConfig, 
             retry_hint="Try re-running with --schema set to one of these.",
         ))
         return None
-    for addition in result.additions:
-        _print_ingest_addition(addition)
-    _print_ingest_drift_and_errors(result, data_source=ds.name)
+    print_ingest_result(result, data_source=ds.name)
     return result
 
 
 _DriftEntryT = TypeVar("_DriftEntryT", bound=DriftReportEntry)
+_T = TypeVar("_T")
 
 _REMOVE_SECTIONS = (
     ("fields", "drop fields"),
@@ -2078,6 +2214,9 @@ def _format_validate_datasets_output(entries: Sequence[DriftReportEntry]) -> str
             continue
         if isinstance(entry, UntypedFinding):
             lines.append(f"UNTYPED: {entry.summary}")
+            continue
+        if isinstance(entry, OntologyFinding):
+            lines.append(f"ONTOLOGY {entry.check.upper().replace('_', ' ')}: {entry.summary}")
             continue
         if entry.tool == "delete_dataset":
             lines.append(
@@ -2271,7 +2410,7 @@ async def _apply_force_clean(
         f"\nApply {' and '.join(changes)} to storage?",
         assume_yes=bool(getattr(args, "yes", False)),
     ):
-        print("Aborted; storage unchanged.")
+        print(_ABORTED)
         return
 
     type_errors = await engine.apply_untyped_findings(untyped)
@@ -2521,14 +2660,44 @@ def _run_import_osi(args):
     engine.run_sync(_import_osi_workflow(args, engine))
 
 
+def _export_document(args: _ExportOsiArgs) -> None:
+    """``export-osi --ontology`` / ``--mapping``: the stored text, as JSON for a ``.json`` output file."""
+    if args.ontology is not None and (args.datasource is not None or args.datasets or args.mapping is not None):
+        _fail("--ontology exports one stored ontology; it takes no --datasource, --datasets or --mapping.")
+    if args.mapping is not None and (args.datasource is None or args.datasets):
+        _fail("--mapping exports one stored mapping of --datasource; give --datasource and no --datasets.")
+    engine = SlayerQueryEngine(storage=_resolve_storage(args))
+    try:
+        if args.ontology is not None:
+            text = engine.run_sync(export_ontology(storage=engine.storage, name=args.ontology))
+        else:
+            text = engine.run_sync(export_ontology_mapping(storage=engine.storage, data_source=str(args.datasource),
+                                                           name=str(args.mapping)))
+    except (OsiExportError, ValueError) as exc:
+        _fail(str(exc).splitlines()[0])
+    finally:
+        engine.close()
+    if args.out.endswith(_JSON_SUFFIX):
+        text = json.dumps(parse_document_text(text), indent=2, ensure_ascii=False) + "\n"
+    # The output path is an intended, user-specified CLI location.
+    with open(args.out, "w", encoding="utf-8", newline="") as fh:  # NOSONAR(S8707)
+        fh.write(text)
+    print(f"Exported {args.ontology or args.mapping} to {args.out}")
+
+
 def _run_export_osi(args: _ExportOsiArgs):
+    if args.ontology is not None or args.mapping is not None:
+        _export_document(args)
+        return
+    if args.datasource is None:
+        _fail("export-osi needs --datasource, --ontology or --mapping.")
     engine = SlayerQueryEngine(storage=_resolve_storage(args))
     try:
         result = engine.run_sync(export_osi(engine=engine, datasource=args.datasource, datasets=args.datasets,
                                             extensions=not args.no_extensions))
     except OsiExportError as exc:
         _fail(str(exc))
-    if args.out.endswith(".json"):
+    if args.out.endswith(_JSON_SUFFIX):
         text = json.dumps(result.document, indent=2, ensure_ascii=False) + "\n"
     else:
         text = result.text or dump_yaml(result.document)
@@ -2549,12 +2718,15 @@ async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
                                   engine=engine)
     except FileNotFoundError as exc:
         _fail(str(exc))
-    for name in result.stored:
-        print(f"Stored semantic model: {name}")
+    for kind, names in (("ontology", result.ontologies), ("semantic model", result.stored),
+                        ("mapping", result.mappings)):
+        for name in names:
+            print(f"Stored {kind}: {name}")
     if result.refused or result.entries:
         print("\nImport report:")
         print(result.render_report())
-    print(f"\nDone: {len(result.stored)} stored, {len(result.refused)} refused")
+    stored = len(result.ontologies) + len(result.stored) + len(result.mappings)
+    print(f"\nDone: {stored} stored, {len(result.refused)} refused")
     if result.refused:
         sys.exit(1)
 
@@ -2567,7 +2739,7 @@ def _run_ossie_roundtrip(args) -> None:
             text = engine.run_sync(_roundtrip(engine, source=args.input, scratch=scratch))
         finally:
             engine.close()
-    if args.output.endswith(".json"):
+    if args.output.endswith(_JSON_SUFFIX):
         text = json.dumps(parse_document_text(text), indent=2, ensure_ascii=False) + "\n"
     # The output path is an intended, user-specified CLI location.
     with open(args.output, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
@@ -2670,7 +2842,7 @@ def _semantic_models_show(storage: StorageBackend, args) -> None:
 
 def _semantic_models_delete(storage: StorageBackend, args) -> None:
     if not _confirm(f"Delete semantic model '{args.name}' and its datasets?", assume_yes=args.yes):
-        print("Aborted; storage unchanged.")
+        print(_ABORTED)
         return
     if not run_sync(storage.delete_semantic_model(args.name, data_source=args.datasource)):
         _fail(f"Semantic model '{args.name}' not found.")
@@ -2687,6 +2859,127 @@ def _run_semantic_models(args):
     if handler is None:
         _fail("usage: slayer semantic-models {list,show,delete}")
     handler(storage, args)
+
+
+def _refused(call: Coroutine[Any, Any, _T]) -> _T:
+    """Run ``call``; a refusal fails the command on one line listing every reason."""
+    try:
+        return run_sync(call)
+    except ValueError as exc:
+        reasons = getattr(exc, "reasons", None)
+        _fail(str(exc).splitlines()[0] + (f" {'; '.join(map(str, reasons))}" if reasons else ""))
+
+
+def _own_name(text: str) -> str:
+    try:
+        return document_name(text)
+    except ValueError as exc:
+        _fail(f"The document has no name to store it under: {exc}")
+
+
+def _read_document(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", newline="") as fh:  # NOSONAR(S8707) — the file the CLI user names
+            return fh.read()
+    except OSError as exc:
+        _fail(f"Cannot read {path}: {exc.strerror or exc}")
+
+
+def _ontologies_list(storage: StorageBackend, _args) -> None:
+    names = run_sync(storage.list_ontologies())
+    print("\n".join(names) if names else "No ontologies found.")
+
+
+def _ontologies_show(storage: StorageBackend, args) -> None:
+    text = _refused(storage.get_ontology_text(args.name))
+    if text is None:
+        _fail(f"Ontology '{args.name}' not found.")
+    sys.stdout.write(text)
+
+
+def _ontologies_save(storage: StorageBackend, args) -> None:
+    text = _read_document(args.file)
+    name = args.name if getattr(args, "name", None) else _own_name(text)
+    notes: list[SlayerWarning] = []
+    _refused(storage.save_ontology_text(name=name, text=text, warnings_out=notes))
+    print(f"Stored ontology '{name}'.")
+    _print_save_warnings(notes)
+    _refresh_concepts(storage)
+
+
+def _ontologies_delete(storage: StorageBackend, args) -> None:
+    if not _confirm(f"Delete ontology '{args.name}'?", assume_yes=args.yes):
+        print(_ABORTED)
+        return
+    if not _refused(storage.delete_ontology(args.name)):
+        _fail(f"Ontology '{args.name}' not found.")
+    print(f"Deleted ontology '{args.name}'.")
+    _refresh_concepts(storage)
+
+
+def _mappings_list(storage: StorageBackend, args) -> None:
+    identities = run_sync(storage.list_ontology_mappings(args.datasource))
+    if not identities:
+        print("No ontology mappings found.")
+    for ds, name in identities:
+        problems = run_sync(storage.ontology_mapping_problems(name, ds))
+        print(f"{ds}.{name}" + (f"  (unresolved: {'; '.join(problems)})" if problems else ""))
+
+
+def _mappings_show(storage: StorageBackend, args) -> None:
+    text = _refused(storage.get_ontology_mapping_text(args.name, args.datasource))
+    if text is None:
+        _fail(f"Mapping '{args.name}' not found in datasource '{args.datasource}'.")
+    sys.stdout.write(text)
+
+
+def _mappings_save(storage: StorageBackend, args) -> None:
+    text = _read_document(args.file)
+    name = args.name if getattr(args, "name", None) else _own_name(text)
+    warnings_out: list[SlayerWarning] = []
+    notes = _refused(storage.save_ontology_mapping_text(data_source=args.datasource, name=name, text=text,
+                                                        warnings_out=warnings_out))
+    print(f"Stored mapping '{name}' in datasource '{args.datasource}'.")
+    for note in notes:
+        print(note)
+    _print_save_warnings(warnings_out)
+    _refresh_concepts(storage, data_source=args.datasource)
+
+
+def _refresh_concepts(storage: StorageBackend, *, data_source: str | None = None) -> None:
+    for warning in run_sync(SearchService(storage=storage).refresh_after_concept_change(data_source)):
+        print(f"Warning: {warning}")
+
+
+def _print_save_warnings(notes: list[SlayerWarning]) -> None:
+    for note in notes:
+        print(f"Warning: {note.human_message()}")
+
+
+def _mappings_delete(storage: StorageBackend, args) -> None:
+    if not _confirm(f"Delete mapping '{args.name}' of datasource '{args.datasource}'?", assume_yes=args.yes):
+        print(_ABORTED)
+        return
+    if not _refused(storage.delete_ontology_mapping(args.name, args.datasource)):
+        _fail(f"Mapping '{args.name}' not found in datasource '{args.datasource}'.")
+    print(f"Deleted mapping '{args.name}'.")
+    _refresh_concepts(storage, data_source=args.datasource)
+
+
+_DOCUMENT_COMMANDS = {
+    "ontologies": {"list": _ontologies_list, "show": _ontologies_show, "create": _ontologies_save,
+                   "replace": _ontologies_save, "delete": _ontologies_delete},
+    "ontology-mappings": {"list": _mappings_list, "show": _mappings_show, "create": _mappings_save,
+                          "replace": _mappings_save, "delete": _mappings_delete},
+}
+
+
+def _run_ontology_documents(args) -> None:
+    commands = _DOCUMENT_COMMANDS[args.command]
+    handler = commands.get(args.document_command)
+    if handler is None:
+        _fail(f"usage: slayer {args.command} {{{','.join(commands)}}}")
+    handler(_resolve_storage(args), args)
 
 
 def _datasources_list(storage: StorageBackend, args) -> None:
@@ -2846,16 +3139,20 @@ def _run_datasources_create(args, storage):
     # Persist ``schema_name`` only for a single explicit schema — a multi-schema
     # or --all-schemas request has no one default schema to record (D-7).
     persisted_schema = schema_list[0] if (schema_list and len(schema_list) == 1) else None
-    ds = DatasourceConfig.model_validate(
-        {
-            "name": name,
-            "type": ds_type,
-            "connection_string": args.connection_string,
-            "description": args.description,
-            "schema_name": persisted_schema,
-            "granularities": getattr(args, "granularities", None) or [],
-        }
-    )
+    try:
+        ds = DatasourceConfig.model_validate(
+            {
+                "name": name,
+                "type": ds_type,
+                "connection_string": args.connection_string,
+                "description": args.description,
+                "schema_name": persisted_schema,
+                "granularities": getattr(args, "granularities", None) or [],
+                "time_zone": getattr(args, "time_zone", None),
+            }
+        )
+    except ValueError as e:
+        _fail(str(e))
 
     existing = run_sync(storage.get_datasource(name))
     if existing is not None and not _confirm(
@@ -2905,11 +3202,23 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
     storage_path = _storage_path(args)
     name = args.name or DEMO_NAME
     db_path = resolve_demo_db_path(storage_path)
+    try:
+        ds = DatasourceConfig.model_validate(
+            {
+                "name": name,
+                "type": "duckdb",
+                "database": db_path,
+                "description": args.description or "Jaffle Shop demo (synthetic data via jafgen)",
+                "granularities": getattr(args, "granularities", None) or [],
+                "time_zone": getattr(args, "time_zone", None),
+            }
+        )
+    except ValueError as e:
+        _fail(str(e))
 
     try:
-        db_built = build_jaffle_shop(
-            db_path=db_path, years=max(1, args.years), stream=sys.stderr
-        )
+        years = None if args.years is None else max(1, args.years)
+        db_built = build_jaffle_shop(db_path=db_path, years=years, stream=sys.stderr)
     except Exception as e:
         _fail(f"Failed to build Jaffle Shop demo: {e}")
 
@@ -2917,16 +3226,6 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
         print(f"Generated Jaffle Shop DuckDB at {db_path}")
     else:
         print(f"Reusing existing Jaffle Shop DuckDB at {db_path}")
-
-    ds = DatasourceConfig.model_validate(
-        {
-            "name": name,
-            "type": "duckdb",
-            "database": db_path,
-            "description": args.description or "Jaffle Shop demo (synthetic data via jafgen)",
-            "granularities": getattr(args, "granularities", None) or [],
-        }
-    )
 
     existing = run_sync(storage.get_datasource(name))
     if existing is not None and not _confirm(
@@ -2946,11 +3245,10 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
         return
 
     try:
-        datasets = ingest_demo_datasets(storage=storage, datasource=ds)
+        demo = ingest_demo_datasets(storage=storage, datasource=ds)
     except Exception as e:
         _fail(f"Ingestion failed: {e}")
-    for dataset in datasets:
-        print(f"Ingested: {dataset.name} ({len(dataset.fields)} fields, {len(dataset.metrics)} metrics)")
+    print_ingest_result(demo.ingest, data_source=ds.name)
 
 
 def _load_query_arg(value):
@@ -2995,7 +3293,7 @@ def _run_memory_save(args, service):
     print(f"Saved memory {response.memory_id}.")
     if response.resolved_entities:
         print("Resolved entities: " + ", ".join(response.resolved_entities))
-    for warning in response.warnings:
+    for warning in unshown(response.warnings):
         print(f"Warning: {warning}")
 
 

@@ -1,0 +1,16 @@
+document:
+  version: 0.3.0.dev0
+  name: sales_mapping
+  ontology_ref:
+  - &id001
+    name: sales
+    iri: ./sales.ontology.yaml
+  - *id001
+  semantic_model_ref:
+    name: sales_model
+    iri: ./sales.semantic_model.yaml
+  concept_mappings:
+  - concept: Order
+    object_mappings:
+    - expression: orders.order_id
+files: {}

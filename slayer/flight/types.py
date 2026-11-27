@@ -33,6 +33,7 @@ _KIND_TO_ARROW: dict[TypeKind, pa.DataType] = {
     TypeKind.BOOLEAN: pa.bool_(),
     TypeKind.DATE: pa.date32(),
     TypeKind.TIMESTAMP: pa.timestamp("us"),
+    TypeKind.TIME: pa.time64("us"),
     # Opaque columns travel as Arrow strings — see DataType.is_opaque. The
     # forward map is intentionally lossy here: UNKNOWN -> utf8 -> TEXT does
     # not round-trip back to UNKNOWN.
@@ -51,7 +52,7 @@ def datatype_to_arrow(dt: DataType) -> pa.DataType:
 def arrow_to_datatype(at: pa.DataType) -> DataType | None:
     """Best-effort reverse map.
 
-    Returns ``None`` if ``at`` cannot be coerced into one of the six
+    Returns ``None`` if ``at`` cannot be coerced into one of the
     SLayer types (e.g. list, struct, decimal-with-precision-loss).
     Callers typically use this to reconcile a ``LIMIT 0``-derived
     Arrow schema against a catalog-declared ``DataType``; on mismatch
@@ -69,6 +70,8 @@ def arrow_to_datatype(at: pa.DataType) -> DataType | None:
         return DataType.DATE
     if pa.types.is_timestamp(at):
         return DataType.DATETIME
+    if pa.types.is_time(at):
+        return DataType.TIME
     return None
 
 

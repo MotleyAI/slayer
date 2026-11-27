@@ -22,7 +22,7 @@ from slayer.core.keys import (
 )
 from slayer.core.errors import AmbiguousRelationshipPathError, UnresolvableDimensionRelationshipError
 from slayer.core.models import SlayerDataset
-from slayer.core.relationship_walker import follow, neighbors, reverse_token
+from slayer.core.relationship_walker import follow, neighbors, reaches_spine, reverse_token
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.cardinality.relationship_safety import home_spine_route
 from slayer.engine.population.anchors import anchor_route
@@ -58,7 +58,7 @@ def _read_leaf(
     """``r`` read from ``home``: its anchor reached by the home's own route, one anchored at the aggregation's
     ``frame`` read back along the source's path; ``None`` when the home reaches it by no relationship path (an
     ambiguous route raises)."""
-    if r.anchor is None and r.path[:1] == (TIME_SPINE_DATASET,):
+    if r.anchor is None and reaches_spine(root=host, path=r.path[:1], datasets_by_name=datasets_by_name):
         # Anchored at the spine: each home reaches it by its own nearest axis (Axiom 15).
         route = _spine_route(home, datasets_by_name=datasets_by_name, leaf=field_leaf(r), fanning=fanning)
         return None if route is None else r.model_copy(update={"path": (*route, *r.path[1:])})
@@ -116,7 +116,8 @@ def _product_anchor(
     """``r``'s anchor when ``home`` meets it only as a product, else ``None``."""
     spelling = anchored_spelling(r, reader=host)
     anchor = _anchor_of(spelling, host=host, datasets_by_name=datasets_by_name)
-    if anchor is None or anchor.name == home.name or is_spine(anchor) or TIME_SPINE_DATASET in spelling:
+    if anchor is None or anchor.name == home.name or is_spine(anchor) or reaches_spine(
+            root=anchor, path=spelling[1:], datasets_by_name=datasets_by_name):
         return None
     try:
         unrelated = anchor_route(reader=home, anchor=anchor, datasets_by_name=datasets_by_name).unrelated
@@ -125,10 +126,11 @@ def _product_anchor(
     return anchor.name if unrelated else None
 
 
-def reads_the_spine(key: ValueKey, *, host: SlayerDataset) -> bool:
+def reads_the_spine(key: ValueKey, *, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset]) -> bool:
     """``key`` reads a reference anchored at the time spine."""
     return any(isinstance(r, (FieldKey, FieldSqlKey)) and (
-        r.path[:1] == (TIME_SPINE_DATASET,) or (r.anchor is None and is_spine(host))) for r in outside_aggregates(key))
+        reaches_spine(root=host, path=r.path[:1], datasets_by_name=datasets_by_name)
+        or (r.anchor is None and is_spine(host))) for r in outside_aggregates(key))
 
 
 def _spine_route(
@@ -136,18 +138,12 @@ def _spine_route(
 ) -> Optional[Tuple[str, ...]]:
     """``home``'s route to the spine (across its nearest fanning axis when ``fanning``); equal-length routes fail
     spelled from the spine."""
-    try:
-        hops = [e for e in neighbors(dataset=home, datasets_by_name=datasets_by_name)
-                if e.to == TIME_SPINE_DATASET and e.product is None]
-        if len(hops) > 1:  # parallel hops to the spine are refused
-            raise AmbiguousRelationshipPathError(source_dataset=home.name, target_dataset=TIME_SPINE_DATASET,
-                                                 candidates=hops, token=TIME_SPINE_DATASET)
-        return home_spine_route(root_dataset=home, datasets_by_name=datasets_by_name, fanning=fanning)
-    except UnresolvableDimensionRelationshipError:
-        spine = datasets_by_name.get(TIME_SPINE_DATASET)
-        if spine is not None:
-            anchor_route(reader=spine, anchor=home, datasets_by_name=datasets_by_name, rest=(leaf,))
-        raise
+    hops = [e for e in neighbors(dataset=home, datasets_by_name=datasets_by_name)
+            if e.to == TIME_SPINE_DATASET and e.product is None]
+    if len(hops) > 1:  # parallel hops to the spine are refused
+        raise AmbiguousRelationshipPathError(source_dataset=home.name, target_dataset=TIME_SPINE_DATASET,
+                                             candidates=hops, token=TIME_SPINE_DATASET)
+    return home_spine_route(root_dataset=home, datasets_by_name=datasets_by_name, leaf=leaf, fanning=fanning)
 
 
 def outside_aggregates(key: ValueKey) -> Iterator[ValueKey]:
@@ -167,7 +163,7 @@ def _aggregate_at_home(
     framed = any(is_framed_path(p) for p in leaf_paths)
     own_frame = anchor_token(home.name)
     if framed and own_frame in {p[0] for p in leaf_paths if p}:
-        interior = reroot_value_key(agg.model_copy(update={"partition_keys": None}), target_path=(own_frame,))
+        interior = reroot_value_key(agg.ungrained(), target_path=(own_frame,))
     elif leaf_paths and not framed and host.name != home.name:
         interior = framed_aggregate(agg, frame=host.name)
     else:
@@ -175,7 +171,7 @@ def _aggregate_at_home(
     if agg.partition_keys is None:
         return interior
     grain = (home_read(p, home=home, host=host, datasets_by_name=datasets_by_name) or p for p in agg.partition_keys)
-    return interior.model_copy(update={"partition_keys": Grain.of(grain)})
+    return interior.model_copy(update={"partition_keys": Grain.of(grain), "grain_defaulted": agg.grain_defaulted})
 
 
 def home_read(

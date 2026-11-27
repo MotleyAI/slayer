@@ -36,7 +36,8 @@ from slayer.core.models import (
 )
 from slayer.core.query import QueryDimension, SlayerQuery, extension_dataset_names
 from slayer.core.refs import IDENTIFIER_RE
-from slayer.core.vocabulary import name_twins
+from slayer.core.time_spine import default_time_field
+from slayer.core.vocabulary import attribute_used, name_twins, old_keywords
 from slayer.core.warnings import BrokenDependentWarning
 from slayer.sql.dialects.reflection import TableKeyReadFailure, info_schema_list_element
 from slayer.sql.sql_predicate import parse_sql_predicate
@@ -71,6 +72,7 @@ from slayer.core.syntax import (
     walk_parsed_refs,
 )
 from slayer.database import sqlite_introspect
+from slayer.ontology.findings import OntologyFinding
 from slayer.database.client import SqlClient, render_type_probe
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
@@ -110,6 +112,33 @@ class RemoveSpec(BaseModel):
             self.relationships.append(edge_reference(dataset=dataset, relationship=relationship))
         self.relationship_edges.append(RelationshipEdgeRef.of(relationship))
 
+    @property
+    @deprecated("columns is deprecated; use fields", category=None)
+    def columns(self) -> list[str]:
+        attribute_used(self, old="columns", new="fields")
+        return self.fields
+
+    @property
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self) -> list[str]:
+        attribute_used(self, old="measures", new="metrics")
+        return self.metrics
+
+    @property
+    @deprecated("join_edges is deprecated; use relationship_edges", category=None)
+    def join_edges(self) -> list[_JoinEdge]:
+        attribute_used(self, old="join_edges", new="relationship_edges (a different edge shape: see the upgrade guide, "
+                                                  "Integrators reading SLayer objects)")
+        return [_JoinEdge(target_model=e.to, name=e.name, join_pairs=e.column_pairs) for e in self.relationship_edges]
+
+
+class _JoinEdge(BaseModel):
+    """A dropped relationship as the pre-2.0 drift result spelled it."""
+
+    target_model: str
+    name: str | None = None
+    join_pairs: list[tuple[str, str]]
+
 
 #: Dataset name → exact references of its relationships dropped so far.
 _DroppedRelationships = dict[str, list[RelationshipEdgeRef]]
@@ -125,6 +154,12 @@ class EditDatasetDelete(BaseModel):
     remove_filters: list[str] = Field(default_factory=list)
     reasons: list[DeleteReason] = Field(default_factory=list)
 
+    @property
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self) -> str:
+        attribute_used(self, old="model_name", new="dataset_name")
+        return self.dataset_name
+
 
 class WholeDatasetDelete(BaseModel):
     """Whole-dataset removal. Replays as ``delete_dataset``."""
@@ -136,6 +171,12 @@ class WholeDatasetDelete(BaseModel):
     # "invalid_sql": dataset's own SQL fails though its tables/columns exist;
     # "unloadable": the stored document itself cannot be loaded.
     cause: Literal["schema_drift", "invalid_sql", "unloadable"] = "schema_drift"
+
+    @property
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self) -> str:
+        attribute_used(self, old="model_name", new="dataset_name")
+        return self.dataset_name
 
 
 ToDeleteEntry = Annotated[
@@ -201,6 +242,18 @@ class RetypeFinding(BaseModel):
         live = f"{self.live_db_type} ({self.live_type.value})" if self.live_db_type else self.live_type.value
         return (f"Field '{self.dataset_name}.{self.field}' is stored as {self.stored_type.value} but its live "
                 f"column is {live}; {self.remedy}.")
+
+    @property
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self) -> str:
+        attribute_used(self, old="model_name", new="dataset_name")
+        return self.dataset_name
+
+    @property
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self) -> str:
+        attribute_used(self, old="column", new="field")
+        return self.field
 
     @classmethod
     def of(
@@ -284,10 +337,11 @@ class NarrowedAccessFinding(BaseModel):
 
 
 #: Validation entries that report rather than delete (cleanup writes an untyped finding in).
-REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding, UntypedFinding)
+REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding, UntypedFinding, OntologyFinding)
 
 #: One entry of a ``validate_datasets`` report.
-DriftReportEntry = EditDatasetDelete | WholeDatasetDelete | NarrowedAccessFinding | RetypeFinding | UntypedFinding
+DriftReportEntry = (EditDatasetDelete | WholeDatasetDelete | NarrowedAccessFinding | RetypeFinding | UntypedFinding
+                    | OntologyFinding)
 
 
 def unloadable_dataset_delete(*, error: StoredDocumentLoadError) -> WholeDatasetDelete:
@@ -430,10 +484,10 @@ def data_type_bucket(dt: DataType) -> str:
 
 
 def _type_buckets_conflict(*, persisted: DataType, live: DataType, temporal_text: bool) -> bool:
-    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP over live TEXT is the dialect's own date storage."""
+    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP/TIME over live TEXT is the dialect's own storage of it."""
     if live is DataType.ARRAY and persisted is not DataType.ARRAY:
         return False
-    if temporal_text and live is DataType.STRING and persisted in TEMPORAL_DATATYPES:
+    if temporal_text and live is DataType.STRING and (persisted in TEMPORAL_DATATYPES or persisted.is_time_of_day):
         return False
     if live.is_opaque:
         return not persisted.is_opaque
@@ -457,12 +511,18 @@ def _field_finding(
                                element_type=element_type)
     if not _retyped(persisted=field.datatype, live=live_type, temporal_text=temporal_text):
         return None
+    # Re-ingest re-types a list column, and a time-of-day column under any stored type but a list or the time axis.
+    axis = default_time_field(dataset)
+    reingest = live_type is DataType.ARRAY or (
+        live_type is DataType.TIME and field.datatype is not DataType.ARRAY
+        and (axis is None or axis.name != field.name))
     return RetypeFinding.of(
         dataset=dataset, field=field, live_type=live_type, live_db_type=live_db_type,
-        remedy_kind="reingest" if live_type is DataType.ARRAY else "set_type",
+        remedy_kind="reingest" if reingest else "set_type",
     )
 
 
+@old_keywords({"model": "dataset"})
 def retype_findings(
     *, dataset: SlayerDataset, live_table: LiveTable | None, temporal_text: bool = False,
 ) -> list[RetypeFinding | UntypedFinding]:
@@ -472,7 +532,7 @@ def retype_findings(
         return []
     out: list[RetypeFinding | UntypedFinding] = []
     for col in dataset.fields:
-        if not col.is_physical_reader:
+        if not col.reads_physical_column:
             continue
         name = col.physical_name
         live = live_table.columns.get(name)
@@ -492,8 +552,8 @@ def sql_dataset_retype_findings(
     out: list[RetypeFinding | UntypedFinding] = []
     for col in dataset.fields:
         live = (live_columns or {}).get(col.name)
-        if live is None and col.definition_sql is not None:
-            live = (live_columns or {}).get(col.definition_sql.strip())
+        if live is None and col.is_base:
+            live = (live_columns or {}).get(col.physical_name)
         if live is None:
             continue
         if finding := _field_finding(dataset=dataset, field=col, live_type=live.type, live_db_type=live.db_type,
@@ -519,7 +579,7 @@ def _diff_sql_table_columns(
     reasons: list[DeleteReason] = []
     for col in dataset.fields:
         # Physical readers only; derived handled by cascade.
-        if not col.is_physical_reader:
+        if not col.reads_physical_column:
             continue
         bare_name = col.physical_name
         if bare_name not in live_table.columns:
@@ -597,6 +657,7 @@ def _vanished_enforced_keys(
     return vanished, reasons
 
 
+@old_keywords({"model": "dataset", "available_models_in_ds": "available_datasets_in_ds"})
 def diff_sql_table_dataset(
     *,
     dataset: SlayerDataset,
@@ -686,10 +747,9 @@ def _diff_sql_dataset_fields(
     reasons: list[DeleteReason] = []
     for col in dataset.fields:
         # Cursor exposes alias names: match col.name, fall back to the column it reads.
-        text = col.definition_sql
-        if col.name not in live_columns and (text is None or text.strip() not in live_columns):
+        if col.name not in live_columns and not (col.is_base and col.physical_name in live_columns):
             # Physical readers only; derived expressions handled by cascade.
-            if col.is_physical_reader:
+            if col.reads_physical_column:
                 dropped_cols.append(col.name)
                 reasons.append(
                     DeleteReason(
@@ -1157,6 +1217,7 @@ def _stage_cascade_state(*, stage: SlayerQuery, scope: QueryScope, state: _Casca
         dropped_metrics={name: set(metrics) for name, metrics in state.dropped_metrics.items()},
         dropped_relationships={name: list(refs) for name, refs in state.dropped_relationships.items()},
         pk_per_dataset=state.pk_per_dataset,
+        vanished=state.vanished,
     )
     extended = [scope.datasets[e.dataset] for e in stage.extensions if e.dataset in scope.datasets]
     changed = True
@@ -1208,6 +1269,7 @@ class _CascadeState:
         "dropped_metrics",
         "dropped_relationships",
         "pk_per_dataset",
+        "vanished",
     )
 
     def __init__(
@@ -1220,6 +1282,7 @@ class _CascadeState:
         dropped_metrics: dict[str, set[str]],
         dropped_relationships: _DroppedRelationships,
         pk_per_dataset: dict[str, set[str]],
+        vanished: dict[str, set[str]] | None = None,
     ) -> None:
         self.datasets_by_name = datasets_by_name
         self.edit_entries = edit_entries
@@ -1228,6 +1291,8 @@ class _CascadeState:
         self.dropped_metrics = dropped_metrics
         self.dropped_relationships = dropped_relationships
         self.pk_per_dataset = pk_per_dataset
+        #: Per dataset, the fields the base diffs dropped because the column they read is gone.
+        self.vanished = vanished or {}
 
     def cascadable(self, name: str) -> set[str]:
         """Cascadable field drops on ``name`` (excludes PKs — rule 7)."""
@@ -1244,8 +1309,9 @@ def _field_ref_targets_dropped(
     """Whether one ``(table_alias, ref_col)`` ref resolves to a dropped field → ``(is_dropped, resolved_target_dataset)``."""
     if table_alias is None:
         dropped = state.cascadable(dataset.name)
-        return any(c.name in dropped and c.is_physical_reader and c.physical_name == ref_col
-                   for c in dataset.fields), dataset
+        vanished = state.vanished.get(dataset.name, set())
+        return any(c.name in dropped and c.reads_physical_column and c.physical_name == ref_col
+                   and (c.is_physical_reader or c.name in vanished) for c in dataset.fields), dataset
     if table_alias == dataset.name:
         return ref_col in state.cascadable(dataset.name), dataset
     target = _walk_alias_to_target_dataset(
@@ -1484,6 +1550,7 @@ def _cascade_one_pass(
     dropped_metrics: dict[str, set[str]],
     dropped_relationships: _DroppedRelationships,
     pk_per_dataset: dict[str, set[str]],
+    vanished: dict[str, set[str]],
 ) -> bool:
     """Run one cascade pass; True if anything new was added."""
     state = _CascadeState(
@@ -1494,6 +1561,7 @@ def _cascade_one_pass(
         dropped_metrics=dropped_metrics,
         dropped_relationships=dropped_relationships,
         pk_per_dataset=pk_per_dataset,
+        vanished=vanished,
     )
 
     changed = False
@@ -1589,6 +1657,7 @@ def _collapse_entries(
     return final
 
 
+@old_keywords({"models": "datasets"})
 def compute_datasource_drops(
     *,
     datasets: list[SlayerDataset],
@@ -1614,6 +1683,8 @@ def compute_datasource_drops(
     )
 
     pk_per_dataset = {m.name: _pk_fields(m) for m in datasets}
+    vanished = {name: {r.target.removeprefix("field:") for r in entry.reasons if r.target.startswith("field:")}
+                for name, entry in edit_entries.items()}
 
     # Iterate to fixed point — safety bound, DAGs converge in <10 passes.
     for _ in range(100):
@@ -1626,6 +1697,7 @@ def compute_datasource_drops(
             dropped_metrics=dropped_metrics,
             dropped_relationships=dropped_relationships,
             pk_per_dataset=pk_per_dataset,
+            vanished=vanished,
         ):
             break
 
@@ -2080,7 +2152,7 @@ def _add_using_relationship_fields(
     if not any(join.args.get("using") for join in joins):
         return False
     args = scope.expression.args
-    from_expr = args.get("from_") or args.get("from")  # key renamed in sqlglot 30
+    from_expr = args.get("from_")
     operands = [from_expr.this] if from_expr else []
     cannot_verify = False
     for join in joins:
@@ -2292,7 +2364,7 @@ async def _sqlite_probe_int_drift_for_dataset(
 
     drifts: list[RetypeFinding] = []
     for col in dataset.fields:
-        if col.datatype is not DataType.INTEGER or not col.is_physical_reader:
+        if col.datatype is not DataType.INTEGER or not col.reads_physical_column:
             continue
         physical = col.physical_name
         if live.columns.get(physical) is not DataType.INTEGER:

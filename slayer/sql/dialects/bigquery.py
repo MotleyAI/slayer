@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from collections.abc import Sequence
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine.url import URL
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.granularity import bucket_type
@@ -23,6 +25,8 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
+    AngleFn,
+    DEFAULT_DECIMAL_PRECISION,
     NativeFn,
     COMPARISON_NODES,
     LIST_ELEMENT,
@@ -41,11 +45,17 @@ from slayer.sql.dialects.base import (
     anon,
     any_null,
     case,
+    decimal_parts,
     is_not_null,
     iso_text,
     lit,
+    number_literal_text,
     operand_copy,
     text_try_cast,
+    zone_name,
+)
+from slayer.sql.dialects._ordered_set_split import (
+    Columns, PercentileColumns, complement_fraction, discrete_percentile, split_percentile_selects,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
@@ -59,6 +69,9 @@ if TYPE_CHECKING:
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 _WEEK_ANCHORS = {TimeGranularity.WEEK: "MONDAY", TimeGranularity.WEEK_SUNDAY: "SUNDAY"}
 _DATETIME = exp.DataType.build("DATETIME")
+_NUMERIC_INTEGER_DIGITS, _NUMERIC_SCALE = 29, 9
+_BIGNUMERIC = exp.DataType.build("BIGNUMERIC", dialect="bigquery")
+_BIGNUMERIC_DIGITS = 38
 
 
 _ELEMENT, _WANTED, _OFFSET = LIST_ELEMENT, "__slayer_w", "__slayer_o"
@@ -77,6 +90,11 @@ def _date_part_unit(unit: TimeGranularity) -> Expression:
     if weekday is not None:
         return exp.Anonymous(this="WEEK", expressions=[exp.var(weekday)])
     return exp.var(unit.value.upper())
+
+
+def _json_document(value: Expression, *, native: bool) -> Expression:
+    """``json_value``'s input: a native JSON column itself, not its cast to ``JSON``."""
+    return value.this.copy() if native and isinstance(value, exp.Cast) else value.copy()
 
 
 def _interval(count: Expression, unit: TimeGranularity) -> Expression:
@@ -125,12 +143,34 @@ def _durable_oauth_material(raw: str) -> str:
     return json.dumps(durable, sort_keys=True, default=str)
 
 
+def _analytic(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
+    """``F(v, p) OVER (PARTITION BY <keys>)`` per row, its MAX per group; a descending ``PERCENTILE_DISC`` is ranked
+    (no ascending fraction picks its value)."""
+
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+        if descending and function is exp.PercentileDisc:
+            return discrete_percentile(p, value, partition, descending=True)
+        fraction = complement_fraction(p) if descending else p
+        window = exp.Window(this=function(this=value.copy(), expression=fraction.copy()),
+                            partition_by=[k.copy() for k in partition])
+        return [window], lambda reads: exp.Max(this=reads[0])
+
+    return columns
+
+
+def _percentile_columns(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    kind = type(node.this)
+    return _analytic(kind) if kind in (exp.PercentileCont, exp.PercentileDisc) else None
+
+
 class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     """BigQuery dialect."""
     enforces_unique_keys: ClassVar[bool] = False
 
     sqlglot_name: str = "bigquery"
-    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.INT,
+    })
     array_cast_types: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"bigquery"})
     sa_backend_names: frozenset[str] = frozenset({"bigquery"})
@@ -149,17 +189,72 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     like_escape_clause: ClassVar[bool] = False
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
+    naive_instant_reads: ClassVar[bool] = True
+    json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON"})
 
     database_name: ClassVar[str] = "BigQuery"
     native_lists: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """``%E*S``: the seconds with only the fraction digits they need."""
+        return anon("FORMAT_TIME", lit("%H:%M:%E*S"), value)
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "CBRT", "GREATEST", "LEAST",
     })
     extremum_propagates_null: ClassVar[bool] = True
 
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``DATETIME(TIMESTAMP(v, S), Q)``; an instant (a ``TIMESTAMP``): ``DATETIME(v, Q)``."""
+        instant = value if source is None else exp.Timestamp(this=value, zone=zone_name(source))
+        return exp.Datetime(this=instant, expression=zone_name(target))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Timestamp(this=exp.Literal.string(f"{iso_text(value)}+00"))
+
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """``PERCENTILE_CONT`` and ``PERCENTILE_DISC`` are analytic only."""
+        return split_percentile_selects(statement.copy(), columns=_percentile_columns)
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """``BIGNUMERIC`` holds 38 integer and 38 fractional digits; a wider ``DECIMAL`` cannot be expressed."""
+        parts = decimal_parts(data_type)
+        if parts is not None:
+            precision, scale = parts[0] or DEFAULT_DECIMAL_PRECISION, parts[1] or 0
+            if scale > _BIGNUMERIC_DIGITS or precision - scale > _BIGNUMERIC_DIGITS:
+                return False
+        return super().cast_type_supported(data_type)
+
+    def build_decimal_cast(
+        self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],  # NOSONAR(S1172) — hook signature
+        try_: bool,
+    ) -> Expression:
+        """``CAST`` takes no type parameters: the value is rounded to ``scale`` (``ROUND`` ties away from zero) and
+        cast to ``NUMERIC`` / ``BIGNUMERIC``; ``TRY_CAST`` checks ``precision``. A number literal is read from its
+        exact text (it would read as a FLOAT64)."""
+        convert = self.build_try_cast if try_ else self.build_cast
+        text = number_literal_text(value)
+        if text is not None:
+            exact: Expression = convert(lit(text), _BIGNUMERIC.copy())
+        elif source is DataType.FLOAT:
+            exact = value.copy()
+        else:
+            exact = convert(value, _BIGNUMERIC.copy())
+        rounded = exp.Round(this=exact, decimals=lit(scale))
+        cast = convert(rounded, exp.DataType(this=self.decimal_type(precision, scale).this))
+        if not try_:
+            return cast
+        fits = exp.LT(this=exp.Abs(this=rounded.copy()), expression=self.integer_bound(10 ** (precision - scale)))
+        return case((fits, cast))
+
+    def decimal_type(self, precision: int, scale: int) -> exp.DataType:
+        """``NUMERIC`` holds 29 integer and 9 fractional digits; ``BIGNUMERIC`` the rest."""
+        name = "NUMERIC" if precision - scale <= _NUMERIC_INTEGER_DIGITS and scale <= _NUMERIC_SCALE else "BIGNUMERIC"
+        return exp.DataType.build(f"{name}({precision}, {scale})", dialect=self.sqlglot_name)
 
     def list_length(self, values: Expression) -> Expression:
         return anon("ARRAY_LENGTH", values)
@@ -258,16 +353,44 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        """``REGEXP_EXTRACT_ALL`` takes at most one capturing group: every group becomes non-capturing."""
+        matches = anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive,
+                                                                     capture=0))
+        return case((exp.Not(this=any_null(value)), anon("ARRAY_LENGTH", matches)))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """No ``RADIANS`` / ``DEGREES``: scaled by π (``ACOS(-1)``)."""
+        pi = anon("ACOS", lit(-1))
+        if fn == "radians":
+            return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=pi)), expression=lit(180))
+        # A FLOAT64 factor: INT64 * 180 can overflow.
+        factor = exp.Literal.number("180.0")
+        return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=factor)), expression=pi)
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
-        return anon("JSON_VALUE", value, lit(path.text))
+        return anon("JSON_VALUE", _json_document(value, native=native), lit(path.text))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        """``JSON_QUERY`` keeps a string's quotes, so only a number reads as one."""
+        found = anon("JSON_QUERY", _json_document(value, native=native), lit(path.text))
+        return exp.TryCast(this=anon("TO_JSON_STRING", found) if native else found,
+                           to=exp.DataType.build("DOUBLE"), safe=True)
+
+    def catalog_types_query(self, location: TableLocation) -> Optional[exp.Select]:
+        """INFORMATION_SCHEMA types (sqlalchemy-bigquery cannot type ``JSON``)."""
+        return self.columns_query(location)
 
     def columns_query(self, location: TableLocation) -> exp.Select:
-        """Dataset-scoped INFORMATION_SCHEMA: a dataset-scoped account cannot read the project-level view."""
+        """Dataset-scoped INFORMATION_SCHEMA (a dataset-scoped account cannot read the project-level view), in the
+        table's own project."""
         dataset, table = location.schema_name, location.name
         if "." in table:
             dataset, table = table.rsplit(".", 1)
         if not dataset:
             return super().columns_query(location)
+        if location.catalog and "." not in dataset:
+            dataset = f"{location.catalog}.{dataset}"
         return (
             exp.select(col("column_name"), col("data_type"))
             .from_(relation("COLUMNS", db="INFORMATION_SCHEMA", catalog=exp.to_identifier(dataset, quoted=True)))

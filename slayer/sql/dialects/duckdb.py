@@ -9,6 +9,8 @@ the Postgres catalog queries duckdb-engine inherits.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlglot
@@ -18,6 +20,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 from sqlalchemy.engine.url import URL
 
+from slayer.core.keys import WindowKey
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.core.enums import DataType
@@ -36,6 +39,9 @@ from slayer.sql.dialects.base import (
     lit,
     pad_fill,
     text_try_cast,
+    at_time_zone,
+    iso_text,
+    time_precision,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
@@ -110,7 +116,11 @@ def _plain_index_columns(sql: str | None) -> list[str] | None:
 
 class DuckdbDialect(SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
+    windowed_holistic: ClassVar[frozenset[str]] = frozenset({"count_distinct", "median", "percentile_cont"})
     sqlglot_name: str = "duckdb"
+    number_cast_rounds: ClassVar[bool] = True
+    #: An unsigned HUGEINT stays below 10^39.
+    _WIDEST_INTEGER: ClassVar[tuple[str, int]] = ("HUGEINT", 38)
     array_cast_types: ClassVar[bool] = True
     unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
         exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
@@ -124,6 +134,7 @@ class DuckdbDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = 256  # safe documented ceiling
     approx_count_distinct_native: bool = True
+    approx_percentile_native: bool = True
     url_scheme: str | None = "duckdb"
     catalog_qualified_schema_tokens: bool = True
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
@@ -134,8 +145,39 @@ class DuckdbDialect(SqlDialect):
         "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
     })
 
+    def window_call(self, key: WindowKey, args: list[Expression], *, input_type: Optional[DataType] = None) -> Expression:
+        """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` windows only as ``quantile_cont(x, p)``."""
+        if key.function == "percentile_cont":
+            return exp.Anonymous(this="quantile_cont", expressions=args)
+        return super().window_call(key, args, input_type=input_type)
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``(v AT TIME ZONE S) AT TIME ZONE Q``; an instant: ``v AT TIME ZONE Q``."""
+        return at_time_zone(value, source=source, target=target)
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"), to=exp.DataType.build("TIMESTAMPTZ"))
+
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
+
+    time_of_day_parts: ClassVar[bool] = True
+    # ``TRY_CAST('24:00:00' AS TIME)`` is ``24:00:00`` here.
+    time_of_day_range_check: ClassVar[bool] = True
+    rounds_time_precision: ClassVar[bool] = True
+
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """``TIME`` takes no precision here: a ``TIME(p)`` cast is rounded to ``p`` digits."""
+        digits = time_precision(to)
+        cast = super().build_time_cast(value, self.time_of_day_type(), source=source, try_=try_)
+        if digits is None or digits >= 6:
+            return cast
+        unit = lit(10 ** (6 - digits))
+        rounded = exp.Mul(this=exp.Round(this=exp.Div(this=anon("EPOCH_US", cast), expression=unit)), expression=unit.copy())
+        micros = exp.Cast(this=rounded, to=exp.DataType.build("BIGINT"))
+        return exp.Add(this=self.build_time_literal(time(0, 0)), expression=anon("TO_MICROSECONDS", micros))
 
     def build_text_call(self, fn: TextFn, args: tuple[Expression, ...]) -> Expression:
         """``left`` / ``right`` / ``lpad`` / ``rpad`` / ``repeat`` are native with the reference meaning."""
@@ -161,12 +203,25 @@ class DuckdbDialect(SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement), lit("g"))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("LEN", anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive)))
+
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:
+        """``TRUNC(x, d)`` arrived in DuckDB 1.5."""
+        return self.rounded_trunc(value, digits, integer=integer)
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         text = lit(path.text)
         scalar = exp.Not(this=exp.In(this=anon("JSON_TYPE", value, text),
                                      expressions=[lit(t) for t in _NON_SCALAR_JSON]))
         read = case((scalar, anon("JSON_EXTRACT_STRING", value, text)))
         return case((anon("JSON_VALID", value), read))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        text = lit(path.text)
+        fraction = exp.EQ(this=anon("JSON_TYPE", value, text), expression=lit("DOUBLE"))
+        number = exp.Cast(this=anon("JSON_EXTRACT_STRING", value, text), to=exp.DataType.build("DOUBLE"))
+        return case((anon("JSON_VALID", value), case((fraction, number))))
 
     def list_length(self, values: Expression) -> Expression:
         return anon("LEN", values)

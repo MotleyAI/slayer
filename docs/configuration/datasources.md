@@ -176,7 +176,8 @@ Statement-level timeout is enforced via
 | `oauth_credentials_json` | string | No | BigQuery OAuth authorized-user grant JSON |
 | `schema_name` | string | No | Default schema name |
 | `transaction_pooler` | bool | No | Postgres only: set it when the datasource is reached through a transaction-mode pooler (e.g. PgBouncer `pool_mode = transaction`), so the statement timeout is set per transaction instead of once per connection (default `false`) |
-| `granularities` | list | No | [Custom granularities](../concepts/time.md#custom-granularities) `{name, base, multiple, origin}` |
+| `granularities` | list | No | [Custom granularities](../concepts/time.md#custom-granularities) `{name, base, multiple, origin, renamed_from}` |
+| `time_zone` | string | No | IANA zone its datasets' `DateTime` columns are stored in, unless a field declares its own; see [Time zones](../concepts/time.md#time-zones) (CLI: `--time-zone`) |
 
 !!! note
     Both `username` and `user` field names are accepted. The `user` alias is automatically mapped to `username` for compatibility with common database tooling conventions.

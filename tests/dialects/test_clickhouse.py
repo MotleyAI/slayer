@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
+from slayer.sql.dialects.base import cast_target
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 
 from tests._engine_helpers import _engine_generate
@@ -30,26 +33,25 @@ def test_clickhouse_log_native_flags() -> None:
 # Median / percentile — ClickHouse native forms
 
 
-def test_clickhouse_build_median_emits_quantile_05_form() -> None:
-    """``median(x)`` transpiles to ClickHouse's parametric ``quantile(0.5)(x)``."""
+def test_clickhouse_build_median_emits_quantile_exact_inclusive_05_form() -> None:
+    """``median(x)`` is ClickHouse's exact ``quantileExactInclusive(0.5)(x)``."""
     d = ClickhouseDialect()
     inner = sqlglot.parse_one("amount", dialect="clickhouse")
     out = d.build_median(inner)
     sql = out.sql(dialect="clickhouse")
-    assert "quantile(0.5)" in sql.lower()
+    assert "quantileexactinclusive(0.5)" in sql.lower()
     assert "PERCENTILE_CONT" not in sql.upper()
     assert "WITHIN GROUP" not in sql.upper()
 
 
-def test_clickhouse_build_percentile_uses_parametric_quantile() -> None:
-    """ClickHouse uses ``quantile(p)(x)`` — parametric aggregate syntax."""
+def test_clickhouse_build_percentile_uses_parametric_quantile_exact_inclusive() -> None:
+    """ClickHouse uses the exact ``quantileExactInclusive(p)(x)`` — parametric aggregate syntax."""
     d = ClickhouseDialect()
     out = d.build_percentile(p=exp.Literal.number("0.9"), col_expr=exp.column("amount"))
     sql = out.sql(dialect="clickhouse")
-    assert "quantile(" in sql.lower()
     assert "0.9" in sql
-    # The parametric form is quantile(p)(x), not quantile(x, p)
-    assert "quantile(0.9)" in sql.lower()
+    # The parametric form is quantileExactInclusive(p)(x), not (x, p)
+    assert "quantileexactinclusive(0.9)" in sql.lower()
 
 
 def test_clickhouse_build_percentile_preserves_literal() -> None:
@@ -140,3 +142,53 @@ def test_clickhouse_windowed_projection_keeps_its_alias() -> None:
     window = exp.Window(this=exp.func("SUM", exp.column("x")), order=exp.Order(expressions=[exp.column("x")]))
     statement = exp.select(window.as_("w")).from_("t").order_by(exp.column("w", quoted=True))
     assert ClickhouseDialect().rewrite_statement(statement).sql(dialect="clickhouse").endswith('ORDER BY "w"')
+
+
+# Layer 1 meanings on ClickHouse
+
+
+def test_clickhouse_refuses_a_time_of_day_cast() -> None:
+    """No zoned time-of-day type: the cast would read NULL."""
+    dialect = ClickhouseDialect()
+    with pytest.raises(ValueError, match="cannot be expressed on clickhouse"):
+        cast_target("TIME WITH TIME ZONE", dialect=dialect)
+
+
+def _parsed(sql: str) -> Expression:
+    tree = sqlglot.parse_one(sql)
+    assert isinstance(tree, Expression)
+    return tree
+
+
+@pytest.mark.parametrize(("value", "digits", "sql"), [
+    ("2.5", 0, "ROUND(toDecimal128OrNull('2.5', 1), 0)"),
+    ("-2.5", 0, "ROUND(toDecimal128OrNull('-2.5', 1), 0)"),
+    ("0.125", 2, "ROUND(toDecimal128OrNull('0.125', 3), 2)"),
+])
+def test_clickhouse_rounds_a_number_literal_tie_away_from_zero(value: str, digits: int, sql: str) -> None:
+    """A number literal is exact; read as a Float64, ``round`` would break its tie to even."""
+    rounded = ClickhouseDialect().build_round(_parsed(value), exp.Literal.number(digits))
+    assert rounded is not None
+    assert rounded.sql(dialect="clickhouse") == sql
+
+
+@pytest.mark.parametrize("digits", ["-1", "orders.d"])
+def test_clickhouse_keeps_its_own_round_otherwise(digits: str) -> None:
+    assert ClickhouseDialect().build_round(_parsed("2.5"), _parsed(digits)) is None
+
+
+@pytest.mark.parametrize(("value", "digits"), [("1", 37), ("1", 38), ("123.5", 35)])
+def test_clickhouse_keeps_its_own_round_past_decimal128(value: str, digits: int) -> None:
+    """The guard digit needs ``integer digits + digits + 1`` ≤ 38: past it the Decimal128 read is NULL."""
+    assert ClickhouseDialect().build_round(_parsed(value), exp.Literal.number(digits)) is None
+
+
+@pytest.mark.parametrize(("value", "digits"), [("1", 36), ("0.5", 37), ("123.5", 34)])
+def test_clickhouse_rounds_exactly_up_to_decimal128(value: str, digits: int) -> None:
+    assert ClickhouseDialect().build_round(_parsed(value), exp.Literal.number(digits)) is not None
+
+
+def test_clickhouse_number_cast_to_boolean_is_a_bool() -> None:
+    """A comparison yields UInt8; a boolean cast reads Bool, like ClickHouse's own TRUE."""
+    sql = ClickhouseDialect().number_to_boolean(exp.column("qty")).sql(dialect="clickhouse")
+    assert sql == "CAST(qty <> 0 AS Nullable(Bool))"

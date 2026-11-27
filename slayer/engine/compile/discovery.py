@@ -19,7 +19,8 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     attached_inputs,
-    transform_operand_grain,
+    is_transform,
+    value_grain,
     is_kernel_requiring,
     is_reaggregation_key,
     is_row_attach_root,
@@ -134,33 +135,33 @@ class _Walker:
         self.active_td = prebound.main_time_key
         self.transforms = transforms
         self.host_cells = transforms.rows_are_host_cells and all(
-            self._over_host_cells(t) for t in transforms.answers if isinstance(t, TransformKey)
+            self._over_host_cells(t) for t in transforms.answers if is_transform(t)
         )
 
     def _host_inline(self, a: AggregateKey) -> bool:
         """An aggregate computed over the plan's host rows at the plan grain (inline, or host-rooted across its
         inputs' hops)."""
         return (
-            a.partition_keys is None and not attached_inputs(a) and not is_reaggregation_key(a)
+            a.written_grain is None and not attached_inputs(a) and not is_reaggregation_key(a)
             and not self.homes.target_rooted(a) and not _is_bare_own_rows_local(a, homes=self.homes)
             and not self.local_broadcasts(a)
         )
 
-    def _over_host_cells(self, t: TransformKey) -> bool:
+    def _over_host_cells(self, t: ValueKey) -> bool:
         """Whether ``t``'s domain is its host's cells at the plan grain."""
         grain = Grain.of(self.grain)
         return all(
             self._host_inline(k) if isinstance(k, AggregateKey)
-            else transform_operand_grain(k.input, query_grain=grain, active_bucket=self.active_td) == grain
-            for k in walk_value_keys(t) if isinstance(k, (AggregateKey, TransformKey))
+            else value_grain(k, query_grain=grain, active_bucket=self.active_td) == grain
+            for k in walk_value_keys(t) if isinstance(k, AggregateKey) or is_transform(k)
         )
 
     def routes(self, k: ValueKey) -> bool:
         """Whether transform ``k`` evaluates in its own domain producer."""
         # A dimensionless plan has one cell, the unit.
-        if not (self.transforms.route and self.grain and isinstance(k, TransformKey)) or k in self.transforms.answers:
+        if not (self.transforms.route and self.grain and is_transform(k)) or k in self.transforms.answers:
             return False
-        if k.op == "time_shift" and not _series_mode(k.input, to_original={}):
+        if isinstance(k, TransformKey) and k.op == "time_shift" and not _series_mode(k.input, to_original={}):
             return False
         return not (self.host_cells and self._over_host_cells(k))
 
@@ -183,19 +184,21 @@ class _Walker:
             or any(is_placeholder(r) for r in walk_value_keys(k.source))  # a lowered re-aggregation outer
         ):
             return False
-        if k.partition_keys is not None:
+        written = k.written_grain
+        if written is not None:
             # A requested key the host reaches but does not determine resolves per the mode axis, as does a fanning
             # window axis.
-            return any(self._associable_key(pk, host=host) for pk in k.partition_keys) or (
+            return any(self._associable_key(pk, host=host) for pk in written) or (
                 window_kwarg_of(k) is not None and self.active_td is not None
                 and not self._attributable(self.active_td, host=host)
             )
         # The population's spine is counted over each home's own axis, never the product; a member mixing an
         # untrusted to-one branch with other reads counts each home row once by association.
         return any(
-            reads_population_spine(g, host=host) or not self._attributable(g, host=host)
+            reads_population_spine(g, host=host, datasets_by_name=self.bundle.datasets_by_name)
+            or not self._attributable(g, host=host)
             or mixes_untrusted_branch(g, root_dataset=host, host_dataset=host, bundle=self.bundle)
-            for g in self.grain
+            for g in (self.grain if k.partition_keys is None else k.partition_keys)
         )
 
     def _associable_key(self, pk: ValueKey, *, host: SlayerDataset) -> bool:

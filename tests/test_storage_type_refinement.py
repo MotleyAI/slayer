@@ -4,8 +4,7 @@ The v4→v5 dict migrator does coarse rename only (``number`` → ``DOUBLE``).
 A separate sync helper, ``slayer.live_schema.type_refinement.refine_dict_with_live_schema``,
 introspects the dataset's datasource and refines ``DOUBLE`` → ``INT`` for base
 fields whose live SQL type is integer. Storage backends call this helper
-during ``get_dataset`` and write back the refined dict so subsequent loads are
-free.
+during ``get_dataset`` in memory; ``slayer storage upgrade`` persists the result.
 
 Hard-fail behavior: if the datasource is unreachable, the SQLAlchemy connect
 error propagates out of ``get_model``. Same effective behavior as a query
@@ -292,7 +291,7 @@ class TestRefineDictWithLiveSchema:
 
 
 # ---------------------------------------------------------------------------
-# YAMLStorage end-to-end: refinement + write-back on first load
+# YAMLStorage end-to-end: refinement on load
 # ---------------------------------------------------------------------------
 
 
@@ -309,38 +308,12 @@ class TestYamlStorageRefinementOnLoad:
         # Non-base derived field stays at DOUBLE (no refinement attempted).
         assert types["double_amount"] == DataType.FLOAT
 
-    async def test_first_load_writes_back_v5_with_refined_types(
-        self, storage_with_v4_model: V4Store
-    ) -> None:
-        await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
-        # Re-read raw YAML; the storage layer writes back at CURRENT_VERSIONS,
-        # whatever migrations.py declares.
+    async def test_first_load_refines_in_memory_only(self, storage_with_v4_model: V4Store) -> None:
         with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
-            raw = yaml.safe_load(f)
-        assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        types_by_name = {c["name"]: c["datatype"] for c in raw["fields"]}
-        assert types_by_name["id"] == "Integer"
-        assert types_by_name["qty"] == "Integer"
-        assert types_by_name["amount"] == "Float"
-        assert types_by_name["name"] == "String"
-        assert types_by_name["double_amount"] == "Float"
-
-    async def test_second_load_does_not_introspect(self, storage_with_v4_model: V4Store) -> None:
-        """After write-back, the on-disk dict is v5 with refined types. The
-        migrator chain returns early (version >= current) and the storage
-        backend's refinement-helper invocation gate doesn't trigger."""
-        # First load: triggers refinement.
+            before = f.read()
         await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
-
-        # Now spy on _live_schema_for_datasource — it must NOT be called the
-        # second time around, because the dataset on disk is now v5 with refined
-        # types and the migrator chain returns immediately.
-        with patch(
-            "slayer.live_schema.schema_drift._live_schema_for_datasource",
-            wraps=_unreachable,
-        ) as spy:
-            await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
-            spy.assert_not_called()
+        with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            assert f.read() == before
 
     async def test_missing_datasource_entry_raises_on_v4_load(
         self, sqlite_with_int_double_text

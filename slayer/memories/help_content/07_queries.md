@@ -30,7 +30,9 @@ declared.
 ## Rows
 
 A query with dimensions only returns distinct combinations; set
-`distinct_dimension_values: false` for raw rows (no metrics allowed). Without a
+`distinct_dimension_values: false` for raw rows (no metrics allowed; a dimension the population
+reaches over a fanning hop, or one with neither a declared cardinality nor a covering unique key,
+raises `DistinctDimensionValuesError`). Without a
 `limit`, the MCP response stops at 20 rows with a notice; for a longer list set a
 `limit` that covers it. Use `limit` for top N, never to cut a list asked for in full.
 
@@ -38,7 +40,8 @@ A query with dimensions only returns distinct combinations; set
 
 Conditions and expressions take one portable library with the same meaning on every
 database that translates it (others refuse the function at plan time): strings (`left`, `split_part`, `concat_ws`, ...), math (`div`, `atan2`, ...),
-regex (`regexp_like(x, 'p')`, `x ~ 'p'`, `regexp_extract`, `regexp_replace`), JSON
+regex (`regexp_like(x, 'p')`, `x ~ 'p'`, `regexp_extract`, `regexp_replace`, `regexp_count`), Ossie's spellings
+(`IF`, `NVL`, `NVL2`, `ZEROIFNULL`, `CHARINDEX`, `TO_DATE`, `EXTRACT(DAYOFWEEK FROM x)` = ISO day), JSON
 (`json_value(x, '$.a' RETURNING INT)`, `x ->> 'a'`), lists (`contains(tags, 'x')`,
 `contains_any(tags, ['x', 'y'])`, `contains_all(tags, ['x', 'y'])`, `length(tags)`; the
 aggregation `collect(x)` builds one per group); text compared with a number reads as

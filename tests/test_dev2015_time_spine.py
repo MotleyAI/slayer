@@ -115,10 +115,11 @@ class TestReservedName:
             "version": CURRENT_VERSIONS["SlayerModel"] - 1, "name": "time_spine", "sql_table": "cal",
             "data_source": "test", "columns": [{"name": "day", "type": "date", "primary_key": True}],
         }))
+        before = path.read_text()
         loaded = await storage.get_dataset("time_spine", data_source="test")
         assert loaded is not None
         assert [c.name for c in loaded.fields] == ["day"]
-        assert yaml.safe_load(path.read_text())["version"] == CURRENT_VERSIONS["SlayerModel"]
+        assert path.read_text() == before
 
 
 # ---------------------------------------------------------------------------

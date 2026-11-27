@@ -1,0 +1,8 @@
+document:
+  version: 0.3.0.dev0
+  name: o
+  ontology:
+  - concept: Order
+    extends:
+    - Ghost
+files: {}

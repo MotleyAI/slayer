@@ -333,13 +333,12 @@ async def _execute(storage: StorageBackend, query: SlayerQuery):
 
 class TestStorageLoad:
     async def test_stored_model_measure_keeps_descending_meaning(self, seed: Seeder):
-        storage = await seed(models=[_model_dict(measures=[{"name": "r", "formula": BARE}])])
+        stored = _model_dict(measures=[{"name": "r", "formula": BARE}])
+        storage = await seed(models=[stored])
         model = await storage.get_dataset("sales", data_source="test")
         assert model is not None
         assert model.metrics[0].expression == FILLED
-        raw = await _raw(storage, "sales")
-        assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert raw["metrics"][0]["expression"] == FILLED
+        assert await _raw(storage, "sales") == stored
         resp = await _execute(storage, SlayerQuery.model_validate(
             {"population": "sales", "dimensions": ["sales.region"], "metrics": ["sales.r"]}))
         assert {k[0]: v["sales.r"] for k, v in rows_by(resp, "sales.region").items()} == RANK_DESC

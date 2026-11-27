@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import copy
 import itertools
-from typing import Any
+from typing import AbstractSet, Any
 
 from slayer.core import slayer_extension as ext
 from slayer.core.enums import DataType, JoinType, RelationshipCardinality
@@ -18,7 +18,7 @@ from slayer.sql.ossie_source import parse_source
 from slayer.storage.document_extensions import restored_relationship
 
 __all__ = ["OSSIE_CORE_TYPES", "as_expression", "core_source", "dataset_payload", "document_payload", "field_payload", "ossie_expression", "relationship_name",
-           "with_dataset", "with_document_payload", "without_dataset"]
+           "with_dataset", "with_document_payload", "with_metrics_in_slayer", "without_dataset"]
 
 OSSIE_CORE_TYPES = frozenset({"String", "Integer", "Decimal", "Float", "Boolean", "Date", "Time", "DateTime",
                               "DateTimeTz", "Opaque"})
@@ -30,8 +30,8 @@ def core_datatype(datatype: DataType | None) -> str | None:
     return datatype.value if datatype.value in OSSIE_CORE_TYPES else "Opaque"
 
 
-_FIELD_ONLY = ("hidden", "format", "granularity", "allowed_aggregations", "meta", "filter", "element_type", "db_type",
-               "sampled", "sampled_values", "distinct_count")
+_FIELD_ONLY = ("hidden", "format", "granularity", "time_zone", "allowed_aggregations", "meta", "filter", "element_type",
+               "db_type", "sampled", "sampled_values", "distinct_count")
 
 
 def ossie_expression(expression: Expression) -> dict[str, Any]:
@@ -457,21 +457,27 @@ def with_document_payload(doc: dict[str, Any], payload: ext.DocumentPayload) -> 
     _set_slayer(doc, None if empty and not payload.metrics else ext.encode(payload, ossie=doc.get("name")))
 
 
-def without_dataset(doc: dict[str, Any], *, name: str, reads: Any) -> dict[str, Any]:
-    """``doc`` without dataset ``name`` and the relationships touching it; each model-scoped metric reading it (per
-    ``reads(expression) -> set of case-folded dataset names``) moves to the document's ``SLAYER`` entry."""
+def without_dataset(doc: dict[str, Any], *, name: str) -> dict[str, Any]:
+    """``doc`` without dataset ``name`` and the relationships touching it."""
     out = copy.deepcopy(doc)
     out["datasets"] = [d for d in out["datasets"] if _fold(d.get("name")) != _fold(name)]
     rels = [r for r in out.get("relationships") or [] if _fold(name) not in (_fold(r.get("from")), _fold(r.get("to")))]
     _set(out, "relationships", rels or None)
+    return out
+
+
+def with_metrics_in_slayer(doc: dict[str, Any], *, names: AbstractSet[str]) -> dict[str, Any]:
+    """``doc`` with its core model-scoped metrics named in ``names`` (case-folded) moved to its ``SLAYER`` entry."""
     kept, moved = [], []
-    for metric in out.get("metrics") or []:
-        (moved if _fold(name) in reads(metric.get("expression") or {}) else kept).append(metric)
-    if moved:
-        _set(out, "metrics", kept or None)
-        payload = document_payload(out)
-        payload.metrics.extend(ext.ModelMetricContent(
-            name=m["name"], expression=as_expression(m["expression"]),
-            description=m.get("description"), datatype=m.get("datatype")) for m in moved)
-        with_document_payload(out, payload)
+    for metric in doc.get("metrics") or []:
+        (moved if _fold(metric.get("name")) in names else kept).append(metric)
+    if not moved:
+        return doc
+    out = copy.deepcopy(doc)
+    _set(out, "metrics", kept or None)
+    payload = document_payload(out)
+    payload.metrics.extend(ext.ModelMetricContent(
+        name=m["name"], expression=as_expression(m["expression"]),
+        description=m.get("description"), datatype=m.get("datatype")) for m in moved)
+    with_document_payload(out, payload)
     return out

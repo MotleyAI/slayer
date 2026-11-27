@@ -61,7 +61,6 @@ async def test_timestamp_cast_in_a_filter(engine: SlayerQueryEngine) -> None:
 
 
 @pytest.mark.parametrize(("expr", "type_name"), [
-    ("CAST(orders.created_at AS TIME)", "time"), ("orders.created_at::TIME", "time"), ("TRY_CAST(orders.created_at AS TIME)", "time"),
     ("CAST(orders.created_at AS TIMESTAMP(3))", "timestamp"), ("TRY_CAST(orders.created_at AS TIMESTAMP(3))", "timestamp"),
     ("orders.created_at::TIMESTAMP(3)", "timestamp"), ("orders.created_at::TIMESTAMP WITH TIME ZONE", "timestamp"),
     ("CAST(orders.created_at AS TIMESTAMP WITH TIME ZONE)", "timestamp"),

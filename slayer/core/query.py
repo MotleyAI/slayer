@@ -45,12 +45,12 @@ from slayer.core.models import (
     SlayerDataset,
     _validate_dataset_name,
     check_metric_name,
-    check_metric_text,
 )
 from slayer.core.names import NAME_PATTERN, match_name, quoted_name
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.strict_flag import strict_flag, without_strict
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
+from slayer.core.time_zones import check_zone
 from slayer.core.vocabulary import (
     FIELD_REF_KEYS,
     ORDER_ITEM_KEYS,
@@ -77,15 +77,16 @@ from slayer.core.syntax import (
     canonical_metric_text,
     dotted_quoting,
     drop_root_qualifier,
+    has_bindings,
     legacy_result_name_seed,
     metric_text_at_path,
     parse_expr,
     parse_template,
+    quote_blind_metric_text,
     root_relative,
     variable_names,
     walk_parsed,
 )
-from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import (
     CURRENT_VERSIONS,
     hoist_root_extension,
@@ -337,12 +338,6 @@ def _rewrite_functional_granularity(data: dict) -> dict:
         coerced.extend(rewritten)
         data = {**data, "time_dimensions": coerced}
     return data
-
-
-def _validate_query_filter_string(expression: str) -> None:
-    """Reject raw ``OVER (...)`` window syntax in a ``SlayerQuery.filter`` entry."""
-    if has_window_function(expression):
-        raise ValueError(f"Filter '{expression}' {WINDOW_IN_FILTER_ERROR}")
 
 
 _BLOCK_OPEN = "{?"
@@ -855,7 +850,7 @@ def _time_dimension_name_identity(td: "TimeDimension") -> tuple[str, tuple] | No
 
 def _canonical_expression_text(expression: str) -> str:
     try:
-        return canonical_metric_text(parse_expr(expression))
+        return quote_blind_metric_text(parse_expr(expression))
     except Exception:  # noqa: BLE001 — an unparseable expression is reported at binding
         return expression
 
@@ -1162,11 +1157,6 @@ class QueryMetric(MetricBase, QueryInput):
     @classmethod
     def _check_alias(cls, v: str | None) -> str | None:
         return v if v is None else check_metric_name(v, what="Query metric alias")
-
-    @field_validator("metric")
-    @classmethod
-    def _check_metric(cls, v: str) -> str:
-        return check_metric_text(v, what="Query metric")
 
     @model_serializer(mode="wrap")
     def _bare_text(self, handler: SerializerFunctionWrapHandler) -> Any:
@@ -1516,9 +1506,9 @@ def _root_relative_ref(ref: FieldRef, root: str | None) -> FieldRef:
 
 
 def _parsed_identity(text: str, root: str | None) -> str:
-    """``text``'s root-relative parsed meaning, as canonical text; the text itself when unparseable."""
+    """``text``'s root-relative parsed meaning, as quote-blind canonical text; the text itself when unparseable."""
     node = _parsed_or_none(text)
-    return text if node is None else canonical_metric_text(root_relative(node, root))
+    return text if node is None else quote_blind_metric_text(root_relative(node, root))
 
 
 @vocabulary.input_object("query")
@@ -1597,7 +1587,8 @@ class SlayerQuery(QueryInput):
             "across datasets: rooted at customers, sum(orders.amount) / count(customers.*) divides "
             "the orders' total by the number of customers.\n"
             "- Aggregations: count(orders.*), sum(orders.amount), count_distinct(orders.customer_id), "
-            "avg(orders.amount - orders.cost), percentile(orders.amount, p=0.9).\n"
+            "avg(orders.amount - orders.cost), percentile(orders.amount, p=0.9), sum_distinct(orders.amount), "
+            "percentile_disc(orders.status, p=0.5) (an observed value, any ordered type).\n"
             "- agg(x) FILTER (WHERE c) aggregates only the rows where c holds: "
             "count(orders.*) FILTER (WHERE orders.status = 'paid').\n"
             "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
@@ -1844,14 +1835,23 @@ class SlayerQuery(QueryInput):
             "partition_by= with the dimensions it is attributable to."
         ),
     )
+    time_zone: str | None = Field(
+        default=None,
+        description=(
+            "IANA zone (e.g. 'America/New_York') to bucket, filter and return timestamps in; 'today' and now() "
+            "follow it. A stage without one takes the final stage's."
+        ),
+    )
+
+    @field_validator("time_zone")
+    @classmethod
+    def _validate_time_zone(cls, v: str | None) -> str | None:
+        return check_zone(v, owner="a query")
 
     @model_validator(mode="after")
     def _validate_dsl_user_input(self) -> "SlayerQuery":
-        """Enforce DSL-mode rules on user-input strings at construction — raw ``OVER (...)``
-        in a filter is caught here; bare-name/raw-SQL-function rejection happen at binding.
-        ``__`` is not rejected: virtual-dataset fields flatten relationship paths (``kpis__total_amount_sum``)."""
-        for f in self.filter_conditions:
-            _validate_query_filter_string(f)
+        """Enforce DSL-mode rules on user-input strings at construction; bare-name/raw-SQL-function rejection happen
+        at binding. ``__`` is not rejected: virtual-dataset fields flatten relationship paths (``kpis__total_amount_sum``)."""
         if self.main_time_dimension is not None:
             _parsed_or_none(self.main_time_dimension)
         self._validate_distinct_dimension_values()
@@ -2017,6 +2017,7 @@ class QueryRefinement(QueryInput):
     whole_periods_only: bool | None = _refinement_field("whole_periods_only")
     distinct_dimension_values: bool | None = _refinement_field("distinct_dimension_values")
     to_many_handling: ManyHandling = _refinement_field("to_many_handling")
+    time_zone: str | None = _refinement_field("time_zone")
 
     _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
 
@@ -2055,10 +2056,13 @@ class QueryRefinement(QueryInput):
         """The filter's conditions, all of which must hold."""
         return filter_conditions(self.filter)
 
+    @field_validator("time_zone")
+    @classmethod
+    def _validate_time_zone(cls, v: str | None) -> str | None:
+        return check_zone(v, owner="a refinement")
+
     @model_validator(mode="after")
     def _validate_inputs(self) -> "QueryRefinement":
-        for f in filter_conditions(self.filter):
-            _validate_query_filter_string(f)
         for name in _NON_NULLABLE_SETTINGS:
             if name in self.model_fields_set and getattr(self, name) is None:
                 raise ValueError(f"refine.{name} cannot be null; omit it to keep the saved value")
@@ -2291,7 +2295,7 @@ def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQu
         "filter": _merged_filter(saved.filter, refinement.filter),
     }
     data.update((name, value) for name, value in merged_lists.items() if value is not getattr(saved, name))
-    for name in ("limit", "offset", "main_time_dimension", *_NON_NULLABLE_SETTINGS):
+    for name in ("limit", "offset", "main_time_dimension", "time_zone", *_NON_NULLABLE_SETTINGS):
         if name in supplied:
             data[name] = getattr(refinement, name)
     if refinement.to_many_handling is not None:
@@ -2318,8 +2322,17 @@ if TYPE_CHECKING:
     class ModelMeasure(DatasetMetric): ...
 
 
-__getattr__ = name_twins(namespace=globals(), renames={
+_renamed = name_twins(namespace=globals(), renames={
     "ColumnRef": "QueryDimension", "ComputedDimension": "QueryDimension", "ModelExtension": "DatasetExtension",
     "ModelVariables": "DatasetVariables",
     "ModelMeasure": "DatasetMetric",
 })
+
+
+if not TYPE_CHECKING:  # the removed helper stays a static error
+
+    def __getattr__(name: str) -> Any:
+        if name == "has_variable_syntax":
+            vocabulary.deprecated_spelling("slayer.core.query.has_variable_syntax", "slayer.core.syntax.has_bindings")
+            return has_bindings
+        return _renamed(name)

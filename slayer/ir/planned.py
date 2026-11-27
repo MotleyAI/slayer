@@ -7,7 +7,7 @@ from datetime import datetime
 import functools
 from enum import Enum, IntEnum
 from typing import (
-    AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypedDict, Union, cast,
+    AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypeAlias, TypedDict, Union, cast,
 )
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -216,6 +216,8 @@ class SpineFactor(BaseModel):
     lower: datetime
     upper: datetime
     size: int = Field(ge=1)
+    #: The host's path to the spine field.
+    path: Tuple[str, ...] = ()
 
 
 class MaskEntry(BaseModel):
@@ -261,12 +263,41 @@ class EmptyBaseGrainPlan(BaseModel):
     host_gated: bool = False
 
 
+class ComputedKey(BaseModel):
+    """A relationship key computed by an expression over its relation's source columns."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["computed"] = "computed"
+    text: str
+
+
+class WindowedKey(BaseModel):
+    """A relationship key read as the column its relation materialises a windowed field in."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["windowed"] = "windowed"
+    field: str
+
+
+#: A non-physical relationship key (``None`` in its place: a physical column).
+DerivedKey: TypeAlias = Union[ComputedKey, WindowedKey]
+
+
+def derived_key(field: DatasetField) -> Optional[DerivedKey]:
+    """How relationship key ``field`` is read: ``None`` for its physical column."""
+    if field.windowed:
+        return WindowedKey(field=field.name)
+    return None if field.is_base else ComputedKey(text=field.definition_sql or field.name)
+
+
 class KeyArgs(TypedDict):
     """``SemiJoinHop``'s key fields, as ``SemiJoinHop.key_args`` builds them."""
 
     join_pairs: Tuple[Tuple[str, str], ...]
     quoted: Tuple[Tuple[bool, bool], ...]
-    computed: Tuple[Tuple[Optional[str], Optional[str]], ...]
+    computed: Tuple[Tuple[Optional[DerivedKey], Optional[DerivedKey]], ...]
 
 
 class SemiJoinHop(BaseModel):
@@ -280,8 +311,8 @@ class SemiJoinHop(BaseModel):
     join_pairs: Tuple[Tuple[str, str], ...]
     #: Per pair, whether each key's stored SQL quotes its physical name (``DatasetField.physical_quoted``).
     quoted: Tuple[Tuple[bool, bool], ...] = ()
-    #: Per pair, each computed key's expression over its own source (``None``: a physical key).
-    computed: Tuple[Tuple[Optional[str], Optional[str]], ...] = ()
+    #: Per pair, each side's derived key (``None``: a physical key).
+    computed: Tuple[Tuple[Optional[DerivedKey], Optional[DerivedKey]], ...] = ()
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
     #: analysis's input (a declared-INNER hop is never null-extended).
@@ -304,12 +335,8 @@ class SemiJoinHop(BaseModel):
         return {
             "join_pairs": tuple((s.key_name, t.key_name) for s, t in keys),
             "quoted": tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
-            "computed": tuple((_computed_text(s), _computed_text(t)) for s, t in keys),
+            "computed": tuple((derived_key(s), derived_key(t)) for s, t in keys),
         }
-
-
-def _computed_text(field: DatasetField) -> Optional[str]:
-    return None if field.is_base else field.definition_sql or field.name
 
 
 class SemiJoinFilter(BaseModel):
@@ -427,6 +454,8 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
+    #: A ``first`` / ``last`` over an aggregate: level 2 picks the value of the cell with the least / greatest key.
+    ranking_key: Optional[ValueKey] = None
 
 
 ProducerKernel = Union[
@@ -492,8 +521,6 @@ class RegroupAttachPlan(BaseModel):
     degenerate_metric: Optional[str] = None
     degenerate_operand_grain: List[str] = Field(default_factory=list)
     degenerate_outer_grain: List[str] = Field(default_factory=list)
-    #: Producer grain slots the attach does not join on: a collapsing pick is constant along them (Axiom 11.3b).
-    collapsed: List[SlotId] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _shift_fields_only_on_shifted(self) -> "RegroupAttachPlan":
@@ -894,9 +921,14 @@ def planned_keys(planned_list) -> Iterator[ValueKey]:
 
 
 def plans_read_clock(planned_list) -> bool:
-    """Whether any plan evaluates ``now()`` / ``current_date()``."""
+    """Whether any plan reads the clock at execution: ``now()`` / ``current_time()`` anywhere, ``current_date()`` in
+    a stage without a zone (under one it is that day's literal)."""
+    def reads(planned, key) -> bool:
+        zoned = planned.stage_bundle is not None and planned.stage_bundle.time_zone is not None
+        return isinstance(key, ScalarCallKey) and (key.name in ("now", "current_time") or (key.name in CLOCK_FUNCTIONS and not zoned))
+
     return any(
-        isinstance(k, ScalarCallKey) and k.name in CLOCK_FUNCTIONS
+        reads(planned, k)
         for planned in planned_list
         for root in plan_value_keys(planned)
         for k in walk_value_keys(root)

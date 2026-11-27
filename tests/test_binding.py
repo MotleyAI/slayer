@@ -10,7 +10,6 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    IllegalWindowInFilterError,
     UnknownReferenceError,
     UnresolvableDimensionRelationshipError,
 )
@@ -31,6 +30,7 @@ from slayer.engine.binding import (
     bind_expr,
     bind_filter,
 )
+from slayer.engine.definitions import resolved_dataset
 from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from slayer.core.syntax import Ref, parse_expr
 
@@ -510,15 +510,12 @@ class TestFilterBinder:
 
 
 # ---------------------------------------------------------------------------
-# Windowed DatasetField.sql in filter → IllegalWindowInFilterError
+# Portable windowed DatasetField resolves as a windowed field
 # ---------------------------------------------------------------------------
 
 
-class TestWindowInFilter:
-    def test_filter_on_windowed_column_sql_raises(self):
-        # A DatasetField.sql containing a window function. A filter referencing
-        # that field raises IllegalWindowInFilterError (no
-        # auto-promotion).
+class TestWindowedField:
+    def test_portable_windowed_field_resolves_as_windowed(self):
         model = _orders().model_copy(update={
             "fields": list(_orders().fields) + [
                 DatasetField(
@@ -528,15 +525,11 @@ class TestWindowInFilter:
                 ),
             ],
         })
-        scope = DatasetScope(population=model)
-        bundle = ResolvedSourceBundle(
-            dialect="postgres",
-            population=model,
-            referenced_datasets=[_customers(), _regions()],
-        )
-        expr = parse_expr("rolling_rank > 1")
-        with pytest.raises(IllegalWindowInFilterError):
-            bind_filter(expr, scope=scope, bundle=bundle)
+        peers = [_customers(), _regions()]
+        resolved = resolved_dataset(model, ds_type="postgres", datasets=peers, live={})
+        field = resolved.get_field("rolling_rank")
+        assert field is not None
+        assert field.windowed
 
 
 class TestNestedAggregateParamDimAliasMap:

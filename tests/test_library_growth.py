@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Iterable, Mapping
+from itertools import combinations
 from pathlib import Path
 
 import pytest
@@ -15,14 +16,16 @@ from slayer.core.enums import (
     RESERVED_NAMES,
 )
 from slayer.core.keys import SCALAR_FUNCTIONS, SCALAR_SPELLINGS
+from slayer.core.models import reserved_granularity_names
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage import migrations
+from slayer.storage import granularity_rename, migrations
 from tests._granularity_rename_fixtures import DS as GRANULARITY_DS
 from tests._granularity_rename_fixtures import EXPECTED_BUCKETS, bucket_totals, granularity_store, renamed
 from tests._library_names_fixtures import SUM_A, agg, metric, stored_engine, t_doc, value
 from tests._stored_upgrade_fixtures import DS
 
-#: Every name the library reserved when this guard was written. Extend it only together with the rule below.
+#: Every name the library reserved when this guard was written. Never extended: a later reservation is shadowable or
+#: goes in ``MIGRATED``.
 PINNED: dict[str, frozenset[str]] = {
     "functions": frozenset({
         "abs", "acos", "ascii", "asin", "atan", "atan2", "cbrt", "ceil", "ceiling", "chr", "coalesce", "concat",
@@ -57,9 +60,19 @@ PINNED: dict[str, frozenset[str]] = {
 
 #: A dataset's own definition shadows these, so a new name in them needs no migration.
 SHADOWABLE = frozenset({"functions", "spellings"})
+#: Ossie Layer 1 functions and spellings reserved after ``PINNED``.
+OSSIE_NAMES = frozenset({
+    "if", "nvl", "nvl2", "startswith", "endswith", "charindex", "truncate", "to_date", "to_timestamp",
+    "zeroifnull", "nullifzero", "radians", "degrees", "regexp_count",
+})
+#: Date-part words with no function form; a stored aggregation of the name keeps working.
+PART_ONLY_NAMES = frozenset({"millisecond", "dayofweek"})
 
 #: A newly reserved name outside ``SHADOWABLE`` → the ``(entity, source_version)`` migration that renames it in stores.
-MIGRATED: dict[str, tuple[str, int]] = {"agg": ("SlayerModel", 18)}
+MIGRATED: dict[str, tuple[str, int]] = {
+    "agg": ("SlayerModel", 18),
+    **dict.fromkeys(("sum_distinct", "avg_distinct", "percentile_disc", "percentile_approx"), ("SlayerModel", 31)),
+}
 
 
 def live_vocabularies() -> dict[str, frozenset[str]]:
@@ -92,6 +105,12 @@ class TestGuard:
     def test_every_vocabulary_is_pinned(self) -> None:
         assert set(live_vocabularies()) == set(PINNED)
 
+    def test_ossie_names_are_shadowable_reservations(self) -> None:
+        assert sorted(OSSIE_NAMES - (SCALAR_FUNCTIONS | SCALAR_SPELLINGS)) == []
+
+    def test_part_only_names_are_not_functions(self) -> None:
+        assert PART_ONLY_NAMES & (SCALAR_FUNCTIONS | SCALAR_SPELLINGS) == set()
+
     def test_agg_is_reserved_and_migrated(self) -> None:
         assert "agg" in live_vocabularies()["reserved"]
         assert MIGRATED["agg"] in migrations._REGISTRY
@@ -115,7 +134,96 @@ class TestGuard:
             "transforms:new_window"]
 
 
-_FUNCTION_NAMES = sorted(SCALAR_FUNCTIONS | SCALAR_SPELLINGS)
+#: The rename gate of every name reserved when gates were introduced.
+INITIAL_GATE: dict[str, int] = {"SlayerModel": 30, "SlayerQuery": 19, "Memory": 14}
+#: Reserved scalar spellings ``PINNED`` does not list.
+_RESERVED_SPELLINGS = frozenset({
+    "array_contains", "array_length", "cardinality", "current_timestamp", "dateadd", "datediff", "iff",
+})
+#: ``MIGRATED`` when gates were introduced; a later entry needs a stepped gate.
+_INITIAL_MIGRATED = frozenset({"agg"})
+INITIAL_NAMES = frozenset().union(*PINNED.values()) | _INITIAL_MIGRATED | _RESERVED_SPELLINGS
+Gates = Mapping[str, Mapping[str, int]]
+
+
+def initial_gate_findings(*, reserved: Iterable[str], gates: Gates) -> list[str]:
+    """Each reserved initial name whose gate is no longer the initial one."""
+    return sorted(n for n in set(reserved) & INITIAL_NAMES if dict(gates.get(n) or {}) != INITIAL_GATE)
+
+
+def _stepped(low: Mapping[str, int], high: Mapping[str, int]) -> bool:
+    return all(high[entity] > low[entity] for entity in INITIAL_GATE)
+
+
+def gate_findings(*, reserved: Iterable[str], gates: Gates) -> list[str]:
+    """Each reserved name without a gate, or whose gate does not step the versions above every other gate."""
+    out: set[str] = set()
+    later: list[str] = []
+    for name in reserved:
+        gate = gates.get(name)
+        if gate is None or (dict(gate) != INITIAL_GATE if name in INITIAL_NAMES else not _stepped(INITIAL_GATE, gate)):
+            out.add(name)
+        elif name not in INITIAL_NAMES:
+            later.append(name)
+    for a, b in combinations(later, 2):
+        if dict(gates[a]) != dict(gates[b]) and not (_stepped(gates[a], gates[b]) or _stepped(gates[b], gates[a])):
+            out |= {a, b}
+    return sorted(out)
+
+
+def _with(name: str, gate: Mapping[str, int] | None = None) -> tuple[set[str], Gates]:
+    """Today's reservations and gates plus ``name`` (gated by ``gate`` when given)."""
+    gates = dict(granularity_rename.RENAME_GATES)
+    if gate is not None:
+        gates[name] = gate
+    return set(reserved_granularity_names()) | {name}, gates
+
+
+class TestRenameGates:
+    def test_every_reserved_name_has_its_gate(self) -> None:
+        assert gate_findings(reserved=reserved_granularity_names(), gates=granularity_rename.RENAME_GATES) == []
+
+    def test_every_initial_name_keeps_the_initial_gate(self) -> None:
+        assert _INITIAL_MIGRATED <= set(MIGRATED)
+        assert initial_gate_findings(reserved=reserved_granularity_names(), gates=granularity_rename.RENAME_GATES) == []
+
+    def test_a_stepped_later_reservation_keeps_the_initial_gates(self) -> None:
+        reserved, gates = _with("new_window", {"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16})
+        assert initial_gate_findings(reserved=reserved, gates=gates) == []
+
+    def test_a_changed_initial_gate_is_caught(self) -> None:
+        reserved, gates = _with("left", {"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16})
+        assert initial_gate_findings(reserved=reserved, gates=gates) == ["left"]
+
+    @pytest.mark.parametrize("name", ["new_window", "new_fn"], ids=["transform", "function"])
+    def test_a_reservation_without_a_gate_is_caught(self, name: str) -> None:
+        reserved, gates = _with(name)
+        assert gate_findings(reserved=reserved, gates=gates) == [name]
+
+    @pytest.mark.parametrize("gate", [
+        INITIAL_GATE, {"SlayerModel": 31, "SlayerQuery": 19, "Memory": 15},
+        {"SlayerModel": 31, "SlayerQuery": 20, "Memory": 14}, {"SlayerModel": 29, "SlayerQuery": 20, "Memory": 15},
+    ], ids=["initial", "query-not-stepped", "memory-not-stepped", "dataset-lower"])
+    def test_a_gate_that_does_not_step_the_versions_is_caught(self, gate: dict[str, int]) -> None:
+        reserved, gates = _with("new_window", gate)
+        assert gate_findings(reserved=reserved, gates=gates) == ["new_window"]
+
+    def test_a_stepped_gate_passes(self) -> None:
+        reserved, gates = _with("new_window", {"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16})
+        assert gate_findings(reserved=reserved, gates=gates) == []
+
+    @pytest.mark.parametrize(("second", "caught"), [
+        ({"SlayerModel": 34, "SlayerQuery": 21, "Memory": 17}, ["new_a", "new_b"]),
+        ({"SlayerModel": 34, "SlayerQuery": 22, "Memory": 17}, []),
+        ({"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16}, []),
+    ], ids=["not-stepped", "stepped", "same-release"])
+    def test_later_gates_step_each_other(self, second: dict[str, int], caught: list[str]) -> None:
+        reserved, gates = _with("new_a", {"SlayerModel": 33, "SlayerQuery": 21, "Memory": 16})
+        gates = {**gates, "new_b": second}
+        assert gate_findings(reserved=reserved | {"new_b"}, gates=gates) == caught
+
+
+_FUNCTION_NAMES = sorted(SCALAR_FUNCTIONS | SCALAR_SPELLINGS | OSSIE_NAMES | PART_ONLY_NAMES)
 
 
 @pytest.fixture(scope="module")

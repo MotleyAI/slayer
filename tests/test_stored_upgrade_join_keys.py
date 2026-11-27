@@ -13,6 +13,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.storage import migrations as mig
@@ -32,6 +33,7 @@ from tests._stored_upgrade_fixtures import (
     seed_shop,
     stored_bytes,
 )
+from tests._storage_upgrade_cli import store_path, upgrade
 
 REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(orders.amount)"]}
 
@@ -71,12 +73,16 @@ def _assert_cast_free_key_equality(sql: str, *, dialect: str) -> None:
 class TestSourceSide:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_cube_import_shape_loads_with_hidden_key(self, tmp_path, shop_ds: DatasourceConfig, backend):
-        storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
+        base = str(tmp_path / "store")
+        storage = await raw_store(backend=backend, base=base, datasource=shop_ds,
                                   models=[orders_v10(declare_fk=False), customers_v10()])
+        before = stored_bytes(backend=backend, base=base, name="orders")
         orders = await storage.get_dataset("orders", data_source=DS)
         assert orders is not None
         col = field_of(orders, "customer_id")
         assert col.hidden is True
+        assert stored_bytes(backend=backend, base=base, name="orders") == before
+        assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
         doc = await raw_doc(storage, "orders")
         assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         assert _hidden(doc, "customer_id")["hidden"] is True
@@ -110,9 +116,9 @@ class TestSourceSide:
         customers["columns"][0]["type"] = "not_a_type"
         storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=shop_ds,
                                   models=[orders_v10(declare_fk=False), customers])
-        await storage.get_dataset("orders", data_source=DS)
-        doc = await raw_doc(storage, "orders")
-        assert _hidden(doc, "customer_id").get("datatype", "String") == "String"
+        orders = await storage.get_dataset("orders", data_source=DS)
+        assert orders is not None
+        assert field_of(orders, "customer_id").datatype in (None, DataType.STRING)
 
 
 class TestTargetSide:
@@ -126,7 +132,7 @@ class TestTargetSide:
         assert customers is not None
         col = field_of(customers, "id")
         assert col.hidden is True
-        assert _hidden(await raw_doc(storage, "customers"), "id")["datatype"] == "Integer"
+        assert col.datatype is DataType.INTEGER
         resp = await run(storage, REGION_QUERY)
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
 
@@ -137,8 +143,9 @@ class TestTargetSide:
             models=[orders_v10(), customers_v10(declare_pk=False)])
         resp = await run(storage, REGION_QUERY)
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
-        orders = await raw_doc(storage, "orders")
-        assert [c["name"] for c in orders["fields"]].count("id") == 0
+        orders = await storage.get_dataset("orders", data_source=DS)
+        assert orders is not None
+        assert [c.name for c in orders.fields].count("id") == 0
 
     async def test_query_backed_target_is_untouched(self, tmp_path, shop_ds: DatasourceConfig):
         qb = {"version": 10, "name": "customers", "data_source": DS,

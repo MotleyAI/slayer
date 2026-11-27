@@ -29,7 +29,9 @@ from slayer.core.names import match_name
 from slayer.core.relationship_search import (
     HopFilter, UnaddressablePair, blocking_pairs, reachable, routes, shortest_route, unaddressable_pairs,
 )
-from slayer.core.relationship_walker import canonical_path, provably_to_one, terminal_dataset, walk
+from slayer.core.relationship_walker import (
+    canonical_path, provably_to_one, terminal_dataset, walk, with_list_children,
+)
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, declared_aliases
 from slayer.core.time_spine import TIME_SPINE_DATASET, reads_spine, names_spine
@@ -295,28 +297,32 @@ def _associates(edge: Any, *, datasets_by_name: dict[str, SlayerDataset]) -> boo
 
 def _walk_to_one(
     *, start: SlayerDataset, tokens: list[str], datasets_by_name: dict[str, SlayerDataset], associate: bool = False,
+    via: tuple[str, ...] = (),
 ) -> tuple[SlayerDataset | None, str, tuple[str, ...]]:
-    """Walk ``tokens`` from ``start``; ``(terminal dataset, verdict, canonical path)``.
+    """Walk ``tokens`` from ``start`` after its canonical route ``via``; ``(terminal dataset, verdict, canonical path)``.
 
     Every oriented hop must be provably to-one, or with ``associate`` an unproven hop in its declared direction;
     ``_NO_EDGE`` distinguishes a path that does not resolve from a resolved-but-unsafe (``_UNREACHABLE``) one.
     """
     try:
-        chain = walk(root=start, path=tokens, datasets_by_name=datasets_by_name)
+        chain = walk(root=start, path=tokens, via=via, datasets_by_name=datasets_by_name)
     except AmbiguousRelationshipPathError:
         return (None, _AMBIGUOUS, ())
     except CircularRelationshipPathError:
         return (None, _UNREACHABLE, ())
     if chain is None:
         return (None, _NO_EDGE, ())
-    if not all(provably_to_one(edge=e, target_dataset=datasets_by_name[e.to])
-               or (associate and _associates(e, datasets_by_name=datasets_by_name)) for e in chain):
+    universe = with_list_children(datasets_by_name)
+    if not all(provably_to_one(edge=e, target_dataset=universe[e.to])
+               or (associate and _associates(e, datasets_by_name=universe)) for e in chain):
         return (None, _UNREACHABLE, ())
-    return (datasets_by_name[chain[-1].to] if chain else start, _OK, canonical_path(chain))
+    return (universe[chain[-1].to] if chain else start, _OK, canonical_path(chain))
 
 
-def _anchored_tokens(*, start: SlayerDataset, parts: list[str], datasets_by_name: dict[str, SlayerDataset]) -> tuple[list[str] | None, str]:
-    """``item``'s path from ``start``: the route binding takes to its anchor, then its explicit route."""
+def _anchored_tokens(
+    *, start: SlayerDataset, parts: list[str], datasets_by_name: dict[str, SlayerDataset],
+) -> tuple[tuple[tuple[str, ...], list[str]] | None, str]:
+    """``item``'s path from ``start``: the canonical route binding takes to its anchor, and its explicit route."""
     anchor = find_anchor(parts[0], quoted=False, reader=start, datasets_by_name=datasets_by_name)
     if anchor is None:
         return None, _UNREACHABLE
@@ -327,7 +333,7 @@ def _anchored_tokens(*, start: SlayerDataset, parts: list[str], datasets_by_name
         return None, _AMBIGUOUS if safe else _UNREACHABLE
     if reached.unrelated:
         return None, _UNREACHABLE
-    return [*reached.route, *parts[1:-1]], _OK
+    return (tuple(reached.route), parts[1:-1]), _OK
 
 
 def probe_item(
@@ -346,10 +352,11 @@ def probe_item(
     start = datasets_by_name.get(root)
     if start is None or len(parts) < 2:
         return (_UNREACHABLE, ())
-    tokens, verdict = _anchored_tokens(start=start, parts=parts, datasets_by_name=datasets_by_name)
-    if tokens is None:
+    anchored, verdict = _anchored_tokens(start=start, parts=parts, datasets_by_name=datasets_by_name)
+    if anchored is None:
         return (verdict, ())
-    terminal, verdict, hops = _walk_to_one(start=start, tokens=tokens, datasets_by_name=datasets_by_name,
+    route, tokens = anchored
+    terminal, verdict, hops = _walk_to_one(start=start, tokens=tokens, via=route, datasets_by_name=datasets_by_name,
                                            associate=associate)
     if terminal is None:
         return (_UNREACHABLE if verdict == _NO_EDGE else verdict, ())
@@ -385,23 +392,26 @@ def item_blockers(*, root: str, item: str, datasets_by_name: dict[str, SlayerDat
     parts = item.split(".")
     if start is None:
         return []
-    path, _verdict = _anchored_tokens(start=start, parts=parts, datasets_by_name=datasets_by_name)
-    if path is None:
+    anchored, _verdict = _anchored_tokens(start=start, parts=parts, datasets_by_name=datasets_by_name)
+    if anchored is None:
         anchor = find_anchor(parts[0], quoted=False, reader=start, datasets_by_name=datasets_by_name)
         if anchor is None or anchor.name == start.name:
             return []
         return blocking_pairs(root=start, target=anchor.name, datasets_by_name=datasets_by_name)
+    route, rest = anchored
+    path = (*route, *rest)
     if not path:
         return []
+    first = path[0]
     try:
-        if walk(root=start, path=path, datasets_by_name=datasets_by_name) is not None or len(path) > 1:
+        if walk(root=start, path=rest, via=route, datasets_by_name=datasets_by_name) is not None or len(path) > 1:
             return []
     except AmbiguousRelationshipPathError as e:
         return [p for p in unaddressable_pairs(datasets_by_name=datasets_by_name)
                 if {p.source_dataset, p.to} == {e.source_dataset, e.target_dataset}]
     except CircularRelationshipPathError:
         return []
-    return blocking_pairs(root=start, target=path[0], datasets_by_name=datasets_by_name)
+    return blocking_pairs(root=start, target=first, datasets_by_name=datasets_by_name)
 
 
 class CandidateVerdict(BaseModel):

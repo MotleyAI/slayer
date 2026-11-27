@@ -1,0 +1,21 @@
+## 1. Failing tests (pr-tests)
+
+- [x] 1.1 Create `tests/test_spine_axis_relationship_names.py` (unit; SQLite and DuckDB in-process, reuse `tests/_dev2015_fixtures.py` `spine_engine` / `orders_dataset`); its scenarios fail on the current code where the spec says behaviour changes — verify by running the file
+- [x] 1.2 Scenario "A relationship named like the spine keeps the axis join": validated save succeeds with no warning; Jan 150 / Feb 70; no `unrelated_dataset` / `associated` warning; both backends
+- [x] 1.3 Scenario "The same relationship in a stored Ossie document" (`save_semantic_model_text`, `tests/_dev2243_fixtures.py` helpers): rows and warnings equal to the renamed-relationship run
+- [x] 1.4 Scenario "Every spine route through the dataset ignores the name", each case differential against the renamed relationship: population `orders` with a spine dimension (product hop); spine-rooted query with a field `orders` reaches (reverse route); `customers` count over the spine (fanning axis); query-backed dataset / stage over `orders` inheriting the relationship; a non-spine query (population `orders`, dimension `customers.region`); both spellings `time_spine` and `Time_Spine`
+- [x] 1.5 Scenario "An explicit hop spelt like the spine stays ambiguous": `orders.time_spine.region` and (relationship `Time_Spine`) `orders.Time_Spine.region` raise `AmbiguousHopError`; a `Time_Spine` relationship keeps the spine query correct (regression)
+- [x] 1.6 Scenario "The spine is always spelt `time_spine`": in the shadowed case no reserved prefix in SQL, result columns, warnings, errors, inspect output of `orders`, search output, or qualified stored text; any suggested path re-resolves to the chain it describes (or none is offered); the multi-route spine error (`shipments` relating to `orders` and `returns`) offers only suggestions that bind as the time dimension, for any relationship name
+- [x] 1.7 Byte-identity guard: SQL of an unaffected spine query equals its SQL with a relationship named `time_spine` added to an unrelated dataset — verify the test passes on current code and keeps passing
+- [x] 1.8 Diagnostics unit test: with the shadowing relationship, `unaddressable_pairs` / `blocking_pairs` do not report the virtual spine hop; genuinely ambiguous declared parallel edges stay reported
+- [x] 1.9 Regression: a query extension relationship named `time_spine` stays refused with `QueryExtensionError` (passes on current code)
+
+## 2. Implementation (pr-implement)
+
+- [x] 2.1 Virtual spine hops (axis link from `axis_relationship`, product hop from `_product_edge`) keep the spelling `time_spine` while it addresses them alone, else take a reserved never-declared token naming the spine (`product_token` rule shape); route search admits them — verify 1.2–1.4 pass
+- [x] 2.2 Every consumer that recognises a spine hop by the literal path token `time_spine` (e.g. `_is_product_path`, spine-route reversal in `resolve_route`, attribution helpers) reads the hop structurally — verify by grepping `TIME_SPINE_DATASET` comparisons against path tokens and 1.4 passing
+- [x] 2.3 One display mapping spells the reserved token `time_spine` on every human-readable surface; executable / round-tripped paths re-resolve or are omitted — verify 1.6 passes
+- [x] 2.4 Diagnostics follow the new addressability — verify 1.8 passes
+- [x] 2.4a The multi-route spine error's suggested paths bind when used as the time dimension, or none is offered (Decision 13) — verify `test_an_unroutable_spine_query_error` passes for both names
+- [x] 2.5 Local test scope green (capped at ~200 tests per run; CI runs the rest): `tests/test_spine_axis_relationship_names.py`, `tests/test_dev2015_time_spine.py`, `tests/test_dev2119_time_spine.py`, `tests/test_dev2015_golden_sql.py`, `tests/test_dev2269_spine_case.py`, `tests/test_dev2218_fanning_axis.py`, and `tests/test_stored_upgrade_spine_date_only.py` (covers "Stored names shadow the spine"); the full `la-affected-tests` list and the other `tests/test_dev2218_*` suites run in CI; if the stored-upgrade outcome changes, stop for a ruling
+- [x] 2.6 `poetry run ruff check slayer/ tests/`, `poetry run la-arch-check`, `poetry run basedpyright` (no new errors vs baseline) clean

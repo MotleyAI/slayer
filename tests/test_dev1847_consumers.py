@@ -174,7 +174,7 @@ class TestCompositeSparseOperand:
 
 class TestFirstLastDispatch:
     async def test_last_over_aggregate_stays_a_transform(self, exec_engine):
-        """Scenario: First and last keep transform dispatch — last(sum(...)) is
+        """Scenario: First and last over a partitioned aggregate rank its cells — last(sum(...)) is
         the last transform (needs a time dimension), never a re-aggregation."""
         query = sales_q(
             dimensions=["sales.region"],
