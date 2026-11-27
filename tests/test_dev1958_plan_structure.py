@@ -128,7 +128,7 @@ class TestLeafClassification:
         assert len(nested) == 1
         assert nested[0] is not outer_cm
         assert len(nested[0].join_pairs) == 1  # keyed by [month] only
-        assert sub.placeholder not in _keys(producer)
+        assert sub.placeholder in {s.placeholder for s in nested[0].substitutions}
 
     def test_inline_local_leaf_is_re_evaluated(self) -> None:
         pq = _plan(f"time_shift({SHARE}, -1)")

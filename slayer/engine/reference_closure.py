@@ -20,6 +20,7 @@ from sqlglot import exp
 
 from slayer.core.keys import (
     AggregateKey,
+    AttachedKey,
     ArithmeticKey,
     CastKey,
     ListSetKey,
@@ -274,7 +275,7 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
         return [node.source, *node.args, *(v for _name, v in node.kwargs), *([node.filter] if node.filter else [])]
     if isinstance(node, TransformKey):
         return [node.input, *sorted(node.partition_keys, key=repr), node.time_key]
-    if isinstance(node, WindowKey):
+    if isinstance(node, (WindowKey, AttachedKey)):
         return list(node.children())
     return _row_children(node)
 

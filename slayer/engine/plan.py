@@ -59,6 +59,7 @@ from slayer.ir.variables import (
 )
 from slayer.sql.dialects import dialect_for_ds_type, get_dialect
 from slayer.sql.mode_a_variables import bind_mode_a
+from slayer.engine.compile.regroup import AttachTable
 
 __all__ = [
     "plan_query",
@@ -74,8 +75,10 @@ def plan_query(
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
     prebound: Optional[PreboundQuery] = None,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
+    attaches: Optional[AttachTable] = None,
 ) -> PlannedQuery:
-    """Plan one user-authored query stage: elaborate, then compile."""
+    """Plan one user-authored query stage: elaborate, then compile (its attached values in its statement's
+    ``attaches``)."""
     elaborated = elaborate_query(
         query=query,
         bundle=bundle,
@@ -86,6 +89,7 @@ def plan_query(
     planned = compile_query(
         elaborated=elaborated,
         producer_registry=producer_registry,
+        attaches=attaches,
     )
     prebound = elaborated.prebound
     update: Dict[str, Any] = {k: v for k, v in (("granularity_conflicts", prebound.granularity_conflicts),
@@ -212,6 +216,8 @@ class _StagePlanner:
         # The query's zone (its final stage's): every stage without its own takes it (D9).
         self.time_zone = time_zone
         self.state = _State(displays=dict(bundle.stage_displays))
+        # One attach table per statement: every stage's attached values get ids distinct from the others'.
+        self.attaches = AttachTable()
         self.inert: Set[str] = set()
         # A merely touched dataset that failed to splice: its error, raised if it is read.
         self.failures: Dict[str, Exception] = {}
@@ -323,7 +329,8 @@ class _StagePlanner:
             placeholders=self._placeholders(),
         )
         stamped = stamped.model_copy(update={"row_supply": RowSupply(product=True)})
-        planned = plan_query(query=query, bundle=stamped, scope=scope, stage_schemas=self.state.schemas)
+        planned = plan_query(query=query, bundle=stamped, scope=scope, stage_schemas=self.state.schemas,
+                             attaches=self.attaches)
         if planned.stage_bundle is not None:
             stamped = with_window_fields(stamped, planned=planned.stage_bundle)
         return planned.model_copy(update={"stage_bundle": stamped})
@@ -366,11 +373,12 @@ class _StagePlanner:
             label = f"stages[{len(self.state.planned)}]"
         with collect_stale_spellings() as spellings:
             if single:
-                planned = plan_query(query=query, bundle=bundle)
+                planned = plan_query(query=query, bundle=bundle, attaches=self.attaches)
             else:
                 with stale_spelling_stage(label):
                     planned = plan_query(
                         query=query, bundle=bundle, scope=scope, stage_schemas=self.state.schemas,
+                        attaches=self.attaches,
                     )
         return planned.model_copy(update={"stale_spellings": spellings})
 

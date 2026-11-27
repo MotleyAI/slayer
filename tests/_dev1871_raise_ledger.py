@@ -57,6 +57,24 @@ AT = "\n  at "
 SUGGEST = "\n  suggestion: "
 
 ROWS: Tuple[LedgerRow, ...] = (
+    _row(module="engine/compile/stages.py", function="_assert_attached_reads_planned", exc="RuntimeError",
+         message="attached value … read at … has … edges, not one",
+         category="internal", family="internal", user=False, owner="compiler"),
+    _row(module="engine/compile/stages.py", function="_assert_attached_reads_planned", exc="RuntimeError",
+         message="attached value … names no producer",
+         category="internal", family="internal", user=False, owner="compiler"),
+    _row(module="engine/compile/stages.py", function="_assert_attached_reads_planned", exc="RuntimeError",
+         message="attached value … joins …, not its producer grain",
+         category="internal", family="internal", user=False, owner="compiler"),
+    _row(module="engine/compile/stages.py", function="_assert_attached_reads_planned", exc="RuntimeError",
+         message="attached value … joins on …, unresolved in its reader",
+         category="internal", family="internal", user=False, owner="compiler"),
+    _row(module="engine/compile/stages.py", function="_assert_attached_reads_planned", exc="RuntimeError",
+         message="attached value … has no answer slot in its producer",
+         category="internal", family="internal", user=False, owner="compiler"),
+    _row(module="engine/compile/regroup.py", function="template", exc="RuntimeError",
+         message="attached value … has no registered producer",
+         category="internal", family="internal", user=False, owner="compiler"),
     _row(module=_CI, function="compile_query", exc="RuntimeError",
          message="An unresolved time-point comparison reached compilation.",
          category="internal", family="internal", user=False, owner="compiler"),
@@ -357,10 +375,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="compiler", family="population", user=True, owner="compiler", sites=2),
     _row(module=_SP, function="_operand_supply", exc="PopulationInferenceError", message="",
          category="compiler", family="population", user=True, owner="compiler"),
-    _row(module=_EE, function="check_reserved_regroup_prefix", exc="NameCollisionError",
-         message="Field(s) … use the reserved '__regroup__' prefix, which collides with the regroup primitive's placeholders."
-         + SUGGEST + "Rename them.",
-         category="checker", family="regroup-roots", user=True, owner="checker"),
     _row(module=_EE, function="check_raw_rows_no_aggregate_slots", exc="DistinctDimensionValuesError",
          message="distinct_dimension_values=False rejects metric references, but this query references the aggregation … in its filters or order."
          + SUGGEST + "…",

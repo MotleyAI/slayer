@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from calendar import monthrange
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
@@ -13,9 +13,8 @@ from slayer.core.granularity import Granularity, granularity_parts
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    FieldKey,
+    AttachedKey,
     LiteralKey,
-    REGROUP_LEAF_PREFIX,
     TimeTruncKey,
     ValueKey,
     constituent_grain,
@@ -28,14 +27,10 @@ from slayer.core.time_points import add_units, date_bound, floor_to, parse_tempo
 from slayer.engine.compile.regroup import substitute_in_bound_filter
 from slayer.ir.bound import BoundFilter, bound_filter_from_key
 
-__all__ = ["MovedFrame", "carried_placeholders", "is_placeholder", "moved_frame"]
+__all__ = ["MovedFrame", "carried_placeholders", "moved_frame"]
 
 _LOWER_OPS = frozenset({">", ">="})
 _MIRROR = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}
-
-
-def is_placeholder(key: ValueKey) -> bool:
-    return isinstance(key, FieldKey) and key.leaf.startswith(REGROUP_LEAF_PREFIX)
 
 
 class MovedFrame(BaseModel):
@@ -183,17 +178,17 @@ def _re_evaluated(
 
 
 def carried_placeholders(
-    inner: ValueKey, *, axis: ValueKey, to_original: Dict[ValueKey, ValueKey],
+    inner: ValueKey, *, axis: ValueKey, to_original: Mapping[ValueKey, ValueKey],
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
 ) -> List[ValueKey]:
-    """Consumer-level placeholders of ``inner`` read at their in-frame value: an
+    """Consumer-level attached values of ``inner`` read at their in-frame value: an
     axis-free leaf is constant along the axis; one whose grain holds the axis, or a
     ranked / windowed one, is re-evaluated instead."""
     carried: List[ValueKey] = []
 
     def visit(node: ValueKey) -> None:
-        if is_placeholder(node):
+        if isinstance(node, AttachedKey):
             original = to_original.get(node)
             if original is not None and node not in carried and not _re_evaluated(
                 original, axis=axis, dim_keys=dim_keys, td_keys=td_keys,

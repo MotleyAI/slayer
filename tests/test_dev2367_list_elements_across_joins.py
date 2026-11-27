@@ -14,7 +14,7 @@ from pytest_postgresql import factories
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.errors import TimeAxisError, UnknownReferenceError, UnsafeRelationshipInputError
+from slayer.core.errors import TimeAxisError, UnsafeRelationshipInputError
 from slayer.core.keys import AggregateKey, FieldKey, Grain, anchor_token
 from slayer.core.models import (
     Aggregation,
@@ -26,7 +26,6 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
-from slayer.engine.compile.stages import _rebuilt_aggregates
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.population.home import resolve_aggregate_homes
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -325,17 +324,6 @@ class TestHomeBelowTheRoot:
         assert redundant == plain
 
 
-def test_rebuilt_aggregates_pair_partition_keys_by_identity_not_position() -> None:
-    # Partition keys are a set: only the replaced member maps to its replacement; an unchanged sibling never moves.
-    for i in range(12):
-        a, b, p = (AggregateKey(source=FieldKey(leaf=f"{name}{i}"), agg="max") for name in ("a", "b", "p"))
-        before = AggregateKey(source=FieldKey(leaf="rate"), agg="sum", partition_keys=Grain.of([a, b]))
-        after = before.model_copy(update={"partition_keys": Grain.of([b, p])})
-        out: dict[Any, Any] = {}
-        _rebuilt_aggregates(before, after, out)
-        assert out == {before: after, a: p}
-
-
 def _seed_one_to_one(db_path: str) -> None:
     with transaction(db_path) as con:
         con.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, price REAL)")
@@ -375,8 +363,6 @@ def _band_query(population: str, expression: str, *, two: bool = False) -> Slaye
     return SlayerQuery.model_validate(body(population, m(expression), dimensions=dims))  # pyright: ignore[reportArgumentType]
 
 
-@pytest.mark.xfail(strict=True, raises=UnknownReferenceError,
-                   reason="DEV-2375: a computed-dimension re-aggregation's placeholder is read on a table lacking it")
 async def test_home_survives_a_reaggregation_partition_key() -> None:
     # The target-rooted aggregate rebuilt around the re-aggregation placeholder keeps its home.
     sql = await emit_contractors(_band_query("contractors",
@@ -400,8 +386,6 @@ def _band_cells(resp: SlayerResponse) -> dict[tuple[Any, Any], Any]:
     return {(r[team], r[band]): num(r[v]) for r in resp.data if r[team] is not None}
 
 
-@pytest.mark.xfail(strict=True, raises=UnknownReferenceError,
-                   reason="DEV-2375: a computed-dimension re-aggregation's placeholder is read on a table lacking it")
 @pytest.mark.parametrize("kind", sorted(BAND_SHAPES))
 async def test_a_reaggregation_dimension_is_independent_of_the_root(engine: SlayerQueryEngine, kind: str) -> None:
     home_expr, other_expr = BAND_SHAPES[kind]
@@ -411,8 +395,6 @@ async def test_a_reaggregation_dimension_is_independent_of_the_root(engine: Slay
     assert {k: home[k] for k in other} == other
 
 
-@pytest.mark.xfail(strict=True, raises=UnknownReferenceError,
-                   reason="DEV-2375: a computed-dimension re-aggregation's placeholder is read on a table lacking it")
 @pytest.mark.parametrize(("population", "expression"), [
     ("contractors", "sum(contractors.rate * length(contractors.skills.value), partition_by=[band, band2])"),
     ("assignments", "sum(contractors.rate * length(contractors.skills.value), partition_by=[band, band2])"),

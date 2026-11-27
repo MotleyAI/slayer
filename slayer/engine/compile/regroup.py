@@ -1,73 +1,108 @@
 """The regroup primitive's structural core: an aggregation-based dimension groups
-by a value that exists only after aggregating at a finer grain. Owns the pieces
+by a value that exists only after aggregating at a finer grain. Owns the attach
+table every plan of one statement reads attached values from, and the pieces
 shared by discovery and substitution (the position typing pass lives in the
 checker, ``elaborate_env``); orchestration lives in ``compile/stages``."""
 
 from __future__ import annotations
 
-from typing import AbstractSet, Callable, Dict, Mapping, Optional
+from typing import Callable, Dict, Hashable, List, Mapping, Optional, Sequence, Tuple
 
-from slayer.core.enums import DataType
-from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, FieldKey, ValueKey, substitute_value_keys, walk_value_keys
-from slayer.engine.key_metadata import SlotTyping
-from slayer.sql.naming import canonical_aggregate_alias
+from slayer.core.keys import AggregateKey, AttachedKey, ValueKey, substitute_value_keys, walk_value_keys
+from slayer.engine.key_metadata import AttachedTyping, SlotTyping
 from slayer.ir.bound import BoundFilter
-from slayer.core.models import SlayerDataset
+from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, SlotId
+from slayer.sql.naming import canonical_aggregate_alias
 
 __all__ = [
-    "REGROUP_LEAF_PREFIX",
-    "RegroupPlaceholderRegistry",
+    "AttachTable",
+    "ProducerRegistry",
     "substitute_in_bound_filter",
-    "reserved_prefix_fields",
 ]
 
 
-def reserved_prefix_fields(dataset: SlayerDataset | None) -> list[str]:
-    """``dataset`` fields colliding with the reserved regroup placeholder prefix."""
-    if dataset is None:
-        return []
-    return [c.name for c in dataset.fields if c.name.startswith(REGROUP_LEAF_PREFIX)]
+def _seed(key: ValueKey) -> str:
+    return (
+        (canonical_aggregate_alias(key, profile="stage_expression") if isinstance(key, AggregateKey) else None)
+        or getattr(key, "agg", None)
+        or getattr(key, "op", None)
+        or "regroup"
+    )
 
 
-class RegroupPlaceholderRegistry:
-    """Mints a distinct reserved-leaf ``FieldKey`` per structural aggregate, keyed
-    by ``AggregateKey`` identity NOT canonical alias (which two distinct aggregates
-    can share); a monotonic index guarantees distinct leaves, skipping ``reserved``
-    (an enclosing plan's placeholders a sub-plan may read). ``types`` holds each
-    minted leaf's type under ``typing``, the minting plan's."""
+class AttachTable:
+    """One statement's attached values: an id per interned producer answer (distinct by construction), each with the
+    attach that minted it and its types."""
 
-    def __init__(
-        self, *, reserved: AbstractSet[ValueKey] = frozenset(), typing: Optional[SlotTyping] = None,
-    ) -> None:
-        self._by_key: Dict[ValueKey, FieldKey] = {}
-        self._reserved = reserved
+    def __init__(self) -> None:
         self._next = 0
-        self._typing = typing
-        self.types: Dict[str, Callable[[], Optional[DataType]]] = {}
+        self._by_answer: Dict[Tuple[Hashable, SlotId], str] = {}
+        self._templates: Dict[str, RegroupAttachPlan] = {}
+        self.typings: Dict[str, AttachedTyping] = {}
 
-    def placeholder_for(self, key: ValueKey) -> FieldKey:
-        existing = self._by_key.get(key)
-        if existing is not None:
-            return existing
-        seed = (
-            (canonical_aggregate_alias(key, profile="stage_expression")
-             if isinstance(key, AggregateKey) else None)
-            or getattr(key, "agg", None)
-            or getattr(key, "op", None)
-            or "regroup"
-        )
-        placeholder = self._mint(seed)
-        while placeholder in self._reserved:
-            placeholder = self._mint(seed)
-        self._by_key[key] = placeholder
-        typing = self._typing
-        if typing is not None:
-            self.types[placeholder.leaf] = lambda: typing.value_type(key)
-        return placeholder
+    def key(
+        self, *, identity: Hashable, answer_slot: SlotId, original: ValueKey,
+        on: Sequence[Tuple[ValueKey, SlotId]],
+    ) -> AttachedKey:
+        """The answer at ``answer_slot`` of the producer interned as ``identity``, read through ``on`` (member →
+        producer grain slot pairs)."""
+        answer = (identity, answer_slot)
+        attach = self._by_answer.get(answer)
+        if attach is None:
+            attach = f"{self._next}__{_seed(original)}"
+            self._next += 1
+            self._by_answer[answer] = attach
+        return AttachedKey(attach=attach, on=tuple((slot, member) for member, slot in on))
 
-    def _mint(self, seed: str) -> FieldKey:
-        self._next += 1
-        return FieldKey(path=(), leaf=f"{REGROUP_LEAF_PREFIX}{self._next - 1}__{seed}")
+    def register(self, attach: RegroupAttachPlan, *, typing: SlotTyping) -> RegroupAttachPlan:
+        """Record ``attach`` as the template of each attached value it answers first, typed by its minting plan."""
+        for sub in attach.substitutions:
+            key = sub.placeholder
+            if isinstance(key, AttachedKey) and key.attach not in self._templates:
+                self._templates[key.attach] = attach
+                self.typings[key.attach] = AttachedTyping(original=sub.original_key, typing=typing)
+        return attach
+
+    def template(self, key: AttachedKey) -> RegroupAttachPlan:
+        found = self._templates.get(key.attach)
+        if found is None:
+            raise RuntimeError(f"attached value {key.attach!r} has no registered producer")
+        return found
+
+    def original(self, key: AttachedKey) -> ValueKey:
+        return self.typings[key.attach].original
+
+    def edge(self, keys: Sequence[AttachedKey], *, phase: str) -> RegroupAttachPlan:
+        """``keys`` (one producer's answers, joined alike) attached to their reader at ``phase``."""
+        template = self.template(keys[0])
+        on = keys[0].on
+        own = {k.attach: k for k in keys}
+        subs = [
+            sub.model_copy(update={"placeholder": own.get(sub.placeholder.attach, sub.placeholder.model_copy(
+                update={"on": on}))})
+            for sub in template.substitutions if isinstance(sub.placeholder, AttachedKey)
+        ]
+        pairs = [(m, s) for s, m in on]
+        if (phase, subs, pairs) == (template.attach_phase, template.substitutions, template.join_pairs):
+            return template  # read where it was minted: the same attach
+        return template.model_copy(update={"attach_phase": phase, "substitutions": subs, "join_pairs": pairs})
+
+    def group_of(self, key: AttachedKey) -> int:
+        """The minting attach ``key`` shares with the other answers of its producer."""
+        return id(self.template(key))
+
+
+class ProducerRegistry(Dict[Hashable, PlannedQuery]):
+    """One stage compilation's interned producers, and its statement's attach table."""
+
+    def __init__(self, attaches: Optional[AttachTable] = None) -> None:
+        super().__init__()
+        self.attaches = AttachTable() if attaches is None else attaches
+
+
+def attached_reads(keys: Sequence[ValueKey]) -> List[AttachedKey]:
+    """Every attached value ``keys`` read, first-seen order."""
+    return list(dict.fromkeys(k for r in keys for k in walk_value_keys(r) if isinstance(k, AttachedKey)))
 
 
 def substitute_in_bound_filter(

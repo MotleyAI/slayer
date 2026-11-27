@@ -29,6 +29,7 @@ from slayer.core.relationship_walker import (
 )
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, axis_field, is_spine
 from slayer.core.keys import (
+    AttachedKey,
     TransformKey,
     display_token,
     is_framed_path,
@@ -823,6 +824,8 @@ def _grain_node_attributable(
     host_dataset: SlayerDataset, host_name: Optional[str],
 ) -> Optional[bool]:
     """One grain node's verdict; ``None`` for a node that references nothing."""
+    if isinstance(r, AttachedKey):
+        return True  # it stands for its members, judged as its children; with none it is a constant
     if isinstance(r, AggregateKey) and is_framed_path(source_anchor_path(r.source)):
         # Read from its own frame, an attached aggregate stands for its grain members (Axiom 2.3).
         return all(grain_member_attributable(

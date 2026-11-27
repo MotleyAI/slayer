@@ -11,6 +11,8 @@ from typing import Any, Callable, cast
 from slayer.core.enums import GRANULARITY_NAMES
 from slayer.core.granularity import CustomGranularity
 from slayer.core.keys import (
+    REGROUP_LEAF_PREFIX,
+    AttachedKey,
     display_token,
     MIRRORED_TIME_POINT_OP,
     OPTIONAL_KEY_FIELDS,
@@ -214,6 +216,8 @@ def _partition_key_display(key: Any) -> str:
         parts = [*map(display_token, key.path), key.leaf]
     elif isinstance(key, FieldSqlKey):
         parts = [*map(display_token, key.path), key.field_name]
+    elif isinstance(key, AttachedKey):
+        parts = [key_display(key)]
     else:
         parts = [legacy_key_str(key)]
     return _NON_IDENT_RE.sub("_", "_".join(parts)).strip("_")
@@ -343,6 +347,8 @@ def _leaf_display(key: ValueKey) -> str | None:
         return ".".join((*map(display_token, key.path), "*"))
     if isinstance(key, LiteralKey):
         return _scalar_display(key.value)
+    if isinstance(key, AttachedKey):
+        return f"{REGROUP_LEAF_PREFIX}{key.attach}"
     return None
 
 
@@ -438,6 +444,8 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return ".".join((*map(display_token, value.path), value.leaf if isinstance(value, FieldKey) else value.field_name))
     if isinstance(value, AggregateKey):
         return _agg_key_canonical_str(value)
+    if isinstance(value, AttachedKey):
+        return key_display(value)
     if isinstance(value, TransformKey):
         return _transform_key_canonical_str(value)
     if isinstance(value, SqlFragmentKey):
@@ -498,7 +506,7 @@ def _transform_key_canonical_str(value: TransformKey) -> str:
     carrying its granularity (a bucketed ``cumsum`` differs from an unbucketed one)."""
     parts = [value.op]
     parts.extend(f"{k}_{agg_kwarg_canonical_str(v)}" for k, v in value.kwargs)
-    if isinstance(value.input, (FieldKey, FieldSqlKey, AggregateKey, TransformKey)):
+    if isinstance(value.input, (FieldKey, FieldSqlKey, AggregateKey, TransformKey, AttachedKey)):
         parts.append(agg_kwarg_canonical_str(value.input))
     else:
         parts.append(_NON_IDENT_RE.sub("_", legacy_key_str(value.input)).strip("_"))

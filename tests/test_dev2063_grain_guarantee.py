@@ -16,8 +16,8 @@ from pydantic import ValidationError
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.enums import DataType
 from slayer.core.keys import (
-    REGROUP_LEAF_PREFIX,
     AggregateKey,
+    AttachedKey,
     ArithmeticKey,
     FieldKey,
     LiteralKey,
@@ -254,7 +254,7 @@ _BASE = Stage(kind=StageKind.BASE)
 _REGION = FieldKey(path=(), leaf="region")
 _CITY = FieldKey(path=(), leaf="city")
 _SUM = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum")
-_PLACEHOLDER = FieldKey(path=(), leaf=f"{REGROUP_LEAF_PREFIX}0__amount_sum")
+_PLACEHOLDER = AttachedKey(attach="a0", on=(("p_d", _REGION),))
 
 
 def _stage_error(build: Callable[[], object]) -> str:

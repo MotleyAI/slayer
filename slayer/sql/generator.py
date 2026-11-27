@@ -50,7 +50,7 @@ from slayer.core.granularity import bucket_type as granularity_bucket_type
 from slayer.core.time_spine import TIME_SPINE_FIELD, is_spine
 from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_zones import CIVIL
-from slayer.core.keys import boolean_valued, split_top_level_and, restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, TRANSFORM_KINDS, ValueKey, WindowKey, aggregation_source_type, display_token, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
+from slayer.core.keys import boolean_valued, split_top_level_and, restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, AttachedKey, ArithmeticKey, CastKey, FieldKey, FieldSqlKey, FieldTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, TRANSFORM_KINDS, ValueKey, WindowKey, aggregation_source_type, display_token, is_ranked, field_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.relationship_walker import (
     OrientedRelationship,
     aggregation_owner,
@@ -2157,12 +2157,12 @@ class SQLGenerator:
         """Resolve ROW slots' plain fields (a ``TimeTruncKey``'s untruncated source) through ``scope``;
         order-only slots, which the base select does not read, register their relationship path only."""
 
-        def _plain(sid: str) -> Optional[FieldKey]:
+        def _plain(sid: str) -> Optional[FieldKey | AttachedKey]:
             slot = slots_by_id.get(sid)
             if slot is None or slot.phase != Phase.ROW:
                 return None
             field = slot.key.source if isinstance(slot.key, TimeTruncKey) else slot.key
-            return field if isinstance(field, FieldKey) else None
+            return field if isinstance(field, (FieldKey, AttachedKey)) else None
 
         out: Dict[str, Expression] = {}
         for sid in render_slot_ids:
@@ -2171,7 +2171,7 @@ class SQLGenerator:
                 out[sid] = scope.resolve(field)
         for sid in order_slot_ids:
             field = _plain(sid)
-            if field is not None and sid not in out:
+            if isinstance(field, FieldKey) and sid not in out:
                 scope.register_path_prefixes(field.path)
         return out
 
@@ -2326,7 +2326,7 @@ class SQLGenerator:
 
             if slot.phase == Phase.ROW:
                 key = slot.key
-                if isinstance(key, FieldKey):
+                if isinstance(key, (FieldKey, AttachedKey)):
                     col_expr = plain_expr_by_sid[sid]
                     select_columns.append(col_expr.copy().as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, col_expr)
@@ -2910,7 +2910,7 @@ class SQLGenerator:
                     bundle=bundle, scope=scope, cast_derived=False,
                 )
             return self._build_date_trunc(col_expr=raw, key=key)
-        if isinstance(key, FieldKey):
+        if isinstance(key, (FieldKey, AttachedKey)):
             return scope.resolve(key)
         if isinstance(key, FieldSqlKey):
             return self._ranked_derived_field_expr(
@@ -3047,10 +3047,7 @@ class SQLGenerator:
                 )
             if isinstance(
                 member.ranked_key, (*SLOT_COMPOSITE_KINDS, *TRANSFORM_KINDS),
-            ) or (
-                isinstance(member.ranked_key, FieldKey)
-                and member.ranked_key.leaf.startswith(REGROUP_LEAF_PREFIX)
-            ):
+            ) or isinstance(member.ranked_key, AttachedKey):
                 expr = render_value_key(
                     key=member.ranked_key,
                     ctx=RenderContext(scope=ranked_scope, dialect=self._dialect),
@@ -5238,7 +5235,7 @@ class SQLGenerator:
         key = slot.key
         if isinstance(key, TimeTruncKey):
             return axis_field is not None and key.source != axis_field
-        return isinstance(key, (FieldKey, FieldSqlKey)) or slot.is_dimension
+        return isinstance(key, (FieldKey, FieldSqlKey, AttachedKey)) or slot.is_dimension
 
     def _render_window_transform_sql(  # NOSONAR(S3776) — one per-op dispatch over the window-transform vocabulary, sharing the resolved metric / frame / partition state every arm reads. Each arm is one line; splitting the dispatch scatters that state without simplifying it.
         self,

@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.keys import (
     SLOT_COMPOSITE_KINDS,
+    AttachedKey,
     FieldKey,
     FieldSqlKey,
     AggregateKey,
@@ -27,7 +28,6 @@ from slayer.core.keys import (
     window_kwarg_of,
 )
 from slayer.engine.compile.projection import _iter_slot_deps
-from slayer.engine.compile.shift import is_placeholder
 from slayer.ir.planned import (
     MaskEntry,
     MaskTyping,
@@ -121,7 +121,7 @@ class _SlotStager:
         key = slot.key
         if isinstance(key, AggregateKey):
             return self._aggregate_stage(key)
-        if is_placeholder(key):
+        if isinstance(key, AttachedKey):
             return self._placeholder_stage(key)
         if isinstance(key, (FieldKey, FieldSqlKey, TimeTruncKey, LiteralKey)):
             return Stage(kind=StageKind.BASE)

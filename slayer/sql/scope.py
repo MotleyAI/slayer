@@ -32,8 +32,8 @@ from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
 from slayer.core.relationship_walker import dataset_field, dataset_field_element, dataset_field_type, resolved_terminal
 from slayer.core.keys import (
-    REGROUP_LEAF_PREFIX,
     ArithmeticKey,
+    AttachedKey,
     ArrayLiteralKey,
     CastKey,
     FieldKey,
@@ -44,6 +44,7 @@ from slayer.core.keys import (
     ScalarCallKey,
     SqlFragmentKey,
     TimeTruncKey,
+    ValueKey,
 )
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.field_expansion import (
@@ -78,7 +79,7 @@ _Grammar = Literal["predicate", "expression"]
 # parameter expressions, free Mode-A / predicate text, and row-level expression
 # composites — an aggregate's same-dataset expression source anchors through the same door.
 Ref = Union[
-    FieldKey, FieldSqlKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, CastKey,
+    FieldKey, FieldSqlKey, AttachedKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, CastKey,
     ListSetKey, str,
 ]
 
@@ -133,10 +134,8 @@ class ScopeFrame(BaseModel):
     allocator: AliasAllocator
     relationship_paths: _OrderedPathSet = Field(default_factory=_OrderedPathSet)
     materializations: List[Materialization] = Field(default_factory=list)
-    # reserved-leaf placeholder → its rendered column on an attached
-    # regroup producer CTE. Resolved by EXACT membership before ordinary column
-    # anchoring; a prefixed leaf that misses this registry is fail-closed.
-    attached_fields: Dict[FieldKey, exp.Expression] = Field(default_factory=dict)
+    #: Attached value → its rendered column on an attached regroup producer.
+    attached_fields: Dict[ValueKey, exp.Expression] = Field(default_factory=dict)
     #: Temporal types of placeholders substituted for attached aggregates.
     placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
     #: Element types of the list-valued ones.
@@ -407,23 +406,12 @@ class ScopeFrame(BaseModel):
         return None if expr is None else expr.sql(dialect=self.dialect.sqlglot_name)
 
     def _anchor(self, ref: Ref) -> exp.Expression:  # NOSONAR(S3776) — flat dispatch over the Ref kinds (FieldKey / FieldSqlKey / str); each arm is independently simple and splitting would scatter the one-resolver-per-scope contract
-        if isinstance(ref, FieldKey):
-            # A regroup placeholder resolves from the attach registry
-            # by EXACT membership; a reserved-prefix leaf that misses is
-            # fail-closed — but ONLY when a regroup is active in this scope
-            # (non-empty registry). With nothing attached, a leaf that merely
-            # collides with the reserved prefix is an ordinary field: the
-            # plan-time prefix fence runs only when a regroup is planned.
+        if isinstance(ref, AttachedKey):
             attached = self.attached_fields.get(ref)
-            if attached is not None:
-                return attached.copy()
-            if self.attached_fields and ref.leaf.startswith(REGROUP_LEAF_PREFIX):
-                raise ValueError(
-                    f"Regroup placeholder {ref.leaf!r} has no attached producer "
-                    f"field in this scope. A __regroup__ leaf must resolve "
-                    f"through the attach registry; reaching field anchoring "
-                    f"means the placeholder escaped its producer's join scope.",
-                )
+            if attached is None:
+                raise ValueError(f"attached value {ref.attach!r} has no attached producer field in this scope")
+            return attached.copy()
+        if isinstance(ref, FieldKey):
             declared = self._plain_field(ref)
             if declared is None:
                 raise UnknownReferenceError(

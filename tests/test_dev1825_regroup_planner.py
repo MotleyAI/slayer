@@ -1,8 +1,7 @@
 """Regroup-planner contracts beyond the basic acceptance:
-placeholder minting is injective by structural key identity, one producer
-serves N outputs, the filter classifier is total over AND/OR/NOT/scalar-call
-trees, and the discovery guards (joined aggregate source, reserved-prefix
-field) fail loudly.
+one producer serves N outputs, the filter classifier is total over AND/OR/NOT/scalar-call
+trees, and the discovery guard (joined aggregate source) fails loudly; a field
+with the former reserved prefix is an ordinary field.
 """
 
 from __future__ import annotations
@@ -12,15 +11,8 @@ import re
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey, FieldKey
-from slayer.core.keys import Grain
 from slayer.core.models import DatasetField
 from slayer.core.query import QueryMetric, SlayerQuery
-from slayer.engine.compile.regroup import (
-    REGROUP_LEAF_PREFIX,
-    RegroupPlaceholderRegistry,
-)
-
 from tests._dev1740_fixtures import cm_cte_bodies, dev1740_datasets, gen
 from tests._engine_helpers import _engine_generate
 
@@ -52,48 +44,6 @@ def _consumer_body(sql: str) -> str:
     final consumer SELECT sees (so a token there is routed to the consumer,
     not the producer)."""
     return sql.replace(cm_cte_bodies(sql), "")
-
-
-# --------------------------------------------------------------------------- #
-# Placeholder registry — injective by STRUCTURAL identity (Codex F2): two
-# distinct keys always mint distinct leaves.
-# --------------------------------------------------------------------------- #
-class TestPlaceholderRegistry:
-    def _keys(self):
-        source = FieldKey(path=(), leaf="amount")
-        plain = AggregateKey(
-            source=source, agg="sum",
-            partition_keys=Grain.of({FieldKey(path=(), leaf="city")}),
-        )
-        other = AggregateKey(
-            source=source, agg="sum",
-            partition_keys=Grain.of({FieldKey(path=(), leaf="region")}),
-        )
-        return plain, other
-
-    def test_indices_are_sequential_by_first_mint(self) -> None:
-        plain, other = self._keys()
-        reg = RegroupPlaceholderRegistry()
-        first = reg.placeholder_for(plain)
-        second = reg.placeholder_for(other)
-        idx = re.compile(re.escape(REGROUP_LEAF_PREFIX) + r"(\d+)__")
-        assert idx.match(first.leaf).group(1) == "0"
-        assert idx.match(second.leaf).group(1) == "1"
-
-    def test_same_key_mints_one_placeholder(self) -> None:
-        plain, _ = self._keys()
-        reg = RegroupPlaceholderRegistry()
-        first = reg.placeholder_for(plain)
-        second = reg.placeholder_for(plain)
-        assert first == second
-
-    def test_minting_is_deterministic_across_registries(self) -> None:
-        plain, other = self._keys()
-        one = RegroupPlaceholderRegistry()
-        two = RegroupPlaceholderRegistry()
-        assert [one.placeholder_for(plain), one.placeholder_for(other)] == [
-            two.placeholder_for(plain), two.placeholder_for(other),
-        ]
 
 
 # --------------------------------------------------------------------------- #
@@ -213,13 +163,13 @@ class TestDiscoveryGuards:
         with pytest.raises(ValueError, match=r"attributable from customers"):
             await gen(q)
 
-    async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
+    async def test_reserved_prefix_column_accepted_when_regroup_active(self) -> None:
         q = _q(
             dimensions=["orders.region", {"field": BAND, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
-        with pytest.raises(ValueError, match=r"__regroup__"):
-            await _gen_with_reserved_field(q)
+        sql = await _gen_with_reserved_field(q)
+        assert "SELECT" in sql
 
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = _q(

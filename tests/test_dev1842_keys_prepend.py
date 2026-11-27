@@ -42,7 +42,7 @@ from slayer.core.keys import (
     reroot_value_key,
     SqlFragmentKey,
 )
-from slayer.core.keys import Grain
+from slayer.core.keys import AttachedKey, Grain
 
 HOST = ("customers",)
 DEEP = ("customers", "regions")
@@ -90,6 +90,7 @@ def _samples() -> dict:
             function="row_number", order=(FieldKey(path=(), leaf="spend"),),
             descending=(False,), nulls_first=(False,),
         ),
+        AttachedKey: AttachedKey(attach="a0", on=(("s0", FieldKey(path=(), leaf="tier")),)),
     }
 
 

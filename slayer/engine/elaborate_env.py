@@ -636,16 +636,6 @@ def check_result_names_case(*, names: Iterable[str]) -> None:
         )
 
 
-def check_reserved_regroup_prefix(fields: List[str]) -> None:
-    """A real field may not carry the reserved regroup placeholder prefix while a regroup is active."""
-    if fields:
-        raise NameCollisionError(
-            summary=f"Field(s) {fields!r} use the reserved '__regroup__' prefix, which "
-            f"collides with the regroup primitive's placeholders.",
-            suggestion="Rename them.",
-        )
-
-
 def validate_dataset_filter(*, mf: str, references: Iterable[Tuple[SlayerDataset, str]]) -> None:
     """Reject a dataset filter naming a saved metric, each ``(owner, leaf)`` reference judged on its owner."""
     for owner, col in references:

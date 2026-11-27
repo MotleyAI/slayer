@@ -11,6 +11,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
 from slayer.core.keys import (
     AggregateKey,
+    AttachedKey,
     ConsumerNode,
     FieldKey,
     FieldSqlKey,
@@ -30,7 +31,6 @@ from slayer.core.keys import (
     window_kwarg_of,
 )
 from slayer.core.scope import DatasetScope
-from slayer.engine.compile.shift import is_placeholder
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
     combined_kind,
@@ -72,6 +72,11 @@ class RootDisposition(BaseModel):
     #: metrics containing that root).
     consumer_public_names: Tuple[str, ...] = ()
     declared_type: Optional[DataType] = None
+
+
+def _routes_reaggregation(k: ValueKey) -> bool:
+    """A re-aggregation whose operand a producer computes; one over attached values only aggregates them in place."""
+    return is_reaggregation_key(k) and bool(attached_inputs(k))
 
 
 def _is_bare_own_rows_local(k: ValueKey, *, homes: AggregateHomes) -> bool:
@@ -138,7 +143,7 @@ class _Walker:
         """An aggregate computed over the plan's host rows at the plan grain (inline, or host-rooted across its
         inputs' hops)."""
         return (
-            a.written_grain is None and not attached_inputs(a) and not is_reaggregation_key(a)
+            a.written_grain is None and not attached_inputs(a) and not _routes_reaggregation(a)
             and not self.homes.target_rooted(a) and not _is_bare_own_rows_local(a, homes=self.homes)
             and not self.local_broadcasts(a)
         )
@@ -175,7 +180,7 @@ class _Walker:
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
             or self.homes.target_rooted(k) or k.locus == "host" or self.crossing(k)
-            or any(is_placeholder(r) for r in walk_value_keys(k.source))  # a lowered re-aggregation outer
+            or any(isinstance(r, AttachedKey) for r in walk_value_keys(k.source))  # a lowered re-aggregation outer
         ):
             return False
         written = k.written_grain
@@ -217,7 +222,7 @@ class _Walker:
 
     def dimension(self, vk: ValueKey, *, name: Optional[str], declared: Optional[DataType]) -> None:
         for k in dimension_nodes(vk):
-            if is_reaggregation_key(k):
+            if _routes_reaggregation(k):
                 self.emit_named(k, "row", "reaggregation", top=k == vk, name=name,
                                 declared=declared)
                 continue
@@ -257,7 +262,7 @@ class _Walker:
             return
         if base is not None and base(n.key):
             return
-        if is_reaggregation_key(n.key):
+        if _routes_reaggregation(n.key):
             if self.classes.combined_admits(n, position=position, root=root):
                 self.emit_named(n.key, "combined", "reaggregation", top=top, name=name, declared=declared)
             return

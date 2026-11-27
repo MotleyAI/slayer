@@ -24,6 +24,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.time_points import date_bound, parse_temporal_value
 from slayer.core.keys import (
+    AttachedKey,
     CLOCK_FUNCTIONS,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
@@ -746,7 +747,7 @@ def render_row_expression(
             )
         return _literal(a, dialect=dialect)
 
-    if isinstance(key, (FieldKey, FieldSqlKey)):
+    if isinstance(key, (FieldKey, FieldSqlKey, AttachedKey)):
         return resolve_field(key)
     if isinstance(key, LiteralKey):
         return _literal(key.value, dialect=dialect)

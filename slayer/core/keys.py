@@ -501,6 +501,39 @@ class StarKey(_LeafKey, frozen=True):
         return Phase.ROW
 
 
+class AttachedKey(_FrozenKey, frozen=True):
+    """A synthesized producer's answer read by a plan: ``attach`` names the interned answer, ``on`` joins each
+    producer grain slot to a grain member in the reader's coordinates (canonical by slot)."""
+
+    attach: str
+    on: Tuple[Tuple[str, "ValueKey"], ...] = ()
+
+    @field_validator("on", mode="after")
+    @classmethod
+    def _by_slot(cls, v):
+        return tuple(sorted(v, key=lambda pair: pair[0]))
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW
+
+    @property
+    def members(self) -> Tuple["ValueKey", ...]:
+        return tuple(m for _, m in self.on)
+
+    def children(self) -> Tuple["ValueKey", ...]:
+        return self.members
+
+    def map_children(self, fn: Callable[["ValueKey"], "ValueKey"]) -> "AttachedKey":
+        m = _ChildMapper(fn)
+        on = tuple((slot, m(member)) for slot, member in self.on)
+        return self.model_copy(update={"on": on}) if m.changed else self
+
+
+#: Keys a typing walk types through ``field_type``.
+FIELD_TYPED_KINDS = (FieldKey, FieldSqlKey, AttachedKey)
+
+
 class LiteralKey(_LeafKey, frozen=True):
     """Identity for a literal value inside an expression tree.
 
@@ -537,7 +570,7 @@ class LiteralKey(_LeafKey, frozen=True):
 # the source may itself be an ``AggregateKey`` (or a composite of them — carried
 # by the Arithmetic/ScalarCall operands, which already admit any ValueKey).
 AggregateSource = Union[
-    FieldKey, FieldSqlKey, StarKey, TimeTruncKey,
+    FieldKey, FieldSqlKey, StarKey, TimeTruncKey, AttachedKey,
     "ArithmeticKey", "ScalarCallKey", "LiteralKey", "AggregateKey", "TransformKey",
     "InKey", "TimePointCmpKey", "CastKey", "ListSetKey", "WindowKey",
 ]
@@ -547,7 +580,7 @@ AggregateSource = Union[
 # `weighted_avg(weight=rank(sum(amount, partition_by=…), direction='desc'))` a grained transform —
 # all via `_bind_agg_arg`.
 _AggregateArgValue = Union[
-    FieldKey, FieldSqlKey, SqlFragmentKey, "AggregateKey", "TransformKey",
+    FieldKey, FieldSqlKey, SqlFragmentKey, AttachedKey, "AggregateKey", "TransformKey",
     "ScalarCallKey", "ArithmeticKey", "CastKey", "InKey", TimeTruncKey, "LiteralKey", "WindowKey",
     Decimal, str, bool, None,
 ]
@@ -1121,6 +1154,7 @@ ValueKey = Union[
     CastKey,
     ListSetKey,
     WindowKey,
+    AttachedKey,
 ]
 
 
@@ -1231,6 +1265,7 @@ CastKey.model_rebuild()
 ListSetKey.model_rebuild()
 WindowKey.model_rebuild()
 TimeTruncKey.model_rebuild()
+AttachedKey.model_rebuild()
 # AggregateKey.source forward-references the expression composites.
 AggregateKey.model_rebuild()
 Grain.model_rebuild()
@@ -1275,6 +1310,7 @@ KIND_POLICY: dict[type, KindPolicy] = {
     CastKey: KindPolicy(slot_composite=True, materialised_order=True),
     ListSetKey: KindPolicy(slot_composite=True, materialised_order=True),
     WindowKey: KindPolicy(slottable=True, materialised_order=True),
+    AttachedKey: KindPolicy(slottable=True),
 }
 SLOT_COMPOSITE_KINDS: Tuple[type, ...] = tuple(k for k, p in KIND_POLICY.items() if p.slot_composite)
 
@@ -1355,7 +1391,9 @@ def constituent_grain(
 ) -> Grain:
     """Grain of an attached constituent (Axiom 2.3) — aggregate or grained
     transform: its effective root grain, folding the active bucket back in when a
-    windowed inner pulls it in."""
+    windowed inner pulls it in; an attached value's is its grain members."""
+    if isinstance(c, AttachedKey):
+        return Grain.of(c.members)
     grain, windowed = effective_root_grain(
         agg=c, projected_dim_keys=projected_dim_keys,
         projected_td_keys=projected_td_keys, active_bucket=active_bucket,
@@ -1493,7 +1531,7 @@ def is_framed_path(path: Tuple[str, ...]) -> bool:
 
 def _framed_leaves(key: _RerootableT, *, token: str) -> _RerootableT:
     """``key``'s row leaves prefixed with ``token`` (an already-framed one kept); attached values are opaque."""
-    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)) or is_transform(key):
+    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey, AttachedKey)) or is_transform(key):
         return key
     if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
         return key if is_framed_path(key.path) else cast(_RerootableT, key.model_copy(update={"path": (token, *key.path)}))
@@ -1506,7 +1544,7 @@ def _framed_leaves(key: _RerootableT, *, token: str) -> _RerootableT:
 def _unanchored_leaves(key: _RerootableT) -> _RerootableT:
     """``key``'s row leaves without their anchored spelling (read from one frame, their path is their identity);
     attached values are opaque."""
-    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey)) or is_transform(key):
+    if not isinstance(key, _FrozenKey) or isinstance(key, (AggregateKey, TransformKey, AttachedKey)) or is_transform(key):
         return key
     if isinstance(key, (FieldKey, FieldSqlKey)):
         return key if key.anchor is None else cast(_RerootableT, key.model_copy(update={"anchor": None}))
@@ -1594,8 +1632,15 @@ def _composed_grain(key: _RerootableT, *, frame: str, host_path: Callable[[], Tu
     return cast(_RerootableT, leaf(cast(ValueKey, key)))
 
 
+def _record_rebuilt(before: object, after: object, rebuilt: Optional[Dict["ValueKey", "ValueKey"]]) -> None:
+    if rebuilt is not None and after is not before and isinstance(before, AggregateKey) \
+            and isinstance(after, AggregateKey):
+        rebuilt[before] = after
+
+
 def substitute_value_keys(
     key: _RerootableT, mapping: Mapping["ValueKey", "ValueKey"],
+    *, rebuilt: Optional[Dict["ValueKey", "ValueKey"]] = None,
 ) -> _RerootableT:
     """Replace whole sub-keys named in ``mapping`` by identity, structurally.
 
@@ -1603,6 +1648,7 @@ def substitute_value_keys(
     replaced atomically (children never traversed, replacements never
     re-substituted); everything else routes through ``map_children`` (a
     protocol-less kind raises). ``TimeTruncKey.source`` IS traversed.
+    ``rebuilt`` records each aggregate rebuilt or replaced by an aggregate, old → new.
     """
     # Scalars ride through untouched (ScalarCallKey args, AggregateKey kwargs).
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
@@ -1613,11 +1659,12 @@ def substitute_value_keys(
             f"only value keys and scalars are substitutable."
         )
     if key in mapping:
-        return cast(_RerootableT, mapping[cast("ValueKey", key)])
-    return cast(
-        _RerootableT,
-        key.map_children(lambda c: substitute_value_keys(c, mapping)),
-    )
+        replaced = mapping[cast("ValueKey", key)]
+        _record_rebuilt(key, replaced, rebuilt)
+        return cast(_RerootableT, replaced)
+    out = key.map_children(lambda c: substitute_value_keys(c, mapping, rebuilt=rebuilt))
+    _record_rebuilt(key, out, rebuilt)
+    return cast(_RerootableT, out)
 
 
 # Conditional branch typing — Postgres CASE semantics.
@@ -1716,7 +1763,7 @@ def _window_argument(key: object) -> Optional["ValueKey"]:
 
 def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     """DATE / TIMESTAMP when ``key`` is provably temporal, else ``None``; field leaves type via ``field_type``."""
-    if isinstance(key, (FieldKey, FieldSqlKey)):
+    if isinstance(key, FIELD_TYPED_KINDS):
         t = field_type(key)
         return t if t in TEMPORAL_TYPES else None
     if isinstance(key, TimeTruncKey):
@@ -1784,7 +1831,7 @@ _BOOLEAN_BRANCH_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyT
 
 def boolean_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly boolean; field leaves type via ``field_type``."""
-    if isinstance(key, (FieldKey, FieldSqlKey)):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key) is DataType.BOOLEAN
     if isinstance(key, LiteralKey):
         return isinstance(key.value, bool)
@@ -1849,7 +1896,7 @@ def numeric_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly a number (a boolean reads as one only beside a number)."""
     if _is_number_literal(key):
         return True
-    if isinstance(key, (FieldKey, FieldSqlKey)):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key) in _NUMERIC_TYPES
     if isinstance(key, ArithmeticKey):
         return key.op in _ARITHMETIC_OPS
@@ -1882,7 +1929,7 @@ def integer_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly an integer (booleans read as 0 / 1 count)."""
     if _is_int_literal(key) or boolean_valued(key, field_type=field_type):
         return True
-    if isinstance(key, (FieldKey, FieldSqlKey)):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key) is DataType.INTEGER
     if isinstance(key, CastKey):
         return key.data_type is DataType.INTEGER
@@ -2061,7 +2108,7 @@ def aggregation_source_type(source: object, *, field_type: FieldTypeFn) -> Optio
         return DataType.BOOLEAN
     if _boolean_int_expression(source, field_type=field_type):
         return DataType.INTEGER
-    if isinstance(source, (FieldKey, FieldSqlKey, CastKey)) or (
+    if isinstance(source, (*FIELD_TYPED_KINDS, CastKey)) or (
             isinstance(source, ScalarCallKey) and source.name in CONDITIONAL_SCALARS):
         return value_type(source, field_type=field_type)
     return None
@@ -2115,7 +2162,7 @@ def conditional_branch_conflict(
 
 def list_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly a list."""
-    if isinstance(key, (FieldKey, FieldSqlKey)):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key) is DataType.ARRAY
     if isinstance(key, (ArrayLiteralKey, ListSetKey)):
         return True
@@ -2243,7 +2290,7 @@ def value_type(
     """``key``'s type; ``None`` only for NULL or an unresolvable field leaf."""
     if isinstance(key, LiteralKey):
         return literal_type(key.value)
-    if isinstance(key, (FieldKey, FieldSqlKey)):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key)
     if isinstance(key, CastKey):
         return None if kind_of(key.data_type) is TypeKind.UNKNOWN else key.data_type
@@ -2347,7 +2394,7 @@ def list_element_type(
     key: object, *, field_type: FieldTypeFn, field_element: FieldElementFn,
 ) -> Optional[DataType]:
     """The element type of a list-valued ``key`` (``None`` when unknown, e.g. ``[]``)."""
-    if isinstance(key, (FieldKey, FieldSqlKey)):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_element(key)
     if isinstance(key, ArrayLiteralKey):
         types = {literal_type(v.value) for v in key.values}
@@ -2595,7 +2642,7 @@ def operand_constituents(source: ValueKey) -> List[ValueKey]:
     out: List[ValueKey] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
+        if isinstance(k, (AggregateKey, TransformKey, AttachedKey)) or is_transform(k):
             if k not in out:
                 out.append(k)
             return
@@ -2613,7 +2660,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
     out: List[ValueKey] = []
 
     def _walk(k: ValueKey) -> None:
-        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
+        if isinstance(k, (AggregateKey, TransformKey, AttachedKey)) or is_transform(k):
             return
         if isinstance(k, (FieldKey, FieldSqlKey, StarKey)):
             out.append(k)
@@ -2628,7 +2675,8 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
 def parameter_row_leaves(value) -> List[ValueKey]:
     """The row-level field leaves of an aggregation parameter value; a scalar, a
     marker string or an attached value (aggregate / transform) has none."""
-    if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey)) or is_transform(value):
+    if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey, AttachedKey)) \
+            or is_transform(value):
         return []
     return source_row_leaves(cast(ValueKey, value))
 
@@ -2638,7 +2686,8 @@ def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
 
     Attached constituents — nested aggregates and grained transforms — are opaque
     (they contribute their grain, not a source leaf); a literal-only source yields
-    no leaf. The one accessor every "where does this source live" site reads (D1)."""
+    no leaf; an attached value lives where its grain members do. The one accessor every "where does this source
+    live" site reads (D1)."""
     out: List[Tuple[str, ...]] = []
 
     def _walk(k: ValueKey) -> None:
@@ -2752,15 +2801,15 @@ def settle_ranked_grains(
 
 
 def attached_inputs(k: ValueKey) -> List[ValueKey]:
-    """Deduped top-level attached constituents — aggregates and grained
-    transforms — across source, args and kwargs (source first)."""
+    """Deduped top-level attached constituents a producer computes — aggregates and grained
+    transforms — across source, args and kwargs (source first); an attached value is already produced."""
     if not isinstance(k, AggregateKey):
         return []
     out: List[ValueKey] = []
     for inp in (k.source, *k.args, *(v for _, v in k.kwargs)):
         if isinstance(inp, _FrozenKey):
             for c in operand_constituents(inp):
-                if c not in out:
+                if c not in out and not isinstance(c, AttachedKey):
                     out.append(c)
     return out
 
@@ -2854,6 +2903,7 @@ def walk_consumer_keys(key: ValueKey) -> Iterator["ValueKey"]:
 def substitute_consumer_keys(
     key: _RerootableT, mapping: Mapping["ValueKey", "ValueKey"],
     *, opaque: Optional[Callable[["ValueKey"], bool]] = None,
+    rebuilt: Optional[Dict["ValueKey", "ValueKey"]] = None,
 ) -> _RerootableT:
     """Replace sub-keys named in ``mapping`` where root discovery looks — the
     substitution law mirroring :func:`walk_consumer_keys`.
@@ -2862,6 +2912,7 @@ def substitute_consumer_keys(
     attach-owning aggregate the source/args/kwargs are opaque (they belong to its
     own attach) and only ``partition_keys`` are traversed; an unmatched ``opaque``
     key is kept whole. Scalars ride through; identity is preserved when nothing matches.
+    ``rebuilt`` records each aggregate rebuilt or replaced by an aggregate, old → new.
     """
     if key is None or isinstance(key, (Decimal, str, bool, int, float)):
         return key
@@ -2871,21 +2922,23 @@ def substitute_consumer_keys(
             f"only value keys and scalars are substitutable."
         )
     if key in mapping:
-        return cast(_RerootableT, mapping[cast("ValueKey", key)])
+        replaced = mapping[cast("ValueKey", key)]
+        _record_rebuilt(key, replaced, rebuilt)
+        return cast(_RerootableT, replaced)
     if opaque is not None and opaque(cast("ValueKey", key)):
         return key
+
+    def _sub(c: "ValueKey") -> "ValueKey":
+        return substitute_consumer_keys(c, mapping, opaque=opaque, rebuilt=rebuilt)
+
     if isinstance(key, AggregateKey) and attached_inputs(key):
         if key.partition_keys is None:
             return key
-        new_pks = Grain.of(
-            substitute_consumer_keys(p, mapping, opaque=opaque) for p in key.partition_keys
-        )
+        new_pks = Grain.of(_sub(p) for p in key.partition_keys)
         if new_pks == key.partition_keys:
             return key
-        return cast(
-            _RerootableT, key.model_copy(update={"partition_keys": new_pks})
-        )
-    return cast(
-        _RerootableT,
-        key.map_children(lambda c: substitute_consumer_keys(c, mapping, opaque=opaque)),
-    )
+        out: object = key.model_copy(update={"partition_keys": new_pks})
+    else:
+        out = key.map_children(_sub)
+    _record_rebuilt(key, out, rebuilt)
+    return cast(_RerootableT, out)

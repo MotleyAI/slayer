@@ -1,0 +1,44 @@
+## 1. Failing tests (pr-tests)
+
+- [x] 1.1 New `tests/test_dev2375_attached_values.py` executing every scenario of the `queries/computed-dimensions` delta on DuckDB and SQLite with hand-computed oracles — fixtures: `tests/_dev2137_fixtures.py` (`list_engine`, `all_datasets`), `tests/_dev1739_fixtures.py` (`make_exec_engine`, `dev1739_datasets`), and a one-table `invoices (id, account_id, state, fee)` seeded via `tests/_engine_helpers.py::seeded_exec_engine`; verify each fails on the current HEAD for the reason named in design.md Context (scope miss / miscount), and the regression guards (time_shift, cumsum, downstream stage, filter beside a cross-dataset metric) pass already. Planning probe facts: the `band` dimension from `orders` (dev1739) with `count(customers.*)` from `customers` by `customers.tier` returns gold/band0 = 2 (truth 1); controls `sum(contractors.rate)` and `count(orders.*)` beside `band` already pass.
+- [x] 1.2 Unit ratchets for the kind (design decisions 3–6, 12–13, 19): equality / hash with pairs canonical by slot, reroot and prepend rewrite only `on` members, atomic substitution, total traversal, fail-closed dispatch enumerated against `VALUE_KEY_TYPES`, not rediscovered as a root, an aggregation over only attached values classified second-order, the plan-time invariant refusing a plan that reads an unattached value, substitution-recorded rebuilt pairs for two changed partition members; verify they fail (import or assertion) on HEAD. (user, pr-tests: "not rediscovered as a root" and the table-driven fail-closed dispatch have no unit ratchet: the executed nested / driving-reaggregation tests and the existing traversal, display and scope ratchets cover them.)
+- [x] 1.3 Edge cases from design decision 19: association / error mode across reverse-to-many, list-child, windowed and keyless (`twins`) homes; operand-only cells under a driving producer; explicit, defaulted and degenerate outer grains; a nested re-aggregation; two stages each minting attaches; interleaved compilation of two statements sharing no ids; a field named `__regroup__0__max` read beside a re-aggregation dimension.
+- [x] 1.4 Remove the seven strict `xfail(... DEV-2375 ...)` markers in `tests/test_dev2367_list_elements_across_joins.py` (they must then fail on HEAD).
+- [x] 1.5 Existing tests that construct reserved-leaf placeholders or pin the retired guard / plumbing contradict the plan — ASK the user's approval to align them (name each file and what changes) before editing: `_dev1871_raise_ledger.py` (`check_reserved_regroup_prefix` row), `test_dev1800_materialisation_stage.py`, `test_dev1824_multistage_boundary.py`, `test_dev1825_regroup_planner.py`, `test_dev1825_scope_attach.py`, `test_dev1825_substitute_keys.py`, `test_dev1829_planner.py`, `test_dev1829_routing.py`, `test_dev1838_transform_predicate_scope.py`, `test_dev1942_consumer_substitution.py`, `test_dev1942_dual_phase_reagg.py`, `test_dev1964_dual_phase_consumption.py`, `test_dev1976_dimension_values.py`, `test_dev1994_empty_value.py`, `test_dev2063_grain_guarantee.py`, `test_dev2101_grammar_parse.py`, `test_dev2367_list_elements_across_joins.py::test_rebuilt_aggregates_pair_partition_keys_by_identity_not_position` (re-check this list with grep for `__regroup__`, `REGROUP_LEAF_PREFIX`, `carried_attaches`, `reserved_placeholders`, `placeholder_originals`, `is_placeholder`, `_rebuilt_aggregates`).
+
+## 2. The attached-value kind
+
+- [x] 2.1 Add `AttachedKey` (`attach` id, `on` = slot-ordered `(producer grain slot, member)` pairs) to `slayer/core/keys.py` with `children()` / `map_children()` over the members, a `KIND_POLICY` entry and explicit cases in every kind dispatch (fail-closed tails kept); verify 1.2's kind ratchets pass.
+- [x] 2.2 Classification (design decision 6): attached constituent for operand / source classification (`operand_constituents`, `is_attached_source`, `is_reaggregation_key`, `source_row_leaves`), never a root to discovery (`slayer/engine/compile/discovery.py`); verify the second-order and not-rediscovered ratchets and the existing re-aggregation goldens pass.
+- [x] 2.3 Home, attributability, dependency closure and source anchor read an `AttachedKey`'s members (design decision 7) — name each function in `slayer/engine/population/` and the cardinality / attributability helpers receiving the case; verify the association and error-mode scenarios.
+
+## 3. One table, one attach rule
+
+- [x] 3.1 One compilation context per generated SQL statement holding the attach table and id allocator, threaded explicitly through `compile_stage`, `compile_synthesized`, routing and `SlotTyping`; registration before recursion; `RegroupPlaceholderRegistry` mints `AttachedKey`s from it; retire `reserved_placeholders`, the registry's `reserved` set and the `minted_placeholders` context variable (`slayer/engine/key_metadata.py`); verify the interleaved-compilation test.
+- [x] 3.2 Producer identity (design decision 9): the id is per interned producer answer (`_intern_producer`), the producer compiled once at minting from the original key with its settled grain; verify interning-across-roots and outer-grain tests.
+- [x] 3.3 One attach rule (design decision 10): every plan attaches each `AttachedKey` it reads and does not produce, at the reading phase, joined on the key's pairs; a plan's own driving operand stays a drive; retire `carried_attaches`, `_attaches_carrying`, `_placeholders_read`, `placeholder_originals` (the shifted producer keeps its carry-vs-recompute decision); verify scenarios 1–5 and the driving-producer test.
+- [x] 3.4 Classifiers read originals from the table (design decision 11): `shift.carried_placeholders`, `_series_mode`, `_re_evaluated`, discovery, projection; `_regroup_substituted_composite_phase` becomes plain phase propagation; verify the windowed / ranked / transform scenario.
+- [x] 3.5 Plan-time invariant (design decision 12) before a `PlannedQuery` is handed off; verify its ratchet.
+- [x] 3.6 Substitution records rebuilt aggregates old→new; `_carried_homes` reads the record; retire `_rebuilt_aggregates` / `_ordered_parts` (design decision 13); verify the two-members-in-one-partition scenario.
+
+## 4. Rendering and guard retirement
+
+- [x] 4.1 Generator / scope: `attached_fields` keyed by `AttachedKey`, alias text `__regroup__<id>__<seed>` from the table; the five `REGROUP_LEAF_PREFIX` checks (`slayer/sql/scope.py`, `slayer/engine/compile/shift.py`, `slayer/engine/compile/projection.py`, `slayer/sql/generator.py`, `slayer/engine/compile/stages.py`) become kind dispatch; verify all golden SQL tests pass byte-identical.
+- [x] 4.2 Retire `check_reserved_regroup_prefix` (`slayer/engine/elaborate_env.py`), `reserved_prefix_fields` (`slayer/engine/compile/regroup.py`) and the raise-ledger row; verify the former-reserved-prefix scenario and `grep -rn "REGROUP_LEAF_PREFIX\|__regroup__" slayer/` shows only the renderer's alias naming.
+
+## 5. Docs and gates
+
+- [x] 5.1 `docs/concepts/queries.md` (computed dimensions): one sentence that a dimension expression may hold a re-aggregation (`max(sum(...), partition_by=...)`), composing with every metric, partition key and measure; verify `zensical.toml` needs no nav change.
+- [x] 5.2 Local test scope per `/la:pr` (`la-affected-tests --base main` plus goldens and the files of 1.5), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `la-arch-check`; all green.
+- [ ] 5.3 At PR creation, note in the PR description that it closes DEV-2017 as well (user-approved); close DEV-2017 when the PR merges.
+
+## 6. Review findings
+
+- [x] 6.1 Executed tests for the two new scenarios on DuckDB and SQLite with hand oracles, plus unit tests: a
+  transform-valued parameter whose input is an attached value names canonically; an attached value over an untyped
+  original types `OPAQUE`, as its producer slot does; verify each fails without its fix.
+- [x] 6.2 Decision 20: lower every planned attach's join members and attached-value coordinates by the plan's final
+  row substitution.
+- [x] 6.3 Canonical naming spells a bare attached value by its display as a partition key and as a transform input;
+  an attached value's native type is its original's.
+- [x] 6.4 Local test scope, ruff, basedpyright, la-arch-check, conventions; all green.

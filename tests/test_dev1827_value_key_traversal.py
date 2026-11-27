@@ -16,7 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import Grain
-from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, InKey, KindPolicy, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, WindowKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ArrayLiteralKey, AttachedKey, CastKey, FieldKey, FieldSqlKey, InKey, KindPolicy, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, WindowKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.reference_closure import UnhandledValueKindError, aggregate_input_closure
@@ -87,6 +87,7 @@ SAMPLES = {
     ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
     ListSetKey: ListSetKey(source=JOINED),
     WindowKey: WindowKey(function="row_number", order=(CITY,), descending=(False,), nulls_first=(False,)),
+    AttachedKey: AttachedKey(attach="a0", on=(("city", CITY),)),
 }
 LEAF_KINDS = (FieldKey, FieldSqlKey, StarKey, LiteralKey)
 
@@ -290,7 +291,7 @@ class TestKindPolicyRegistry:
 
     def test_slottable_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.slottable} == {
-            FieldKey, FieldSqlKey, AggregateKey, TransformKey, TimeTruncKey, WindowKey,
+            FieldKey, FieldSqlKey, AggregateKey, TransformKey, TimeTruncKey, WindowKey, AttachedKey,
         }
 
     def test_slot_composite_membership(self) -> None:
