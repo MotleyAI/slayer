@@ -638,6 +638,7 @@ carve_outs:
   - {name: ModelMetricNameError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: ModelMetricReferenceError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: UnqualifiedModelMetricReferenceError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: _AggregatedMeasureRef, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
   - {name: _parse_formula, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
   - {name: formula, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
@@ -674,7 +675,7 @@ carve_outs:
   - {name: model, file: slayer/ontology/mapping.py, reason: "Ossie's semantic model (the document)"}
   - {name: model, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_name, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
-  - {name: model_of, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model_of, file: slayer/core/datasource_scope.py, reason: "Ossie's semantic model (the document)"}
   - {name: from_columns, file: slayer/ontology/use.py, reason: "Ossie's own wire name"}
   - {name: model_findings, file: slayer/ontology/use.py, reason: "Ossie's semantic model (the document)"}
   - {name: to_columns, file: slayer/ontology/use.py, reason: "Ossie's own wire name"}
@@ -710,7 +711,7 @@ carve_outs:
   - {name: check_model_metric, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: visible_model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
-  - {name: warn_broken_model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
+  - {name: broken_model_metrics, file: slayer/storage/dependents.py, reason: "Ossie's semantic model (the document)"}
   - {name: column, file: slayer/storage/semantic_models.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: analyse_model_scoped, file: slayer/storage/semantic_models.py, reason: "Ossie's semantic model (the document)"}
   - {name: embedding_model_name, file: slayer/storage/upgrade.py, reason: "embedding model"}
