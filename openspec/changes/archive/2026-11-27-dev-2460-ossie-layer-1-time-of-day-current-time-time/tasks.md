@@ -47,5 +47,5 @@
 - [x] 6.1 Run the Ossie gate with ClickHouse on 25.12; if any row outside this change's seven shifts, stop and show the user each one before changing anything; verify the gate passes
 - [x] 6.2 Regenerate or update `docs/interfaces/ossie-compliance.md` (the seven rows, the ClickHouse version measured) and `docs/interfaces/ossie-layer-3.md`; verify the compliance-page test passes
 - [x] 6.3 Docs: `docs/concepts/datasets.md` (type and aggregation tables, ingestion of `TIME`), `references.md`, `time.md`, `expressions.md`, `docs/database-support.md` (matrix row, ClickHouse 25.6 / 25.12), the `Time` sentence in `docs/upgrading/2.0.md`, upgrade notes for the three breaking changes, and the MCP help topics listing functions; verify the docs guard tests pass
-- [ ] 6.4 Run the tests `la-affected-tests --base main` prints plus the goldens this change reaches; verify all pass
+- [x] 6.4 Run the tests `la-affected-tests --base main` prints plus the goldens this change reaches; verify all pass
 - [x] 6.5 Run `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` against the baseline, `poetry run la-arch-check` and `openspec validate dev-2460-ossie-layer-1-time-of-day-current-time-time --strict`; verify all are clean
