@@ -110,8 +110,9 @@ def _projected_slot_keys(*, root_planned: PlannedQuery) -> List[Tuple[ValueSlot,
 
 
 def time_of_day_columns(*, root_planned: PlannedQuery) -> List[str]:
-    """The result keys whose planned type is a time of day."""
-    return [rk for slot, rk in _projected_slot_keys(root_planned=root_planned) if slot.type is DataType.TIME]
+    """The result keys whose planned type is a time of day, or a list of them."""
+    return [rk for slot, rk in _projected_slot_keys(root_planned=root_planned)
+            if slot.type is DataType.TIME or (slot.type is DataType.ARRAY and slot.element_type is DataType.TIME)]
 
 
 def time_of_day_cells(rows: List[Dict[str, Any]], *, columns: Sequence[str]) -> List[Dict[str, Any]]:

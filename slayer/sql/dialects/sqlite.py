@@ -996,7 +996,9 @@ class SqliteDialect(SqlDialect):
         name, declared = (exp.column(exp.to_identifier(c, quoted=True)) for c in ("name", "type"))
         selects = []
         for source in sources:
-            columns = exp.Table(this=anon("pragma_table_xinfo", lit(source.table), lit(source.schema_name or "main")))
+            # No schema: SQLite resolves the table as the statement does.
+            schema = [] if source.schema_name is None else [lit(source.schema_name)]
+            columns = exp.Table(this=anon("pragma_table_xinfo", lit(source.table), *schema))
             if source.result is None or source.column is None:
                 selects.append(exp.select(name.copy(), declared.copy()).from_(columns))
                 continue
@@ -1010,12 +1012,12 @@ class SqliteDialect(SqlDialect):
         return query
 
     def declared_result_types(self, rows: Sequence[Sequence[Any]]) -> dict[str, ResultColumnType]:
-        types: dict[str, ResultColumnType] = {}
+        """A result's time-of-day type when every column it may read declares that type; else the census decides."""
+        found: dict[str, set[DataType | None]] = {}
         for result, declared in rows:
-            found = time_of_day_type(str(declared or ""))
-            if found is not None:
-                types.setdefault(str(result), ResultColumnType(type=found))
-        return types
+            found.setdefault(str(result), set()).add(time_of_day_type(str(declared or "")))
+        agreed = {result: next(iter(kinds)) for result, kinds in found.items() if len(kinds) == 1}
+        return {result: ResultColumnType(type=kind) for result, kind in agreed.items() if kind is not None}
 
     regex_flavour: ClassVar[Optional[RegexFlavour]] = PYTHON
     json_db_types: ClassVar[frozenset[str]] = frozenset()

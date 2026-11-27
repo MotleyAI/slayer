@@ -951,8 +951,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             description=(
                 'Field definitions: {"name", "expression", "datatype"}; expression is SQL over the source '
                 "columns (a bare name reads a source column, dataset.field a field; unset reads the column "
-                "named like the field); datatype TEXT, INT, DOUBLE, BOOLEAN, "
-                "DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); optional "
+                "named like the field); datatype String, Integer, Decimal, Float, Boolean, Date, Time, "
+                "DateTime, DateTimeTz, Opaque, or Array with element_type (one of the others); optional "
                 "primary_key, unique (single-field uniqueness other than the primary key), "
                 "allowed_aggregations, filter (a condition masking the field's value "
                 "inside aggregates), granularity (only for a field truly bucketed at that grain), "
@@ -1177,8 +1177,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             description=(
                 'Fields to upsert by name; only the given keys change. {"name", "datatype", "element_type", "expression", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
-                '"label", "granularity"}; datatype TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or '
-                'ARRAY with element_type (one of the others); unique marks '
+                '"label", "granularity"}; datatype String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, '
+                'DateTimeTz, Opaque, or Array with element_type (one of the others); unique marks '
                 "single-field uniqueness other than the primary key (used for relationship cardinality); set "
                 "granularity only for a field truly bucketed at that grain (null clears it)."
             ),

@@ -51,8 +51,9 @@ def _duckdb(tmp_path: Path, *statements: str) -> DatasourceConfig:
 
 
 def _authored(name: str, datatype: DataType) -> DatasetField:
-    return DatasetField(name=name, datatype=datatype, description=f"{name} description", label=f"{name} label",
-                        meta={"owner": name}, hidden=True)
+    element = DataType.STRING if datatype is DataType.ARRAY else None
+    return DatasetField(name=name, datatype=datatype, element_type=element, description=f"{name} description",
+                        label=f"{name} label", meta={"owner": name}, hidden=True)
 
 
 def _attrs(field: DatasetField) -> dict[str, Any]:
@@ -75,6 +76,10 @@ class TestTypeNames:
     ])
     def test_spacing_and_case_do_not_matter(self, name: str, expected: DataType) -> None:
         assert time_of_day_type(name) is expected
+
+    @pytest.mark.parametrize(("name", "kept"), [("TIME WITH TIME ZONE", "TIME WITH TIME ZONE"), ("TIME", None)])
+    def test_a_zoned_time_keeps_its_database_type(self, name: str, kept: str | None) -> None:
+        assert column_from_type_string(name="c", data_type=name).db_type == kept
 
     @pytest.mark.parametrize(("sa_type", "sa_dialect", "expected"), [
         pytest.param(sa.Time(), postgresql.dialect(), TIME, id="generic"),
@@ -195,6 +200,17 @@ class TestDrift:
         assert found.get(("clocks_sql", "opens")) == (stored.value, "Time")
         assert await storage.get_dataset("clocks", data_source="d") == before
 
+    @pytest.mark.parametrize(("stored", "remedy"), [
+        (DataType.DATETIME, "reingest"), (DataType.STRING, "reingest"), (DataType.ARRAY, "set_type"),
+    ])
+    async def test_the_remedy_is_one_a_reingest_applies(self, tmp_path: Path, stored: DataType, remedy: str) -> None:
+        datasource, storage = await self._stored(tmp_path, opens=stored)
+        async with owned_query_engine(storage=storage, datasources=[datasource]) as engine:
+            entries = await engine.validate_datasets(data_source="d")
+        found = {e["field"]: e["remedy_kind"] for entry in entries
+                 if (e := entry.model_dump(mode="json")).get("finding") == "retype" and e["dataset_name"] == "clocks"}
+        assert found.get("opens") == remedy, found
+
     async def test_a_time_field_over_a_time_column_is_no_conflict(self, tmp_path: Path) -> None:
         datasource, storage = await self._stored(tmp_path, opens=TIME)
         async with owned_query_engine(storage=storage, datasources=[datasource]) as engine:
@@ -217,3 +233,22 @@ class TestDrift:
         assert got["zoned"].datatype is DataType.STRING
         for name in ("opens", "zoned", "label"):
             assert _attrs(got[name]) == _attrs(was[name]), name
+
+    async def test_a_default_time_dimension_is_left_as_stored(self, tmp_path: Path) -> None:
+        datasource, storage = await self._stored(tmp_path, opens=DataType.DATETIME)
+        stored = await storage.get_dataset("clocks", data_source="d")
+        assert stored is not None
+        await storage.save_dataset(stored.model_copy(update={"default_time_dimension": "opens", "description": "kept"}))
+        async with owned_query_engine(storage=storage, datasources=[datasource]) as engine:
+            result = await ingest_datasource_idempotent(datasource=datasource, storage=storage,
+                                                        client=engine.client_for(datasource), include_tables=["clocks"])
+            entries = await engine.validate_datasets(data_source="d")
+        assert [e for e in result.errors if e.dataset_name == "clocks"] == []
+        after = await storage.get_dataset("clocks", data_source="d")
+        assert after is not None
+        opens = after.get_field("opens")
+        assert opens is not None
+        assert opens.datatype is DataType.DATETIME
+        found = {e["field"]: e["remedy_kind"] for entry in entries
+                 if (e := entry.model_dump(mode="json")).get("finding") == "retype" and e["dataset_name"] == "clocks"}
+        assert found.get("opens") == "set_type", found

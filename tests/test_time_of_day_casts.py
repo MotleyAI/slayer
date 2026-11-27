@@ -148,6 +148,7 @@ class TestFromTime:
         ("CAST(TIME '10:30:00' AS VARCHAR)", "10:30:00"), ("CAST(TIME '10:30:00.5' AS VARCHAR)", "10:30:00.5"),
         ("TIME '10:30:00.120000'::TEXT", "10:30:00.12"), ("CAST(TIME '10:30' AS STRING)", "10:30:00"),
         ("CAST(shifts.starts_at AS VARCHAR)", "09:30:00"), ("TRY_CAST(shifts.starts_at AS TEXT)", "09:30:00"),
+        ("CAST(TIME '10:30:45' AS VARCHAR(5))", "10:30"), ("CAST(shifts.starts_at AS VARCHAR(5))", "09:30"),
     ])
     async def test_to_text(self, engine: SlayerQueryEngine, text: str, expected: str) -> None:
         got = await value_of(engine, text)

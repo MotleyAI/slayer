@@ -202,7 +202,7 @@ Sample profiling SHALL profile a `Time` field as the other ordered non-text type
 
 ### Requirement: Database time-of-day columns ingest as Time
 
-Ingestion, drift validation and a statement's column-type probe SHALL type a database column of a time-of-day type without a time zone as `Time` on every Tier-1 database: `TIME`, `TIME(p)` and `TIME WITHOUT TIME ZONE`, and ClickHouse `Time` and `Time64(p)`. A time type with a time zone SHALL stay `Opaque`. A stored field of another type over such a column SHALL be reported by validation as a type conflict naming both types, SHALL be left as stored by a load, and SHALL be re-typed to `Time` by a re-ingest with every other attribute unchanged.
+Ingestion, drift validation and a statement's column-type probe SHALL type a database column of a time-of-day type without a time zone as `Time` on every Tier-1 database: `TIME`, `TIME(p)` and `TIME WITHOUT TIME ZONE`, and ClickHouse `Time` and `Time64(p)`. A time type with a time zone SHALL stay `Opaque`. A stored field of another type over such a column SHALL be reported by validation as a type conflict naming both types, SHALL be left as stored by a load, and SHALL be re-typed to `Time` by a re-ingest with every other attribute unchanged, except a field that is its dataset's `default_time_dimension`, which a re-ingest SHALL leave as stored.
 
 #### Scenario: Ingested as Time
 - **WHEN** a DuckDB table with a `TIME` column and a `TIME WITH TIME ZONE` column is ingested
@@ -211,3 +211,7 @@ Ingestion, drift validation and a statement's column-type probe SHALL type a dat
 #### Scenario: A stored DateTime field over a TIME column
 - **WHEN** a stored dataset types a field `DateTime` over a database `TIME` column, the datasets are validated, and the datasource is then re-ingested
 - **THEN** validation reports a type conflict naming `DateTime` and `Time`, the stored dataset is unchanged until the re-ingest, and the re-ingest makes the field `Time` keeping its description and label
+
+#### Scenario: A stored default time dimension over a TIME column
+- **WHEN** a stored dataset's `default_time_dimension` is a `DateTime` field over a database `TIME` column, and the datasource is re-ingested
+- **THEN** the re-ingest succeeds for the dataset, that field stays `DateTime`, and validation still reports the conflict

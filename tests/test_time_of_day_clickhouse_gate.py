@@ -11,11 +11,15 @@ from typing import Any
 import pytest
 import sqlglot
 
+from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery
 from slayer.database.client import ExecutionResult, SlayerSQLClient
+from slayer.engine.plan import plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.statement_reads import time_of_day_construct
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._ch_fake_http import CORRELATED_SETTING, TIME_SETTING, FakeClickHouse, fake_ch_engine, route_engine
 from tests._time_of_day_fixtures import d, m, q, shifts_dataset
@@ -228,3 +232,27 @@ class TestRenderedType:
         sql = await _sql(engine, TIME_QUERIES["part"])
         assert "toHour(" not in sql, sql
         assert "EXTRACT(" not in sql.upper(), sql
+
+
+class TestConstructDetection:
+    def test_each_plan_reads_against_its_own_universe(self) -> None:
+        stored = shifts_dataset()
+        namesake = stored.model_copy(update={"fields": [
+            f.model_copy(update={"datatype": DataType.STRING}) if f.name == "starts_at" else f for f in stored.fields]})
+        reads_time = plan_stages(queries=[q(dimensions=["shifts.starts_at"])],
+                                 bundle=ResolvedSourceBundle(dialect="clickhouse", population=stored))[-1]
+        own = ResolvedSourceBundle(dialect="clickhouse", population=namesake)
+        later = plan_stages(queries=[q(dimensions=["shifts.id"])], bundle=own)[-1].model_copy(update={"stage_bundle": own})
+        construct = time_of_day_construct(plans=[reads_time, later],
+                                          bundle=ResolvedSourceBundle(dialect="clickhouse", population=stored))
+        assert construct == "The Time field shifts.starts_at"
+
+
+class TestTypeProbe:
+    async def test_the_probe_of_a_time_field_enables_the_setting(self, ch_server: ChServer,
+                                                                 engine: SlayerQueryEngine) -> None:
+        fake = ch_server.start(version="25.8.3.1")
+        await engine.get_result_column_types("shifts")
+        probes = fake.user_statements()
+        assert probes, fake.statements()
+        assert all(TIME_SETTING in sql for sql in probes), probes

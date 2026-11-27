@@ -42,13 +42,17 @@ def _scope_sources(scope: Scope) -> list[ColumnSource]:
 
 def _projection_sources(scope: Scope, projection: Expr) -> list[ColumnSource]:
     node = projection.unalias()
-    if isinstance(node, exp.Star) or (isinstance(node, exp.Column) and isinstance(node.this, exp.Star)):
+    if _is_star(node):
         qualifier = node.table if isinstance(node, exp.Column) else ""
         names = [qualifier] if qualifier else list(scope.selected_sources)
         return [found for name in names for found in _every_column(scope.sources.get(name))]
     if isinstance(node, exp.Column):
         return _one_column(_source(scope, node), column=node.name, result=projection.alias_or_name)
     return []
+
+
+def _is_star(node: Expr) -> bool:
+    return isinstance(node, exp.Star) or (isinstance(node, exp.Column) and isinstance(node.this, exp.Star))
 
 
 def _source(scope: Scope, column: exp.Column) -> object:
@@ -75,9 +79,27 @@ def _one_column(source: object, *, column: str, result: str) -> list[ColumnSourc
         return _table(source, result=result, column=column)
     if not isinstance(source, Scope):
         return []
+    if source.outer_columns:
+        return _listed_column(source, column=column, result=result)
     inner = _scope_sources(source)
     named = [i for i in inner if i.result is not None and i.result.lower() == column.lower()]
     if named:
         return [named[0].model_copy(update={"result": result})]
     # Under ``*`` the column is whichever table's it is: each is asked, and only its owner answers.
     return [i.model_copy(update={"result": result, "column": column}) for i in inner if i.result is None]
+
+
+def _listed_column(source: Scope, *, column: str, result: str) -> list[ColumnSource]:
+    """``column`` of a source with a column list: the inner projection at its position; none under ``*``."""
+    names = [name.lower() for name in source.outer_columns]
+    select = source.expression
+    if column.lower() not in names or not isinstance(select, exp.Select):
+        return []
+    projections = select.expressions
+    if any(_is_star(p.unalias()) for p in projections):
+        return []
+    position = names.index(column.lower())
+    if position >= len(projections):
+        return []
+    found = _projection_sources(source, projections[position])
+    return [f.model_copy(update={"result": result}) for f in found]

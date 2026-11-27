@@ -174,7 +174,13 @@ class MysqlDialect(SqlDialect):
             this=exp.GTE(this=cast.copy(), expression=self.build_time_literal(time(0, 0))),
             expression=exp.LT(this=cast.copy(), expression=exp.Cast(this=lit("24:00:00"), to=self.time_of_day_type())),
         )
-        clock = exp.Like(this=as_text(value), expression=lit("__:__%"))
+        # The text is the cast's own ``HH:MM[:SS[.f…]]`` spelling: MySQL casts a valid prefix of any text.
+        text = as_text(value)
+        length = exp.Length(this=text.copy())
+        spelled = anon("LEFT", anon("TIME_FORMAT", cast.copy(), lit("%H:%i:%s.%f")), length.copy())
+        shaped = exp.or_(exp.In(this=length.copy(), expressions=[lit(5), lit(8)]),
+                         exp.Between(this=length, low=lit(10), high=lit(15)))
+        clock = exp.and_(shaped, exp.EQ(this=text, expression=spelled))
         return case((exp.And(this=clock, expression=day), cast))
 
     def build_time_text(self, value: Expression) -> Expression:

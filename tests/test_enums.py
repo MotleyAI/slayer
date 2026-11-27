@@ -47,7 +47,7 @@ class TestTypeKindValuesMatchSqlglot:
 
     @pytest.mark.parametrize(
         "name",
-        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN", "ARRAY"],
+        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "TIME", "UNKNOWN", "ARRAY"],
     )
     def test_value_equals_sqlglot_name(self, name: str) -> None:
         assert getattr(TypeKind, name).value == name

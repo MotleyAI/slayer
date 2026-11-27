@@ -2543,8 +2543,11 @@ class SlayerQueryEngine:
         }), datasource=datasource)
         planned = plan_stages(queries=[probe_query], bundle=bundle)
         root = planned[-1]
+        render_dialect = await self._render_dialect(
+            dialect=dialect, datasource=datasource, planned_list=planned, bundle=bundle,
+        )
         built = build_planned_statement(
-            planned, bundle=bundle, dialect=dialect,
+            planned, bundle=bundle, dialect=render_dialect,
             projection_aliases=projection_result_keys(root_planned=root), type_probe=True,
         )
         return built, dialect, root

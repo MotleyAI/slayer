@@ -126,9 +126,14 @@ def axis_field(dataset: SlayerDataset) -> Optional[str]:
     return axis if axis is not None and dataset.get_field(axis) is not None else None
 
 
+def default_time_field(dataset: SlayerDataset) -> Optional[DatasetField]:
+    """The field ``dataset``'s ``default_time_dimension`` names, if any."""
+    return dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
+
+
 def check_default_time_dimension(dataset: SlayerDataset) -> None:
     """A declared ``default_time_dimension`` must name a date or timestamp field: it is the dataset's time axis."""
-    field = dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
+    field = default_time_field(dataset)
     if field is not None and field.datatype is not None and field.datatype not in TEMPORAL_DATATYPES:
         raise DefaultTimeDimensionTypeError(dataset=dataset.name, field=field.name, field_type=field.datatype)
 

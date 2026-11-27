@@ -127,6 +127,12 @@ class TestDriverForms:
         assert (got["shifts.label"], got["span"]) == ("10:30:00", "25:00:00")
         assert is_time(got[START], time(9, 30)), got
 
+    @pytest.mark.parametrize("ds_type", ["clickhouse", "postgres"])
+    async def test_a_list_of_times_cell(self, monkeypatch: pytest.MonkeyPatch, ds_type: str) -> None:
+        async with served(monkeypatch, ds_type, {"v": ["09:30:00", timedelta(hours=17)]}) as engine:
+            resp = await engine.execute(q(metrics=[m(f"collect({START})")]))
+        assert resp.data[0]["v"] == [time(9, 30), time(17, 0)]
+
 
 def text_engine(*times: str | None):
     """A SQLite engine over shifts whose ``starts_at`` text column holds ``times``."""

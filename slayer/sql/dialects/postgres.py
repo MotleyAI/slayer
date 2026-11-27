@@ -16,12 +16,13 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, TypeKind
 from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastKey, ScalarCallKey
-from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.base import (
     LIST_ELEMENT,
     CONSTANT_INPUT,
     PORTABLE_LIBRARY,
     SET_TRANSACTION_READ_ONLY,
+    TIME_OF_DAY_TEXT,
     IdentifierFolding,
     ReadOnlyEngineArgs,
     TransactionMode,
@@ -331,6 +332,15 @@ class PostgresDialect(SqlDialect):
         # A constant input is read through a subquery: Postgres folds a constant cast at plan time, invalid or not.
         read = exp.Subquery(this=exp.select(value.copy())) if _constant(value) else value.copy()
         return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=read, to=to))])
+
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """Postgres 16+ also yields NULL for ``24:00:00``, which its ``time`` accepts and the clock day does not."""
+        cast = super().build_time_cast(value, to, source=source, try_=try_)
+        if source is not None or not try_ or not self.validates_input():
+            return cast
+        return case((self.build_regexp_like(as_text(value), parse_regex(TIME_OF_DAY_TEXT), False), cast))
 
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
         """``pg_input_is_valid`` already accepts only integer text in range."""

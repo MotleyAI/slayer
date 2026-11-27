@@ -171,10 +171,13 @@ class TestCurrentTime:
         with pytest.raises(ValueError, match=r"(?is)current_time.*argument"):
             await value_of(engine, call)
 
-    @pytest.mark.parametrize("dialect", ["postgres", "sqlite"])
-    async def test_emits_in_a_filter(self, dialect: str) -> None:
+    @pytest.mark.parametrize(("dialect", "comparison"), [
+        ("postgres", "shifts.starts_at <= CAST(CAST(CURRENT_TIMESTAMP AS TIMESTAMP) AS TIME)"),
+        ("sqlite", "SLAYER_TIME_TEXT(shifts.starts_at) <= SLAYER_TIME_CAST(CURRENT_TIMESTAMP, 6)"),
+    ])
+    async def test_emits_in_a_filter(self, dialect: str, comparison: str) -> None:
         sql = await emit(q(dimensions=["shifts.id"], filter=["shifts.starts_at <= CURRENT_TIME"]), dialect=dialect)
-        assert "starts_at" in sql
+        assert comparison in sql, sql
 
 
 class TestAFieldNamedCurrentTime:

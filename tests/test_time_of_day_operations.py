@@ -79,6 +79,7 @@ REFUSED = [
     (d(f"coalesce({START}, 0)"), "starts_at"), (d(f"coalesce({START}, shifts.created_at)"), "starts_at"),
     (d(f"greatest({START}, shifts.order_date)"), "starts_at"), (d(f"iif(shifts.id = 1, {START}, 'x')"), "starts_at"),
     (d(f"CASE WHEN shifts.id = 1 THEN {START} ELSE shifts.created_at END"), "starts_at"),
+    (d(f"nullif({START}, shifts.order_date)"), "starts_at"), (d("nullif(TIME '10:30', DATE '2026-01-01')"), "10:30"),
 ]
 PARTS = [
     (f"date_part('hour', {START})", 9), (f"date_part('minute', {START})", 30), (f"date_part('second', {START})", 0),
@@ -238,7 +239,7 @@ class TestParts:
     async def test_sub_day_parts(self, engine: SlayerQueryEngine, text: str, expected: int) -> None:
         got = await value_of(engine, text)
         assert type(got) is not str, got
-        assert int(got) == expected
+        assert got == expected
 
     async def test_a_part_filters(self, engine: SlayerQueryEngine) -> None:
         assert await filtered_ids(engine, f"date_part('hour', {START}) = 17") == {3}

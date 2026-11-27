@@ -119,6 +119,15 @@ class TestPostgresFacade:
     def test_a_binary_parameter(self) -> None:
         assert pg.value_from_binary(struct.pack(">q", MICROS), OID_TIME) == TEN_THIRTY
 
+    @pytest.mark.parametrize("micros", [86_400_000_000, 90_000_000_000, -1])
+    def test_a_binary_parameter_outside_the_day_is_refused(self, micros: int) -> None:
+        encoded = struct.pack(">q", micros)
+        with pytest.raises(ValueError, match="not a time of day"):
+            pg.value_from_binary(encoded, OID_TIME)
+
+    def test_the_last_microsecond_is_a_binary_parameter(self) -> None:
+        assert pg.value_from_binary(struct.pack(">q", 86_399_999_999), OID_TIME) == dt.time(23, 59, 59, 999999)
+
     def test_a_parameter_is_substituted_quoted(self) -> None:
         assert pg.literal_for_substitution(TEN_THIRTY) == "'10:30:00'"
         assert pg.literal_for_substitution(FRACTION) == "'10:30:00.123456'"

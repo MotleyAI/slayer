@@ -12,6 +12,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.column_sources import ColumnSource, column_sources
+from slayer.sql.dialects.sqlite import SqliteDialect
 from slayer.storage.sqlite_conn import transaction
 
 
@@ -38,6 +39,9 @@ class TestColumnSources:
          [_one("o", "opens", table="shops"), _one("o", "opens")]),
         ("SELECT c.opens, s.id FROM clocks AS c JOIN shops AS s ON s.id = c.id",
          [_one("opens", "opens"), _one("id", "id", table="shops")]),
+        ("WITH q(x) AS (SELECT opens FROM clocks) SELECT x FROM q", [_one("x", "opens")]),
+        ("SELECT x FROM (SELECT opens FROM clocks) AS q(x)", [_one("x", "opens")]),
+        ("WITH q(x, y) AS (SELECT id, opens FROM clocks) SELECT y AS o FROM q", [_one("o", "opens")]),
     ])
     def test_a_plain_column_read(self, sql: str, expected: list[ColumnSource]) -> None:
         assert _sources(sql) == expected
@@ -49,6 +53,7 @@ class TestColumnSources:
         "SELECT opens FROM clocks AS c JOIN shops AS s ON s.id = c.id",
         "SELECT o FROM (SELECT upper(opens) AS o FROM clocks) AS q",
         "SELECT 1 AS opens",
+        "WITH q(x) AS (SELECT * FROM clocks) SELECT x FROM q",
     ])
     def test_anything_else_has_no_source(self, sql: str) -> None:
         assert _sources(sql) == []
@@ -84,6 +89,24 @@ class TestSqliteDeclaredTypes:
     async def test_a_statement_column(self, client: SlayerSQLClient, sql: str, expected: dict[str, str]) -> None:
         types = await client.get_result_column_types(sql)
         assert {name: found.type.value for name, found in types.items()} == expected
+
+    async def test_candidates_that_disagree_keep_the_census_type(self, client: SlayerSQLClient,
+                                                                 tmp_path: Path) -> None:
+        with transaction(str(tmp_path / "live.db")) as con:
+            con.execute("CREATE TABLE stalls (id INTEGER PRIMARY KEY, opens TEXT)")
+            con.execute("INSERT INTO stalls VALUES (1, 'early')")
+        sql = "SELECT opens AS o FROM (SELECT * FROM stalls AS s JOIN clocks AS c ON s.id = c.id) AS q"
+        types = await client.get_result_column_types(sql)
+        assert types["o"].type is DataType.STRING
+
+    @pytest.mark.parametrize(("sql", "schema_args"), [
+        ("SELECT opens FROM clocks", ["'clocks')"]), ("SELECT opens FROM aux.clocks", ["'clocks', 'aux')"]),
+    ])
+    def test_an_unqualified_table_is_resolved_as_the_statement_resolves_it(self, sql: str,
+                                                                         schema_args: list[str]) -> None:
+        probe = SqliteDialect().declared_types_select(_sources(sql))
+        assert probe is not None
+        assert [a for a in schema_args if a in probe.sql(dialect="sqlite")] == schema_args, probe.sql(dialect="sqlite")
 
     async def test_time_text_in_a_text_column_stays_text(self, client: SlayerSQLClient) -> None:
         types = await client.get_result_column_types("SELECT label FROM clocks")

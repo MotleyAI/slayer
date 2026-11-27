@@ -1380,6 +1380,8 @@ def _checked_operands(key: object) -> Sequence[object]:
         return key.operands
     if isinstance(key, InKey):
         return (key.field, *key.values)
+    if isinstance(key, ScalarCallKey) and key.name == "nullif":
+        return key.args
     return ()
 
 

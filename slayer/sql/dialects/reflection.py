@@ -351,8 +351,8 @@ def column_from_type_string(
     zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(),
     instant: Callable[[str], bool] | None = None,
 ) -> ReflectedColumn:
-    """A column read from a catalog type string; ``db_type`` kept where ``DataType`` is lossy (a list, exact
-    numerics, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
+    """A column read from a catalog type string; ``db_type`` kept where ``DataType`` is lossy (opaque, a list,
+    exact numerics, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
     unwrapped = unwrap_clickhouse_wrapper_str(data_type) if data_type else ""
     element = info_schema_list_element(unwrapped)
     if element is not None:
@@ -362,7 +362,8 @@ def column_from_type_string(
         )
     mapped, is_float = info_schema_type(unwrapped, overrides=overrides)
     word = unwrapped.split("(")[0].upper().strip()
-    lossy = is_exact_numeric_db_type(unwrapped) or word in json_types or unwrapped.upper() in zoned_types
+    lossy = (mapped.is_opaque or is_exact_numeric_db_type(unwrapped) or word in json_types
+             or unwrapped.upper() in zoned_types)
     return ReflectedColumn(
         name=name, type=mapped, is_float=is_float, db_type=unwrapped if lossy else None,
         comment=clean_comment(comment), type_name=unwrapped or None,

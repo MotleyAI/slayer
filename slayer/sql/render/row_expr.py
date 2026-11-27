@@ -302,9 +302,13 @@ def render_cast(
         to = dialect.try_cast_type(to, data_type=key.data_type)
     source = key.source
     if key.data_type is DataType.TIME:
-        return dialect.build_time_cast(part(source), to, source=key.temporal_source, try_=key.try_)
+        value = part(source)
+        if key.try_:
+            value.meta[CONSTANT_INPUT] = reads_no_rows(source)
+        return dialect.build_time_cast(value, to, source=key.temporal_source, try_=key.try_)
     if key.temporal_source is DataType.TIME:
-        return dialect.build_time_text(part(source))
+        text, length = dialect.build_time_text(part(source)), text_length(to)
+        return text if length is None else dialect.build_varchar_cast(text, length)
     sized = text_length(to) is not None or decimal_parts(to) is not None
     if key.try_ and direct and not sized and isinstance(source, ScalarCallKey) and source.name == "json_value":
         value, path, native = json_operands(source, part=part, dialect=dialect)

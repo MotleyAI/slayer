@@ -74,13 +74,14 @@ def time_of_day_construct(*, plans: list[PlannedQuery], bundle: ResolvedSourceBu
 
 
 def _time_field_read(*, plans: list[PlannedQuery], bundle: ResolvedSourceBundle) -> str | None:
-    reads = statement_reads(plans=plans, bundle=bundle)
-    datasets = {name: d for plan in plans for name, d in _universe(plan.stage_bundle or bundle).items()}
-    for dataset_name, field_name in sorted(reads.fields):
-        host = datasets.get(dataset_name)
-        field = host.get_field(field_name, quoted=True) if host is not None else None
-        if field is not None and field.datatype is DataType.TIME:
-            return f"The Time field {dataset_name}.{field_name}"
+    """Each plan's reads, against that plan's own universe."""
+    for plan in plans:
+        datasets = _universe(plan.stage_bundle or bundle)
+        for dataset_name, field_name in sorted(statement_reads(plans=[plan], bundle=bundle).fields):
+            host = datasets.get(dataset_name)
+            field = host.get_field(field_name, quoted=True) if host is not None else None
+            if field is not None and field.datatype is DataType.TIME:
+                return f"The Time field {dataset_name}.{field_name}"
     return None
 
 

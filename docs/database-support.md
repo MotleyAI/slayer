@@ -132,7 +132,7 @@ Each database runs a [portable library function](concepts/references.md) only wh
 
 A [time of day](concepts/references.md#time-of-day) is the database's own microsecond time type on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery, and canonical text `HH:MM:SS.ffffff` on SQLite, where stored time text is read in any of the literal's forms.
 
-On ClickHouse it needs server 25.6 or later: from 25.12 the query runs as written, on 25.6 to 25.11 SLayer sends `enable_time_time64_type = 1` with the statement (a `readonly = 1` user without that setting is refused), and an older or unknown server is refused before any SQL runs; computed values are `Time64(6)`.
+On ClickHouse it needs server 25.6 or later: from 25.12 the query runs as written, on 25.6 to 25.11 SLayer sends `enable_time_time64_type = 1` with the statement (a `readonly = 1` user without that setting is refused), and an older or unknown server is refused before the query runs; computed values are `Time64(6)`.
 
 MariaDB behaves as MySQL; Redshift and Oracle keep the `TIME` cast for the literal and the cast, and every Tier-2 database refuses `current_time()` and the parts of a time of day.
 

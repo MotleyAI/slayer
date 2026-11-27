@@ -56,6 +56,7 @@ DATATYPE_TO_OID: dict[DataType, int] = {t: _KIND_TO_OID[t.kind] for t in DataTyp
 # Postgres binary date/timestamp epoch.
 _PG_EPOCH_DATE = _dt.date(2000, 1, 1)
 _PG_EPOCH_DATETIME = _dt.datetime(2000, 1, 1)
+_MICROS_PER_DAY = 86_400_000_000
 
 
 def datatype_to_oid(dt: DataType | None) -> int:
@@ -197,6 +198,8 @@ def value_from_binary(buf: bytes, oid: int) -> Any:
         return _PG_EPOCH_DATETIME + _dt.timedelta(microseconds=micros)
     if oid == OID_TIME:
         micros = struct.unpack(">q", buf)[0]
+        if not 0 <= micros < _MICROS_PER_DAY:
+            raise ValueError(f"bound TIME parameter of {micros} microseconds is not a time of day")
         return (_dt.datetime.min + _dt.timedelta(microseconds=micros)).time()
     return buf.decode("utf-8")
 
