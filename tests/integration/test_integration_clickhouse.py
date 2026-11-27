@@ -2141,7 +2141,9 @@ def _clickhouse_dev2120_storage(clickhouse_container, tmp_path_factory):
 @pytest.mark.integration
 class TestClickHousePortableLibrary:
     async def test_library(self, _clickhouse_dev2120_storage) -> None:
-        await check_library(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+        # The container's 24.10 server has no time of day: the clock is refused, naming the version it needs.
+        await check_library(SlayerQueryEngine(storage=_clickhouse_dev2120_storage),
+                            gated=frozenset({"current_time"}), refusal="ClickHouse 25.6")
 
     async def test_native_json_column(self, _clickhouse_dev2120_storage) -> None:
         await check_native_json(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
