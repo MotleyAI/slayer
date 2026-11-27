@@ -109,14 +109,14 @@ def row_attach_inputs(
 
 
 class TransformRouting(BaseModel):
-    """Which transforms of a plan evaluate over its own rows: ``answers`` always (a domain producer's own transforms);
+    """Which transforms of a plan evaluate over its own rows: ``in_place`` always (the plan's rows are their cells);
     any other only when the plan's rows are its host's cells and it reads nothing but host-local aggregates at the
     plan grain — its domain is then the plan's rows (Axiom 11.6). Every other transform gets its own producer."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     route: bool = True
-    answers: frozenset = frozenset()
+    in_place: frozenset = frozenset()
     rows_are_host_cells: bool = True
     #: A spine plan: every ``time_shift`` reads a shifted producer over the moved spine bounds (Axiom 15).
     spine: bool = False
@@ -144,7 +144,7 @@ class _Walker:
         self.active_td = prebound.main_time_key
         self.transforms = transforms
         self.host_cells = transforms.rows_are_host_cells and all(
-            self._over_host_cells(t) for t in transforms.answers if is_transform(t)
+            self._over_host_cells(t) for t in transforms.in_place if is_transform(t)
         )
 
     def _host_inline(self, a: AggregateKey) -> bool:
@@ -168,7 +168,7 @@ class _Walker:
     def routes(self, k: ValueKey) -> bool:
         """Whether transform ``k`` evaluates in its own domain producer."""
         # A dimensionless plan has one cell, the unit.
-        if not (self.transforms.route and self.grain and is_transform(k)) or k in self.transforms.answers:
+        if not (self.transforms.route and self.grain and is_transform(k)) or k in self.transforms.in_place:
             return False
         if isinstance(k, TransformKey) and k.op == "time_shift" and not _series_mode(k.input, to_original=self.originals):
             return False

@@ -201,12 +201,8 @@ class ObjectListing(BaseModel):
     materialized_views: list[LiveName] = Field(default_factory=list)
 
 
-def _dispose_engine_quietly(engine: sa.Engine) -> None:
-    """Dispose a private engine, logging rather than raising (finalizer / close backstop)."""
-    try:
-        engine.dispose()
-    except Exception:  # pragma: no cover - dispose failures are best-effort
-        logger.warning("Failed to dispose a private in-memory engine.", exc_info=True)
+_PRIVATE_ENGINE_CLOSED = "private in-memory engine closed"
+_PRIVATE_ENGINE_COLLECTED = "private in-memory engine collected"
 
 
 def _release_bridge_engine(engine: AsyncEngine, token: int) -> None:
@@ -763,7 +759,7 @@ class SlayerSQLClient:
             self._sync_engine_finalizer = None
             if finalizer is not None:
                 finalizer.detach()
-            _dispose_engine_quietly(engine)
+            engine_factory._dispose_quietly(engine=engine, reason=_PRIVATE_ENGINE_CLOSED)
             return True
         return False
 
@@ -888,14 +884,19 @@ class SlayerSQLClient:
 
         In-memory SQLite gets a private one-connection engine (isolated per client),
         owned and disposed here with a finalizer backstop; everything else
-        delegates to engine_factory, which owns and disposes it.
+        delegates to engine_factory, which owns and disposes it, and is re-resolved once retired there.
         """
-        if self._sync_engine is not None:
-            return self._sync_engine
+        engine = self._sync_engine
+        if engine is not None and not self._holds_retired_engine(engine):
+            return engine
         with self._sync_engine_lock:
-            if self._sync_engine is not None:
-                return self._sync_engine
+            engine = self._sync_engine
+            if engine is not None and not self._holds_retired_engine(engine):
+                return engine
             return self._build_sync_engine()
+
+    def _holds_retired_engine(self, engine: sa.Engine) -> bool:
+        return self._sync_engine_owner == "factory" and engine_factory.is_retired(engine)
 
     def _build_sync_engine(self) -> sa.Engine:
         """Build and retain this client's sync engine; the caller holds ``_sync_engine_lock``."""
@@ -907,7 +908,7 @@ class SlayerSQLClient:
             self._sync_engine = engine
             self._sync_engine_owner = "client"
             self._sync_engine_finalizer = weakref.finalize(
-                self, _dispose_engine_quietly, engine,
+                self, engine_factory._dispose_quietly, engine=engine, reason=_PRIVATE_ENGINE_COLLECTED,
             )
             return engine
         self._sync_engine = engine_factory.get_engine(ds)

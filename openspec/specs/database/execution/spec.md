@@ -63,6 +63,14 @@ loop-bound asynchronous engines SHALL NOT dispose synchronous engines. A query e
 unreachable without being closed SHALL still have its private in-memory engines disposed when it
 is collected.
 
+Disposing a synchronous engine SHALL close every connection that engine opened: an idle
+connection at once, a connection in use when it is returned, and a connection the engine opens
+after its disposal when that connection is returned. A connection in use SHALL keep working
+until it is returned; disposal SHALL neither wait for it nor interrupt it. An engine used after
+its disposal SHALL still execute statements.
+A client holding a factory engine that has since been disposed SHALL use the factory's current
+engine for its next statement.
+
 #### Scenario: Cache reset disposes every held engine
 - **WHEN** the engine factory cache is reset while it holds engines
 - **THEN** each held engine is disposed exactly once and the cache is empty
@@ -85,6 +93,47 @@ is collected.
 - **WHEN** a query engine holding a private in-memory engine becomes unreachable without `close()`
   and the garbage collector runs on CPython 3.13 or newer
 - **THEN** no `unclosed database` ResourceWarning is emitted
+
+#### Scenario: A connection in use across a cache reset is closed when returned
+- **WHEN** a connection of a factory engine is in use, the factory cache is reset, the connection
+  then executes a statement and is returned
+- **THEN** the statement succeeds and the database connection is closed once it is returned
+
+#### Scenario: A connection in use across an invalidation is closed when returned
+- **WHEN** a connection of a factory engine is in use, that datasource's engine is invalidated,
+  and the connection is then returned
+- **THEN** the database connection is closed once it is returned
+
+#### Scenario: A connection in use across an eviction is closed when returned
+- **WHEN** a connection of a factory engine is in use, the engine is evicted because the cache
+  is over its limit, and the connection is then returned
+- **THEN** the database connection is closed once it is returned
+
+#### Scenario: A private in-memory engine's connection in use across close is closed when returned
+- **WHEN** a connection of a client's private in-memory engine is in use, the client is closed,
+  and the connection is then returned
+- **THEN** the database connection is closed once it is returned
+
+#### Scenario: A blocking call abandoned by cancellation leaves no open connection
+- **WHEN** a blocking statement is cancelled while its worker still holds a connection, the
+  datasource's engine is invalidated before the worker finishes, and the worker then finishes
+- **THEN** no connection of that engine is open
+
+#### Scenario: An engine used after its disposal leaves no open connection
+- **WHEN** an engine obtained from the factory executes a statement after the factory cache was
+  reset
+- **THEN** the statement succeeds and no connection of that engine is open afterwards
+
+#### Scenario: A client re-resolves a retired factory engine
+- **WHEN** a client that obtained its engine from the factory executes two statements after the
+  factory cache was reset
+- **THEN** both succeed on the factory's current engine, and the second reuses the first's
+  connection
+
+#### Scenario: A server session is closed on a late return
+- **WHEN** a connection of a synchronous Postgres engine is in use, the engine is disposed, and
+  the connection is then returned
+- **THEN** the server has no session left from that engine
 
 ### Requirement: In-memory SQLite is one database per owner and per datasource
 Within one owner — a query engine's client, or the shared engine factory — statements over an

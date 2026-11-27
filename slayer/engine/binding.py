@@ -1027,7 +1027,8 @@ def _resolve_ref(
     dataset = scope.population
 
     # A ``__``-bearing name is not special: it resolves like any other name.
-    col = resolve_generated_field(dataset=dataset, name=name, quoted=quoted)
+    mm = _exact_metric(dataset, name=name)
+    col = None if mm is not None else resolve_generated_field(dataset=dataset, name=name, quoted=quoted)
     if col is not None:
         _check_evaluable(col, dataset=dataset)
         if col.needs_expansion:
@@ -1035,7 +1036,7 @@ def _resolve_ref(
         return FieldKey(path=(), leaf=col.name)
 
     # No field: a saved metric resolves inline in an eligible position.
-    mm = dataset.get_metric(name, quoted=quoted)
+    mm = mm or dataset.get_metric(name, quoted=quoted)
     if mm is not None:
         return _resolve_saved_metric(
             metric=mm, terminal_dataset=dataset, scope=scope, bundle=bundle,
@@ -1047,6 +1048,14 @@ def _resolve_ref(
         scope_summary=f"{_dataset_label(dataset, bundle=bundle)} fields: {[c.name for c in dataset.fields]}",
         suggestion=_name_suggestion(name=name, dataset=dataset),
     )
+
+
+def _exact_metric(dataset: SlayerDataset, *, name: str) -> Optional[DatasetMetric]:
+    """The saved metric spelled exactly ``name`` when no field is: fields and saved metrics share one namespace, where
+    the exact spelling wins."""
+    if any(c.name == name or name in c.respellings for c in dataset.fields):
+        return None
+    return dataset.get_metric(name, exact=True)
 
 
 def _check_evaluable(entity: "DatasetField | DatasetMetric", *, dataset: SlayerDataset) -> None:
@@ -1120,9 +1129,10 @@ def _anchored_saved_metric(
     if walked is None or walked[0].name == host.name:
         return None
     terminal = walked[0]
-    if peek_dataset_field(dataset=terminal, name=parts[-1], quoted=quoted[-1]) is not None:
+    exact = _exact_metric(terminal, name=parts[-1])
+    if exact is None and peek_dataset_field(dataset=terminal, name=parts[-1], quoted=quoted[-1]) is not None:
         return None
-    metric = terminal.get_metric(parts[-1], quoted=quoted[-1])
+    metric = exact or terminal.get_metric(parts[-1], quoted=quoted[-1])
     if metric is None:
         return None
 
@@ -1538,7 +1548,8 @@ def _resolve_terminal_leaf(
 ) -> ValueKey:
     """Resolve ``leaf`` on terminal dataset ``current``: field (plain or derived)
     → saved metric (re-anchored into host coords) → unresolved error."""
-    col = resolve_generated_field(dataset=current, name=leaf, quoted=quoted)
+    mm = _exact_metric(current, name=leaf)
+    col = None if mm is not None else resolve_generated_field(dataset=current, name=leaf, quoted=quoted)
     if col is not None:
         _check_evaluable(col, dataset=current)
         if col.needs_expansion:
@@ -1548,7 +1559,7 @@ def _resolve_terminal_leaf(
                 path=tuple(hop_path), dataset=current.name, field_name=col.name,
             )
         return FieldKey(path=tuple(hop_path), leaf=col.name)
-    mm = current.get_metric(leaf, quoted=quoted)
+    mm = mm or current.get_metric(leaf, quoted=quoted)
     if mm is not None:
         return _resolve_saved_metric(
             metric=mm, terminal_dataset=current, scope=scope, bundle=bundle,

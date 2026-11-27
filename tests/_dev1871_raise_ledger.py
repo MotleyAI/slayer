@@ -249,6 +249,9 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_SP, function="_assert_attach_covers_producer_grain", exc="ValueError",
          message="Regroup attach join keys do not match the producer's grouping grain; the join must cover the complete grain or it changes cardinality.",
          category="internal", family="internal", user=False, owner="compiler"),
+    _row(module=_SP, function="_assert_in_place_transform_grains", exc="ValueError",
+         message="Transform … would evaluate over rows at …, not its operand grain ….",
+         category="internal", family="internal", user=False, owner="compiler"),
     _row(module=_EE, function="check_partition_key_analysable", exc="PartitionKeyError",
          message="The partition_by field '…' has a definition whose relationship paths cannot be analysed, so its attributability from the aggregate's home is unknown."
          + AT + "…"

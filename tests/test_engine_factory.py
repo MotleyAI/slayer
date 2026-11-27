@@ -514,21 +514,20 @@ class TestResetCacheDisposal:
         assert len(engine_factory._engine_cache) == 0
 
     def test_checked_out_connection_finishes_after_reset(self) -> None:
-        """Dispose closes checked-in connections; a checked-out one keeps working.
-
-        A soft dispose swaps in a fresh pool, so a plain ``close()`` re-pools the
-        connection into the orphaned old pool (closed only on GC — a 3.13+ leak);
-        ``invalidate()`` closes the DBAPI connection there and then.
-        """
+        """A connection in use across a reset keeps working and is closed when returned."""
         engine_factory.reset_cache()
         ds = DatasourceConfig(name="lite", type="sqlite", database=_tmp_db("slayer-reset-live.db"))
         conn = engine_factory.get_engine(ds).connect()
+        held = conn.connection.driver_connection
+        assert held is not None
         try:
             engine_factory.reset_cache()
             assert conn.exec_driver_sql("SELECT 1").scalar() == 1
         finally:
-            conn.invalidate()
             conn.close()
+        closed = TestReleaseIdle._is_closed(held)
+        held.close()
+        assert closed, "the returned connection stayed open in the disposed engine's pool"
         engine_factory.reset_cache()
 
 
