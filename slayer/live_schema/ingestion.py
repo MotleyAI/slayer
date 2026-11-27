@@ -74,7 +74,7 @@ from slayer.memories.resolver import (
     extract_entities_from_query,
 )
 from slayer.storage.base import StorageBackend
-from slayer.storage.ontology_documents import database_driven
+from slayer.storage.dependents import database_driven
 from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:

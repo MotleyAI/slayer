@@ -29,8 +29,10 @@ from slayer.core.enums import Conformance
 from slayer.demo.jaffle_shop import DemoSetupError
 from slayer.core.errors import (
     AmbiguousDatasetError,
+    HiddenContentConflictError,
     MemoryNotFoundError,
     SlayerError,
+    StoredDependentBreakError,
 )
 from slayer.core.models import (
     Aggregation,
@@ -1274,6 +1276,10 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                     f"the existing target first, or move to a different "
                     f"datasource."
                 )
+            try:
+                await storage.guard_dataset_deletion(name=dataset.name, data_source=original_data_source)
+            except (StoredDependentBreakError, HiddenContentConflictError) as exc:
+                return _refusal(f"moving dataset '{dataset.name}'", exc)
             dataset.data_source = new_data_source
             dataset.enforced_keys = []
             changes.append(
@@ -1766,6 +1772,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             deleted = await storage.delete_dataset(name, data_source=data_source)
         except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
+        except (StoredDependentBreakError, HiddenContentConflictError) as exc:
+            return _refusal(f"deleting dataset '{name}'", exc)
         if deleted:
             return f"Dataset '{name}' deleted."
         return f"Dataset '{name}' not found."
@@ -1848,6 +1856,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             deleted = await storage.delete_semantic_model(name, data_source=data_source)
         except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
+        except (StoredDependentBreakError, HiddenContentConflictError) as exc:
+            return _refusal(f"deleting semantic model '{name}'", exc)
         return f"Semantic model '{name}' deleted." if deleted else f"Semantic model '{name}' not found."
 
     def _refusal(action: str, exc: Exception) -> str:

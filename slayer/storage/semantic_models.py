@@ -42,9 +42,13 @@ from slayer.storage.document_extensions import (
     Restored, apply_dataset_entry, apply_field_entry, digest as entry_digest, metric_entry, read_entry,
     relocate_metrics, restore_metrics, restored_relationship,
 )
+from slayer.storage.model_metric_rules import (
+    aggregate_call, aggregate_window_key, chain_warning, document_names, unevaluable_chain, unresolved_metrics,
+    unresolved_references,
+)
 
-__all__ = ["Decomposition", "DocumentIndex", "aggregate_window_key", "analyse_model_scoped", "build_index", "chain_warning", "checked_document",
-           "decompose", "expression_datasets", "load_problem", "metric_graph", "unevaluable_chain", "unevaluable_targets",
+__all__ = ["Decomposition", "DocumentIndex", "analyse_model_scoped", "build_index", "checked_document",
+           "decompose", "expression_datasets", "load_problem", "metric_graph", "unevaluable_targets",
            "warn_unevaluable_dependents"]
 
 _OSSIE_TYPES = {t.value: t for t in DataType if t is not DataType.ARRAY}
@@ -267,7 +271,8 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None,
     documented = len(metrics)
     if entry is not None:
         metrics += [ModelScopedMetric(name=m.name, semantic_model=doc.name, data_source=data_source,
-                                      expression=m.expression, description=m.description, datatype=m.datatype)
+                                      expression=m.expression, description=m.description, datatype=m.datatype,
+                                      slayer_held=True)
                     for m in entry.payload.metrics]
     names = {m.name.casefold() for m in metrics}
     for i, metric in enumerate(metrics):
@@ -291,7 +296,7 @@ def _aggregated(node: exp.Expr) -> bool:
     """Inside an aggregate call, its ``FILTER`` clause or an ``AGG(d.m)`` call."""
     parent = node.parent
     while parent is not None:
-        if _aggregate_call(parent) or (isinstance(parent, exp.Filter) and not isinstance(parent.parent, exp.Window)):
+        if aggregate_call(parent) or (isinstance(parent, exp.Filter) and not isinstance(parent.parent, exp.Window)):
             return True
         parent = parent.parent
     return False
@@ -334,18 +339,6 @@ def analyse_model_scoped(expression: Expression, *, metric_names: set[str]) -> M
     return ModelScopedAnalysis(homes=list(homes), metrics=list(names), problems=problems)
 
 
-def aggregate_window_key(column: exp.Column) -> bool:
-    """Whether ``column`` is a partition or order key of a window over an aggregate."""
-    node: exp.Expr = column
-    while node.parent is not None:
-        parent = node.parent
-        if isinstance(parent, exp.Window) and node is not parent.this:
-            head = _unfiltered(parent.this) if parent.this is not None else None
-            return any(_aggregate_call(n) for n in parent.walk() if n is not parent.this and n is not head)
-        node = parent
-    return False
-
-
 def _reference_problem(column: exp.Column) -> MetricProblem | None:
     """Why Ossie rejects a field reference that names no metric."""
     unqualified = f"reads the unqualified field {column.name!r}; qualify it by its dataset"
@@ -361,23 +354,13 @@ def _reference_problem(column: exp.Column) -> MetricProblem | None:
 def _components(tree: exp.Expr) -> list[exp.Expr]:
     """The aggregate calls no other aggregate call contains, ``AGG(d.m)`` included; a call's own ``FILTER`` does not
     contain it, and the function a window applies is no aggregate call."""
-    return [n for n in tree.walk() if _aggregate_call(n) and not _enclosed(n)]
-
-
-def _aggregate_call(node: exp.Expr) -> bool:
-    if isinstance(_unfiltered(node).parent, exp.Window):
-        return False
-    return isinstance(node, exp.AggFunc) or is_agg_call(node)
-
-
-def _unfiltered(node: exp.Expr) -> exp.Expr:
-    return node.parent if isinstance(node.parent, exp.Filter) and node.parent.this is node else node
+    return [n for n in tree.walk() if aggregate_call(n) and not _enclosed(n)]
 
 
 def _enclosed(node: exp.Expr) -> bool:
     parent = node.parent
     while parent is not None:
-        if _aggregate_call(parent):
+        if aggregate_call(parent):
             return True
         parent = parent.parent
     return False
@@ -432,32 +415,6 @@ def metric_graph(metrics: list[ModelScopedMetric]) -> dict[str, tuple[str, set[s
     return {m.name.casefold(): (m.name, _metric_reads(m.expression)) for m in metrics}
 
 
-def unevaluable_chain(reads: set[str], *, targets: dict[str, tuple[str, str]],
-                      graph: dict[str, tuple[str, set[str]]]) -> tuple[list[str], str] | None:
-    """The shortest chain from ``reads`` through model-scoped metrics (``graph``: folded name → spelling, reads) to an
-    unevaluable target, and that target's warning; cycle-safe."""
-    frontier = [(name, []) for name in sorted(reads)]
-    seen: set[str] = set()
-    while frontier:
-        nxt = []
-        for name, path in frontier:
-            if name in seen:
-                continue
-            seen.add(name)
-            if name in targets:
-                spelling, warning = targets[name]
-                return [*path, spelling], warning
-            if name in graph:
-                spelling, further = graph[name]
-                nxt += [(n, [*path, spelling]) for n in sorted(further)]
-        frontier = nxt
-    return None
-
-
-def chain_warning(chain: list[str], warning: str) -> str:
-    return f"reads {' → '.join(chain)}, which {warning}"
-
-
 def warn_unevaluable_dependents(metrics: list[ModelScopedMetric], *, datasets: list[SlayerDataset]) -> set[str]:
     """Warn each model-scoped metric reaching an entity SLayer cannot evaluate, naming the chain; the warned names,
     case-folded."""
@@ -495,6 +452,8 @@ class DocumentIndex(BaseModel):
     #: Owning document of every document dataset (quarantined ones included) by case-folded name.
     owners: dict[str, str] = {}
     metrics: dict[str, ModelScopedMetric] = {}
+    #: Every model-scoped metric each document stores, loadable or not.
+    stored_metrics: dict[str, list[ModelScopedMetric]] = {}
     #: Case-folded names unloadable everywhere, standalone copies included.
     quarantined: dict[str, str] = {}
     failures: list[StoredDocumentLoadError] = []
@@ -516,6 +475,16 @@ def build_index(*, data_source: str, documents: list[tuple[str, str]], standalon
         except Exception as exc:  # noqa: BLE001 — one unloadable document never hides the others
             index.failures.append(StoredDocumentLoadError(kind="semantic_model", name=name, data_source=data_source,
                                                           cause=exc))
+    _quarantine(index, decomposed, standalone=standalone)
+    for doc in decomposed:
+        for ds in doc.datasets:
+            _admit_dataset(index, ds, gone=set(index.quarantined))
+    _admit_metrics(index, decomposed)
+    return index
+
+
+def _quarantine(index: DocumentIndex, decomposed: list[Decomposition], *, standalone: list[str]) -> None:
+    """Record each document dataset's owner, and quarantine every name two owners claim."""
     claims: dict[str, list[tuple[str, str]]] = {}
     for name in standalone:
         claims.setdefault(name.casefold(), []).append(("standalone dataset", name))
@@ -526,21 +495,9 @@ def build_index(*, data_source: str, documents: list[tuple[str, str]], standalon
     for folded, owners in claims.items():
         if len(owners) > 1:
             index.quarantined[folded] = " and ".join(f"{o} ({n!r})" for o, n in owners)
-            for owner, spelled in owners:
+            for _, spelled in owners:
                 index.failure(kind="dataset", name=spelled,
                               cause=f"{spelled!r} is declared by {index.quarantined[folded]}; rename one of them")
-    known = {n.casefold() for n in standalone} | set(claims)
-    for doc in decomposed:
-        _admit(index, doc, known=known)
-    return index
-
-
-def _admit(index: DocumentIndex, doc: Decomposition, *, known: set[str]) -> None:
-    """Admit ``doc``'s datasets and metrics, dropping each dependent of a quarantined dataset with a failure."""
-    gone = set(index.quarantined)
-    for ds in doc.datasets:
-        _admit_dataset(index, ds, gone=gone)
-    _admit_metrics(index, doc, gone=gone, known=known)
 
 
 def _admit_dataset(index: DocumentIndex, ds: SlayerDataset, *, gone: set[str]) -> None:
@@ -560,23 +517,25 @@ def _admit_dataset(index: DocumentIndex, ds: SlayerDataset, *, gone: set[str]) -
     index.datasets[ds.name.casefold()] = ds
 
 
-def _admit_metrics(index: DocumentIndex, doc: Decomposition, *, gone: set[str], known: set[str]) -> None:
-    pending = {m.name.casefold(): m for m in doc.metrics}
-    dropped: set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for folded, metric in list(pending.items()):
-            tables, bare = expression_datasets(metric.expression)
-            cause = next((t for t in sorted(tables) if t in gone), None) or next(
-                (b for b in sorted(bare) if b in dropped), None)
-            if cause is not None:
-                index.failure(kind="metric", name=metric.name, cause=f"it reads {cause!r}, which is unloadable")
-                dropped.add(folded)
-                del pending[folded]
-                changed = True
-    for metric in pending.values():
-        missing = sorted(t for t in expression_datasets(metric.expression)[0] if t not in known)
-        if missing and metric.load_warning is None:
-            metric.load_warning = f"reads {', '.join(repr(m) for m in missing)}, which no longer exist"
-    index.metrics.update(pending)
+def _admit_metrics(index: DocumentIndex, decomposed: list[Decomposition]) -> None:
+    """Admit every document's model-scoped metrics; one reading what is not there (an unloadable dataset too), or such
+    a metric through others, fails to load."""
+    metrics = [m for doc in decomposed for m in doc.metrics]
+    names = {m.name.casefold() for m in metrics}
+    direct = {}
+    for doc in decomposed:
+        index.stored_metrics[doc.name] = doc.metrics
+        fields, dataset_metrics = document_names(
+            [index.datasets[k] for d in doc.datasets if (k := d.name.casefold()) in index.datasets])
+        for metric in doc.metrics:
+            gone = sorted(t for t in expression_datasets(metric.expression)[0] if t in index.quarantined)
+            direct[metric.name.casefold()] = {gone[0]: (gone[0], "is unloadable")} if gone else unresolved_references(
+                metric.expression, fields=fields, dataset_metrics=dataset_metrics, metric_names=names,
+                document=doc.name, data_source=index.data_source, bare_metrics=metric.slayer_held)
+    failed = unresolved_metrics(direct, graph=metric_graph(metrics))
+    for metric in metrics:
+        why = failed.get(metric.name.casefold())
+        if why:
+            index.failure(kind="metric", name=metric.name, cause="; ".join(why))
+        else:
+            index.metrics[metric.name.casefold()] = metric

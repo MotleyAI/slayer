@@ -157,6 +157,8 @@ class ModelScopedMetric(BaseModel):
     #: Why SLayer cannot evaluate it yet; set on load, read when a query names it.
     load_warning: str | None = None
     analysis: ModelScopedAnalysis = ModelScopedAnalysis()
+    #: Held in the document's ``SLAYER`` entry, where every bare name is a model-scoped metric reference.
+    slayer_held: bool = Field(default=False, exclude=True)
 
 
 def _has_custom_extensions(node: Any) -> bool:

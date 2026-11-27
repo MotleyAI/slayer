@@ -135,6 +135,8 @@ A query-backed dataset's `fields` are generated at save, so supplying them retur
 
 A dataset of a semantic model is updated and deleted inside its document.
 
+A delete that would break a stored model-scoped metric or ontology mapping returns 400 listing each one, or, when one is hidden from the caller, a 400 hidden-content conflict naming none; see [Semantic models](../concepts/semantic-models.md#editing).
+
 ### Semantic models
 
 ```
@@ -145,7 +147,7 @@ PUT    /semantic-models/{data_source}/{name}   # Replace the document's text
 DELETE /semantic-models/{data_source}/{name}   # Delete it and its datasets
 ```
 
-`POST` takes `{"data_source", "name", "content"}`, where `content` is an Ossie `0.3.0.dev0` document as YAML/JSON text or an object, or `{"data_source", "name", "datasets": [...]}` to move standalone datasets into a new document. `PUT` takes `{"content"}`. A refused document returns 400 with the reasons; an unknown document returns 404. See [Semantic models](../concepts/semantic-models.md).
+`POST` takes `{"data_source", "name", "content"}`, where `content` is an Ossie `0.3.0.dev0` document as YAML/JSON text or an object, or `{"data_source", "name", "datasets": [...]}` to move standalone datasets into a new document. `PUT` takes `{"content"}`. A refused document, or a delete that would break a stored dependent, returns 400 with the reasons; an unknown document returns 404. See [Semantic models](../concepts/semantic-models.md).
 
 ```bash
 curl -X POST http://localhost:5143/semantic-models \

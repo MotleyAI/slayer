@@ -19,7 +19,7 @@ from slayer.core.syntax import (
 from slayer.ontology.findings import OntologyFinding
 from slayer.ontology.names import identifier_key
 from slayer.ontology.ontology import Ontology, Relationship
-from slayer.ontology.scope import MappingScope
+from slayer.core.datasource_scope import DatasourceScope
 
 OBJECTS_STAGE = "ontology_check_objects"
 LINK_STAGE = "ontology_check_link_"
@@ -60,7 +60,7 @@ class UnresolvedMapping(BaseModel):
     problems: list[str]
 
 
-class StoredUse(MappingScope):
+class StoredUse(DatasourceScope):
     """One datasource's mappings and what they read, as a caller sees them."""
 
     mappings: list[MappingDocument] = []
