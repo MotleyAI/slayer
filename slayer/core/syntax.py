@@ -3047,31 +3047,43 @@ def respell_path_heads(
         parse_template(text)
     except Exception:  # noqa: BLE001 — unparseable text is left for binding to report
         return text
+    out: List[str] = []
+    last = 0
+    for start, end, new in _head_respellings(text, respell=respell, respell_quoted=respell_quoted):
+        out += [text[last:start], new]
+        last = end
+    return "".join([*out, text[last:]])
+
+
+def _head_respellings(
+    text: str, *, respell: Callable[[str], Optional[str]], respell_quoted: Optional[Callable[[str], Optional[str]]],
+) -> Iterator[Tuple[int, int, str]]:
+    """``(start, end, new spelling)`` of each path head of ``text`` to replace, in order."""
     regions = _regions(text)
     blanked = "".join(
         re.sub(r"[^\n]", " ", text[r.start:r.end]) if r.kind == "comment" else text[r.start:r.end] for r in regions
     )
-    out: List[str] = []
-    last = 0
+    renames = {"code": respell, "ident": respell_quoted}
     for region in regions:
-        if region.kind == "ident" and respell_quoted is not None:
-            if region.end - region.start >= 2 and _is_path_head(blanked, start=region.start, end=region.end):
-                new = respell_quoted(text[region.start + 1:region.end - 1].replace('""', '"'))
-                if new is not None:
-                    out += [text[last:region.start], new]
-                    last = region.end
+        rename = renames.get(region.kind)
+        if rename is not None:
+            yield from _region_respellings(text, blanked=blanked, region=region, rename=rename)
+
+
+def _region_respellings(
+    text: str, *, blanked: str, region: _Region, rename: Callable[[str], Optional[str]],
+) -> Iterator[Tuple[int, int, str]]:
+    """``_head_respellings`` within one code or ``"…"`` identifier region."""
+    if region.kind == "ident":
+        names = [(region.start, region.end, text[region.start + 1:region.end - 1].replace('""', '"'))]
+    else:
+        names = [(w.start(), w.end(), w.group()) for w in _RUN_RE.finditer(text, region.start, region.end)]
+    for start, end, name in names:
+        if not _is_path_head(blanked, start=start, end=end):
             continue
-        if region.kind != "code":
-            continue
-        for word in _RUN_RE.finditer(text, region.start, region.end):
-            if not _is_path_head(blanked, start=word.start(), end=word.end()):
-                continue
-            new = respell(word.group())
-            if new is None or new == word.group():
-                continue
-            out += [text[last:word.start()], new]
-            last = word.end()
-    return "".join([*out, text[last:]])
+        new = rename(name)
+        if new is not None and new != text[start:end]:
+            yield start, end, new
 
 
 class CallSource(BaseModel):
