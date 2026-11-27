@@ -281,11 +281,12 @@ class TestProducerIdentity:
 _AT = FieldKey(path=(), leaf="ordered_at")
 
 
-def _moved(op: str, value: date, *, bucket: TimeGranularity, date_axis: bool) -> list[tuple[str, object]]:
-    """``(op, literal)`` of each frame bound ``ordered_at <op> value`` moves to under a one-``bucket`` back shift."""
+def _moved(op: str, value: date, *, bucket: TimeGranularity, date_axis: bool,
+           periods: int = -1) -> list[tuple[str, object]]:
+    """``(op, literal)`` of each frame bound ``ordered_at <op> value`` moves to under a ``periods``-``bucket`` shift."""
     frame = moved_frame(
         filters=[bound_filter_from_key(ArithmeticKey(op=op, operands=(_AT, LiteralKey(value=value))))],
-        n_date_range=0, axis=TimeTruncKey(source=_AT, granularity=bucket), date_axis=date_axis, periods=-1,
+        n_date_range=0, axis=TimeTruncKey(source=_AT, granularity=bucket), date_axis=date_axis, periods=periods,
         unit=bucket,
     )
     assert frame.n_frame == len(frame.filters)
@@ -322,3 +323,23 @@ class TestStrictBoundsStepByTheAxisType:
     def test_a_datetime_bound_keeps_its_type(self) -> None:
         assert _moved(">=", datetime(2024, 3, 5, 7), bucket=TimeGranularity.HOUR, date_axis=False) == [
             (">=", datetime(2024, 3, 5, 6))]
+
+
+class TestBoundsMovedPastTheRepresentableRangeOpen:
+    def test_a_lower_bound_moved_before_the_first_date_opens(self) -> None:
+        assert _moved(">=", date(1, 1, 1), bucket=TimeGranularity.MONTH, date_axis=True) == []
+
+    def test_an_upper_bound_moved_past_the_last_date_opens(self) -> None:
+        assert _moved("<", date(9999, 12, 1), bucket=TimeGranularity.MONTH, date_axis=True, periods=1) == []
+
+
+class TestFramesAtTheRepresentableEdges:
+    async def test_a_range_from_the_first_date_shifts_back(self, engine) -> None:
+        [shifted] = await _run(engine, SHIFT_RW, date_range=["0001-01-01", "2024-05-31"])
+        [unbounded] = await _run(engine, AMOUNT, date_range=None)
+        assert shifted["2024-02"] == 30.0
+        assert shifted == {m: unbounded.get(_back(m)) for m in shifted}
+
+    async def test_a_range_to_the_last_date_shifts_forward(self, engine) -> None:
+        [shifted] = await _run(engine, f"time_shift({REWRITE}, 1)", date_range=["2024-02-01", "9999-12-30"])
+        assert shifted["2024-04"] == 5.0  # May

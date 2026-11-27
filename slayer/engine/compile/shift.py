@@ -87,6 +87,23 @@ def _offset(value: datetime, unit: Granularity, n: int) -> datetime:
     return start.replace(day=min(value.day, monthrange(start.year, start.month)[1]))
 
 
+def _moved_start(value: datetime, *, bucket: Granularity, unit: Granularity, periods: int) -> Optional[datetime]:
+    """The moved lower bound; None past the representable range, where no source bucket exists."""
+    try:
+        return floor_to(_offset(floor_to(value, bucket), unit, periods), bucket)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _moved_end(value: datetime, *, bucket: Granularity, unit: Granularity, periods: int) -> Optional[datetime]:
+    """The moved exclusive upper bound; None past the representable range, where no source bucket exists."""
+    try:
+        last = floor_to(value - timedelta(microseconds=1), bucket)
+        return add_units(floor_to(_offset(last, unit, periods), bucket), bucket, 1)
+    except (OverflowError, ValueError):
+        return None
+
+
 def _literal(value: datetime, *, is_date: bool) -> LiteralKey:
     midnight = value == datetime(value.year, value.month, value.day)
     return LiteralKey(value=value.date() if is_date and midnight else value)
@@ -133,13 +150,16 @@ def moved_frame(
     moved: List[BoundFilter] = []
     if lowers:
         value, is_date = max(lowers)
-        start = floor_to(_offset(floor_to(value, bucket), unit, periods), bucket)
-        moved.append(bound_filter_from_key(ArithmeticKey(op=">=", operands=(field, _literal(start, is_date=is_date)))))
+        start = _moved_start(value, bucket=bucket, unit=unit, periods=periods)
+        if start is not None:
+            moved.append(bound_filter_from_key(
+                ArithmeticKey(op=">=", operands=(field, _literal(start, is_date=is_date)))))
     if uppers:
         value, is_date = min(uppers)
-        last = floor_to(value - timedelta(microseconds=1), bucket)
-        end = add_units(floor_to(_offset(last, unit, periods), bucket), bucket, 1)
-        moved.append(bound_filter_from_key(ArithmeticKey(op="<", operands=(field, _literal(end, is_date=is_date)))))
+        end = _moved_end(value, bucket=bucket, unit=unit, periods=periods)
+        if end is not None:
+            moved.append(bound_filter_from_key(
+                ArithmeticKey(op="<", operands=(field, _literal(end, is_date=is_date)))))
     return MovedFrame(filters=[*moved, *kept], n_frame=len(moved) + n_kept_range)
 
 
