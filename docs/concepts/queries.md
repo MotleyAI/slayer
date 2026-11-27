@@ -45,7 +45,7 @@ Each entry in `dimensions` is either a string (a field reference or an expressio
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `field` | string | A field reference (dotted paths for joined datasets) or a row-level expression. A double-quoted segment (`orders."status"`) matches its declared name exactly. |
+| `field` | string | A field reference (dotted paths for joined datasets) or a row-level expression. A double-quoted segment (`orders."status"`) matches its declared name exactly, else the one whose Ossie normalized form it is (see [References](references.md)). |
 | `alias` | string | Optional result key |
 | `label` | string | Optional human-readable display name |
 

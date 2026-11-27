@@ -15,7 +15,6 @@ import contextlib
 import importlib
 import importlib.util
 import shutil
-import sqlite3
 import sys
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
@@ -27,10 +26,16 @@ import pytest
 import yaml
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.errors import AmbiguousReferenceError, ListTypeError, UnknownReferenceError
-from slayer.core.models import DatasetField, DatasetMetric, DatasourceConfig, SlayerDataset
+from slayer.core.errors import (
+    AmbiguousHopError,
+    AmbiguousReferenceError,
+    CanonicalAliasShadowsFieldError,
+    ListTypeError,
+    UnknownReferenceError,
+)
+from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.core.names import match_name, match_path
-from slayer.core.relationship_walker import OrientedRelationship, matching_edges
+from slayer.core.relationship_walker import OrientedRelationship, matching_edges, resolve_hop
 from slayer.core.scope import resolve_generated_field
 from slayer.database.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -39,6 +44,7 @@ from slayer.live_schema.ingestion import introspect_table_to_dataset
 from slayer.osi.exporter import export_osi
 from slayer.osi.importer import OsiImportResult, import_osi
 from slayer.sql.dialects.sqlite import PROBE_SCAN_CAP
+from slayer.storage.sqlite_conn import transaction
 from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._dev2215_fixtures import BACKENDS, dev2215_datasets, dev2215_engine, m, num, q, single, sorted_rows
 from tests._dev2217_fixtures import fixture_engine, rows, strict, strict_error
@@ -149,7 +155,7 @@ def seed_path(tmp: Path, backend: str) -> Path:
 def oracle(backend: str, db: Path, sql: str) -> list[tuple[Any, ...]]:
     """``sql``'s rows straight from the seeded database, before any engine opens it."""
     if backend == "sqlite":
-        with contextlib.closing(sqlite3.connect(db)) as con:
+        with transaction(db) as con:
             return [tuple(r) for r in con.execute(sql).fetchall()]
     with contextlib.closing(duckdb.connect(str(db))) as con:
         return [tuple(r) for r in con.execute(sql).fetchall()]
@@ -222,7 +228,8 @@ async def test_a_model_scoped_case_over_aggregates_evaluates(tmp_path: Path, bac
     async with imported(tmp_path, backend=backend, text=fidelity_document(typing)) as (engine, result):
         assert not_evaluable(result) == []
         whole = await engine.execute({"metrics": metrics})
-        assert {"all": tuple(plain(single(whole, n)) for n in names)} == total
+        actual = {"all": tuple(plain(single(whole, n)) for n in names)}
+        assert actual == total
         by_status = await engine.execute({"dimensions": [{"field": "orders.status", "alias": "g"}], "metrics": metrics})
         assert keyed(by_status, "g", *names) == grouped
 
@@ -311,7 +318,11 @@ async def engine(request: pytest.FixtureRequest) -> AsyncGenerator[SlayerQueryEn
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="order total", expression="amount", datatype=DataType.FLOAT),
     ])
-    async with dev2215_engine(request.param, datasets=[*dev2215_datasets(), twins, spaced]) as eng:
+    shared = SlayerDataset(name="shared", sql_table="ledger", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="amount", expression="rev_b", datatype=DataType.FLOAT),
+    ], metrics=[DatasetMetric(name="AMOUNT", expression="sum(amount) * 2")])
+    async with dev2215_engine(request.param, datasets=[*dev2215_datasets(), twins, spaced, shared]) as eng:
         yield eng
 
 
@@ -346,6 +357,18 @@ class TestQuotedNames:
         """Spec: The exact spelling beats the normalized form."""
         resp = await engine.execute(q(population="twins", metrics=[m('sum("AMOUNT")', "a"), m('sum("amount")', "b")]))
         assert (num(single(resp, "a")), num(single(resp, "b"))) == (3.0, 30.0)
+
+    @pytest.mark.parametrize("ref", ['"AMOUNT"', 'shared."AMOUNT"', "AMOUNT"])
+    async def test_an_exact_saved_metric_beats_a_field_in_another_spelling(self, engine: SlayerQueryEngine,
+                                                                           ref: str) -> None:
+        # Reaching the metric (not the field ``amount``) meets the shadowed-alias refusal on its own dataset.
+        query = q(population="shared", metrics=[m(ref, "a")])
+        with pytest.raises(CanonicalAliasShadowsFieldError):
+            await engine.execute(query)
+
+    async def test_an_exact_saved_metric_beats_a_field_from_another_dataset(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(q(population="orders", metrics=[m('shared."AMOUNT"', "a")]))
+        assert num(single(resp, "a")) == 60.0
 
     async def test_two_names_with_one_normalized_form_are_ambiguous(self, engine: SlayerQueryEngine) -> None:
         """Spec: Two names with one normalized form are ambiguous."""
@@ -484,14 +507,35 @@ def test_a_quoted_hop_takes_an_exact_spelling_before_a_normalized_one() -> None:
     assert matching_edges([named], "CUSTOMERS", quoted=True) == [named]
 
 
+def _hop_clash_datasets() -> dict[str, SlayerDataset]:
+    """``orders`` has the edge ``CUSTOMERS`` into ``plans`` and an unnamed edge into ``customers``."""
+    def ds(name: str, *relationships: DatasetRelationship) -> SlayerDataset:
+        return SlayerDataset(name=name, sql_table=name, data_source=DS, relationships=list(relationships),
+                             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
+
+    def rel(to: str, name: str | None = None) -> DatasetRelationship:
+        return DatasetRelationship(to=to, name=name, from_columns=["id"], to_columns=["id"])
+
+    return {d.name: d for d in (ds("orders", rel("plans", "CUSTOMERS"), rel("customers")), ds("plans"),
+                                ds("customers"))}
+
+
+def test_a_quoted_exact_edge_name_never_clashes_with_a_normalized_target() -> None:
+    by_name = _hop_clash_datasets()
+    hop = resolve_hop(current=by_name["orders"], token="CUSTOMERS", datasets_by_name=by_name, quoted=True)
+    assert hop is not None
+    assert hop.to == "plans"
+    with pytest.raises(AmbiguousHopError):
+        resolve_hop(current=by_name["orders"], token="CUSTOMERS", datasets_by_name=by_name)
+
+
 # --------------------------------------------------------------------------- #
 # SQLite resolves an untyped field's type as ingestion does
 # --------------------------------------------------------------------------- #
 def sqlite_seed(db: Path, *statements: str) -> None:
-    with contextlib.closing(sqlite3.connect(db)) as con:
+    with transaction(db) as con:
         for statement in statements:
             con.execute(statement)
-        con.commit()
 
 
 @contextlib.asynccontextmanager
@@ -575,6 +619,39 @@ async def test_sqlite_typing_agrees_with_ingestion_when_the_probe_fails(tmp_path
 
     monkeypatch.setattr(SlayerSQLClient, "execute", failing_census)
     await assert_parity(tmp_path, declared="INTEGER", insert="INSERT INTO probe (v) VALUES (1), (2.5)")
+
+
+async def resolved_in_memory(tmp: Path, *, fields: list[DatasetField], sql_table: str | None = None,
+                             sql: str | None = None) -> dict[str, DataType | None]:
+    """Each of ``fields``' resolved type, on an in-memory dataset over ``tmp/seed.db``."""
+    async with stored(tmp, text=document_text(name="anchor", datasets=[dataset("anchor", fields=[field("id")])])) as eng:
+        ds = SlayerDataset(name="probe", data_source=DS, fields=fields, sql_table=sql_table, sql=sql)
+        typed = await UnknownTypes().resolve(ds, storage=eng.storage, client_for=eng.client_for)
+        return {f.name: f.datatype for f in typed.fields}
+
+
+async def test_a_failed_reflection_keeps_the_probed_type(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sqlite_seed(tmp_path / "seed.db", "CREATE TABLE probe (v REAL)", "INSERT INTO probe VALUES (1.5)")
+
+    async def failing_reflection(self: SlayerSQLClient, location: Any) -> Any:
+        raise RuntimeError("no metadata access")
+
+    monkeypatch.setattr(SlayerSQLClient, "reflect_columns", failing_reflection)
+    assert await resolved_in_memory(tmp_path, fields=[DatasetField(name="v", datatype=None)], sql_table="probe") == {
+        "v": DataType.FLOAT}
+
+
+async def test_a_result_with_two_source_owners_keeps_the_probed_type(tmp_path: Path) -> None:
+    sqlite_seed(tmp_path / "seed.db", "CREATE TABLE a (amount INTEGER)", "CREATE TABLE b (amount TEXT)",
+                "INSERT INTO a VALUES (1), (2)", "INSERT INTO b VALUES ('1'), ('2')")
+    assert await resolved_in_memory(tmp_path, fields=[DatasetField(name="amount", datatype=None)],
+                                    sql="SELECT * FROM a JOIN b USING (amount)") == {"amount": DataType.INTEGER}
+
+
+async def test_a_column_is_reflected_by_sqlite_identifier_comparison(tmp_path: Path) -> None:
+    sqlite_seed(tmp_path / "seed.db", 'CREATE TABLE probe ("É" REAL, "é" TEXT)')
+    assert await resolved_in_memory(tmp_path, fields=[DatasetField(name="É", datatype=None)], sql_table="probe") == {
+        "É": DataType.FLOAT}
 
 
 async def test_an_untyped_sqlite_expression_over_no_rows_is_string(tmp_path: Path) -> None:

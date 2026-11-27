@@ -112,7 +112,7 @@ class TestSpineInAnyCase:
 
     async def test_a_quoted_spelling_is_exact(self, engine) -> None:
         quoted = SlayerQuery.model_validate(
-            {"population": "time_spine", "time_dimensions": [td('"TIME_SPINE"')], **sum_orders()})
+            {"population": "time_spine", "time_dimensions": [td('"Time_Spine"')], **sum_orders()})
         with pytest.raises(UnknownReferenceError):
             await engine.execute(quoted)
         assert await outcome(engine, {"time_dimensions": [td('"time_spine"')], **sum_orders()}) == \

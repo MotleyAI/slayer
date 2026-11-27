@@ -13,6 +13,7 @@ from slayer.database.client import SqlClient, render_type_probe
 from slayer.database.sqlite_introspect import ingested_sqlite_type
 from slayer.sql.column_sources import ColumnSource, column_sources
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
+from slayer.sql.dialects.base import ascii_lower
 from slayer.sql.dialects.reflection import ReflectedColumn, TableLocation
 from slayer.sql.render.parse import parse_table
 from slayer.storage.base import StorageBackend
@@ -75,10 +76,14 @@ async def _probe(
     client = client_for(datasource)
     try:
         found = await client.get_result_column_types(render_type_probe(select, dialect=dialect))
-        ingested = await _ingested_types(select, client=client, dialect=dialect)
     except Exception as exc:  # noqa: BLE001 — an unprobeable field stays unknown; the query refuses it where it binds
         logger.info("Type probe of %s.%s failed: %s", dataset.data_source, dataset.name, exc)
         return {}
+    try:
+        ingested = await _ingested_types(select, client=client, dialect=dialect)
+    except Exception as exc:  # noqa: BLE001 — the refinement is optional; the probed result types stand
+        logger.info("Ingestion typing of %s.%s failed: %s", dataset.data_source, dataset.name, exc)
+        ingested = {}
     columns = {column.casefold(): result for column, result in found.items()}
     out: dict[str, DatasetField] = {}
     for f in fields:
@@ -98,27 +103,34 @@ async def _probe(
 async def _ingested_types(
     select: exp.Select, *, client: SqlClient, dialect: SqlDialect,
 ) -> dict[str, tuple[DataType, ReflectedColumn]]:
-    """Per folded result name, the type ingestion gives the table column it reads unchanged (integer-affinity
-    dialects only)."""
+    """Per folded result name, the type ingestion gives the one table column it reads unchanged (integer-affinity
+    dialects only); a result with several candidate owners keeps its probed type."""
     if not dialect.probes_integer_affinity:
         return {}
-    reads = [s for s in column_sources(select) if s.result is not None and s.column is not None]
     tables: dict[tuple[str, str | None], list[ReflectedColumn]] = {}
-    out: dict[str, tuple[DataType, ReflectedColumn]] = {}
-    for read in reads:
+    owners: dict[str, list[tuple[ColumnSource, ReflectedColumn]]] = {}
+    for read in column_sources(select):
+        if read.result is None or read.column is None:
+            continue
         where = (read.table, read.schema_name)
         if where not in tables:
             tables[where] = await client.reflect_columns(TableLocation(name=read.table, schema_name=read.schema_name))
-        reflected = _reflected(tables[where], read=read)
-        if reflected is not None and read.result is not None:
+        reflected = _reflected(tables[where], column=read.column)
+        if reflected is not None:
+            owners.setdefault(read.result.casefold(), []).append((read, reflected))
+    out: dict[str, tuple[DataType, ReflectedColumn]] = {}
+    for result, candidates in owners.items():
+        if len(candidates) == 1:
+            read, reflected = candidates[0]
             datatype = await ingested_sqlite_type(client=client, table=read.table, name=reflected.name,
                                                   declared=reflected.narrowed_type, schema=read.schema_name)
-            out[read.result.casefold()] = (datatype, reflected)
+            out[result] = (datatype, reflected)
     return out
 
 
-def _reflected(columns: list[ReflectedColumn], *, read: ColumnSource) -> ReflectedColumn | None:
-    """The reflected column ``read`` names (SQLite names fold case)."""
-    folded = (read.column or "").casefold()
-    hits = [c for c in columns if c.name.casefold() == folded]
+def _reflected(columns: list[ReflectedColumn], *, column: str) -> ReflectedColumn | None:
+    """The reflected column ``column`` names: its exact spelling, else the unique one equal up to ASCII case (SQLite's
+    identifier comparison)."""
+    exact = [c for c in columns if c.name == column]
+    hits = exact or [c for c in columns if ascii_lower(c.name) == ascii_lower(column)]
     return hits[0] if len(hits) == 1 else None
