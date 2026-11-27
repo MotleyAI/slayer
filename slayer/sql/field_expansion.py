@@ -512,7 +512,7 @@ def reads_siblings_first(field: DatasetField) -> bool:
 
 
 def _expanding_sibling(dataset: SlayerDataset, *, leaf: str) -> bool:
-    col = resolve_generated_field(dataset=dataset, name=leaf, quoted=True)
+    col = resolve_generated_field(dataset=dataset, name=leaf, exact=True)
     return col is not None and col.needs_expansion
 
 
@@ -575,7 +575,7 @@ def _process_reference_site(
     owner = visited[-1] if visited else site
     # Mode-A SQL names a field exactly.
     target_col = resolve_generated_field(
-        dataset=target_dataset, name=leaf, location=".".join(owner) if owner else None, quoted=True,
+        dataset=target_dataset, name=leaf, location=".".join(owner) if owner else None, exact=True,
     )
     if target_col is not None:
         leaf = target_col.name

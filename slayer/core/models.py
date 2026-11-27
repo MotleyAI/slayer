@@ -613,7 +613,7 @@ def source_reader(dataset: "SlayerDataset", *, qualifier: str, column: str, quot
     """The runtime reader ``qualifier.column`` names on ``dataset`` when ``qualifier`` is the source qualifier."""
     if not is_source_qualifier(qualifier, dataset=dataset):
         return None
-    return dataset.get_field(source_reader_name(column, quoted=quoted), quoted=True)
+    return dataset.get_field(source_reader_name(column, quoted=quoted), exact=True)
 
 
 def list_operations_hint(field: DatasetField) -> str:
@@ -1650,14 +1650,14 @@ class SlayerDataset(DatasetPart):
         temporal = [c.name for c in self.fields if c.datatype in TEMPORAL_DATATYPES]
         return temporal[0] if len(temporal) == 1 else None
 
-    def get_field(self, name: str, *, quoted: bool = False) -> DatasetField | None:
+    def get_field(self, name: str, *, quoted: bool = False, exact: bool = False) -> DatasetField | None:
         """The field ``name`` reaches (``slayer.core.names.match_name``)."""
-        found = match_name(name=name, declared=[c.name for c in self.fields], quoted=quoted)
+        found = match_name(name=name, declared=[c.name for c in self.fields], quoted=quoted, exact=exact)
         return None if found is None else next(c for c in self.fields if c.name == found)
 
-    def get_metric(self, name: str, *, quoted: bool = False) -> DatasetMetric | None:
+    def get_metric(self, name: str, *, quoted: bool = False, exact: bool = False) -> DatasetMetric | None:
         """The saved metric ``name`` reaches (``slayer.core.names.match_name``)."""
-        found = match_name(name=name, declared=[m.name for m in self.metrics if m.name], quoted=quoted)
+        found = match_name(name=name, declared=[m.name for m in self.metrics if m.name], quoted=quoted, exact=exact)
         return None if found is None else next(m for m in self.metrics if m.name == found)
 
     def get_aggregation(self, name: str, *, quoted: bool = False) -> Aggregation | None:

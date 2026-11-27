@@ -241,14 +241,14 @@ def host_dataset_name(scope: DatasetScope) -> str:
 
 
 def resolve_generated_field(
-    *, dataset: SlayerDataset, name: str, location: Optional[str] = None, quoted: bool = False,
+    *, dataset: SlayerDataset, name: str, location: Optional[str] = None, quoted: bool = False, exact: bool = False,
 ) -> Optional[DatasetField]:
     """``resolve_flat_name`` over ``dataset``'s fields; only generated query-backed
     fields carry respellings, so authored fields stay exact. A stale name
     matching several fields fails closed (never read as a physical column)."""
     col = resolve_flat_name(
         name=name, entries=[(c.name, c.respellings, c) for c in dataset.fields],
-        location=location, quoted=quoted,
+        location=location, quoted=quoted, exact=exact,
     )
     if col is None:
         matches = [c.name for c in dataset.fields if name in c.respellings]
@@ -262,11 +262,11 @@ def resolve_generated_field(
 
 def resolve_flat_name(
     *, name: str, entries: Sequence[Tuple[str, Tuple[str, ...], _T]],
-    location: Optional[str] = None, quoted: bool = False,
+    location: Optional[str] = None, quoted: bool = False, exact: bool = False,
 ) -> Optional[_T]:
     """The entry ``match_name`` reaches, else the one entry whose respellings contain it
     (recorded as a stale spelling); several or none → ``None``."""
-    hit = _flat_hit(name=name, entries=entries, quoted=quoted)
+    hit = _flat_hit(name=name, entries=entries, quoted=quoted, exact=exact)
     if hit is None:
         return None
     stale, entry = hit
@@ -292,10 +292,10 @@ def peek_dataset_field(*, dataset: SlayerDataset, name: str, quoted: bool = Fals
 
 
 def _flat_hit(
-    *, name: str, entries: Sequence[Tuple[str, Tuple[str, ...], _T]], quoted: bool,
+    *, name: str, entries: Sequence[Tuple[str, Tuple[str, ...], _T]], quoted: bool, exact: bool = False,
 ) -> Optional[Tuple[Optional[str], _T]]:
     """``(None, entry)`` for the entry ``match_name`` reaches, else ``(canonical, entry)`` for a unique respelling."""
-    found = match_name(name=name, declared=[n for n, _, _ in entries], quoted=quoted)
+    found = match_name(name=name, declared=[n for n, _, _ in entries], quoted=quoted, exact=exact)
     for entry_name, _, entry in entries:
         if entry_name == found:
             return None, entry
