@@ -884,14 +884,19 @@ class SlayerSQLClient:
 
         In-memory SQLite gets a private one-connection engine (isolated per client),
         owned and disposed here with a finalizer backstop; everything else
-        delegates to engine_factory, which owns and disposes it.
+        delegates to engine_factory, which owns and disposes it, and is re-resolved once retired there.
         """
-        if self._sync_engine is not None:
-            return self._sync_engine
+        engine = self._sync_engine
+        if engine is not None and not self._holds_retired_engine(engine):
+            return engine
         with self._sync_engine_lock:
-            if self._sync_engine is not None:
-                return self._sync_engine
+            engine = self._sync_engine
+            if engine is not None and not self._holds_retired_engine(engine):
+                return engine
             return self._build_sync_engine()
+
+    def _holds_retired_engine(self, engine: sa.Engine) -> bool:
+        return self._sync_engine_owner == "factory" and engine_factory.is_retired(engine)
 
     def _build_sync_engine(self) -> sa.Engine:
         """Build and retain this client's sync engine; the caller holds ``_sync_engine_lock``."""

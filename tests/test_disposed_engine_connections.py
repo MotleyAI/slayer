@@ -151,18 +151,13 @@ def test_a_blocking_call_abandoned_by_cancellation_leaves_no_open_connection(fil
 
 
 def test_an_engine_used_after_its_disposal_leaves_no_open_connection(file_ds: DatasourceConfig) -> None:
-    client = sql_client.SlayerSQLClient(file_ds)
-    engine = client._get_sync_engine_for_client()
-    assert client._sync_engine_owner == "factory"
+    engine = engine_factory.get_engine(file_ds)
     opened = _record_connections(engine)
-
-    async def run_once() -> list[dict[str, Any]]:
-        return (await client.execute("SELECT 1 AS one")).rows
-
-    assert asyncio.run(run_once()) == [{"one": 1}]
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT 1").scalar() == 1
     engine_factory.reset_cache()
-    assert asyncio.run(run_once()) == [{"one": 1}]
-    assert client._sync_engine is engine
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT 1").scalar() == 1
     assert _still_open(opened) == []
 
 
@@ -180,6 +175,23 @@ class TestQuietDisposal:
             engine_factory._dispose_quietly(engine=engine, reason="probe")
         assert any(r.exc_info is not None and r.exc_info[1] is boom for r in caplog.records), caplog.records
 
+    def test_a_listener_registration_failure_still_disposes(self, file_ds: DatasourceConfig) -> None:
+        engine = engine_factory.get_engine(file_ds)
+        boom = RuntimeError("listener refused")
+        with patch("sqlalchemy.event.listen", side_effect=boom), \
+                patch("sqlalchemy.event.api.listen", side_effect=boom), \
+                patch.object(engine, "dispose", wraps=engine.dispose) as dispose:
+            engine_factory._dispose_quietly(engine=engine, reason="probe")
+        dispose.assert_called_once_with()
+
+    def test_a_listener_registration_failure_still_retires(self, file_ds: DatasourceConfig) -> None:
+        engine = engine_factory.get_engine(file_ds)
+        boom = RuntimeError("listener refused")
+        with patch("sqlalchemy.event.listen", side_effect=boom), \
+                patch("sqlalchemy.event.api.listen", side_effect=boom):
+            engine_factory._dispose_quietly(engine=engine, reason="probe")
+        assert engine_factory.is_retired(engine)
+
     def test_a_dispose_failure_is_logged(self, file_ds: DatasourceConfig, caplog: pytest.LogCaptureFixture) -> None:
         engine = engine_factory.get_engine(file_ds)
         boom = RuntimeError("pool stuck")
@@ -187,6 +199,9 @@ class TestQuietDisposal:
                 caplog.at_level(logging.WARNING, logger=engine_factory.logger.name):
             engine_factory._dispose_quietly(engine=engine, reason="probe")
         assert any(r.exc_info is not None and r.exc_info[1] is boom for r in caplog.records), caplog.records
+
+    def test_a_target_never_disposed_is_not_retired(self) -> None:
+        assert engine_factory.is_retired(object()) is False  # pyright: ignore[reportArgumentType]
 
     def test_disposing_twice_registers_one_listener(self, file_ds: DatasourceConfig) -> None:
         engine = engine_factory.get_engine(file_ds)
@@ -227,4 +242,30 @@ def test_a_server_session_is_closed_on_a_late_return(postgresql_proc: Any) -> No
         finally:
             if held is not None and not held.closed:
                 held.close()
+            engine_factory.invalidate_engine(ds)
+
+
+def test_a_client_re_resolves_a_retired_factory_engine(postgresql_proc: Any) -> None:
+    # psycopg2 is sync-only and networked, so the client pools on a factory engine across calls.
+    with pg_database(postgresql_proc, statements=[], name="reresolve") as base:
+        url = make_url(base.get_connection_string()).set(drivername="postgresql+psycopg2")
+        ds = base.model_copy(update={"connection_string": url.render_as_string(hide_password=False)})
+        engine_factory.reset_cache()
+        client = sql_client.SlayerSQLClient(ds)
+
+        async def run_once() -> list[dict[str, Any]]:
+            return (await client.execute("SELECT 1 AS one")).rows
+
+        try:
+            assert asyncio.run(run_once()) == [{"one": 1}]
+            assert client._sync_engine_owner == "factory"
+            engine_factory.reset_cache()
+            current = engine_factory.get_engine(ds)
+            opened = _record_connections(current)
+            assert asyncio.run(run_once()) == [{"one": 1}]
+            assert asyncio.run(run_once()) == [{"one": 1}]
+            assert client._sync_engine is current
+            assert len(opened) == 1
+        finally:
+            client.close()
             engine_factory.invalidate_engine(ds)

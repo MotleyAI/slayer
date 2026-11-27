@@ -7,6 +7,7 @@ import atexit
 import logging
 import os
 import threading
+import weakref
 from collections import OrderedDict
 from typing import Any
 
@@ -41,6 +42,9 @@ _cache_lock = threading.Lock()
 DEFAULT_MAX_CACHED_ENGINES = 64
 
 MAX_CACHED_ENGINES_ENV = "SLAYER_MAX_CACHED_ENGINES"
+
+# Engines disposed here; a holder re-resolves rather than keep using one.
+_retired: "weakref.WeakSet[sa.Engine]" = weakref.WeakSet()
 
 
 def _max_cached_engines() -> int:
@@ -79,11 +83,20 @@ def _dispose_quietly(*, engine: sa.Engine, reason: str) -> None:
     """Retire a sync engine: close idle connections now, every other one on return; log rather than raise.
     Keep secrets out of ``reason`` — it's logged."""
     try:
+        _retired.add(engine)
         if not sa_event.contains(engine, "checkin", _close_on_checkin):
             sa_event.listen(engine, "checkin", _close_on_checkin)
+    except Exception:
+        logger.warning("Failed to retire engine (%s).", reason, exc_info=True)
+    try:
         engine.dispose()
     except Exception:
         logger.warning("Failed to dispose engine (%s).", reason, exc_info=True)
+
+
+def is_retired(engine: sa.Engine) -> bool:
+    """Whether ``engine`` was disposed here: it pools nothing, so a holder should resolve a current one."""
+    return engine in _retired
 
 
 def _take_evictions_over_limit() -> list[sa.Engine]:

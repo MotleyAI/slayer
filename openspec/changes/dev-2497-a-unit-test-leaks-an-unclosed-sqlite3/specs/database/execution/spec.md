@@ -14,6 +14,8 @@ connection at once, a connection in use when it is returned, and a connection th
 after its disposal when that connection is returned. A connection in use SHALL keep working
 until it is returned; disposal SHALL neither wait for it nor interrupt it. An engine used after
 its disposal SHALL still execute statements.
+A client holding a factory engine that has since been disposed SHALL use the factory's current
+engine for its next statement.
 
 #### Scenario: Cache reset disposes every held engine
 - **WHEN** the engine factory cache is reset while it holds engines
@@ -64,9 +66,15 @@ its disposal SHALL still execute statements.
 - **THEN** no connection of that engine is open
 
 #### Scenario: An engine used after its disposal leaves no open connection
-- **WHEN** a client that obtained its engine from the factory executes a statement after the
-  factory cache was reset
+- **WHEN** an engine obtained from the factory executes a statement after the factory cache was
+  reset
 - **THEN** the statement succeeds and no connection of that engine is open afterwards
+
+#### Scenario: A client re-resolves a retired factory engine
+- **WHEN** a client that obtained its engine from the factory executes two statements after the
+  factory cache was reset
+- **THEN** both succeed on the factory's current engine, and the second reuses the first's
+  connection
 
 #### Scenario: A server session is closed on a late return
 - **WHEN** a connection of a synchronous Postgres engine is in use, the engine is disposed, and

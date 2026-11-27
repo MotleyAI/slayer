@@ -63,6 +63,9 @@ the locked SQLAlchemy:
   through it. `client._dispose_engine_quietly` stops calling `engine.dispose()` itself.
 - **Nothing waits, nothing is interrupted.** The connection is closed on the thread
   that returns it, which for SQLite is the thread that used it.
+- **A client re-resolves a retired engine.** A client holding a factory engine the factory has
+  since disposed uses the factory's current engine on its next call, so its connections persist
+  across calls (`python.database` §3.5).
 
 ### Harness (`tests/_sqlite_connection_law.py`, a pytest plugin listed in `tests/conftest.py` `pytest_plugins`)
 
@@ -124,12 +127,16 @@ the locked SQLAlchemy:
     registration failure. `(codex)`
 14. **One shared wrapper on both door names, exact restore, idempotent install**, with
     a self-test. `(codex)`
+15. **A client re-resolves a retired factory engine** instead of opening a connection per use on
+    it, which `python.database` §3.5 forbids. Options: re-resolve when retired / never cache a
+    factory engine in the client / keep the per-use connect. `(user)`
 
 ## Risks / Trade-offs
 
-- [A holder of a disposed engine now pays a connect per use] → It is correct and leak
-  free; before, it silently pooled connections nobody closed. In-memory SQLite on a
-  disposed engine starts empty on each use, as it already did after a disposal.
+- [A holder of a disposed engine other than a client pays a connect per use] → It is
+  correct and leak free; before, it silently pooled connections nobody closed. In-memory
+  SQLite on a disposed engine starts empty on each use, as it already did after a disposal.
+  A client re-resolves instead (decision 15).
 - [3.11 jobs can now go red on the intermittent leak] → Chosen deliberately
   (decision 2): each failure names its source.
 - [Untraced connections: a caller-supplied `factory`, or one opened before the plugin
