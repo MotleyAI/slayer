@@ -56,7 +56,7 @@ Pass `client_factory=` to run every database access through your own client — 
 
 - A **dict** — a single query.
 - A **`SlayerQuery`** instance.
-- A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/queries.md#query-lists).
+- A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/saved-and-multistage-queries.md#query-lists).
 - A **string** — runs the backing query of a query-backed dataset by name.
 
 Each also takes `variables=` — runtime values for `{placeholders}`, overriding saved defaults.

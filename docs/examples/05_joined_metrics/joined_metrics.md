@@ -14,7 +14,7 @@ For metrics from joined datasets to be useful, we must ensure that querying a me
 {"population": "customers", "metrics": ["count(customers.*)"], "dimensions": ["customers.name"]}
 ```
 
-How do we achieve that? Through a sub-query. Suppose we have a query that references a metric from a joined dataset. We split that query into two parts: one that contains the [cross-dataset metric](../../concepts/queries.md#cross-dataset-metrics) reference, and the other that contains all the other fields. We evaluate the second one as usual; and for the first one, we change the population to the dataset of that metric, then drop all dimensions that are not reachable from that dataset.
+How do we achieve that? Through a sub-query. Suppose we have a query that references a metric from a joined dataset. We split that query into two parts: one that contains the [cross-dataset metric](../../concepts/cross-dataset-queries.md#cross-dataset-metrics) reference, and the other that contains all the other fields. We evaluate the second one as usual; and for the first one, we change the population to the dataset of that metric, then drop all dimensions that are not reachable from that dataset.
 
 We then evaluate both queries (the results may have different cardinality because the dimensions in one are only a subset of the other), and left join the results to each other by all the dimensions they share.
 

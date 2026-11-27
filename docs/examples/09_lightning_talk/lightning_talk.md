@@ -80,4 +80,4 @@ Then ask Claude in any project: *"What stores are in jaffle_shop and which one h
 - [Queries concept](../../concepts/queries.md)
 - [Memories concept](../../concepts/memories.md)
 - [Search concept](../../concepts/search.md)
-- [GitHub](https://github.com/MotleyAI/slayer) · [Discord](https://discord.gg/egWxMctHCA)
+- [GitHub](https://github.com/MotleyAI/slayer)

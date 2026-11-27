@@ -66,7 +66,7 @@ Only the `__slayer_` prefix is reserved for SLayer-internal identifiers.
 
 ## Fields
 
-A field is the unit of structure on the dataset. The same field entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A [list field](queries.md#list-fields) is the exception. What the field *carries* is its identity (name), how to compute it from the source (`expression`), what data type to expect (`datatype`), and a handful of policy attributes (which aggregations are allowed, whether it's a primary key, whether it's hidden).
+A field is the unit of structure on the dataset. The same field entry can serve as a group-by key in one query and as input to an aggregation in another — the role is decided per query, not declared up front. A [list field](filters.md#list-fields) is the exception. What the field *carries* is its identity (name), how to compute it from the source (`expression`), what data type to expect (`datatype`), and a handful of policy attributes (which aggregations are allowed, whether it's a primary key, whether it's hidden).
 
 ### Attributes
 
@@ -115,7 +115,7 @@ Data types are Ossie's datatype names plus `Array`, stored and shown as written.
 | `DateTimeTz` | An instant; behaves as `DateTime`, and under a query [time zone](time.md#time-zones) reads as that zone's wall clock | TIMESTAMPTZ, TIMESTAMP WITH TIME ZONE, BigQuery / MySQL `TIMESTAMP`, ClickHouse `DateTime('UTC')` |
 | `Time` | [Time of day](references.md#time-of-day), with no date and no time zone; never a time axis | TIME, ClickHouse `Time` / `Time64` |
 | `Opaque` | Stored and displayed, never grouped, aggregated or cast | Postgres `point`, `json`, range types |
-| `Array` | A list of `element_type` values, see [list fields](queries.md#list-fields); re-ingest re-types a `String` field whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
+| `Array` | A list of `element_type` values, see [list fields](filters.md#list-fields); re-ingest re-types a `String` field whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
 
 The pre-2.0 values `TEXT`, `INT`, `BOOLEAN`, `DATE`, `UNKNOWN` and `ARRAY` (and their lowercase spellings) still convert, with a deprecation; `DOUBLE` becomes `Decimal` when the field's `db_type` is an exact numeric, else `Float`, and `TIMESTAMP` becomes `DateTimeTz` when the `db_type` carries a time zone, else `DateTime`.
 
@@ -313,7 +313,7 @@ Aggregations are the operators that turn a field expression into a value: `sum`,
 | `var_samp` / `var_pop` | `var_samp(orders.latency)` | Sample / population variance |
 | `corr` | `corr(orders.price, other=orders.quantity)` | Pearson correlation between two fields |
 | `covar_samp` / `covar_pop` | `covar_samp(orders.price, other=orders.quantity)` | Sample / population covariance |
-| `collect` | `collect(customers.name)` | The values as a list, see [list fields](queries.md#list-fields) |
+| `collect` | `collect(customers.name)` | The values as a list, see [list fields](filters.md#list-fields) |
 
 `count(orders.*)` is always available with no metric definition. `*` means "all rows" and is **only** valid with `count` — `sum(orders.*)` and friends are rejected. Detailed NULL / N=1 semantics for the statistical aggregations are documented in [database-support.md](../database-support.md).
 
@@ -376,7 +376,7 @@ relationships:
 
 A relationship's `to` spells its dataset exactly: a save whose target matches a dataset only by case (`customers` for `Customers`), or whose name a stored relationship reaches only by case, fails naming the declared spelling.
 
-Relationships enable **cross-dataset metrics** — querying a metric from a joined dataset alongside the main dataset's data. See [Cross-Dataset Metrics](queries.md#cross-dataset-metrics). During [auto-ingestion](ingestion.md), relationships are generated automatically from foreign keys; multi-hop paths are resolved at query time by walking each intermediate dataset's own relationships. A relationship targeting the dataset itself (`employees.manager` from `manager_id` to its own `id`) saves and loads, as Ossie allows, but takes no part in paths: a reference spelling a hop over it (`employees.manager.name`) fails. To query the second role, define it as a separate dataset over the same table (or a view) and declare the relationship to that.
+Relationships enable **cross-dataset metrics** — querying a metric from a joined dataset alongside the main dataset's data. See [Cross-Dataset Metrics](cross-dataset-queries.md#cross-dataset-metrics). During [auto-ingestion](ingestion.md), relationships are generated automatically from foreign keys; multi-hop paths are resolved at query time by walking each intermediate dataset's own relationships. A relationship targeting the dataset itself (`employees.manager` from `manager_id` to its own `id`) saves and loads, as Ossie allows, but takes no part in paths: a reference spelling a hop over it (`employees.manager.name`) fails. To query the second role, define it as a separate dataset over the same table (or a view) and declare the relationship to that.
 
 ### Bidirectional traversal
 
@@ -414,7 +414,7 @@ relationships:
     cardinality: many_to_one   # many orders → one customer
 ```
 
-`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **orthogonal to the join type** — joins stay LEFT regardless — but it is load-bearing for [cross-dataset metrics](queries.md#cross-dataset-metrics): a dimension reached over a hop that is provably to-one (a primary key on the far side, or a declared `one_to_one`/`many_to_one`) gets the **exact** per-group value, while an unproven hop makes the metric **associate** across that dimension (each cell aggregating the distinct rows reaching it, cells possibly overlapping) with a response warning. Declaring cardinality (or primary keys) is how you make such dimensions partition the rows. Proof is **per orientation**: a declared `customers → orders (one_to_many)` edge traversed in reverse is a provable `many_to_one` hop, while inverting a to-one hop yields a fan-out orientation that associates.
+`cardinality` is one of `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` (omit it when undetermined). It is **orthogonal to the join type** — joins stay LEFT regardless — but it is load-bearing for [cross-dataset metrics](cross-dataset-queries.md#cross-dataset-metrics): a dimension reached over a hop that is provably to-one (a primary key on the far side, or a declared `one_to_one`/`many_to_one`) gets the **exact** per-group value, while an unproven hop makes the metric **associate** across that dimension (each cell aggregating the distinct rows reaching it, cells possibly overlapping) with a response warning. Declaring cardinality (or primary keys) is how you make such dimensions partition the rows. Proof is **per orientation**: a declared `customers → orders (one_to_many)` edge traversed in reverse is a provable `many_to_one` hop, while inverting a to-one hop yields a fan-out orientation that associates.
 
 Auto-ingestion fills it structurally from key constraints: an FK relationship defaults to `many_to_one`, upgrading to `one_to_one` when the source key is itself unique. To infer it from the actual data instead, run:
 
@@ -448,7 +448,7 @@ relationships:
 
 On data that satisfies the declarations, trusted and untrusted hops return the same values. On data that violates a trusted relationship, the result is undefined. `trusted` covers every orientation of the relationship that is provably to-one, and has no effect on a relationship with none. Ingestion records `enforced_keys` from primary and unique constraints on databases that enforce them (Postgres, MySQL/MariaDB, SQLite, SQL Server, Oracle, DuckDB), never on Snowflake, BigQuery, Redshift, Databricks, ClickHouse or Trino. An enforced key must name the dataset's primary key or a unique field of a table-backed dataset. Saving a dataset with a different source drops its enforced keys. Models stored before 2.0 upgrade with `trusted: true` on every relationship, so their results do not change.
 
-`validate-datasets` also prints a **Join safety** section with one finding per declared edge, reporting the provability of **both orientations**; an edge neither declared `many_to_one`/`one_to_one` nor structurally proven (via a primary/unique key on the target side) is flagged as a warning — dimensions across such a relationship are [associated](queries.md#cross-dataset-metrics) rather than partitioning the rows, and aggregation inputs across it are refused, so each finding names the remedy.
+`validate-datasets` also prints a **Join safety** section with one finding per declared edge, reporting the provability of **both orientations**; an edge neither declared `many_to_one`/`one_to_one` nor structurally proven (via a primary/unique key on the target side) is flagged as a warning — dimensions across such a relationship are [associated](cross-dataset-queries.md#cross-dataset-metrics) rather than partitioning the rows, and aggregation inputs across it are refused, so each finding names the remedy.
 
 ### Path-based table aliases
 
@@ -507,7 +507,7 @@ Run the backing query directly by name — returns the final-stage result:
 await engine.execute("monthly_revenue", variables={"region": "US"})
 ```
 
-Run it by name with extra clauses merged into its final stage (see [Refining a saved query](queries.md#refining-a-saved-query)):
+Run it by name with extra clauses merged into its final stage (see [Refining a saved query](saved-and-multistage-queries.md#refining-a-saved-query)):
 
 ```python
 await engine.execute("monthly_revenue", refine={"dimensions": ["orders.region"]})
@@ -525,7 +525,7 @@ Or use the saved result as a dataset in another query:
 
 A consumed query-backed dataset is spliced into the consuming query as stages whose names stay private to it, and one that references itself, directly or through other query-backed datasets, is rejected.
 
-Relationships declared on a saved query-backed dataset, keyed on its output fields, stay usable wherever the dataset is consumed. Its final stage also inherits, like any stage, every relationship whose key fields it outputs unchanged (see [Stages inherit edges on pass-through keys](queries.md#query-lists)); a declared relationship wins over an inherited one, and `inspect` lists inherited edges marked `inherited`.
+Relationships declared on a saved query-backed dataset, keyed on its output fields, stay usable wherever the dataset is consumed. Its final stage also inherits, like any stage, every relationship whose key fields it outputs unchanged (see [Stages inherit edges on pass-through keys](saved-and-multistage-queries.md#query-lists)); a declared relationship wins over an inherited one, and `inspect` lists inherited edges marked `inherited`.
 
 ### Variables in dataset SQL
 
