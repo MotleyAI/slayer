@@ -3037,9 +3037,12 @@ def respell_bare_names(text: str, *, respell: Callable[[str], Optional[str]]) ->
     return "".join([*out, text[last:]])
 
 
-def respell_path_heads(text: str, *, respell: Callable[[str], Optional[str]]) -> str:
-    """``text`` with each unquoted dotted-path head ``respell`` maps to a new spelling replaced, every other byte kept;
-    text that does not parse is returned unchanged."""
+def respell_path_heads(
+    text: str, *, respell: Callable[[str], Optional[str]], respell_quoted: Optional[Callable[[str], Optional[str]]] = None,
+) -> str:
+    """``text`` with each unquoted dotted-path head ``respell`` maps to a new spelling replaced (each double-quoted one
+    ``respell_quoted`` maps, given its unquoted name), every other byte kept; text that does not parse is returned
+    unchanged."""
     try:
         parse_template(text)
     except Exception:  # noqa: BLE001 — unparseable text is left for binding to report
@@ -3051,6 +3054,13 @@ def respell_path_heads(text: str, *, respell: Callable[[str], Optional[str]]) ->
     out: List[str] = []
     last = 0
     for region in regions:
+        if region.kind == "ident" and respell_quoted is not None:
+            if region.end - region.start >= 2 and _is_path_head(blanked, start=region.start, end=region.end):
+                new = respell_quoted(text[region.start + 1:region.end - 1].replace('""', '"'))
+                if new is not None:
+                    out += [text[last:region.start], new]
+                    last = region.end
+            continue
         if region.kind != "code":
             continue
         for word in _RUN_RE.finditer(text, region.start, region.end):

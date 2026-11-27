@@ -118,6 +118,12 @@ class TestSpineInAnyCase:
         assert await outcome(engine, {"time_dimensions": [td('"time_spine"')], **sum_orders()}) == \
             await outcome(engine, {"time_dimensions": [td("time_spine")], **sum_orders()})
 
+    async def test_a_quoted_spine_name_in_ossie_normalized_form_is_the_spine(self, engine) -> None:
+        normalized = await engine.execute(SlayerQuery.model_validate(
+            {"time_dimensions": [td('"TIME_SPINE"')], **sum_orders()}))
+        plain = await engine.execute(SlayerQuery.model_validate({"time_dimensions": [td("time_spine")], **sum_orders()}))
+        assert by_bucket(normalized, ["o"]) == by_bucket(plain, ["o"]) == {"2025-01": (150.0,), "2025-02": (70.0,)}
+
     async def test_a_string_literal_is_unchanged(self, engine) -> None:
         query = SlayerQuery.model_validate({"time_dimensions": [td("time_spine")], "dimensions": ["customers.region"],
                                             "filter": ["customers.region <> 'TIME_SPINE.timestamp'"], **sum_orders()})
@@ -188,6 +194,13 @@ class TestReservedName:
     @pytest.mark.parametrize("variant_engine", BACKENDS, indirect=True)
     async def test_other_spellings_are_ambiguous(self, variant_engine) -> None:
         query = spine_query(metrics=TWO_FACTS, population="TIME_SPINE", time_dimensions=[td("TIME_SPINE")])
+        with pytest.raises(AmbiguousReferenceError) as err:
+            await variant_engine.execute(query)
+        assert {"time_spine", "Time_Spine"} <= set(err.value.candidates)
+
+    @pytest.mark.parametrize("variant_engine", BACKENDS, indirect=True)
+    async def test_the_quoted_normalized_spelling_is_ambiguous(self, variant_engine) -> None:
+        query = spine_query(metrics=TWO_FACTS, time_dimensions=[td('"TIME_SPINE"')])
         with pytest.raises(AmbiguousReferenceError) as err:
             await variant_engine.execute(query)
         assert {"time_spine", "Time_Spine"} <= set(err.value.candidates)
