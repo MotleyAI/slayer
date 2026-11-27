@@ -34,7 +34,7 @@ from slayer.core.errors import (
     AmbiguousRelationshipPathError, PopulationErrorReason, PopulationInferenceError,
     UnresolvableDimensionRelationshipError,
 )
-from slayer.core.keys import TRANSFORM_KINDS, WINDOW_OP, WindowKey, is_transform, transform_operands, SLOT_COMPOSITE_KINDS, display_token, is_framed_path, is_ranked_over_cells, is_reaggregation_key, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
+from slayer.core.keys import TRANSFORM_KINDS, WINDOW_OP, WindowKey, is_transform, transform_operands, SLOT_COMPOSITE_KINDS, display_token, is_framed_path, is_ranked_over_cells, is_reaggregation_key, token_anchor, AggregateKey, AggregateSource, Grain, ArithmeticKey, FieldKey, FieldSqlKey, InKey, LiteralKey, Phase, PREDICATE_COMPARISON_OPS, StarKey, TimeTruncKey, TransformKey, ValueKey, field_leaf, effective_root_grain, constituent_grain, attached_parameter_grain, substitute_value_keys, substitute_consumer_keys, walk_value_keys, REGROUP_LEAF_PREFIX, is_kernel_requiring, is_ranked, restricts_own_rows, input_masked, split_top_level_and, window_kwarg_of, is_row_attach_root, attached_inputs, value_grain, NULL_SAFE_COMPARISON_OPS, NON_IDENTITY_KEY_FIELDS, OPTIONAL_KEY_FIELDS, operand_aggregates, operand_constituents, parameter_row_leaves, source_anchor_path, source_row_leaves, shift_offset_of, value_type, VALUE_KEY_TYPES
 from slayer.core.names import spelled_name
 from slayer.core.relationship_search import routes
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
@@ -503,6 +503,20 @@ def _assert_attach_covers_producer_grain(
             "Regroup attach join keys do not match the producer's grouping grain; "
             "the join must cover the complete grain or it changes cardinality."
         )
+
+
+def _assert_in_place_transform_grains(prebound: PreboundQuery, *, in_place: AbstractSet[ValueKey]) -> None:
+    """A transform evaluated over the plan's rows has the plan grain as its operand grain, up to determination."""
+    grain = Grain.of(dm.bound.value_key for dm in prebound.grain_declared_metrics)
+    plan = _prune_functionally_determined_grain(grain)
+    for t in in_place:
+        if not is_transform(t):
+            continue
+        operand = value_grain(t, query_grain=grain, active_bucket=prebound.main_time_key)
+        if _prune_functionally_determined_grain(operand) != plan:
+            raise ValueError(
+                f"Transform {t!r} would evaluate over rows at {list(plan)!r}, not its operand grain {list(operand)!r}."
+            )
 
 
 def _scalar_free_fields(node: ValueKey, out: set) -> None:
@@ -1321,6 +1335,7 @@ def _plan_shifted_attaches(
             reserved_placeholders=frozenset(to_original),
             kernel_answer=_kernel_answer(decision),
             domain_of=key,
+            in_place={answer},
         )
         if not any(s.key == answer for s in producer_plan.aggregate_slots):
             # The answer nests as an attach carrying its own kernel.
@@ -2016,6 +2031,8 @@ class ProducerContext(BaseModel):
     placeholder_originals: Mapping[ValueKey, ValueKey] = Field(default_factory=dict)
     #: The transform whose domain this producer's rows are (semantics Axiom 11.6).
     domain_of: Optional[ValueKey] = None
+    #: Declared answers whose cells are this producer's rows: its transforms evaluate over them in place.
+    in_place: FrozenSet[ValueKey] = frozenset()
 
 
 def _materialised(
@@ -3372,6 +3389,7 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
             carrier_grain=carrier_grain, union_grain=union_grain, outer_grain=outer_grain, constituents=constituents,
             context=context)
         else {})
+    carrier_rows_grain = carrier_grain if grain_placeholders else union_grain
     # The carrier: one producer at the union grain carrying every constituent
     # (coarser constituents broadcast within it).
     constituent_placeholders: Dict[ValueKey, ValueKey] = {
@@ -3391,7 +3409,8 @@ def _synthesize_reaggregation_producer(  # NOSONAR(S3776) — one cohesive secon
     else:
         semi_join_names = []
     carrier_attach = _build_carrier_attach(
-        union_grain=carrier_grain if grain_placeholders else union_grain, constituents=constituents,
+        union_grain=carrier_rows_grain, constituents=constituents,
+        in_place=_carrier_domain_of(source_constituents, rows_grain=carrier_rows_grain, context=context),
         constituent_placeholders=constituent_placeholders, host_dataset=host_dataset,
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         inherited=inherited, n_date_range=n_date_range,
@@ -3549,6 +3568,7 @@ def _build_carrier_attach(
     population_semi_join_metrics: Optional[List[str]] = None,
     grain_placeholders: Optional[Mapping[ValueKey, ValueKey]] = None,
     supply: Optional[Callable[[Mapping[ValueKey, str]], PlannedRowSupply]] = None,
+    in_place: AbstractSet[ValueKey] = frozenset(),
 ) -> RegroupAttachPlan:
     """A row-attach producer at the union grain carrying every constituent (coarser
     ones broadcast within it) — the carrier / level-1 of the re-aggregation. With ``supply``, its rows are that row
@@ -3573,6 +3593,7 @@ def _build_carrier_attach(
         bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         producer_registry=producer_registry,
         population=population,
+        in_place=in_place,
     )
     value_slots = [
         *carrier_plan.aggregate_slots, *carrier_plan.combined_expression_slots,
@@ -3764,6 +3785,16 @@ def _cells_are_the_carrier(
         not operand_constituents(g) for g in union_grain if g not in outer_grain) and all(
         _operand_constituent_grain(c, context=context) == union_grain and _reads_host_rows(c, context=context)
         for c in constituents)
+
+
+def _carrier_domain_of(
+    source_constituents: Sequence[ValueKey], *, rows_grain: Grain, context: _ProducerSynthesisContext,
+) -> FrozenSet[ValueKey]:
+    """The transform whose cells are the carrier's rows: its only source constituent, at the carrier's grain."""
+    if len(source_constituents) == 1 and is_transform(t := source_constituents[0]) and (
+            _operand_constituent_grain(t, context=context) == rows_grain):
+        return frozenset({t})
+    return frozenset()
 
 
 def _reads_host_rows(c: ValueKey, *, context: _ProducerSynthesisContext) -> bool:
@@ -4218,6 +4249,15 @@ def _producer_window_td(
     return td if windowed or (is_transform(root) and td in pks) else None
 
 
+def _local_regroup_domain(
+    answer: ValueKey, *, producer_aggs: Sequence[ValueKey],
+) -> Tuple[Optional[ValueKey], FrozenSet[ValueKey]]:
+    """A transform answer's producer is its domain: ``(domain_of, in_place)``."""
+    if is_transform(answer):
+        return answer, frozenset(producer_aggs)
+    return None, frozenset()
+
+
 def _synthesize_local_regroup(
     *, ctx: "_LocalRegroupContext", phase: Literal["row", "combined"], pks: Grain,
     windowed: bool, aggs: List[ValueKey], order_fn: Callable[[Grain], List[ValueKey]],
@@ -4266,7 +4306,7 @@ def _synthesize_local_regroup(
         ranking_candidates=prebound.ranking_candidates,
     )
     decision = _kernel_decision(answer=producer_aggs[0], windowed=windowed)
-    answer = own[aggs[0]]
+    domain_of, in_place = _local_regroup_domain(own[aggs[0]], producer_aggs=producer_aggs)
     producer_plan = compile_synthesized(
         prebound=producer_prebound,
         source_dataset=ctx.producer_source_dataset,
@@ -4276,7 +4316,8 @@ def _synthesize_local_regroup(
         producer_registry=ctx.producer_registry,
         population=ctx.population,
         kernel_answer=_kernel_answer(decision),
-        domain_of=answer if is_transform(answer) else None,
+        domain_of=domain_of,
+        in_place=in_place,
     )
     # A union-grain producer MAY carry nested attaches at any depth; the
     # complete-grain assert is the admission rule.
@@ -4639,11 +4680,12 @@ def compile_synthesized(
     kernel_answer: Optional[AggregateKey] = None,
     placeholder_originals: Optional[Mapping[ValueKey, ValueKey]] = None,
     domain_of: Optional[ValueKey] = None,
+    in_place: AbstractSet[ValueKey] = frozenset(),
 ) -> PlannedQuery:
     """Elaborate a compiler-synthesized producer — its aggregates' homes relative to
     its OWN root (D3) — and compile it. ``carried_attaches`` are outer attaches whose
     placeholders it reads as is; ``reserved_placeholders`` are never minted again;
-    ``kernel_answer`` is the answer its kernel renders."""
+    ``kernel_answer`` is the answer its kernel renders; ``in_place`` the answers whose cells are its rows."""
     env = elaborate_synthesized(
         prebound, bundle=bundle, scope=scope, stage_schemas=stage_schemas,
         source_dataset=source_dataset,
@@ -4656,6 +4698,7 @@ def compile_synthesized(
         kernel_answer=kernel_answer,
         placeholder_originals=dict(placeholder_originals or {}),
         domain_of=domain_of,
+        in_place=frozenset(in_place),
     )
     routed = _route_producer(
         env, context=context,
@@ -4754,11 +4797,10 @@ def _route_producer(
 ) -> _Routed:
     prebound, scope, bundle = env.prebound, env.scope, env.bundle
     on_spine = spine_field(scope.population, bundle=bundle) is not None
+    _assert_in_place_transform_grains(prebound, in_place=context.in_place)
     dispositions = discover_roots(
         prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle, homes=env.homes,
-        transforms=TransformRouting(answers=frozenset(
-            dm.bound.value_key for dm in prebound.declared_metrics if not dm.is_dimension
-        ), spine=on_spine),
+        transforms=TransformRouting(in_place=context.in_place, spine=on_spine),
     )
     routed_prebound, attaches = _plan_regroups(
         prebound=prebound, filter_typings=list(env.filter_typings),
