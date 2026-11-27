@@ -244,7 +244,7 @@ class TestInterleavedStatements:
         a, b = await asyncio.gather(invoices.execute(one), invoices.execute(two))
         assert per_account(a) == {"a1": 9.0, "a2": 29.0, "a3": 29.0, "a4": 29.0}
         assert per_account(b) == {"a1": 24.0, "a2": 24.0, "a3": 14.0, "a4": 24.0}
-        assert [a.sql, b.sql] == alone
+        assert alone == [a.sql, b.sql]
 
 
 # --------------------------------------------------------------------------- #

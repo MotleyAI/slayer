@@ -99,6 +99,10 @@ class SlotTyping:
         self._datasets = bundle.datasets_by_name
         self._dialect = bundle.dialect
 
+    @property
+    def population(self) -> Optional[SlayerDataset]:
+        return self._population
+
     def field_type(self, key: object) -> Optional[DataType]:
         if isinstance(key, AttachedKey):
             found = self._attached.get(key.attach)

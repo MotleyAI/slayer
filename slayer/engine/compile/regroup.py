@@ -86,10 +86,10 @@ class AttachTable:
                 update={"on": on}))})
             for sub in template.substitutions if isinstance(sub.placeholder, AttachedKey)
         ]
-        join_pairs = [(m, s) for s, m in on]
-        if (phase, subs, join_pairs) == (template.attach_phase, template.substitutions, template.join_pairs):
+        pairs = [(m, s) for s, m in on]
+        if (phase, subs, pairs) == (template.attach_phase, template.substitutions, template.join_pairs):
             return template  # read where it was minted: the same attach
-        return template.model_copy(update={"attach_phase": phase, "substitutions": subs, "join_pairs": join_pairs})
+        return template.model_copy(update={"attach_phase": phase, "substitutions": subs, "join_pairs": pairs})
 
     def group_of(self, key: AttachedKey) -> int:
         """The minting attach ``key`` shares with the other answers of its producer."""

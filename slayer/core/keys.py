@@ -530,8 +530,8 @@ class AttachedKey(_FrozenKey, frozen=True):
         return self.model_copy(update={"on": on}) if m.changed else self
 
 
-#: Keys a typing walk reads as a column through ``field_type``.
-COLUMN_KINDS = (FieldKey, FieldSqlKey, AttachedKey)
+#: Keys a typing walk types through ``field_type``.
+FIELD_TYPED_KINDS = (FieldKey, FieldSqlKey, AttachedKey)
 
 
 class LiteralKey(_LeafKey, frozen=True):
@@ -1763,7 +1763,7 @@ def _window_argument(key: object) -> Optional["ValueKey"]:
 
 def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     """DATE / TIMESTAMP when ``key`` is provably temporal, else ``None``; field leaves type via ``field_type``."""
-    if isinstance(key, COLUMN_KINDS):
+    if isinstance(key, FIELD_TYPED_KINDS):
         t = field_type(key)
         return t if t in TEMPORAL_TYPES else None
     if isinstance(key, TimeTruncKey):
@@ -1831,7 +1831,7 @@ _BOOLEAN_BRANCH_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyT
 
 def boolean_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly boolean; field leaves type via ``field_type``."""
-    if isinstance(key, COLUMN_KINDS):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key) is DataType.BOOLEAN
     if isinstance(key, LiteralKey):
         return isinstance(key.value, bool)
@@ -1896,7 +1896,7 @@ def numeric_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly a number (a boolean reads as one only beside a number)."""
     if _is_number_literal(key):
         return True
-    if isinstance(key, COLUMN_KINDS):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key) in _NUMERIC_TYPES
     if isinstance(key, ArithmeticKey):
         return key.op in _ARITHMETIC_OPS
@@ -1929,7 +1929,7 @@ def integer_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly an integer (booleans read as 0 / 1 count)."""
     if _is_int_literal(key) or boolean_valued(key, field_type=field_type):
         return True
-    if isinstance(key, COLUMN_KINDS):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key) is DataType.INTEGER
     if isinstance(key, CastKey):
         return key.data_type is DataType.INTEGER
@@ -2108,7 +2108,7 @@ def aggregation_source_type(source: object, *, field_type: FieldTypeFn) -> Optio
         return DataType.BOOLEAN
     if _boolean_int_expression(source, field_type=field_type):
         return DataType.INTEGER
-    if isinstance(source, (*COLUMN_KINDS, CastKey)) or (
+    if isinstance(source, (*FIELD_TYPED_KINDS, CastKey)) or (
             isinstance(source, ScalarCallKey) and source.name in CONDITIONAL_SCALARS):
         return value_type(source, field_type=field_type)
     return None
@@ -2162,7 +2162,7 @@ def conditional_branch_conflict(
 
 def list_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     """Whether ``key``'s value is certainly a list."""
-    if isinstance(key, COLUMN_KINDS):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key) is DataType.ARRAY
     if isinstance(key, (ArrayLiteralKey, ListSetKey)):
         return True
@@ -2290,7 +2290,7 @@ def value_type(
     """``key``'s type; ``None`` only for NULL or an unresolvable field leaf."""
     if isinstance(key, LiteralKey):
         return literal_type(key.value)
-    if isinstance(key, COLUMN_KINDS):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_type(key)
     if isinstance(key, CastKey):
         return None if kind_of(key.data_type) is TypeKind.UNKNOWN else key.data_type
@@ -2394,7 +2394,7 @@ def list_element_type(
     key: object, *, field_type: FieldTypeFn, field_element: FieldElementFn,
 ) -> Optional[DataType]:
     """The element type of a list-valued ``key`` (``None`` when unknown, e.g. ``[]``)."""
-    if isinstance(key, COLUMN_KINDS):
+    if isinstance(key, FIELD_TYPED_KINDS):
         return field_element(key)
     if isinstance(key, ArrayLiteralKey):
         types = {literal_type(v.value) for v in key.values}
