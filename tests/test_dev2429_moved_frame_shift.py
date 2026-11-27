@@ -332,6 +332,14 @@ class TestBoundsMovedPastTheRepresentableRangeOpen:
     def test_an_upper_bound_moved_past_the_last_date_opens(self) -> None:
         assert _moved("<", date(9999, 12, 1), bucket=TimeGranularity.MONTH, date_axis=True, periods=1) == []
 
+    @pytest.mark.parametrize("op", ["<=", ">"])
+    def test_a_bound_past_the_last_date_opens(self, op: str) -> None:
+        assert _moved(op, date(9999, 12, 31), bucket=TimeGranularity.DAY, date_axis=True) == []
+
+    @pytest.mark.parametrize("op", ["<=", ">"])
+    def test_a_bound_past_the_last_instant_opens(self, op: str) -> None:
+        assert _moved(op, datetime.max, bucket=TimeGranularity.HOUR, date_axis=False) == []
+
 
 class TestFramesAtTheRepresentableEdges:
     async def test_a_range_from_the_first_date_shifts_back(self, engine) -> None:
@@ -343,3 +351,8 @@ class TestFramesAtTheRepresentableEdges:
     async def test_a_range_to_the_last_date_shifts_forward(self, engine) -> None:
         [shifted] = await _run(engine, f"time_shift({REWRITE}, 1)", date_range=["2024-02-01", "9999-12-30"])
         assert shifted["2024-04"] == 5.0  # May
+
+    async def test_a_filter_to_the_last_date_bounds_nothing(self, engine) -> None:
+        [filtered] = await _run(engine, SHIFT_RW, date_range=None, filter=["orders.ordered_at <= '9999-12-31'"])
+        [plain] = await _run(engine, SHIFT_RW, date_range=None)
+        assert filtered == plain

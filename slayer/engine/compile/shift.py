@@ -60,8 +60,9 @@ def _instant(value: object) -> Tuple[datetime, bool]:
     return datetime(value.year, value.month, value.day), True
 
 
-def _side(conjunct: ArithmeticKey, field: ValueKey, *, date_axis: bool) -> Tuple[bool, datetime, bool]:
-    """``(is_lower, instant, is_date)``: an inclusive lower or exclusive upper instant, a DATE axis's in whole days."""
+def _side(conjunct: ArithmeticKey, field: ValueKey, *, date_axis: bool) -> Optional[Tuple[bool, datetime, bool]]:
+    """``(is_lower, instant, is_date)``: an inclusive lower or exclusive upper instant, a DATE axis's in whole days;
+    None past the last representable instant."""
     lhs, rhs = conjunct.operands
     op = conjunct.op if lhs == field else _MIRROR[conjunct.op]
     literal = rhs if lhs == field else lhs
@@ -70,11 +71,14 @@ def _side(conjunct: ArithmeticKey, field: ValueKey, *, date_axis: bool) -> Tuple
     if date_axis:
         canonical = date_bound(op, value)
         if canonical is None:
-            raise ValueError(f"time_shift cannot move the frame bound {literal.value!r}: past the last date")
+            return None
         op, day = canonical
         value, is_date = datetime(day.year, day.month, day.day), True
     elif op in (">", "<="):
-        value += timedelta(microseconds=1)
+        try:
+            value += timedelta(microseconds=1)
+        except OverflowError:
+            return None
     return op in _LOWER_OPS, value, is_date
 
 
@@ -119,8 +123,10 @@ def _without_axis_bounds(
     for conjunct in conjuncts:
         if is_frame_bound(key=conjunct, time_fields={field}):
             assert isinstance(conjunct, ArithmeticKey)
-            is_lower, value, is_date = _side(conjunct, field, date_axis=date_axis)
-            (lowers if is_lower else uppers).append((value, is_date))
+            side = _side(conjunct, field, date_axis=date_axis)
+            if side is not None:
+                is_lower, value, is_date = side
+                (lowers if is_lower else uppers).append((value, is_date))
         else:
             residual.append(conjunct)
     if not residual:
