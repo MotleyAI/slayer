@@ -95,7 +95,7 @@ eval $(poetry env activate)
 claude
 ```
 
-Then run `/la:pr` and describe your change. After the pin in `pyproject.toml` changes, re-add the marketplace at the new tag.
+Then run `/la:pr` and describe your change. After the pin in `pyproject.toml` changes, run `/plugin marketplace remove living-architecture`, then both install commands above again: adding the marketplace at a new tag fails while the old one is registered.
 
 **Outside contributors:** `living-architecture.yaml` sets this repo up for MotleyAI's Linear tracker and the Codex reviewer. To override that, create a `living-architecture.local.yaml` at the repo root. It's git-ignored and is merged over the committed config:
 
