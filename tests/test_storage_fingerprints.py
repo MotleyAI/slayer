@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
@@ -17,6 +18,15 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
 SUFFIXES = (".yaml",)
+
+
+def _dataset_document(base: Path, *, data_source: str, name: str) -> Path:
+    """The YAML store's dataset document declaring dataset ``name``, found by content."""
+    hits = [p for p in sorted((base / "semantic_models" / data_source).glob("*.yaml"))
+            if isinstance(doc := yaml.safe_load(p.read_text(encoding="utf-8")), dict)
+            and (doc.get("dataset") or {}).get("name") == name]
+    assert len(hits) == 1, f"dataset document {name!r}: {hits}"
+    return hits[0]
 
 
 def _dataset(tag: str) -> SlayerDataset:
@@ -36,7 +46,7 @@ class TestYaml:
     async def test_same_size_rewrite_with_restored_mtime(self, tmp_path: Path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _seeded(storage)
-        path = os.path.join(storage.models_dir, "ds", "m.yaml")
+        path = _dataset_document(tmp_path, data_source="ds", name="m")
         mtime = os.stat(path).st_mtime_ns
         before = await storage.graph_fingerprint()
         await storage.save_dataset(_dataset("bb"), _validate=False)

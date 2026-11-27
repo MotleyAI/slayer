@@ -32,7 +32,9 @@ from tests._dev2277_fixtures import (
     rel,
     seed_datasets,
 )
-from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, raw_doc, raw_store, run, stored_bytes
+from tests._stored_upgrade_fixtures import (
+    BACKENDS, DS, assert_current, memory_v2, raw_ossie, raw_store, run, source_queries, stored_bytes,
+)
 from tests._upgrade_corpus import Corpus, online
 
 #: The versions this change introduces; a concurrent bump renumbers only this line.
@@ -165,9 +167,9 @@ class TestRewrites:
         storage = await store(tmp_path, seed_ds, backend=backend, models=(sq,))
         dataset, _ = await load(storage, "sq")
         await storage.save_dataset(dataset)
-        raw = await raw_doc(storage, "sq")
-        assert raw["version"] == CURRENT_VERSIONS["SlayerModel"]
-        (written,) = raw["source_queries"]
+        raw = await raw_ossie(storage, "sq")
+        assert_current(raw)
+        (written,) = source_queries(raw["dataset"])
         assert written["dimensions"] == ["orders.status"]
         assert written["metrics"] == ["count(orders.*)"]
 

@@ -410,14 +410,14 @@ class TestDemoSetupHealsModels:
     def test_a_demo_model_that_is_not_stored_fails_setup(
         self, jaffle_generator, storage: YAMLStorage, store_dir, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        save_model_impl = storage._save_dataset_impl
+        write = storage._write_document_dataset
 
-        async def refuse_tweets(model: SlayerDataset):
-            if model.name == "tweets":
+        async def refuse_tweets(**kwargs):
+            if kwargs["name"] == "tweets":
                 raise RuntimeError("disk full")
-            return await save_model_impl(model)
+            return await write(**kwargs)
 
-        monkeypatch.setattr(storage, "_save_dataset_impl", refuse_tweets)
+        monkeypatch.setattr(storage, "_write_document_dataset", refuse_tweets)
         with pytest.raises(SlayerError, match=r"tweets.*disk full"):
             _setup(storage, store_dir)
 

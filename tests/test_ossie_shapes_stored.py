@@ -15,8 +15,8 @@ import pytest
 from slayer.core.models import SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from tests._deprecated_input_helpers import deprecations, recorded
-from tests._ossie_vocabulary_fixtures import shop_store, stored_document
-from tests._stored_upgrade_fixtures import DS
+from tests._ossie_vocabulary_fixtures import shop_store
+from tests._stored_upgrade_fixtures import DS, ossie_dataset, stored_relationships
 
 PRE_DATASET = 25
 PRE_QUERY = 15
@@ -119,9 +119,12 @@ class TestShapes:
             loaded = await storage.get_dataset("orders", data_source=DS)
             assert loaded is not None
         assert deprecations(caught) == []
+        stored_customers = await storage.get_dataset("customers", data_source=DS)
+        assert stored_customers is not None
+        await storage.save_dataset(stored_customers)  # the relationship's target is stored first
         await storage.save_dataset(loaded)
-        written = stored_document(backend=backend, base=str(tmp_path), name="orders")
-        [rel] = written["relationships"]
+        written = ossie_dataset(backend=backend, base=str(tmp_path), name="orders")
+        [rel] = stored_relationships(backend=backend, base=str(tmp_path), name="orders")
         assert (rel["from_columns"], rel["to_columns"]) == (["customer_id"], ["id"])
         assert "join_pairs" not in rel
         assert {f["name"]: f["datatype"] for f in written["fields"]}["amount"] == "Float"

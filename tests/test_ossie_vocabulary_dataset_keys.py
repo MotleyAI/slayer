@@ -16,8 +16,10 @@ from fastapi.testclient import TestClient
 from slayer.api.server import create_app
 from slayer.core.models import SlayerDataset
 from tests._deprecated_input_helpers import recorded
-from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store, stored_document
-from tests._stored_upgrade_fixtures import AMOUNT_BY_REGION, BACKENDS, DS, by_dimension, run
+from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store
+from tests._stored_upgrade_fixtures import (
+    AMOUNT_BY_REGION, BACKENDS, DS, by_dimension, ossie_dataset, run, slayer_payload, stored_relationships,
+)
 
 PRE_2_0_DATASET_KEYS = {"columns", "measures", "joins"}
 PRE_2_0_MEMBER_KEYS = {"type", "formula", "target_model"}
@@ -50,6 +52,34 @@ def assert_kept_keys(doc: dict[str, Any]) -> None:
     assert {"from_columns", "to_columns"} <= doc["relationships"][0].keys()
 
 
+def expression_texts(expression: Any) -> list[str]:
+    """Every text of a stored Ossie expression."""
+    if isinstance(expression, str):
+        return [expression]
+    return [*([expression["sql"]] if "sql" in expression else []),
+            *(d["expression"] for d in expression.get("dialects") or [])]
+
+
+def assert_stored_ossie(*, backend: str, base: Path) -> None:
+    """The stored ``orders`` spells every member the Ossie way and keeps its SLayer-only keys in its entry."""
+    doc = ossie_dataset(backend=backend, base=str(base), name="orders")
+    payload = slayer_payload(doc)
+    rels = stored_relationships(backend=backend, base=str(base), name="orders")
+    assert not PRE_2_0_DATASET_KEYS & (doc.keys() | payload.keys())
+    for member in [*doc["fields"], *doc.get("metrics", []), *rels, *payload.get("aggregations", []),
+                   *payload.get("metrics", [])]:
+        assert not PRE_2_0_MEMBER_KEYS & member.keys(), member
+    assert all("datatype" in f for f in doc["fields"])
+    [metric] = doc.get("metrics", [])
+    assert any(t.casefold() == "sum(amount)" for t in expression_texts(metric["expression"])), metric
+    [rel] = rels
+    assert (rel["to"], rel["from_columns"], rel["to_columns"]) == ("customers", ["customer_id"], ["id"])
+    assert doc["source"] == "orders"
+    assert payload["source"]["filters"] == [KEPT_FILTER]
+    [aggregation] = payload["aggregations"]
+    assert aggregation["expression"] == "SUM({value}) * 2"
+
+
 class TestDump:
     @pytest.mark.parametrize("mode", ["python", "json"])
     @pytest.mark.parametrize("exclude_none", [False, True])
@@ -72,10 +102,8 @@ class TestSavedDocument:
         await storage.save_dataset(SlayerDataset.model_validate(shop_customers()))
         orders = SlayerDataset.model_validate(full_orders())
         await storage.save_dataset(orders)
-        doc = stored_document(backend=backend, base=str(tmp_path), name="orders")
-        assert_ossie_document(doc)
-        assert_kept_keys(doc)
-        assert await storage.get_dataset("orders", data_source=DS) == orders
+        assert_stored_ossie(backend=backend, base=tmp_path)
+        assert await storage.get_dataset("orders", data_source=DS) == orders.model_copy(update={"semantic_model": DS})
 
     async def test_a_saved_dataset_runs(self, backend: str, tmp_path: Path) -> None:
         storage = await shop_store(backend=backend, base=str(tmp_path))

@@ -161,7 +161,7 @@ NAV_SECTIONS: dict[str, set[str]] = {
     "Agent context": {"concepts/memories.md", "concepts/search.md"},
     "Operate": {
         "concepts/row-level-security.md", "concepts/query-cache.md", "reference/opentelemetry.md",
-        "reference/usage-reporting.md", "upgrading/2.0.md",
+        "reference/usage-reporting.md", "upgrading/2.0.md", "upgrading/stored-format.md",
     },
     "Tutorials": {
         "examples/01_dynamic/dynamic.md",

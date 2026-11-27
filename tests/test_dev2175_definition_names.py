@@ -43,6 +43,7 @@ from tests._dev2175_fixtures import (
     to_customers,
 )
 from tests._engine_helpers import owned_query_engine
+from tests._stored_upgrade_fixtures import raw_ossie, slayer_payload
 
 BACKEND = pytest.mark.parametrize("dialect", BACKENDS)
 STATUS_IS_STATE = fld("status", "state")
@@ -127,10 +128,10 @@ class TestDialectSelection:
         legacy = dataset(orders_doc(fld("n", sql="amount + 1")))
         async with engine_with(dialect="duckdb") as (_, storage, _):
             await storage.save_dataset(legacy)
-            raw = await storage._load_raw_dataset_dict(name="orders", data_source=legacy.data_source)
-        assert raw is not None
-        (n,) = [f for f in raw["fields"] if f["name"] == "n"]
-        assert (n.get("sql"), n["expression"]) == (None, {"dialects": [{"dialect": "DUCKDB", "expression": "amount + 1"}]})
+            raw = await raw_ossie(storage, "orders", data_source=legacy.data_source)
+        (n,) = [f for f in raw["dataset"]["fields"] if f["name"] == "n"]
+        assert ((slayer_payload(n).get("field") or {}).get("sql"), n["expression"]) == (
+            None, {"dialects": [{"dialect": "DUCKDB", "expression": "amount + 1"}]})
 
 
 # ── portable vs dialect meaning ───────────────────────────────────────────
@@ -336,7 +337,7 @@ class TestMetricExpression:
 
 # ── checks that need the dialect ──────────────────────────────────────────
 
-async def test_saved_without_its_datasource_refused_when_queried() -> None:
+async def test_saved_without_its_datasource_translated_when_queried() -> None:
     doc = orders_doc(fld("n", {"dialects": [entry("DUCKDB", "amount + 1")]}))
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "shop.sqlite")
@@ -344,9 +345,8 @@ async def test_saved_without_its_datasource_refused_when_queried() -> None:
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         await storage.save_dataset(dataset(doc))
         async with owned_query_engine(storage=storage, datasources=[datasource(dialect="sqlite", db_path=db_path)]) as engine:
-            with pytest.raises(SlayerError) as caught:
-                await by_id(engine, field="n")
-    assert_refused(caught.value, "n", "DUCKDB")
+            got = await by_id(engine, field="n")
+    assert got == [11, 21, 6]  # each seeded amount plus one
 
 
 # ── the deprecated field sql ──────────────────────────────────────────────

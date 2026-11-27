@@ -639,7 +639,10 @@ async def test_slayer_1_8_export_restores(tmp_path: Path) -> None:
     legacy_text = await stores[1].get_semantic_model_text(name, EXPORT_DS)
     assert legacy_text is not None
     assert "custom_extensions" not in legacy_text
-    assert yaml.safe_load(legacy_text) == yaml.safe_load(modern.read_text(encoding="utf-8"))
+    # The datasource model is stored split: compare the two stores' resolved documents.
+    resolved = [await store.semantic_model_document(name, data_source=EXPORT_DS) for store in stores]
+    assert resolved[0] is not None
+    assert resolved[1] == resolved[0]
     for dataset_name in ("customers", "orders"):
         modern_ds = await stores[0].get_dataset(dataset_name, data_source=EXPORT_DS)
         legacy_ds = await stores[1].get_dataset(dataset_name, data_source=EXPORT_DS)
@@ -919,7 +922,7 @@ async def _reimport(engine: SlayerQueryEngine, base: Path) -> Any:
 
 async def test_reimport_replaces_the_converted_datasets(legacy_1x: SlayerQueryEngine, tmp_path: Path) -> None:
     storage = legacy_1x.storage
-    assert await storage.semantic_model_owner("orders", DS) is None
+    assert await storage.semantic_model_owner("orders", DS) == DS
     result = await _reimport(legacy_1x, tmp_path)
     assert result.stored == ["sales"]
     text = await storage.get_semantic_model_text("sales", DS)

@@ -3,8 +3,10 @@
 import os
 import stat
 import tempfile
+from pathlib import Path
 
 import pytest
+import yaml
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
@@ -46,10 +48,46 @@ def sample_datasource() -> DatasourceConfig:
     )
 
 
+_OTHER_DOCUMENT = """\
+version: 0.3.0.dev0
+name: sales
+datasets:
+  - name: other
+    source: other
+    fields:
+      - name: id
+        expression: {sql: id}
+        datatype: String
+"""
+
+
 def _yaml_dump_raises(data, **kwargs):
     """Stand-in for ``yaml.dump`` that fails before any bytes are written,
     exercising the serialize-first guarantee (destination stays untouched)."""
     raise OSError("simulated disk full")
+
+
+def _dataset_document_path(storage: YAMLStorage, *, data_source: str, name: str) -> str:
+    """The dataset document declaring dataset ``name``, found by content."""
+    root = Path(storage.base_dir) / "semantic_models" / data_source
+    hits = [p for p in sorted(root.glob("*.yaml"))
+            if isinstance(doc := yaml.safe_load(p.read_text(encoding="utf-8")), dict)
+            and (doc.get("dataset") or {}).get("name") == name]
+    assert len(hits) == 1, f"dataset document {name!r}: {hits}"
+    return str(hits[0])
+
+
+def _replace_fails_under(monkeypatch: pytest.MonkeyPatch, root: str) -> None:
+    """Every atomic install of a file under ``root`` fails before the destination changes."""
+    for op in ("replace", "rename"):
+        original = getattr(os, op)
+
+        def run(src, dst, *args, _original=original, **kwargs):
+            if str(Path(dst).resolve()).startswith(str(Path(root).resolve())):
+                raise OSError("simulated disk full")
+            return _original(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(os, op, run)
 
 
 def test_atomic_write_preserves_permissions(tmp_path) -> None:
@@ -203,10 +241,10 @@ class TestModelStorage:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         await storage.save_dataset(sample_dataset)
-        path = os.path.join(storage.models_dir, "test_ds", "test_dataset.yaml")
+        path = _dataset_document_path(storage, data_source="test_ds", name="test_dataset")
         original = open(path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
 
-        monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _yaml_dump_raises)
+        _replace_fails_under(monkeypatch, os.path.dirname(path))
         replacement = sample_dataset.model_copy(update={"description": "lost update"})
         with pytest.raises(OSError, match="simulated disk full"):
             await storage.save_dataset(replacement)
@@ -223,10 +261,10 @@ class TestModelStorage:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         await storage.save_dataset(sample_dataset)
-        path = os.path.join(storage.models_dir, "test_ds", "test_dataset.yaml")
+        path = _dataset_document_path(storage, data_source="test_ds", name="test_dataset")
         original = open(path).read()  # NOSONAR(S7493) — sync fixture I/O is intentional
 
-        monkeypatch.setattr("slayer.storage.atomic_write.yaml.dump", _yaml_dump_raises)
+        _replace_fails_under(monkeypatch, os.path.dirname(path))
         with pytest.raises(OSError, match="simulated disk full"):
             await storage.update_field_sampled(
                 data_source="test_ds",
@@ -242,34 +280,33 @@ class TestModelStorage:
         assert reloaded is not None
         assert reloaded.fields[1].sampled is None
 
-    async def test_empty_model_file_raises_clear_error(
+    async def _corrupted_dataset_document_isolates_its_model(self, storage: YAMLStorage,
+                                                             sample_dataset: SlayerDataset, text: str) -> None:
+        await storage.save_dataset(sample_dataset)
+        await storage.save_semantic_model_text(data_source="test_ds", name="sales", text=_OTHER_DOCUMENT)
+        path = _dataset_document_path(storage, data_source="test_ds", name="test_dataset")
+        with open(path, "w", encoding="utf-8") as f:  # NOSONAR(S7493) — test corrupts a local fixture file
+            f.write(text)
+
+        loaded, errs = await storage.load_datasets(data_source="test_ds")
+        assert {d.name for d in loaded} == {"other"}
+        failures = {e.name: e.cause_text for e in errs if e.kind == "semantic_model"}
+        assert set(failures) == {"test_ds"}
+        assert os.path.basename(path) in failures["test_ds"]
+        assert await storage.get_dataset("other", data_source="test_ds") is not None
+
+    async def test_an_empty_dataset_document_isolates_its_model(
         self, storage: YAMLStorage, sample_dataset: SlayerDataset
     ) -> None:
-        # A zero-byte dataset file (disk-full / interrupted write) must surface
-        # an actionable error, not a bare Pydantic model_type failure.
-        await storage.save_dataset(sample_dataset)
-        path = os.path.join(storage.models_dir, "test_ds", "test_dataset.yaml")
-        open(path, "w").close()  # NOSONAR(S7493) — test corrupts a tiny local fixture file; sync I/O is intentional
+        """A zero-byte dataset document (interrupted write) is not a dataset document."""
+        await self._corrupted_dataset_document_isolates_its_model(storage, sample_dataset, "")
 
-        with pytest.raises(ValueError, match="empty or corrupt") as excinfo:
-            await storage.get_dataset("test_dataset")
-        assert "test_dataset" in str(excinfo.value)
-        assert "slayer ingest" in str(excinfo.value)
-
-    async def test_truncated_model_file_raises_clear_error(
+    async def test_a_truncated_dataset_document_isolates_its_model(
         self, storage: YAMLStorage, sample_dataset: SlayerDataset
     ) -> None:
-        # A file cut off mid-write (full disk) is invalid YAML; the error must
-        # name the file and the remediation, not surface a bare yaml trace.
-        await storage.save_dataset(sample_dataset)
-        path = os.path.join(storage.models_dir, "test_ds", "test_dataset.yaml")
-        with open(path, "w") as f:  # NOSONAR(S7493) — test corrupts a tiny local fixture file; sync I/O is intentional
-            f.write('name: "test_dataset\ncolumns:\n  - name: "id\n')
-
-        with pytest.raises(ValueError, match="invalid YAML") as excinfo:
-            await storage.get_dataset("test_dataset")
-        assert "test_dataset.yaml" in str(excinfo.value)
-        assert "slayer ingest" in str(excinfo.value)
+        """A dataset document cut off mid-write is invalid YAML."""
+        await self._corrupted_dataset_document_isolates_its_model(
+            storage, sample_dataset, 'version: 0.3.0.dev0\ndataset:\n  name: "test_dataset\n  fields:\n')
 
 
 class TestDatasourceStorage:

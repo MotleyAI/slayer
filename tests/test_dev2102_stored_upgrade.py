@@ -23,7 +23,8 @@ from tests._stored_upgrade_fixtures import (
     memory_v2,
     orders_v10,
     query_backed_v10,
-    raw_doc,
+    raw_ossie,
+    source_queries,
     raw_store,
     rev_query,
     run,
@@ -128,11 +129,11 @@ class TestStoredModels:
         model = await storage.get_dataset("rev2_q", data_source=DS)
         assert model is not None
         await storage.save_dataset(model)
-        [stage] = (await raw_doc(storage, "rev2_q"))["source_queries"]
+        [stage] = source_queries((await raw_ossie(storage, "rev2_q"))["dataset"])
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
         assert stage["population"] == "orders"
         assert [e["dataset"] for e in stage["extensions"]] == ["orders"]
-        assert await storage.get_dataset("rev2_q", data_source=DS) == model
+        assert await storage.get_dataset("rev2_q", data_source=DS) == model.model_copy(update={"semantic_model": DS})
 
     def test_a_current_version_model_holding_a_stored_stage(self) -> None:
         doc = query_backed_v10(name="rev2_q", stages=[_stage()], version=CURRENT_VERSIONS["SlayerModel"])

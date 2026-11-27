@@ -333,6 +333,9 @@ class TestDemoEnrichment:
     def test_setup_saves_enriched_models(self, tmp_path, jaffle_generator):
         storage = YAMLStorage(base_dir=str(tmp_path))
         _setup_demo(storage, tmp_path)
+        # Stubbing one dataset at a time would strand its peers' relationships on keys the stub drops.
+        for table in jaffle_shop.TABLE_NAMES:
+            jaffle_shop.run_sync(storage.delete_dataset(table, data_source="jaffle_shop"))
         for table in jaffle_shop.TABLE_NAMES:
             jaffle_shop.run_sync(
                 storage.save_dataset(

@@ -1,0 +1,65 @@
+version: 0.3.0.dev0
+dataset:
+  name: tickets
+  source: tickets
+  fields:
+  - name: ticket_id
+    expression:
+      sql: ticket_id
+    datatype: String
+  - name: status
+    expression:
+      sql: status
+    datatype: String
+  - name: labels
+    expression:
+      sql: labels
+    datatype: Opaque
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 4
+        entity: labels
+        fingerprint: 86dc8e898d1cd32b523ff36d256df12504bed7e2a6e429bba060163053458210
+        kind: field
+        field:
+          datatype: Array
+          hidden: false
+          element_type: String
+  primary_key:
+  - ticket_id
+  metrics:
+  - name: ticket_count
+    expression:
+      sql: COUNT(*)
+    nonportable_extensions:
+    - vendor_name: SLAYER
+      data:
+        version: 4
+        entity: ticket_count
+        fingerprint: 3344a309d3a87849ab919632d7bf7f30b7174c5ff499481611c8f18614c4dbf7
+        kind: metric
+        dataset: tickets
+        metric:
+          expression: COUNT(*)
+          name: ticket_count
+          label: Tickets
+  nonportable_extensions:
+  - vendor_name: SLAYER
+    data:
+      version: 4
+      entity: tickets
+      fingerprint: 9efdfd60436ba230b2f52ccdd20b93b9a54c6f2a3fac9b35f2e13edc92a0a106
+      kind: dataset
+      source:
+        sql_table: tickets
+        filters:
+        - status <> 'test'
+        query_variables: {}
+      hidden: false
+      access_tags: []
+      aggregations: []
+      fields: []
+      metrics: []
+      relationships: []
+      enforced_keys: []

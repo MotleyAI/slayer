@@ -176,6 +176,19 @@ def _validate_field_name(name: str, context: str) -> str:
     return name
 
 
+def name_problem(kind: str, name: str) -> str | None:
+    """Why SLayer cannot reference a ``kind`` (dataset, field, metric, relationship) named ``name``; ``None`` if it can."""
+    checks = {"dataset": lambda: _validate_dataset_name(name, "Dataset"),
+              "field": lambda: _validate_field_name(name, "Field"),
+              "metric": lambda: check_metric_name(name, what="DatasetMetric name"),
+              "relationship": lambda: _validate_dataset_name(name, "Relationship")}
+    try:
+        checks[kind]()
+    except ValueError as exc:
+        return str(exc).strip().splitlines()[0]
+    return None
+
+
 def is_base_field_sql(sql: str | None) -> bool:
     """A definition text that names one physical column (unset, bare or double-quoted identifier)."""
     return sql is None or unquoted_identifier(sql) is not None
@@ -1383,6 +1396,8 @@ class SlayerDataset(DatasetPart):
     # Runtime-only (never persisted): a query stage's user spelling in relationship paths.
     # Runtime-only: a document dataset as it was read, the base a save merges its changes from.
     _read_as: "SlayerDataset | None" = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor
+    #: The version each stored stage was written at, when read from a document's ``SLAYER`` entry.
+    _stage_versions: tuple[int | None, ...] = PrivateAttr(default=())  # NOSONAR(S5890) — pydantic PrivateAttr
     _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
     # Runtime-only: this dataset is the P factor of a ``time_spine × P`` population.
     _population_spine: bool = PrivateAttr(default=False)
@@ -1399,6 +1414,16 @@ class SlayerDataset(DatasetPart):
     _restricts_rows: bool = PrivateAttr(default=False)
     # Runtime-only: key sets unique by construction (a stage's grain, a per-query row number).
     _constructed_keys: tuple[tuple[str, ...], ...] = PrivateAttr(default=())
+
+    @property
+    def stage_versions(self) -> tuple[int | None, ...]:
+        return self._stage_versions
+
+    def with_stage_versions(self, versions: tuple[int | None, ...]) -> "SlayerDataset":
+        """This dataset recording the version each of its stored stages was written at."""
+        out = self.model_copy()
+        out._stage_versions = versions
+        return out
 
     @property
     def constructed_keys(self) -> list[list[str]]:

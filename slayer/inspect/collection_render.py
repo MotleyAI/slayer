@@ -123,13 +123,22 @@ def render_datasets_summary(
     descriptions_max_chars: int | None = None,
     inherited_errors: Mapping[str, str] | None = None,
     model_metrics: list[ModelScopedMetric] | None = None,
+    ignored: list[str] | None = None,
 ) -> str:
     """Render a datasource's (already hidden-filtered + name-sorted) datasets and its model-scoped metrics.
 
     Extracted from ``mcp/server.py::datasets_summary`` so both the tool and the
     ``inspect`` dataset collection (compact=False) render through one path. With
-    ``descriptions_max_chars=None`` the output is byte-identical to the tool.
+    ``descriptions_max_chars=None`` the output is byte-identical to the tool. ``ignored`` lists the stored entities
+    loaded inert.
     """
+    if ignored:
+        rendered = render_datasets_summary(datasource_name=datasource_name, datasets=datasets, fmt=fmt,
+                                           compact=compact, descriptions_max_chars=descriptions_max_chars,
+                                           inherited_errors=inherited_errors, model_metrics=model_metrics)
+        if fmt == "json":
+            return json.dumps({**json.loads(rendered), "ignored_entities": list(ignored)}, indent=2)
+        return rendered + "\n\n## Ignored stored entities\n" + "\n".join(f"- {line}" for line in ignored)
     if not datasets:
         # An empty datasource must still emit valid JSON under fmt="json"
         # (a plain-text sentinel would break json.loads for the caller).

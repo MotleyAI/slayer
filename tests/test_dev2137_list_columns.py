@@ -38,7 +38,7 @@ from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2120_fixtures import contractors_engine, contractors_dataset, emit_contractors
 from tests._dev2137_fixtures import list_engine, metric, num, query
-from tests._stored_upgrade_fixtures import DS, raw_doc, raw_store
+from tests._stored_upgrade_fixtures import DS, raw_ossie, raw_store, slayer_payload
 
 
 def _array(element: str) -> dict[str, Any]:
@@ -562,8 +562,8 @@ class TestSqlModeElementType:
         assert _skills(loaded).element_type is DataType.OPAQUE
         assert loaded is not None
         await storage.save_dataset(loaded)
-        (saved,) = [c for c in (await raw_doc(storage, "dev_skills"))["fields"] if c["name"] == "skills"]
-        assert saved.get("element_type") == "Opaque", saved
+        (saved,) = [c for c in (await raw_ossie(storage, "dev_skills"))["dataset"]["fields"] if c["name"] == "skills"]
+        assert (slayer_payload(saved).get("field") or {}).get("element_type") == "Opaque", saved
 
     async def test_a_declared_element_type_survives_re_ingest(self) -> None:
         with _duckdb_file(*LIVE) as (ds, tmp):

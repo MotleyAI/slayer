@@ -37,9 +37,10 @@ def _metric_names(document: dict) -> set[str]:
 
 async def test_every_entity_carries_one_versioned_slayer_extension(env) -> None:
     result = await export_datasets(env, customers(), rich_orders(), visits(), monthly_revenue())
-    for entity in entities(result.document):
-        assert len(slayer_entries(entity)) == 1, entity["name"]
-        assert isinstance(payload(entity)["version"], int)
+    for entity in entities(result.document):  # a stored entity carries one only for its SLayer-only content
+        assert len(slayer_entries(entity)) <= 1, entity["name"]
+        if slayer_entries(entity):
+            assert isinstance(payload(entity)["version"], int)
 
 
 def test_fingerprint_normalization_is_stable() -> None:
@@ -116,8 +117,8 @@ async def test_malformed_foreign_extension_is_reported_and_omitted(env) -> None:
 async def test_reexport_keeps_one_slayer_extension_per_entity(env) -> None:
     first = await export_datasets(env, customers(), rich_orders())
     imported, _ = await reimport(env, first.document)
-    for entity in entities((await export(imported)).document):
-        assert len(slayer_entries(entity)) == 1, entity["name"]
+    for entity in entities((await export(imported)).document):  # one only for its SLayer-only content
+        assert len(slayer_entries(entity)) <= 1, entity["name"]
 
 
 # ──────────────────────────── --no-extensions ──────────────────────────────

@@ -20,12 +20,12 @@ from tests._stored_upgrade_fixtures import (
     metric_total,
     memory_v2,
     orders_v10,
+    ossie_text,
     query_backed_v10,
     raw_store,
     rev_query,
     run,
     seed_shop,
-    stored_bytes,
 )
 
 #: (stored legacy text, the text it loads as).
@@ -208,7 +208,7 @@ class TestStoredResultsUnchanged:
         model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
         await storage.save_dataset(model)
-        assert '"ok"' not in stored_bytes(backend="yaml", base=str(tmp_path / "store"), name="rev_q")
+        assert '"ok"' not in ossie_text(backend="yaml", base=str(tmp_path / "store"), name="rev_q")
 
     async def test_unversioned_client_query_fails_with_the_hint(self, tmp_path, shop_ds) -> None:
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", stage=rev_query())

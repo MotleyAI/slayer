@@ -21,6 +21,7 @@ from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._storage_upgrade_cli import store_path, upgrade
+from tests._stored_upgrade_fixtures import assert_current, raw_ossie, relationships_of
 
 Seeder = Callable[[list[dict]], Awaitable[StorageBackend]]
 
@@ -100,9 +101,9 @@ class TestCanonicalisedOnLoad:
         assert orders.relationships[0].column_pairs == [("customer_id", "id")]
         assert await _stored(storage, "orders") == doc
         assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
-        stored = await _stored(storage, "orders")
-        assert stored["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert (stored["relationships"][0]["from_columns"], stored["relationships"][0]["to_columns"]) == (["customer_id"], ["id"])
+        assert_current(await raw_ossie(storage, "orders", data_source="ds"))
+        [rel] = relationships_of(storage, "orders", data_source="ds")
+        assert (rel["from_columns"], rel["to_columns"]) == (["customer_id"], ["id"])
 
     async def test_target_side_physical_spelling_rewritten(self, seed: Seeder):
         storage = await seed([

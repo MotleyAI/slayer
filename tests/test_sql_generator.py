@@ -1,5 +1,6 @@
 """Tests for the SQL generator."""
 
+from typing import Any
 import re as _re
 import tempfile
 from contextlib import asynccontextmanager
@@ -14,42 +15,56 @@ from sqlglot import exp
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.field_expression import DialectEntry, ExpressionObject
-from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.models import (
+    Aggregation,
+    AggregationParam,
+    DatasetField,
+    DatasetRelationship,
+    DatasourceConfig,
+    SlayerDataset,
+)
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
+from slayer.database.client import ResultColumnType
+from slayer.database.engine_factory import client_cache_key
+from slayer.engine.plan import plan_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.engine.plan import plan_query
-from slayer.database.client import ResultColumnType
 from slayer.sql.dialects import get_dialect
-from slayer.database.engine_factory import client_cache_key
 from slayer.sql.generator import (
     SQLGenerator,
     _wrap_cast_for_type,
 )
 from slayer.sql.scope_check import assert_scope_closed
+from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
-
 from tests._dev1965_fixtures import post_filter_where, split_chain
 from tests._engine_helpers import (
     _assert_valid_sql,
     _engine_generate,
-    orders_agg_sql,
     _extract_cte_body,
     _extract_src_body,
     _join_aliases,
     _norm,
+    orders_agg_sql,
+)
+from tests._field_builders import (
+    col,
+    literal_time_orders,
+    log_completed_orders,
+    log_orders,
+    pk,
+    public_orders,
+    to_customers,
 )
 from tests._rank_direction_fixtures import rank_windows
-from slayer.storage.base import StorageBackend
-from tests._field_builders import col, literal_time_orders, log_completed_orders, log_orders, pk, public_orders, to_customers
 from tests._trusted import trusting, trusting_all
 
 
 class _TrustingStorage(YAMLStorage):
     """Stores every relationship trusted: these tests pin the inline-join lowering."""
 
-    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
-        await super()._save_dataset_impl(trusting(dataset))
+    async def save_dataset(self, dataset: SlayerDataset, **kwargs: Any) -> None:
+        await super().save_dataset(trusting(dataset), **kwargs)
 
 
 def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:

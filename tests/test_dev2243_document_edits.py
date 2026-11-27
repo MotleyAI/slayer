@@ -7,11 +7,14 @@ import asyncio
 import contextlib
 import difflib
 import json
+import os
 import re
+import sqlite3
 import warnings
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import pytest
 import yaml
@@ -36,15 +39,18 @@ from slayer.core.ossie_expression import OSIExpression
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.base import StorageBackend
-from slayer.storage.sqlite_conn import open_connection, transaction
+from slayer.storage.sqlite_conn import transaction
 from tests._cli_inprocess import run_cli_in_process
 from tests._dev1737_fixtures import TableSpec
 from tests._dev2243_fixtures import (
-    DS, SALES, STORAGES, dataset, document_engine, document_path, document_text, error, field, is_untyped,
+    DS, SALES, STORAGES, dataset, document_engine, document_text, error, field, is_untyped,
     make_storage, metric, place_document, relationship, store_document,
 )
 from tests._dev2277_fixtures import by, customers_dataset, orders_dataset, returns_dataset, scoped
 from tests._dataset_access_fixtures import mcp_text
+from tests._stored_format_fixtures import (
+    dataset_documents, dataset_file, folder, model_documents, model_file, refs, texts,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -99,12 +105,69 @@ def diff(before: str, after: str) -> tuple[list[str], list[str]]:
     return [ln[2:] for ln in lines if ln.startswith("- ")], [ln[2:] for ln in lines if ln.startswith("+ ")]
 
 
-def standalone_exists(kind: str, base: Path, name: str) -> bool:
-    """A standalone dataset ``name`` is stored outside every document."""
+def in_datasource_model(kind: str, base: Path, name: str) -> bool:
+    """Dataset ``name`` belongs to the datasource model."""
+    try:
+        home = model_documents(kind, base).get(DS)
+        datasets = dataset_documents(kind, base)
+    except sqlite3.OperationalError:  # no ``documents`` table: nothing is stored in the layout
+        return False
+    if home is None:
+        return False
+    listed = {unquote(i) for i in refs(home)}
+    return (any(f in listed and d["dataset"]["name"] == name for f, d in datasets.items())
+            or any(d.get("name") == name for d in home.get("datasets") or []))
+
+
+@contextlib.contextmanager
+def failing_store_writes(kind: str, base: Path, monkeypatch: pytest.MonkeyPatch, *,
+                         refusal: Callable[[], BaseException]) -> Generator[None]:
+    """Fail the next store write with ``refusal()``: on YAML at its second file operation in the datasource folder (after
+    a partial write), on SQLite at its commit."""
     if kind == "yaml":
-        return (base / "store" / "models" / DS / f"{name}.yaml").exists()
-    with open_connection(base / "store.db") as con:
-        return bool(con.execute("SELECT 1 FROM models WHERE data_source = ? AND name = ?", (DS, name)).fetchall())
+        root = str(folder(base).resolve())
+        count = [0]
+        for op in ("replace", "rename", "unlink", "remove"):
+            original = getattr(os, op)
+
+            def run(*args: Any, _op: str = op, _original: Callable[..., Any] = original, **kwargs: Any) -> Any:
+                if str(Path(args[-1] if _op in ("replace", "rename") else args[0]).resolve()).startswith(root):
+                    count[0] += 1
+                    if count[0] == 2:
+                        raise refusal()
+                return _original(*args, **kwargs)
+
+            monkeypatch.setattr(os, op, run)
+        yield
+        return
+    db = (base / "store.db").resolve()
+    connect = sqlite3.connect
+
+    class Refusing(sqlite3.Connection):
+        def _refuse(self) -> None:
+            self.rollback()
+            raise refusal()
+
+        def commit(self) -> None:
+            self._refuse()
+
+        def execute(self, sql: str, *args: Any) -> sqlite3.Cursor:
+            if sql.strip().rstrip(";").upper() in {"COMMIT", "END", "COMMIT TRANSACTION", "END TRANSACTION"}:
+                self._refuse()
+            return super().execute(sql, *args)
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+            if exc_type is None and self.in_transaction:
+                self._refuse()
+            return super().__exit__(exc_type, exc, tb)
+
+    def refusing_connect(path: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if str(path) != ":memory:" and Path(path).resolve() == db:
+            kwargs["factory"] = Refusing
+        return connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", refusing_connect)
+    yield
 
 
 def shop(model: SlayerDataset) -> SlayerDataset:
@@ -139,7 +202,7 @@ async def test_a_colliding_save_is_refused(tmp_path: Path, kind: str) -> None:
     text = document_text(datasets=[dataset("ORDERS", source="orders", fields=[field("order_id")])])
     with pytest.raises(error("NamespaceCollisionError")) as info:
         await store_document(storage, text)
-    assert "standalone dataset 'orders'" in str(info.value)
+    assert "dataset 'orders' of semantic model 'shop'" in str(info.value)
     assert "semantic model 'sales'" in str(info.value)
 
 
@@ -220,7 +283,8 @@ async def test_hand_placed_collisions_quarantine_dependents_in_sqlite(tmp_path: 
     storage = make_storage("sqlite", tmp_path)
     await store_document(storage, QUARANTINE_A)
     with transaction(tmp_path / "store.db") as con:
-        con.execute("INSERT INTO semantic_models (data_source, name, text) VALUES (?, ?, ?)", (DS, "ledger", QUARANTINE_B))
+        con.execute("INSERT INTO documents (data_source, file_name, text) VALUES (?, ?, ?)",
+                    (DS, "ledger.semantic_model.yaml", QUARANTINE_B))
     loaded, errs = await storage.load_datasets(data_source=DS)
     _assert_quarantined(loaded, errs)
 
@@ -252,7 +316,7 @@ async def test_adding_a_slayer_only_filter_to_a_document_dataset(tmp_path: Path,
     assert core(orders_entry) == core(original)
     orders = await must_get(storage, "orders")
     assert (orders.filters, orders.hidden) == (["status <> 'test'"], True)
-    assert not standalone_exists(kind, tmp_path, "orders")
+    assert not in_datasource_model(kind, tmp_path, "orders")
 
 
 async def test_a_slayer_only_filter_on_a_document_dataset_applies_to_queries() -> None:
@@ -320,7 +384,7 @@ async def test_slayer_only_content_is_written_to_a_slayer_entry(
         assert attribute in slayer_text(f_after)
         [f_reread] = [f for f in reread.fields if f.name == field_name]
         assert getattr(f_reread, attribute) == update[attribute]
-    assert not standalone_exists(kind, tmp_path, "orders")
+    assert not in_datasource_model(kind, tmp_path, "orders")
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -349,17 +413,18 @@ async def test_create_dataset_with_a_semantic_model_adds_it_to_the_document(tmp_
                    semantic_model="sales")
     assert "returns" in {d["name"] for d in (await doc_of(storage))["datasets"]}
     assert await storage.semantic_model_owner("returns", data_source=DS) == "sales"
-    assert not standalone_exists(kind, tmp_path, "returns")
+    assert not in_datasource_model(kind, tmp_path, "returns")
 
 
 @pytest.mark.parametrize("kind", STORAGES)
-async def test_create_dataset_without_a_semantic_model_is_standalone(tmp_path: Path, kind: str) -> None:
+async def test_create_dataset_without_a_semantic_model_joins_the_datasource_model(tmp_path: Path, kind: str) -> None:
     storage = make_storage(kind, tmp_path)
     await store_document(storage, SALES)
     await mcp_text(storage, "create_dataset", name="returns", sql_table="returns", data_source=DS,
                    fields=[{"name": "return_id", "datatype": "String"}])
-    assert await storage.semantic_model_owner("returns", data_source=DS) is None
-    assert standalone_exists(kind, tmp_path, "returns")
+    assert await storage.semantic_model_owner("returns", data_source=DS) == DS
+    assert dataset_file(kind, tmp_path, "returns")
+    assert in_datasource_model(kind, tmp_path, "returns")
     assert "returns" not in await text_of(storage)
 
 
@@ -371,7 +436,7 @@ async def test_delete_dataset_removes_it_from_the_document(tmp_path: Path, kind:
     await mcp_text(storage, "delete_dataset", name="orders", data_source=DS)
     assert [d["name"] for d in (await doc_of(storage))["datasets"]] == ["customers"]
     assert await storage.get_dataset("orders", data_source=DS) is None
-    assert not standalone_exists(kind, tmp_path, "orders")
+    assert not in_datasource_model(kind, tmp_path, "orders")
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -383,7 +448,7 @@ async def test_a_rest_dataset_write_patches_the_document(tmp_path: Path, kind: s
         resp = await client.put("/datasets/orders", json=body)
     assert resp.status_code == 200, resp.text
     assert entry(await doc_of(storage), "orders")["description"] == "Via REST."
-    assert not standalone_exists(kind, tmp_path, "orders")
+    assert not in_datasource_model(kind, tmp_path, "orders")
 
 
 def test_a_cli_dataset_write_patches_the_document(tmp_path: Path) -> None:
@@ -396,7 +461,7 @@ def test_a_cli_dataset_write_patches_the_document(tmp_path: Path) -> None:
     result = run_cli_in_process(["datasets", "--storage", str(tmp_path / "store"), "create", str(spec)])
     assert result.returncode == 0, result.stderr
     assert entry(asyncio.run(doc_of(storage)), "orders")["description"] == "Via CLI."
-    assert not standalone_exists("yaml", tmp_path, "orders")
+    assert not in_datasource_model("yaml", tmp_path, "orders")
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -409,7 +474,7 @@ async def test_a_field_sampling_update_patches_the_document(tmp_path: Path, kind
     assert (region.sampled_values, region.distinct_count) == (["EAST", "WEST"], 3)
     assert "EAST" in slayer_text(next(f for f in entry(await doc_of(storage), "customers")["fields"]
                                       if f["name"] == "region"))
-    assert not standalone_exists(kind, tmp_path, "customers")
+    assert not in_datasource_model(kind, tmp_path, "customers")
 
 
 async def test_cardinality_persistence_patches_the_document(tmp_path: Path) -> None:
@@ -423,7 +488,7 @@ async def test_cardinality_persistence_patches_the_document(tmp_path: Path) -> N
         orders = await must_get(engine.storage, "orders")
         assert {r.cardinality for r in orders.relationships} == {RelationshipCardinality.MANY_TO_ONE}
         assert "SLAYER" in await text_of(engine.storage)
-    assert not standalone_exists("yaml", tmp_path, "stores")
+    assert not in_datasource_model("yaml", tmp_path, "stores")
 
 
 async def test_an_ingestion_upsert_patches_the_document(tmp_path: Path) -> None:
@@ -437,7 +502,7 @@ async def test_an_ingestion_upsert_patches_the_document(tmp_path: Path) -> None:
         names = [f["name"] for f in entry(await doc_of(engine.storage), "orders")["fields"]]
         assert names[:2] == ["order_id", "amount"]
         assert "status" in names
-    assert not standalone_exists("yaml", tmp_path, "orders")
+    assert not in_datasource_model("yaml", tmp_path, "orders")
 
 
 # --------------------------------------------------------------------------- #
@@ -639,7 +704,7 @@ async def test_an_external_edit_is_seen_on_the_next_query(tmp_path: Path) -> Non
     async with document_engine(base=tmp_path) as engine:
         assert await single(engine, population="orders", metric_expr="sum(orders.amount)") == 650.0
         before = await engine.storage.graph_fingerprint()
-        document_path(tmp_path, name="sales").write_text(SALES_UPPER, encoding="utf-8")
+        (folder(tmp_path) / model_file("yaml", tmp_path, "sales")).write_text(SALES_UPPER, encoding="utf-8")
         assert await engine.storage.graph_fingerprint() != before
         assert by(await engine.execute(UPPER_QUERY), "orders.status_upper", "n") == {"COMPLETED": 2.0, "OPEN": 2.0}
 
@@ -649,7 +714,8 @@ async def test_an_external_sqlite_edit_is_seen_on_the_next_query(tmp_path: Path)
         assert await single(engine, population="orders", metric_expr="sum(orders.amount)") == 650.0
         before = await engine.storage.graph_fingerprint()
         with transaction(tmp_path / "store.db") as con:
-            con.execute("UPDATE semantic_models SET text = ? WHERE data_source = ? AND name = ?", (SALES_UPPER, DS, "sales"))
+            con.execute("UPDATE documents SET text = ? WHERE data_source = ? AND file_name = ?",
+                        (SALES_UPPER, DS, model_file("sqlite", tmp_path, "sales")))
         assert await engine.storage.graph_fingerprint() != before
         assert by(await engine.execute(UPPER_QUERY), "orders.status_upper", "n") == {"COMPLETED": 2.0, "OPEN": 2.0}
 
@@ -1099,7 +1165,7 @@ async def test_an_untyped_numeric_field_aggregates(tmp_path: Path) -> None:
         assert is_untyped(amount)
         assert float(await single(engine, population="orders", metric_expr="sum(orders.amount)")) == 650.0
         assert is_untyped((await must_get(engine.storage, "orders")).fields[1])
-    assert document_path(tmp_path, name="sales").read_text(encoding="utf-8") == UNTYPED
+    assert (folder(tmp_path) / model_file("yaml", tmp_path, "sales")).read_text(encoding="utf-8") == UNTYPED
 
 
 async def test_an_untyped_field_loads_without_a_probe(tmp_path: Path) -> None:
@@ -1150,7 +1216,7 @@ async def test_native_authoring_without_an_ossie_file(tmp_path: Path) -> None:
             "expression": "AGG(orders.total_revenue) / COUNT(DISTINCT customers.customer_id)"}])
         for name in ("orders", "customers"):
             assert await storage.semantic_model_owner(name, data_source=DS) == "sales"
-            assert not standalone_exists("yaml", tmp_path, name)
+            assert not in_datasource_model("yaml", tmp_path, name)
             assert (await must_get(storage, name)).model_dump(mode="json", exclude={"version"}) == before[name]
         assert by(await engine.execute(REGION_QUERY), "customers.region", "orders.total_revenue") == revenue
         resp = await engine.execute({"metrics": ["revenue_per_customer"]})
@@ -1179,6 +1245,8 @@ async def test_edit_semantic_model_edits_document_fields_metrics_relationships_a
     storage = make_storage("yaml", tmp_path)
     await store_document(storage, SALES_STORES)
     await storage.save_dataset(shop(returns_dataset()).model_copy(update={"relationships": []}), _validate=False)
+    returns_file = dataset_file("yaml", tmp_path, "returns")
+    returns_text = texts("yaml", tmp_path)[returns_file]
     await mcp_text(storage, "edit_semantic_model", name="sales", data_source=DS, description="Edited.",
                    ai_context="Sales data.", remove_metrics=["revenue_per_customer"],
                    metrics=[metric("order_total", "SUM(orders.amount)")], remove_relationships=["orders_to_customers"],
@@ -1189,8 +1257,10 @@ async def test_edit_semantic_model_edits_document_fields_metrics_relationships_a
     assert (doc["description"], doc["ai_context"]) == ("Edited.", "Sales data.")
     assert [m["name"] for m in doc["metrics"]] == ["order_total"]
     assert [r["name"] for r in doc["relationships"]] == ["orders_to_stores"]
-    assert "returns" in {d["name"] for d in doc["datasets"]}
-    assert not standalone_exists("yaml", tmp_path, "returns")
+    assert returns_file in {unquote(i) for i in refs(doc)}
+    assert "returns" not in {d["name"] for d in doc["datasets"]}
+    assert texts("yaml", tmp_path)[returns_file] == returns_text
+    assert not in_datasource_model("yaml", tmp_path, "returns")
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -1199,50 +1269,47 @@ async def test_a_failed_move_into_a_document_leaves_both_as_they_were(
     storage = make_storage(kind, tmp_path)
     await store_document(storage, SALES)
     await storage.save_dataset(shop(returns_dataset()).model_copy(update={"relationships": []}), _validate=False)
-    before = await storage.get_semantic_model_text("sales", data_source=DS)
-
-    async def refused(**_: Any) -> bool:
-        raise OSError("disk full")
-
-    monkeypatch.setattr(storage, "_delete_dataset_row", refused)
-    with pytest.raises(OSError, match="disk full"):
+    before = texts(kind, tmp_path)
+    with failing_store_writes(kind, tmp_path, monkeypatch, refusal=lambda: OSError("disk full")), \
+            pytest.raises(OSError, match="disk full"):
         await storage.edit_semantic_model("sales", data_source=DS, add_datasets=["returns"])
-    assert await storage.get_semantic_model_text("sales", data_source=DS) == before
-    assert standalone_exists(kind, tmp_path, "returns")
+    assert texts(kind, tmp_path) == before
+    assert in_datasource_model(kind, tmp_path, "returns")
 
 
 @pytest.mark.parametrize("kind", STORAGES)
-async def test_a_move_cancelled_mid_write_restores_the_standalone_dataset(
+async def test_a_move_cancelled_mid_write_leaves_the_dataset_in_the_datasource_model(
         tmp_path: Path, kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
     storage = make_storage(kind, tmp_path)
     await store_document(storage, SALES)
     await storage.save_dataset(shop(returns_dataset()).model_copy(update={"relationships": []}), _validate=False)
-
-    async def cancelled(**_: Any) -> str:
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(storage, "_patch_semantic_model_text", cancelled)
-    with pytest.raises(asyncio.CancelledError):
+    before = texts(kind, tmp_path)
+    with failing_store_writes(kind, tmp_path, monkeypatch, refusal=asyncio.CancelledError), \
+            pytest.raises(asyncio.CancelledError):
         await storage.edit_semantic_model("sales", data_source=DS, add_datasets=["returns"])
-    assert standalone_exists(kind, tmp_path, "returns")
+    assert texts(kind, tmp_path) == before
+    assert in_datasource_model(kind, tmp_path, "returns")
 
 
-async def test_deleting_a_yaml_document_keeps_its_lock_file(tmp_path: Path) -> None:
+async def test_deleting_a_yaml_document_keeps_its_folders_lock_file(tmp_path: Path) -> None:
     """Unlinking the lock would let a waiter on the old inode and a new locker run concurrently."""
     storage = make_storage("yaml", tmp_path)
     await store_document(storage, SALES)
-    path = document_path(tmp_path, name="sales")
+    path = folder(tmp_path) / model_file("yaml", tmp_path, "sales")
+    locks = {p.name for p in folder(tmp_path).glob("*.lock")}
     await storage.delete_semantic_model("sales", data_source=DS)
     assert not path.exists()
-    assert Path(f"{path}.lock").exists()
+    assert len(locks) == 1
+    assert {p.name for p in folder(tmp_path).glob("*.lock")} == locks
 
 
 async def test_delete_semantic_model_tool_removes_the_document(tmp_path: Path) -> None:
     storage = make_storage("yaml", tmp_path)
     await store_document(storage, SALES)
+    path = folder(tmp_path) / model_file("yaml", tmp_path, "sales")
     await mcp_text(storage, "delete_semantic_model", name="sales", data_source=DS)
     assert await storage.list_semantic_models() == []
-    assert not document_path(tmp_path, name="sales").exists()
+    assert not path.exists()
 
 
 async def test_rest_exposes_semantic_models(tmp_path: Path) -> None:
@@ -1327,6 +1394,7 @@ def test_the_python_clients_sync_twins_manage_semantic_models(tmp_path: Path, ki
 def test_the_cli_lists_shows_and_deletes_semantic_models(tmp_path: Path) -> None:
     storage = make_storage("yaml", tmp_path)
     asyncio.run(store_document(storage, SALES))
+    path = folder(tmp_path) / model_file("yaml", tmp_path, "sales")
     where = ["--storage", str(tmp_path / "store")]
     listed = run_cli_in_process(["semantic-models", "list", "--datasource", DS, *where])
     assert listed.returncode == 0, listed.stderr
@@ -1336,7 +1404,7 @@ def test_the_cli_lists_shows_and_deletes_semantic_models(tmp_path: Path) -> None
     assert "# owned by finance" in shown.stdout
     deleted = run_cli_in_process(["semantic-models", "delete", "sales", "--datasource", DS, "--yes", *where])
     assert deleted.returncode == 0, deleted.stderr
-    assert not document_path(tmp_path, name="sales").exists()
+    assert not path.exists()
 
 
 # --------------------------------------------------------------------------- #

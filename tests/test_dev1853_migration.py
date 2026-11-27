@@ -12,6 +12,7 @@ import json
 import os
 from slayer.storage.sqlite_conn import transaction
 import tempfile
+from pathlib import Path
 
 import pytest
 import yaml
@@ -23,6 +24,7 @@ from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.base import StorageBackend
+from tests._stored_format_fixtures import slayer_entry
 
 
 def test_v10_is_current_and_registered() -> None:
@@ -120,6 +122,22 @@ async def _relationships_after_load(storage: StorageBackend) -> tuple[list[Datas
     return orders.relationships, customers.relationships
 
 
+def _dataset_document(base: str, *, data_source: str, name: str) -> dict:
+    """The YAML store's dataset document declaring dataset ``name``, found by content."""
+    hits = [doc for p in sorted(Path(base, "semantic_models", data_source).glob("*.yaml"))
+            if isinstance(doc := yaml.safe_load(p.read_text(encoding="utf-8")), dict)
+            and (doc.get("dataset") or {}).get("name") == name]
+    assert len(hits) == 1, f"dataset document {name!r}: {len(hits)}"
+    return hits[0]
+
+
+def _assert_current(document: dict) -> None:
+    """An Ossie dataset document whose ``SLAYER`` entry, when present, is at the current payload version."""
+    assert document["version"] == "0.3.0.dev0"
+    entry = slayer_entry(document["dataset"])
+    assert entry is None or entry["version"] == 3
+
+
 class TestMirroredPairCollapses:
     async def test_yaml_keeps_the_to_one_side(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -168,10 +186,13 @@ class TestMirroredPairCollapses:
             customers = await storage.get_dataset("customers", data_source="ds")
             assert customers is not None
             await storage.save_dataset(customers)
-            on_disk = yaml.safe_load(
-                open(os.path.join(d, "models", "ds", "customers.yaml")).read())
-            assert not on_disk.get("joins")
-            assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
+            on_disk = _dataset_document(d, data_source="ds", name="customers")
+            _assert_current(on_disk)
+            assert not on_disk["dataset"].get("relationships")
+            assert not (slayer_entry(on_disk["dataset"]) or {}).get("relationships")
+            reread = await YAMLStorage(base_dir=d).get_dataset("customers", data_source="ds")
+            assert reread is not None
+            assert reread.relationships == []
 
     async def test_repeated_loads_change_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as d:

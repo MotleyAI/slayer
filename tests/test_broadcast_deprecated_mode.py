@@ -13,11 +13,9 @@ import json
 import tempfile
 import warnings
 from collections.abc import AsyncGenerator, AsyncIterator
-from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -45,6 +43,7 @@ from tests._deprecated_input_helpers import (
 )
 from tests._dev1840_fixtures import make_exec_engine
 from tests._stored_upgrade_fixtures import rev_query
+from tests._stored_format_fixtures import hand_edit_stage
 
 B = "broadcast"
 SAVED_B = "by_status_b"
@@ -307,10 +306,7 @@ def _store_broadcast_stage(engine: SlayerQueryEngine) -> None:
     assert isinstance(engine.storage, EngineStorage)
     storage = engine.storage.inner
     assert isinstance(storage, YAMLStorage)
-    path = next(Path(storage.base_dir).glob(f"models/*/{SAVED}.yaml"))
-    doc = yaml.safe_load(path.read_text())
-    doc["source_queries"][0]["to_many_handling"] = B
-    path.write_text(yaml.safe_dump(doc))
+    hand_edit_stage(storage.base_dir, SAVED, {"to_many_handling": B}, reader="sqlite")
 
 
 class TestStoredStage:

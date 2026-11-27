@@ -28,6 +28,8 @@ from tests._engine_helpers import owned_query_engine
 
 DS = "shop"
 BACKENDS = ["yaml", "sqlite"]
+OSSIE_VERSION = "0.3.0.dev0"
+SLAYER_PAYLOAD_VERSION = 4
 
 CUSTOMERS_ROWS = [
     (1, "Ann", "North", "2023-06-01 00:00:00"),
@@ -251,8 +253,123 @@ def _write_text(*, path: str, text: str) -> None:
         f.write(text)
 
 
+def ossie_texts(*, backend: str, base: str, data_source: str = DS) -> dict[str, str]:
+    """``{file name: text}`` of ``data_source``'s stored Ossie documents; ``{}`` for a store in the 2.0 layout."""
+    return _texts_at(yaml_base=base if backend == "yaml" else None, db_path=os.path.join(base, "store.db"),
+                     data_source=data_source)
+
+
+def _texts_at(*, yaml_base: str | None, db_path: str, data_source: str) -> dict[str, str]:
+    if yaml_base is not None:
+        root = os.path.join(yaml_base, "semantic_models", data_source)
+        if not os.path.isdir(root):
+            return {}
+        out: dict[str, str] = {}
+        for f in sorted(os.listdir(root)):
+            path = os.path.join(root, f)
+            if os.path.isfile(path) and not f.startswith(".") and f.endswith((".yaml", ".yml", ".json")):
+                with open(path, encoding="utf-8", errors="surrogateescape") as fh:  # NOSONAR(S7493) — test read
+                    out[f] = fh.read()
+        return out
+    with transaction(db_path) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'").fetchone():
+            return {}
+        rows = conn.execute("SELECT file_name, text FROM documents WHERE data_source = ? ORDER BY file_name",
+                            (data_source,)).fetchall()
+    return {f: t for f, t in rows}
+
+
+def parse_text(text: str) -> Any:
+    return json.loads(text) if text.lstrip().startswith("{") else yaml.safe_load(text)
+
+
+def parsed(text: str) -> Any:
+    """``text`` parsed; ``None`` for a document that is not YAML or JSON."""
+    try:
+        return parse_text(text)
+    except (ValueError, yaml.YAMLError):
+        return None
+
+
+def _dataset_document_text(*, backend: str, base: str, name: str, data_source: str = DS) -> str | None:
+    hits = [t for t in ossie_texts(backend=backend, base=base, data_source=data_source).values()
+            if isinstance(d := parsed(t), dict) and isinstance(d.get("dataset"), dict)
+            and d["dataset"].get("name") == name]
+    assert len(hits) <= 1, f"dataset {name!r} is in {len(hits)} dataset documents"
+    return hits[0] if hits else None
+
+
+def ossie_text(*, backend: str, base: str, name: str, data_source: str = DS) -> str:
+    """The text of the dataset document storing dataset ``name``."""
+    text = _dataset_document_text(backend=backend, base=base, name=name, data_source=data_source)
+    assert text is not None, f"dataset {name!r} is not stored as a dataset document"
+    return text
+
+
+def ossie_document(*, backend: str, base: str, name: str, data_source: str = DS) -> dict[str, Any]:
+    """The dataset document (``version`` and ``dataset``) storing dataset ``name``, parsed."""
+    return parse_text(ossie_text(backend=backend, base=base, name=name, data_source=data_source))
+
+
+def ossie_dataset(*, backend: str, base: str, name: str, data_source: str = DS) -> dict[str, Any]:
+    """The stored Ossie dataset ``name``."""
+    return ossie_document(backend=backend, base=base, name=name, data_source=data_source)["dataset"]
+
+
+def slayer_payload(entity: dict[str, Any]) -> dict[str, Any]:
+    """The ``data`` of ``entity``'s ``SLAYER`` extension entry, parsed; ``{}`` when it has none."""
+    for entry in entity.get("nonportable_extensions") or []:
+        if entry.get("vendor_name") == "SLAYER":
+            data = entry["data"]
+            return json.loads(data) if isinstance(data, str) else data
+    return {}
+
+
+def slayer_payloads(node: Any) -> list[dict[str, Any]]:
+    """Every ``SLAYER`` payload anywhere in a parsed document."""
+    if isinstance(node, list):
+        return [p for item in node for p in slayer_payloads(item)]
+    if not isinstance(node, dict):
+        return []
+    own = [slayer_payload(node)] if any(isinstance(e, dict) and e.get("vendor_name") == "SLAYER"
+                                        for e in node.get("nonportable_extensions") or []) else []
+    return own + [p for k, v in node.items() if k != "nonportable_extensions" for p in slayer_payloads(v)]
+
+
+def assert_current(doc: dict[str, Any]) -> None:
+    """A stored Ossie document at the current format: Ossie's version and every ``SLAYER`` payload at version 4."""
+    assert doc["version"] == OSSIE_VERSION, doc["version"]
+    assert [p.get("version") for p in slayer_payloads(doc)] == [SLAYER_PAYLOAD_VERSION] * len(slayer_payloads(doc))
+
+
+def source_queries(entity: dict[str, Any]) -> list[dict[str, Any]]:
+    """A stored dataset's saved queries, from its ``SLAYER`` entry."""
+    return (slayer_payload(entity).get("source") or {}).get("source_queries") or []
+
+
+def stored_relationships(*, backend: str, base: str, name: str, data_source: str = DS) -> list[dict[str, Any]]:
+    """Every stored relationship from dataset ``name``: model documents' core ``relationships``, the ``SLAYER``
+    ``relationships`` of model documents and of the dataset itself."""
+    return _relationships_in(ossie_texts(backend=backend, base=base, data_source=data_source), name=name)
+
+
+def _relationships_in(texts: dict[str, str], *, name: str) -> list[dict[str, Any]]:
+    docs = [d for t in texts.values() if isinstance(d := parsed(t), dict)]
+    own = [d["dataset"] for d in docs if isinstance(d.get("dataset"), dict) and d["dataset"].get("name") == name]
+    assert len(own) == 1, f"dataset {name!r} is not stored as a dataset document"
+    out: list[dict[str, Any]] = []
+    for doc in docs:
+        if "dataset" not in doc:
+            out += [r for r in doc.get("relationships") or [] if r.get("from") == name]
+            out += [d["relationship"] for d in slayer_payload(doc).get("relationships") or [] if d.get("dataset") == name]
+    return out + list(slayer_payload(own[0]).get("relationships") or [])
+
+
 def stored_bytes(*, backend: str, base: str, name: str) -> str:
-    """The persisted dataset payload exactly as stored."""
+    """The persisted dataset payload exactly as stored: its dataset document, else its 2.0 file or row."""
+    text = _dataset_document_text(backend=backend, base=base, name=name)
+    if text is not None:
+        return text
     if backend == "yaml":
         with open(yaml_model_path(base=base, name=name), encoding="utf-8") as f:  # NOSONAR(S7493) — test read
             return f.read()
@@ -267,7 +384,37 @@ def field_of(dataset: SlayerDataset, name: str) -> DatasetField:
     return by_name[name]
 
 
+def storage_texts(storage: StorageBackend, *, data_source: str = DS) -> dict[str, str]:
+    """``{file name: text}`` of ``data_source``'s stored Ossie documents in ``storage`` (an engine's view unwrapped)."""
+    storage = getattr(storage, "inner", storage)
+    yaml_base = storage.base_dir if isinstance(storage, YAMLStorage) else None
+    db_path = storage.db_path if isinstance(storage, SQLiteStorage) else ""
+    return _texts_at(yaml_base=yaml_base, db_path=db_path, data_source=data_source) if yaml_base or db_path else {}
+
+
+def _storage_dataset_document(storage: StorageBackend, name: str, *, data_source: str) -> dict[str, Any] | None:
+    hits = [d for t in storage_texts(storage, data_source=data_source).values() if isinstance(d := parsed(t), dict)
+            and isinstance(d.get("dataset"), dict) and d["dataset"].get("name") == name]
+    return hits[0] if hits else None
+
+
+async def raw_ossie(storage: StorageBackend, name: str, *, data_source: str = DS) -> dict[str, Any]:
+    """The dataset document (``version`` and ``dataset``) storing dataset ``name`` of ``storage``."""
+    doc = _storage_dataset_document(storage, name, data_source=data_source)
+    assert doc is not None, f"dataset {name!r} is not stored as a dataset document"
+    return doc
+
+
+def relationships_of(storage: StorageBackend, name: str, *, data_source: str = DS) -> list[dict[str, Any]]:
+    """Every stored relationship from dataset ``name`` of ``storage`` (see :func:`stored_relationships`)."""
+    return _relationships_in(storage_texts(storage, data_source=data_source), name=name)
+
+
 async def raw_doc(storage: StorageBackend, name: str) -> dict:
+    """Dataset ``name`` as stored: its dataset document, else its 2.0 document."""
+    ossie = _storage_dataset_document(storage, name, data_source=DS)
+    if ossie is not None:
+        return ossie
     doc = await storage._load_raw_dataset_dict(name=name, data_source=DS)
     assert doc is not None
     return doc

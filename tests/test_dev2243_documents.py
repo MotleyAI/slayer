@@ -23,10 +23,11 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import open_connection
 from tests._dev1737_fixtures import TableSpec
 from tests._dev2243_fixtures import (
-    DS, SALES, STORAGES, dataset, document_engine, document_path, document_text, error, field, importer_module,
+    DS, SALES, STORAGES, dataset, document_engine, document_text, error, field, importer_module,
     make_storage, metric, place_document, relationship, store_document,
 )
 from tests._dev2277_fixtures import by, managers_dataset, returns_dataset
+from tests._stored_format_fixtures import folder, model_file
 from tests._engine_helpers import owned_query_engine
 from tests._dataset_access_fixtures import mcp_text
 
@@ -44,6 +45,11 @@ async def yaml_storage_with_datasource(base: Path) -> StorageBackend:
     storage = make_storage("yaml", base)
     await storage.save_datasource(DatasourceConfig(name=DS, type="duckdb", database=str(base / "absent.duckdb")))
     return storage
+
+
+def stored_model_text(base: Path, *, name: str) -> str:
+    """The YAML store's text of model document ``name``, found by content."""
+    return (folder(base) / model_file("yaml", base, name)).read_text(encoding="utf-8")
 
 
 def failed(errs: Sequence[Any], kind: str) -> dict[str, str]:
@@ -94,15 +100,16 @@ async def test_sqlite_stores_the_text_verbatim(tmp_path: Path) -> None:
     assert "# owned by finance" in SALES
     assert await storage.get_semantic_model_text("sales", data_source=DS) == SALES
     with open_connection(tmp_path / "store.db") as con:
-        [(text,)] = con.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?", (DS, "sales"))
+        [(text,)] = con.execute("SELECT text FROM documents WHERE data_source = ? AND file_name = ?",
+                                (DS, "sales.semantic_model.yaml"))
     assert text == SALES
 
 
 async def test_yaml_storage_keeps_the_document_at_its_layout_path(tmp_path: Path) -> None:
     storage = make_storage("yaml", tmp_path)
     await store_document(storage, SALES)
-    assert document_path(tmp_path, name="sales").read_text(encoding="utf-8") == SALES
-    assert not (tmp_path / "store" / "models" / DS / "orders.yaml").exists()
+    assert (folder(tmp_path) / "sales.semantic_model.yaml").read_text(encoding="utf-8") == SALES
+    assert not (tmp_path / "store" / "models").exists()
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -129,13 +136,23 @@ async def test_a_document_is_replaceable_and_deletable(tmp_path: Path, kind: str
 
 
 @pytest.mark.parametrize("kind", STORAGES)
-@pytest.mark.parametrize(("data_source", "name"), [("shop", "../evil"), ("a/b", "sales"), ("shop", "x.y"), ("", "s")])
+@pytest.mark.parametrize(("data_source", "name"), [("a/b", "sales"), ("", "s")])
 async def test_document_path_components_obey_the_path_rules(tmp_path: Path, kind: str, data_source: str,
                                                             name: str) -> None:
     storage = make_storage(kind, tmp_path)
     text = document_text(name=name, datasets=[dataset("orders", fields=[field("order_id")])])
     with pytest.raises(ValueError):
         await storage.save_semantic_model_text(data_source=data_source, name=name, text=text)
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+@pytest.mark.parametrize("name", ["../evil", "x.y"])
+async def test_a_document_name_need_not_be_a_path_component(tmp_path: Path, kind: str, name: str) -> None:
+    storage = make_storage(kind, tmp_path)
+    text = document_text(name=name, datasets=[dataset("orders", fields=[field("order_id")])])
+    await storage.save_semantic_model_text(data_source=DS, name=name, text=text)
+    assert await storage.list_semantic_models(data_source=DS) == [(DS, name)]
+    assert await storage.get_semantic_model_text(name, data_source=DS) == text
 
 
 # --------------------------------------------------------------------------- #
@@ -502,7 +519,7 @@ async def test_a_standalone_relationship_keeps_its_declared_cardinality(tmp_path
     stored = await storage.get_dataset("managers", data_source=DS)
     assert stored is not None
     assert [r.cardinality for r in stored.relationships] == [RelationshipCardinality.ONE_TO_MANY]
-    assert await storage.semantic_model_owner("managers", data_source=DS) is None
+    assert await storage.semantic_model_owner("managers", data_source=DS) == DS
 
 
 # --------------------------------------------------------------------------- #
@@ -856,7 +873,7 @@ async def test_an_expression_without_a_runnable_form_is_translated_in_memory(
         assert float(await single(engine, population="orders", metric_expr="sum(orders.pick)")) == expected
         assert await engine.storage.get_semantic_model_text("parity", data_source=DS) == doc
     if kind == "yaml":
-        assert document_path(tmp_path, name="parity").read_text(encoding="utf-8") == doc
+        assert stored_model_text(tmp_path, name="parity") == doc
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -877,7 +894,7 @@ async def test_a_dataset_metric_without_a_runnable_form_is_translated_in_memory(
         assert float(await single(engine, population="orders", metric_expr="orders.pick")) == expected
         assert await engine.storage.get_semantic_model_text("parity", data_source=DS) == doc
     if kind == "yaml":
-        assert document_path(tmp_path, name="parity").read_text(encoding="utf-8") == doc
+        assert stored_model_text(tmp_path, name="parity") == doc
 
 
 GROSS_REVENUE = document_text(
@@ -896,7 +913,7 @@ async def test_a_metric_written_only_as_a_dialect_entry_runs(tmp_path: Path, kin
         assert [float(r["gross_revenue"]) for r in resp.data] == [650.0]
         assert await engine.storage.get_semantic_model_text("sales", data_source=DS) == GROSS_REVENUE
     if kind == "yaml":
-        assert document_path(tmp_path, name="sales").read_text(encoding="utf-8") == GROSS_REVENUE
+        assert stored_model_text(tmp_path, name="sales") == GROSS_REVENUE
 
 
 async def test_a_model_scoped_metric_in_the_datasources_own_dialect_runs_unchanged(tmp_path: Path) -> None:
@@ -907,7 +924,7 @@ async def test_a_model_scoped_metric_in_the_datasources_own_dialect_runs_unchang
         resp = await engine.execute({"population": "orders", "metrics": ["reach"]})
         assert [r["reach"] for r in resp.data] == [2]
         assert await engine.storage.get_semantic_model_text("parity", data_source=DS) == doc
-    assert document_path(tmp_path, name="parity").read_text(encoding="utf-8") == doc
+    assert stored_model_text(tmp_path, name="parity") == doc
 
 
 async def test_a_window_inside_an_aggregates_filter_evaluates(tmp_path: Path) -> None:

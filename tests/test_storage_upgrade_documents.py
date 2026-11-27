@@ -17,8 +17,10 @@ from pydantic import BaseModel
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.upgrade import upgrade_datasets
+from slayer.storage.yaml_storage import YAMLStorage
 from tests._integrator_1x import DATA_SOURCE, raw_documents
-from tests._storage_upgrade_cli import raw, store_path, upgrade, warehouse_store
+from tests._storage_upgrade_cli import store_path, upgrade, warehouse_store
+from tests._stored_upgrade_fixtures import assert_current, ossie_document
 
 
 def _unknown_keys(raw_doc: dict[str, Any], owner: type[BaseModel]) -> list[str]:
@@ -73,10 +75,16 @@ def test_the_result_matches_what_the_store_upgrade_stores(tmp_path: Path) -> Non
     base = str(tmp_path / "store")
     storage = warehouse_store(backend="yaml", base=base)
     assert upgrade(store_path(storage)).code == 0
-    stored = raw(backend="yaml", base=base)
+    reopened = YAMLStorage(base_dir=base)
     result = upgrade_datasets(documents=list(raw_documents().values()), datasource_type="duckdb")
     for document in result.documents:
-        assert yaml.safe_load(stored[f"models/{DATA_SOURCE}/{document['name']}"]) == document
+        assert_current(ossie_document(backend="yaml", base=base, name=document["name"], data_source=DATA_SOURCE))
+        loaded = asyncio.run(reopened.get_dataset(document["name"], data_source=DATA_SOURCE))
+        assert loaded is not None
+        expected, got = SlayerDataset.model_validate(document).model_dump(mode="json"), loaded.model_dump(mode="json")
+        # The stored form keeps no position between core and SLayer-only metrics.
+        assert sorted(expected.pop("metrics"), key=repr) == sorted(got.pop("metrics"), key=repr)
+        assert expected == got
 
 
 def test_a_datasource_config_supplies_the_dialect() -> None:

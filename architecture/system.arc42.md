@@ -48,6 +48,7 @@ flowchart TD
   importers --> live_schema
   importers --> engine
   importers --> sql
+  importers --> storage
   ir --> core
   live_schema --> core
   live_schema --> database

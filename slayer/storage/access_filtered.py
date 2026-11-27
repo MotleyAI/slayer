@@ -391,6 +391,30 @@ class AccessFilteredStorage(StorageBackend):
             kind=_SEMANTIC_MODEL, name=name),
             warnings_out=warnings_out, data_source=data_source, datasets=members)
 
+    async def store_split_model(self, *, data_source: str, document: dict[str, Any], merge: bool = False) -> None:
+        if not self._bypass:
+            await self._refuse_hidden_in_document(data_source=data_source, document=str(document.get("name")),
+                                                  entities=document)
+        await self._inner.store_split_model(data_source=data_source, document=document, merge=merge)
+
+    async def semantic_model_document(self, name: str, data_source: str) -> tuple[str, dict[str, Any]] | None:
+        found = await self._inner.semantic_model_document(name, data_source=data_source)
+        if found is None or self._bypass:
+            return found
+        text = await self.get_semantic_model_text(name, data_source=data_source)
+        hidden = await self._hidden_entities(data_source)
+        return (text if text is not None else found[0]), _without_hidden(found[1], hidden=hidden)
+
+    async def semantic_model_members(self, name: str, data_source: str) -> list[str]:
+        members = await self._inner.semantic_model_members(name, data_source=data_source)
+        if self._bypass:
+            return members
+        hidden = (await self._hidden_entities(data_source)).datasets
+        return [m for m in members if m.casefold() not in hidden]
+
+    async def ignored_entities(self, data_source: str) -> list[str]:
+        return await self._inner.ignored_entities(data_source)
+
     async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
                                     datasets: list[str] | None = None,
                                     warnings_out: list[SlayerWarning] | None = None) -> None:

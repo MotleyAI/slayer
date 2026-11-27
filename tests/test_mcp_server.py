@@ -67,7 +67,7 @@ def _shared_mcp_server(_shared_storage: YAMLStorage):
 def _reset_yaml_storage(storage: YAMLStorage) -> None:
     """Wipe dataset/datasource files (recursively) plus ``priority.yaml`` so the
     session-scoped storage looks fresh; priority leakage makes tests order-dependent."""
-    for sub in ("models", "datasources"):
+    for sub in ("models", "datasources", "semantic_models"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
             for entry in os.listdir(d):
@@ -2268,15 +2268,14 @@ class TestEditModelDatasourceMoveSafety:
         ))
 
         # Force the save under the new datasource to fail; the source row must survive.
-        # The engine's storage view writes through the store's ``_save_dataset_impl``.
-        original_save = storage._save_dataset_impl
+        original_write = storage._write_document_dataset
 
-        async def _failing_save(model):
-            if model.data_source == "db_b":
+        async def _failing_write(**kwargs):
+            if kwargs["data_source"] == "db_b":
                 raise RuntimeError("simulated storage failure on new key")
-            return await original_save(model)
+            return await original_write(**kwargs)
 
-        monkeypatch.setattr(storage, "_save_dataset_impl", _failing_save)
+        monkeypatch.setattr(storage, "_write_document_dataset", _failing_write)
 
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",

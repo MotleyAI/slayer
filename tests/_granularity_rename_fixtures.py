@@ -18,7 +18,7 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._stored_upgrade_fixtures import run
+from tests._stored_upgrade_fixtures import ossie_texts, run
 
 DS = "gds"
 OTHER_DS = "other"
@@ -143,8 +143,12 @@ def reopen(*, backend: str, base: str) -> StorageBackend:
 
 
 def raw_documents(*, backend: str, base: str) -> dict[str, str]:
-    """Every persisted datasource, dataset and memory exactly as stored, keyed ``<kind>/<name>``."""
+    """Every persisted datasource, dataset and memory exactly as stored, keyed ``<kind>/<name>``; the Ossie documents
+    of the stored format keyed ``semantic_models/<data_source>/<file name>``."""
     out: dict[str, str] = {}
+    for ds in _ossie_data_sources(backend=backend, base=base):
+        out.update({f"semantic_models/{ds}/{f}": t for f, t in ossie_texts(backend=backend, base=base,
+                                                                           data_source=ds).items()})
     if backend == "yaml":
         for kind, ext in (("datasources", ".yaml"), ("models", ".yaml"), ("memories", ".md")):
             root = os.path.join(base, kind)
@@ -164,6 +168,16 @@ def raw_documents(*, backend: str, base: str) -> dict[str, str]:
         for mem_id, data in conn.execute("SELECT id, data FROM memories"):
             out[f"memories/{mem_id}"] = data
     return out
+
+
+def _ossie_data_sources(*, backend: str, base: str) -> list[str]:
+    if backend == "yaml":
+        root = os.path.join(base, "semantic_models")
+        return sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))) if os.path.isdir(root) else []
+    with transaction(os.path.join(base, "store.db")) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'").fetchone():
+            return []
+        return [r[0] for r in conn.execute("SELECT DISTINCT data_source FROM documents ORDER BY data_source")]
 
 
 async def granularity_store(*, backend: str, base: str, name: str) -> StorageBackend:

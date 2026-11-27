@@ -52,13 +52,14 @@ def _fsync_dir(dir_path: str) -> None:
             os.close(dir_fd)
 
 
-def _atomic_write_text(path: str, text: str) -> None:
+def _atomic_write_text(path: str, text: str, *, temp_dir: str | None = None) -> None:
     """Durably replace ``path``: serialize to a same-dir temp file, fsync it,
     then ``os.replace`` (atomic on POSIX). An existing file's permission mode
     is preserved; new files are created ``0o600``. Any raised error leaves the
     old file in place and removes the temp file — the post-replace directory
     sync is best-effort and never raises, so an exception here always means the
-    replace did not happen.
+    replace did not happen. ``temp_dir`` (on the same file system) holds the temp
+    file instead of ``path``'s directory.
 
     Durability covers the file and its containing directory; a directory the
     caller freshly created (e.g. a new datasource dir) is not parent-fsynced,
@@ -69,8 +70,9 @@ def _atomic_write_text(path: str, text: str) -> None:
     except FileNotFoundError:
         mode = 0o600
     dir_path = os.path.dirname(path) or "."
+    staging = temp_dir or dir_path
     fd, tmp = tempfile.mkstemp(
-        dir=dir_path, prefix=_temp_prefix(dir_path, os.path.basename(path)),
+        dir=staging, prefix=_temp_prefix(staging, os.path.basename(path)),
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design

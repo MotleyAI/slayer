@@ -81,9 +81,10 @@ def _deprecation(old: str, new: str) -> DeprecatedInputWarning:
 
 
 def same_ignoring_deprecations(a: BaseModel, b: BaseModel) -> bool:
-    """``a == b`` (same type) disregarding the pre-2.0 spellings each was read from."""
+    """``a == b`` (same type) disregarding the pre-2.0 spellings and the stored form each was read from."""
     def private(model: BaseModel) -> dict[str, Any]:
-        return {k: v for k, v in (model.__pydantic_private__ or {}).items() if k != "_deprecated_inputs"}
+        return {k: v for k, v in (model.__pydantic_private__ or {}).items()
+                if k not in ("_deprecated_inputs", "_read_as", "_stage_versions")}
 
     return a.__dict__ == b.__dict__ and private(a) == private(b) and a.__pydantic_extra__ == b.__pydantic_extra__
 

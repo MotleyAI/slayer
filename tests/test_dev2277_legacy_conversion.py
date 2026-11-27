@@ -31,6 +31,7 @@ from tests._dev2277_fixtures import (
     response_conversions,
     seed_engine,
 )
+from tests._stored_upgrade_fixtures import raw_ossie, source_queries
 
 
 def m(expression: str, alias: str) -> dict[str, str]:
@@ -437,9 +438,8 @@ async def test_a_rootless_list_column_first_path_converts_nothing() -> None:
 # Saving, refinement and the cache see the qualified twin
 # --------------------------------------------------------------------------- #
 async def _raw_text(engine: SlayerQueryEngine, name: str) -> str:
-    raw = await engine.storage._load_raw_dataset_dict(name=name, data_source=DS)
-    assert raw is not None
-    return json.dumps(raw, sort_keys=True)
+    raw = await raw_ossie(engine.storage, name, data_source=DS)
+    return json.dumps([raw, source_queries(raw["dataset"])], sort_keys=True)
 
 
 LEGACY_SAVED = _orders(dimensions=["status"], metrics=["sum(amount)", "count(*)", "total_revenue"])

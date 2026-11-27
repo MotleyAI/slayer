@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, ObjectKind
 from slayer.core.field_expression import Expression as FieldExpression
 from slayer.core.field_expression import unquoted_identifier
 from slayer.core.format import NumberFormat
@@ -25,16 +25,16 @@ from slayer.core.vocabulary import Spellings
 from slayer.core.ossie_expression import OSINonportableExtension
 
 VENDOR = "SLAYER"
-PAYLOAD_VERSION = 3
+PAYLOAD_VERSION = 4
 #: Every payload version ``decode`` reads.
-KNOWN_VERSIONS = (1, 2, PAYLOAD_VERSION)
+KNOWN_VERSIONS = (1, 2, 3, PAYLOAD_VERSION)
 _FINGERPRINT_VERSION = 1
 
 
 class _Payload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[3] = PAYLOAD_VERSION
+    version: Literal[4] = PAYLOAD_VERSION
     #: The name of the Ossie entity the payload was written for.
     entity: str
     fingerprint: str = ""
@@ -102,6 +102,8 @@ class SourceStructure(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sql_table: str | None = None
+    #: The kind of object ``sql_table`` names, as ingestion recorded it.
+    source_kind: ObjectKind | None = None
     sql: str | None = None
     filters: list[str] | None = None
     source_queries: list[dict[str, Any]] | None = None
@@ -152,6 +154,8 @@ class DocumentBoundary(BaseModel):
 class DocumentPayload(_Payload):
     kind: Literal["semantic_model"] = "semantic_model"
     metrics: list[ModelMetricContent] = []
+    #: Relationships from a dataset of this model to a dataset of another model of its datasource.
+    relationships: list[RelationshipDeclaration] = []
     #: The stored documents an export merged, so a re-import splits them back.
     documents: list[DocumentBoundary] = []
 
@@ -219,14 +223,14 @@ def _version_2(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def decode(data: dict[str, Any]) -> Payload:
-    """The payload in ``data`` (a version-1 or -2 payload read silently as version 3, its fingerprint over its content
+    """The payload in ``data`` (an older payload read silently as the current version, its fingerprint over its content
     as written); raises ``ValueError`` when malformed or of an unknown version or kind."""
     version = data.get("version")
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         return _ADAPTER.validate_python(data)
     upgraded = {**(_version_2(data) if version == 1 else data), "version": PAYLOAD_VERSION}
     legacy: dict[str, str] = {}
-    if upgraded.get("kind") == "dataset" and isinstance(upgraded.get("fields"), list):
+    if version != 3 and upgraded.get("kind") == "dataset" and isinstance(upgraded.get("fields"), list):
         upgraded["fields"] = [_without_sql(f, legacy) if isinstance(f, dict) else f for f in upgraded["fields"]]
     payload = _ADAPTER.validate_python(upgraded)
     payload._written = {k: v for k, v in data.items() if k != "fingerprint"}

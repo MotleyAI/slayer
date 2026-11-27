@@ -85,6 +85,7 @@ nav = [
     { "OpenTelemetry" = "reference/opentelemetry.md" },
     { "Usage Reporting" = "reference/usage-reporting.md" },
     { "Upgrading to 2.0" = "upgrading/2.0.md" },
+    { "Upgrading to the Ossie Stored Format" = "upgrading/stored-format.md" },
   ]},
   { "Tutorials" = [
     { "Make it dynamic" = "examples/01_dynamic/dynamic.md" },

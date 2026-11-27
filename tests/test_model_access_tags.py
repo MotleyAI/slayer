@@ -23,7 +23,9 @@ from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dataset_access_fixtures import make_storage, mcp_text, must_get
 from tests._storage_upgrade_cli import store_path, upgrade
-from tests._stored_upgrade_fixtures import DS as SHOP, customers_v10, orders_v10, raw_doc, raw_store
+from tests._stored_upgrade_fixtures import (
+    DS as SHOP, assert_current, customers_v10, orders_v10, raw_doc, raw_ossie, raw_store,
+)
 
 DS = "tagds"
 SECRET_TAG = "zz-secret-tag"
@@ -75,7 +77,7 @@ async def test_v14_model_loads_untagged_and_upgrades_later(backend: str) -> None
         assert (await must_get(storage, "orders", SHOP)).access_tags == []
         assert (await raw_doc(storage, "orders"))["version"] == 14
         assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
-        assert (await raw_doc(storage, "orders"))["version"] == CURRENT_VERSIONS["SlayerModel"]
+        assert_current(await raw_ossie(storage, "orders"))
 
 
 class TestMcp:

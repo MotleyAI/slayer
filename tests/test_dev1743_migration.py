@@ -24,6 +24,7 @@ import json
 import os
 from slayer.storage.sqlite_conn import transaction
 import tempfile
+from pathlib import Path
 
 import pytest
 import yaml
@@ -38,6 +39,7 @@ from slayer.storage.legacy_alias_rewrite import (
 )
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._stored_format_fixtures import slayer_entry
 
 
 # --------------------------------------------------------------------------- #
@@ -161,6 +163,22 @@ async def _seed_sqlite(db_path: str, payloads: list[dict]) -> SQLiteStorage:
 # --------------------------------------------------------------------------- #
 # The rewrite: legacy __ alias -> dotted, on load, both backends.
 # --------------------------------------------------------------------------- #
+def _dataset_document(base: str, *, data_source: str, name: str) -> dict:
+    """The YAML store's dataset document declaring dataset ``name``, found by content."""
+    hits = [doc for p in sorted(Path(base, "semantic_models", data_source).glob("*.yaml"))
+            if isinstance(doc := yaml.safe_load(p.read_text(encoding="utf-8")), dict)
+            and (doc.get("dataset") or {}).get("name") == name]
+    assert len(hits) == 1, f"dataset document {name!r}: {len(hits)}"
+    return hits[0]
+
+
+def _assert_current(document: dict) -> None:
+    """An Ossie dataset document whose ``SLAYER`` entry, when present, is at the current payload version."""
+    assert document["version"] == "0.3.0.dev0"
+    entry = slayer_entry(document["dataset"])
+    assert entry is None or entry["version"] == 3
+
+
 class TestLegacyAliasRewrittenOnLoad:
     @pytest.mark.asyncio
     async def test_yaml_rewrites_two_hop_alias_to_dotted(self) -> None:
@@ -187,11 +205,15 @@ class TestLegacyAliasRewrittenOnLoad:
             assert loaded is not None
             assert yaml.safe_load(open(path).read())["version"] == 8
             await storage.save_dataset(loaded)
-            on_disk = yaml.safe_load(open(path).read())
-            assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-            region_col = next(c for c in on_disk["fields"]
-                              if c["name"] == "region_name")
-            assert region_col["expression"]["dialects"][0]["expression"] == "customers.regions.name"
+            assert not os.path.exists(path)
+            on_disk = _dataset_document(d, data_source="ds", name="orders")
+            _assert_current(on_disk)
+            stored = yaml.safe_dump(on_disk)
+            assert "customers.regions.name" in stored
+            assert "customers__regions" not in stored
+            reread = await YAMLStorage(base_dir=d).get_dataset("orders", data_source="ds")
+            assert reread is not None
+            assert reread.get_field("region_name").definition_sql == "customers.regions.name"
 
     @pytest.mark.asyncio
     async def test_sqlite_rewrites_two_hop_alias_to_dotted(self) -> None:
@@ -271,7 +293,9 @@ class TestOpaqueQualifierPreserved:
             ])
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").definition_sql == "foo__bar"
+            region = loaded.get_field("region_name")
+            assert region is not None
+            assert region.definition_sql == "foo__bar"
 
 
 # --------------------------------------------------------------------------- #

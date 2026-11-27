@@ -1,0 +1,6 @@
+version: 4
+name: shop
+type: duckdb
+database: corpus.duckdb
+transaction_pooler: false
+granularities: []

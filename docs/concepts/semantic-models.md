@@ -35,22 +35,37 @@ metrics:
     expression: {sql: AGG(orders.total_revenue) / COUNT(DISTINCT customers.customer_id)}
 ```
 
-## Where documents live
+## The stored format
 
-A document belongs to the datasource it is stored under, since an Ossie document carries no connection:
+Every dataset the YAML and SQLite stores hold is an Ossie dataset inside an Ossie model, and each datasource's models
+live in one folder, as Ossie multi-file models:
 
-- **YAML storage**: `semantic_models/<data_source>/<name>.yaml`, beside `models/<data_source>/`.
-- **SQLite storage**: the `semantic_models` table, holding the document text verbatim.
+- **YAML storage**: `semantic_models/<data_source>/`.
+- **SQLite storage**: the `documents` table, holding each document's text verbatim under the file name YAML would use.
 
-The document's `name` must equal its storage name. Loading a document never connects to the database and never writes to storage.
+A model document is flat (`datasets`) or split (`dataset_refs`, each entry a `name` and the `iri` of a dataset
+document in the same folder, optionally beside inline `datasets`); a dataset document holds `version` and one
+`dataset`. Documents are recognised by their content, never their file names; a model's identity is its `name`,
+any non-empty string. A model document whose references do not resolve (a missing, shared or mis-named file, an `iri`
+leaving the folder, a different `version`) is unloadable with an error naming the files involved, and the
+datasource's other models load. A dataset document no model lists is ignored, with a warning naming its file.
 
-Only Ossie's flat `0.3.0.dev0` shape loads. A key Ossie does not define, at any level, makes the document unloadable with an error naming the key; so do an unknown `version`, the legacy `semantic_model` wrapper, the legacy `custom_extensions` key, a YAML or JSON mapping key repeated at any depth (repeated `<<` merge directives are allowed), and a scalar YAML cannot build, such as `2024-02-30`, each named with its line; a save or edit of such text is refused. Upgrade earlier shapes with [`slayer import-osi`](../osi/osi_import.md). An unloadable document does not affect other documents or datasets.
+**The datasource model.** The model named exactly like its datasource holds every dataset no other model holds, each
+as a dataset document. `create_dataset` without `semantic_model` adds to it; it is created by its first dataset and
+deleted with its last. It is a semantic model like any other: listed, inspected, edited (description, `ai_context`,
+model-scoped metrics, relationships) and deleted through every surface. Creating another document of its name is
+refused as a name collision.
+
+A document belongs to the datasource it is stored under, since an Ossie document carries no connection. Loading a
+document never connects to the database and never writes to storage.
+
+Only Ossie's `0.3.0.dev0` shape loads. A key Ossie does not define, at any level, makes the document unloadable with an error naming the key; so do an unknown `version`, the legacy `semantic_model` wrapper, the legacy `custom_extensions` key, a YAML or JSON mapping key repeated at any depth (repeated `<<` merge directives are allowed), and a scalar YAML cannot build, such as `2024-02-30`, each named with its line; a save or edit of such text is refused. Upgrade earlier shapes with [`slayer import-osi`](../osi/osi_import.md). An unloadable document does not affect other documents or datasets.
 
 ## What a document becomes
 
-**Datasets.** Each Ossie dataset is a native [dataset](datasets.md) of the datasource, exposing exactly its declared fields: a source column no field declares is not on the dataset. Its `source` is a table or a query. `primary_key` marks each named field (a composite key marks every member, and none is a sole identifier). A one-field `unique_keys` entry marks that field `unique`; a composite one stays in the document but proves nothing. `dimension.is_time`, or Ossie's default for the field's `datatype`, sets the time role. Dataset-scoped `metrics` are the dataset's metrics.
+**Datasets.** Each Ossie dataset is a native [dataset](datasets.md) of the datasource, exposing exactly its declared fields: a source column no field declares is not on the dataset. Its `source` is a table or a query; a table's unquoted parts fold as the database folds them (Ossie's identifier rule), and SLayer writes every part it reads exactly, such as a mixed-case table name, quoted. `primary_key` marks each named field (a composite key marks every member, and none is a sole identifier). A one-field `unique_keys` entry marks that field `unique`; a composite one stays in the document but proves nothing. `dimension.is_time`, or Ossie's default for the field's `datatype`, sets the time role. Dataset-scoped `metrics` are the dataset's metrics.
 
-**Relationships.** Each top-level relationship becomes a named, many-to-one, LEFT relationship on its `from` dataset, so it proves the hop to-one. A relationship names only datasets of its own document.
+**Relationships.** Each top-level relationship becomes a named, many-to-one, LEFT relationship on its `from` dataset, so it proves the hop to-one. A core relationship names only datasets of its own model; one into another model's dataset is held in the `SLAYER` entry of the model holding its `from` dataset.
 
 **Metrics.** Each top-level metric is a [model-scoped metric](#model-scoped-metrics).
 
@@ -96,7 +111,7 @@ In a document's portable `sql`, Ossie allows `AGG` only in metrics: as `AGG(data
 
 A SLayer datasource is the equivalent of one Ossie semantic model, so within a datasource:
 
-- dataset names are unique across all documents and standalone datasets together;
+- dataset names are unique across all models together;
 - model-scoped metric names are unique across all documents, and differ from every dataset name.
 
 Names compare as [identifier case](references.md) specifies. A save that would introduce a duplicate is refused, naming both owners. When stored files collide (two hand-placed documents declaring `orders`), the colliding dataset is unloadable in every owner, and so is everything in the same document that depends on it; the rest loads.
@@ -109,7 +124,7 @@ A field that declares no `datatype` loads with an unknown type. Before the first
 
 ## Ossie metadata
 
-Each dataset's, field's, dataset metric's and relationship's `ai_context`, and its other vendors' `nonportable_extensions`, are read into its `meta` as `osi_ai_context` and `osi_nonportable_extensions`, so `inspect` and search show them. They stay in the document as written; a save never writes these `meta` keys back.
+Each dataset's, field's, dataset metric's and relationship's `ai_context`, and its other vendors' `nonportable_extensions`, are read into its `meta` as `osi_ai_context` and `osi_nonportable_extensions`, so `inspect` and search show them. They stay in the document as written; a save never writes these `meta` keys back, except stashed Ossie content core rejects (a malformed extension, a key on a filtered field), which stays in the `SLAYER` entry with a warning and which export reports.
 
 ## SLAYER entries
 
@@ -127,17 +142,22 @@ A valid document can hold entities SLayer cannot evaluate yet:
 - a dataset-scoped metric evaluating a source measure with `AGG(source.measure)`;
 - a model-scoped metric reaching any of these, directly or through other model-scoped metrics, whose warning names the chain.
 
-Such an entity loads with a warning shown by `inspect`, `datasets_summary`, search and the import report. A query reading it fails with a typed error naming the entity and the reason; nothing else is affected. SLayer refuses to author such an entity itself.
+Such an entity loads with a warning shown by `inspect`, `datasets_summary`, search and the import report.
+
+Names are stored as written, any non-empty string. A dataset, field, metric or relationship whose name SLayer cannot
+reference yet (a `.` or `:` in it, or a metric name that is not an identifier) loads inert: no query reads it, search
+does not list it, an `ignored_stored_entity` warning names it, `inspect` and `datasets_summary` show it, and its text
+round-trips through every save and export. SLayer refuses to author such a name. A query reading it fails with a typed error naming the entity and the reason; nothing else is affected. SLayer refuses to author such an entity itself.
 
 A query without a population whose metrics read no dataset (`NOW()`) fails with `NoRowSourceError`.
 
 ## Editing
 
-**Through the dataset tools.** `edit_dataset`, `delete_dataset`, `create_dataset` with `semantic_model`, the REST and CLI dataset writes, ingestion, sampling, `--force-clean` and `--persist-cardinality` all edit a document's datasets inside the document. Ossie-expressible content is written as Ossie; everything else as a `SLAYER` entry. A relationship added to a document dataset lands in the document's top-level `relationships`.
+**Through the dataset tools.** `edit_dataset`, `delete_dataset`, `create_dataset` with `semantic_model`, the REST and CLI dataset writes, ingestion, sampling, `--force-clean` and `--persist-cardinality` all edit a document's datasets inside the document. Each field, metric, key and relationship is written as Ossie core in the form an export gives it (a SLayer formula such as `count_distinct(x)` as its Ossie SQL, the formula as written kept in its `SLAYER` entry); content with no Ossie form that keeps SLayer's meaning (a field reading another dataset, a transform, a many-to-many relationship) is written only as a `SLAYER` entry. A relationship added to a document dataset lands in the document's top-level `relationships`.
 
-**Text fidelity.** A save patches only what it changes: comments, key order, quoting, blank lines and formatting of untouched parts are kept, in YAML and SQLite storage alike. Concurrent writes to one document are serialised, so no edit is lost. A document edited by hand is picked up on the next query.
+**Text fidelity.** A save patches only what it changes: comments, key order, quoting, blank lines and formatting of untouched parts are kept, in YAML and SQLite storage alike. Writes to a datasource's documents are serialised and a multi-file write is journaled, so no edit is lost and a crash never leaves a half-done move. A document edited by hand is picked up on the next query.
 
-**The document itself.** Create, edit and delete documents through MCP (`create_semantic_model`, `edit_semantic_model`, `delete_semantic_model`), REST (`/semantic-models`), the [Python client](../reference/python-client.md#semantic-models) or the [CLI](../reference/cli.md#slayer-semantic-models). `create_semantic_model(datasets=[...])` and `edit_semantic_model(add_datasets=[...])` move standalone datasets into a document, unchanged, which is how to author model-scoped metrics without writing an Ossie file.
+**The document itself.** Create, edit and delete documents through MCP (`create_semantic_model`, `edit_semantic_model`, `delete_semantic_model`), REST (`/semantic-models`), the [Python client](../reference/python-client.md#semantic-models) or the [CLI](../reference/cli.md#slayer-semantic-models). `create_semantic_model(datasets=[...])` and `edit_semantic_model(add_datasets=[...])` move datasets of any model of the datasource (the datasource model included) into a model by their reference: a dataset document's text stays as it is, and each relationship it takes part in moves to the model holding its `from` dataset. A dataset a save adds to a flat model is written inline; one added to a split model (the datasource model always is) gets its own dataset document.
 
 **Deleting.** Deleting a document dataset runs the usual dataset cascade (embeddings, memory links, relationships into it) and removes its relationships from the document. Deleting a document deletes all its datasets and model-scoped metrics.
 

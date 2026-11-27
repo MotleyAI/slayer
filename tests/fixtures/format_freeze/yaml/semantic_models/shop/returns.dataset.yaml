@@ -1,0 +1,11 @@
+version: 0.3.0.dev0
+dataset:
+  name: returns
+  source: returns
+  fields:
+  - name: return_id
+    expression:
+      sql: return_id
+    datatype: String
+  primary_key:
+  - return_id

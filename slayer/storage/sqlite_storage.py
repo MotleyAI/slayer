@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 import sqlite3
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Sequence
 from typing import Any
 
 from sqlglot import exp
@@ -29,6 +29,8 @@ from slayer.storage.base import (
 )
 from slayer.storage.content_fingerprint import stat_key
 from slayer.storage.document_loading import Loaded, stored_document_boundary
+from slayer.storage.folder_documents import FolderDocuments
+from slayer.storage.stored_layout import Folder, FolderWrite
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
     SidecarEmbeddingStore,
@@ -56,7 +58,21 @@ _ROW_DATA_STATEMENTS = {
 }
 
 
-class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
+def _decoded_row(raw: str) -> dict | None:
+    """A ``models`` row's stored dict; ``None`` when corrupt or not a mapping."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _legacy_file(name: str) -> str:
+    """The file name a 2.0 ``semantic_models`` row reads under: the 2.0 YAML store's."""
+    return f"{name}.yaml"
+
+
+class SQLiteStorage(SidecarEmbeddingsMixin, FolderDocuments, StorageBackend):
     def __init__(self, db_path: str):
         self.db_path = db_path
         # Idempotent: rebuilds a v3 ``models`` table if needed; no-op on v4.
@@ -177,6 +193,14 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    data_source TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    PRIMARY KEY (data_source, file_name)
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS ontologies (
                     name TEXT PRIMARY KEY,
                     text TEXT NOT NULL
@@ -262,58 +286,66 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             )
             return cursor.rowcount > 0
 
-    def _save_semantic_model_sync(self, data_source: str, name: str, text: str) -> None:
-        with transaction(self.db_path) as conn:
-            conn.execute("INSERT OR REPLACE INTO semantic_models (data_source, name, text) VALUES (?, ?, ?)",
-                         (data_source, name, text))
+    # ---- the stored format: one folder of Ossie documents per datasource ---
 
-    def _get_semantic_model_sync(self, data_source: str, name: str) -> str | None:
-        with transaction(self.db_path) as conn:
-            row = conn.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?",
-                               (data_source, name)).fetchone()
-        return row[0] if row else None
+    @staticmethod
+    def _folder_from(conn: sqlite3.Connection, data_source: str) -> Folder:
+        """``data_source``'s documents; a 2.0 ``semantic_models`` row reads as ``<name>.yaml``."""
+        texts = {f: t for f, t in conn.execute("SELECT file_name, text FROM documents WHERE data_source = ?",
+                                               (data_source,))}
+        legacy: list[str] = []
+        for name, text in conn.execute("SELECT name, text FROM semantic_models WHERE data_source = ?", (data_source,)):
+            if _legacy_file(name) not in texts:
+                texts[_legacy_file(name)] = text
+                legacy.append(_legacy_file(name))
+        return Folder(data_source=data_source, texts=texts, legacy_files=legacy)
 
-    def _list_semantic_models_sync(self) -> list[tuple[str, str]]:
+    def _read_folder_sync(self, data_source: str) -> Folder:
         with transaction(self.db_path) as conn:
-            rows = conn.execute("SELECT data_source, name FROM semantic_models ORDER BY data_source, name").fetchall()
-        return [(r[0], r[1]) for r in rows]
+            return self._folder_from(conn, data_source)
 
-    def _delete_semantic_model_sync(self, data_source: str, name: str) -> bool:
+    async def _read_folder(self, data_source: str) -> Folder:
+        return await asyncio.to_thread(self._read_folder_sync, data_source)
+
+    def _folder_data_sources_sync(self) -> list[str]:
         with transaction(self.db_path) as conn:
-            return conn.execute("DELETE FROM semantic_models WHERE data_source = ? AND name = ?",
-                                (data_source, name)).rowcount > 0
+            rows = conn.execute("SELECT data_source FROM documents UNION SELECT data_source FROM semantic_models "
+                                "ORDER BY data_source").fetchall()
+        return [r[0] for r in rows]
 
-    def _patch_semantic_model_sync(self, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+    async def _folder_data_sources(self) -> list[str]:
+        return await asyncio.to_thread(self._folder_data_sources_sync)
+
+    def _write_folder_sync(self, data_source: str, plan: Callable[[Folder], FolderWrite],
+                           legacy: Sequence[str]) -> None:
         with open_connection(self.db_path, isolation_level=None) as conn:
             conn.execute(_BEGIN_IMMEDIATE)
             try:
-                row = conn.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?",
-                                   (data_source, name)).fetchone()
-                if row is None:
-                    raise ValueError(f"semantic model {name!r} of datasource {data_source!r} not found")
-                text = patch(row[0])
-                conn.execute("UPDATE semantic_models SET text = ? WHERE data_source = ? AND name = ?",
-                             (text, data_source, name))
+                folder = self._folder_from(conn, data_source)
+                raws = {}
+                for name in legacy:
+                    row = conn.execute(_SELECT_DATASET, (data_source, name)).fetchone()
+                    raws[name] = _decoded_row(row[0]) if row else None
+                write = plan(folder.model_copy(update={"legacy": raws}))
+                for file, text in write.ordered_writes():
+                    conn.execute("INSERT OR REPLACE INTO documents (data_source, file_name, text) VALUES (?, ?, ?)",
+                                 (data_source, file, text))
+                for file in [f for f, _ in write.ordered_writes()] + write.deletes:
+                    if file.endswith(".yaml"):
+                        conn.execute("DELETE FROM semantic_models WHERE data_source = ? AND name = ?",
+                                     (data_source, file.removesuffix(".yaml")))
+                for file in write.deletes:
+                    conn.execute("DELETE FROM documents WHERE data_source = ? AND file_name = ?", (data_source, file))
+                for name in write.retired:
+                    conn.execute("DELETE FROM models WHERE data_source = ? AND name = ?", (data_source, name))
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
             conn.execute("COMMIT")
-        return text
 
-    async def _save_semantic_model_text_impl(self, *, data_source: str, name: str, text: str) -> None:
-        await asyncio.to_thread(self._save_semantic_model_sync, data_source, name, text)
-
-    async def _get_semantic_model_text_impl(self, *, data_source: str, name: str) -> str | None:
-        return await asyncio.to_thread(self._get_semantic_model_sync, data_source, name)
-
-    async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
-        return await asyncio.to_thread(self._list_semantic_models_sync)
-
-    async def _delete_semantic_model_row(self, *, data_source: str, name: str) -> bool:
-        return await asyncio.to_thread(self._delete_semantic_model_sync, data_source, name)
-
-    async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:
-        return await asyncio.to_thread(self._patch_semantic_model_sync, data_source, name, patch)
+    async def _write_folder(self, data_source: str, plan: Callable[[Folder], FolderWrite], *,
+                            legacy: Sequence[str] = ()) -> None:
+        await asyncio.to_thread(self._write_folder_sync, data_source, plan, legacy)
 
     # ---- ontology and mapping documents ------------------------------------
 
@@ -442,13 +474,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         validation) for sibling-hop resolution during the legacy-``__``
         rewrite. Returns ``None`` when the row is absent, corrupt or not a mapping."""
         raw = await asyncio.to_thread(self._get_dataset_sync, data_source, name)
-        if not raw:
-            return None
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            return None
-        return data if isinstance(data, dict) else None
+        return _decoded_row(raw) if raw else None
 
     def _raw_rows_sync(self, sql: str) -> list[tuple[str, dict]]:
         with transaction(self.db_path) as conn:

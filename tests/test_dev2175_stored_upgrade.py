@@ -34,7 +34,9 @@ from tests._dev2175_fixtures import (
 )
 from tests._engine_helpers import owned_query_engine
 from tests._storage_upgrade_cli import store_path, upgrade
-from tests._stored_upgrade_fixtures import BACKENDS, raw_store, stored_bytes
+from tests._stored_upgrade_fixtures import (
+    BACKENDS, assert_current, ossie_document, ossie_text, raw_store, stored_bytes,
+)
 
 STORES = pytest.mark.parametrize("backend", BACKENDS)
 ITEMS = ('CREATE TABLE items (id INTEGER, amount INTEGER, "Label" VARCHAR, qty INTEGER)',
@@ -92,8 +94,8 @@ class TestStoredFieldSql:
             assert not [w for w in caught if issubclass(w.category, FutureWarning)]
             assert stored_bytes(backend=backend, base=base, name="items") == before
             assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
-            assert f"{CURRENT_VERSIONS['SlayerModel']}" in stored_bytes(backend=backend, base=base, name="items")
-            assert "items.doubled" in stored_bytes(backend=backend, base=base, name="items")
+            assert_current(ossie_document(backend=backend, base=base, name="items"))
+            assert "items.doubled" in ossie_text(backend=backend, base=base, name="items")
             async with engine_on(storage, db_path) as engine:
                 assert await by_id(engine, field="amount", ds="items") == [10, 20, 5]
                 assert await by_id(engine, field="label", ds="items") == ["a", "b", "c"]
@@ -118,7 +120,7 @@ class TestStoredFieldSql:
                 "dialects": [entry("DUCKDB", "items.doubled / qty")]}
             assert stored_bytes(backend=backend, base=base, name="items") == before
             assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
-            assert "items.doubled" in stored_bytes(backend=backend, base=base, name="items")
+            assert "items.doubled" in ossie_text(backend=backend, base=base, name="items")
 
     def test_direct_validation_of_a_stored_document(self) -> None:
         doc = items_v()

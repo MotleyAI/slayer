@@ -48,10 +48,12 @@ def _foreign(entity: dict[str, Any]) -> list[dict[str, Any]]:
 
 async def test_slayer_payload_is_an_object_under_nonportable_extensions(env) -> None:
     result = await export_datasets(env, customers(), rich_orders())
-    for entity in entities(result.document):
-        [entry] = slayer_entries(entity)
-        assert isinstance(entry["data"], dict), entity["name"]
-        assert entry["data"]["version"] == ext.PAYLOAD_VERSION
+    for entity in entities(result.document):  # a stored entity carries one only for its SLayer-only content
+        found = slayer_entries(entity)
+        assert len(found) <= 1, entity["name"]
+        for entry in found:
+            assert isinstance(entry["data"], dict), entity["name"]
+            assert entry["data"]["version"] == ext.PAYLOAD_VERSION
     assert "custom_extensions" not in _keys(result.document)
     validate(result.document)
 
@@ -106,13 +108,15 @@ async def test_malformed_document_level_entry_is_reported_and_omitted(env, exten
 # ──────────────────────── dataset stored by SLayer 1.8 ───────────────────────
 
 async def test_model_stored_before_the_shape_change(env) -> None:
-    await save(env, customers(), orders(metrics=BASIC_METRICS))
+    await save(env, customers())
     path = env.store / "models" / env.datasource / "orders.yaml"
-    stored = dataset_in(yaml.safe_load(path.read_text(encoding="utf-8")), LEGACY_KEYS)
+    legacy = orders(metrics=BASIC_METRICS).model_copy(update={"data_source": env.datasource})
+    stored = dataset_in(legacy.model_dump(mode="json", exclude_none=True), LEGACY_KEYS)
     stored["version"] = 21
     [amount] = [c for c in stored["columns"] if c["name"] == "amount"]
     amount["meta"] = {"osi_custom_extensions": [{"vendor_name": "ACME", "data": '{"k": 1}'},
                                                 {"vendor_name": "ACME", "data": "not json"}]}
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(stored, sort_keys=False), encoding="utf-8")
     result = await export(env)
     exported = field(dataset(result.document, "orders"), "amount")
@@ -172,7 +176,9 @@ async def test_export_import_export_keeps_every_payload(env) -> None:
     first = (await export_datasets(env, customers(), rich_orders())).document
     imported, _ = await reimport(env, first)
     second = (await export(imported)).document
-    assert [(e["name"], payload(e)) for e in entities(second)] == [(e["name"], payload(e)) for e in entities(first)]
+    # An entity carries a SLAYER entry only for its SLayer-only content.
+    assert [(e["name"], [x["data"] for x in slayer_entries(e)]) for e in entities(second)] == [
+        (e["name"], [x["data"] for x in slayer_entries(e)]) for e in entities(first)]
     assert yaml.safe_dump(first, sort_keys=False) == yaml.safe_dump(second, sort_keys=False)
 
 

@@ -102,7 +102,8 @@ class TestAPortableWindowedField:
         for twin in _twin():
             stored = await engine.storage.get_dataset(twin.name, data_source="test")
             assert stored is not None
-            assert [f.name for f in stored.fields] == [f.name for f in twin.fields]
+            # The stored form keeps no position between core and SLayer-only fields.
+            assert sorted(f.name for f in stored.fields) == sorted(f.name for f in twin.fields)
 
     async def test_as_a_dimension(self, bare, door):
         engine = await _saved(bare, door)

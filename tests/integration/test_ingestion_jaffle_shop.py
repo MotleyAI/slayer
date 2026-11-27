@@ -9,7 +9,6 @@ ingested datasets through YAMLStorage to confirm no v1 keys leak to disk.
 """
 
 import asyncio
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -30,7 +29,6 @@ from slayer.demo.jaffle_shop import (
 )
 from slayer.live_schema import ingestion
 from slayer.database.client import SlayerSQLClient
-from slayer.storage import migrations as mig
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests.integration._demo_build import NOTEBOOK_DEMO_DB
@@ -232,13 +230,12 @@ async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_datasets: dict[str, S
             await storage.save_dataset(model)
 
         for model_name, model in jaffle_datasets.items():
-            # v4: files are nested under models/<data_source>/<name>.yaml.
-            path = os.path.join(
-                storage.models_dir, model.data_source, f"{model_name}.yaml"
-            )
-            raw = await asyncio.to_thread(Path(path).read_text)
-            on_disk = yaml.safe_load(raw)
-            assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"], model_name
+            # Each dataset is a dataset document in its datasource folder.
+            folder = Path(tmpdir, "semantic_models", model.data_source)
+            documents = [yaml.safe_load(await asyncio.to_thread(p.read_text)) for p in sorted(folder.glob("*.yaml"))]
+            [document] = [d for d in documents if (d.get("dataset") or {}).get("name") == model_name]
+            assert document["version"] == "0.3.0.dev0", model_name
+            on_disk = document["dataset"]
             assert "fields" in on_disk, model_name
             assert "dimensions" not in on_disk, (
                 f"{model_name}: v1 'dimensions' key should not be on disk"

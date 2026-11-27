@@ -1,0 +1,9 @@
+version: 0.3.0.dev0
+dataset:
+  name: tickets/2024 Q1
+  source: '"Tickets2024"'
+  fields:
+  - name: ticket_id
+    expression:
+      sql: ticket_id
+    datatype: String

@@ -3,18 +3,21 @@ over documents SLayer does not own. Both run the upgrade every load applies in m
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import difflib
+import json
 import warnings
 from collections.abc import Awaitable, Mapping, Sequence
-from typing import Any, Final, Literal, NoReturn
+from typing import Any, Final, Literal, NoReturn, cast
 
 import yaml
 from pydantic import BaseModel
 
 from slayer.async_utils import run_sync
-from slayer.core.errors import OssieDocumentInvalidError, UnreadableDocumentError
+from slayer.core.errors import ModelResolutionError, OssieDocumentInvalidError, UnreadableDocumentError
 from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.semantic_model import OSSIE_VERSION, ossie_validity_errors
 from slayer.core.warnings import SlayerStoredUpgradeNeededWarning
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
@@ -24,7 +27,9 @@ from slayer.storage.base import (
 )
 from slayer.storage.document_loading import Loaded
 from slayer.storage.instant_field_migration import awaits_datasource_type
+from slayer.storage.semantic_model_edits import with_datasets
 from slayer.storage.semantic_models import checked_document
+from slayer.storage.stored_layout import Folder, FolderWrite, Workspace, classify
 
 DocumentKind = Literal["dataset", "semantic model", "memory", "datasource"]
 Status = Literal["upgraded", "current", "would upgrade", "not upgraded", "conflict"]
@@ -135,11 +140,123 @@ async def _semantic_model_outcome(storage: StorageBackend, *, data_source: str, 
     """A semantic-model document has no upgrade: it is current when valid, else reported with its reasons."""
     shown = f"{data_source}.{name}"
     try:
-        text = await storage.get_semantic_model_text(name, data_source=data_source)
-        checked_document(text=text or "", name=name)
+        found = await storage.semantic_model_document(name, data_source=data_source)
+        if found is not None:  # a datasource model of 2.0 members only exists once upgraded
+            checked_document(text=json.dumps(found[1]), name=name)
     except (UnreadableDocumentError, OssieDocumentInvalidError) as exc:
         return DocumentOutcome(kind=SEMANTIC_MODEL, name=shown, status=NOT_UPGRADED, detail=str(exc))
     return DocumentOutcome(kind=SEMANTIC_MODEL, name=shown, status="current")
+
+
+class _Baseline(BaseModel):
+    """One datasource's datasource-model text and 2.0 standalone dataset dicts, as the upgrade first read them."""
+
+    data_source: str
+    model_text: str | None
+    raws: dict[str, dict[str, Any] | None]
+
+
+class _Conflict(Exception):
+    def __init__(self, outcomes: list[DocumentOutcome]) -> None:
+        super().__init__("; ".join(o.line() for o in outcomes))
+        self.outcomes = outcomes
+
+
+_CHANGED = "changed in the store since the upgrade read it; the datasource's 2.0 form is left as it is"
+
+
+async def _baselines(storage: StorageBackend, *, data_source: str | None) -> list[_Baseline]:
+    """Each in-scope datasource's stored-format upgrade baseline, read before anything else reads it; a write a crash
+    left pending is completed first."""
+    if not storage._supports_stored_format():
+        return []
+    legacy: dict[str, list[str]] = {}
+    for ds, name in await storage._standalone_identities():
+        if data_source in (None, ds):
+            legacy.setdefault(ds, []).append(name)
+    folders = [ds for ds in await storage._folder_data_sources() if data_source in (None, ds)]
+    for ds in folders:
+        await storage._complete_pending(ds)
+    out = []
+    for ds in sorted({*legacy, *folders}):
+        text = None
+        with contextlib.suppress(UnreadableDocumentError):
+            text = await storage._get_semantic_model_text_impl(data_source=ds, name=ds)
+        raws = {n: await storage._load_raw_dataset_dict(name=n, data_source=ds) for n in legacy.get(ds, [])}
+        out.append(_Baseline(data_source=ds, model_text=text, raws=raws))
+    return out
+
+
+async def _upgraded_members(storage: StorageBackend, baseline: _Baseline,
+                            outcomes: list[DocumentOutcome]) -> dict[str, SlayerDataset]:
+    """Each 2.0 standalone dataset of ``baseline`` upgraded; the ones that cannot be reported in ``outcomes``."""
+    ds = baseline.data_source
+    index = await storage._document_index(ds)
+    out: dict[str, SlayerDataset] = {}
+    for name, raw in baseline.raws.items():
+        shown = f"{ds}.{name}"
+        if raw is None:
+            outcomes.append(DocumentOutcome(kind="dataset", name=shown, status=NOT_UPGRADED,
+                                            detail=await _unreadable(storage.get_dataset(name, data_source=ds))))
+            continue
+        if name not in index.legacy:
+            outcomes.append(DocumentOutcome(kind="dataset", name=shown, status=NOT_UPGRADED,
+                                            detail="a semantic model declares a dataset of this name; rename one"))
+            continue
+        result = await _upgraded_or_refusal(
+            storage._upgraded_dataset(name=name, data=copy.deepcopy(raw), data_source=ds), data_source=ds,
+            dialect_remedy=_store_dialect_remedy(ds), awaits_type=await _awaits_type(storage, data=raw, data_source=ds))
+        if isinstance(result, str):
+            outcomes.append(DocumentOutcome(kind="dataset", name=shown, status=NOT_UPGRADED, detail=result))
+        else:
+            out[name] = cast(SlayerDataset, result[0])
+    return out
+
+
+def _stored_form(folder: Folder, *, baseline: _Baseline, members: dict[str, SlayerDataset], reader: str) -> FolderWrite:
+    """The write storing ``members`` in the datasource model and moving every 2.0 document row; ``_Conflict`` when a
+    participating artifact differs from what the upgrade read."""
+    ds = baseline.data_source
+    file = classify(folder).models.get(ds)
+    changed = [] if (folder.texts.get(file) if file else None) == baseline.model_text else [
+        DocumentOutcome(kind=SEMANTIC_MODEL, name=f"{ds}.{ds}", status="conflict", detail=_CHANGED)]
+    changed += [DocumentOutcome(kind="dataset", name=f"{ds}.{n}", status="conflict", detail=_CHANGED)
+                for n in members if folder.legacy.get(n) != baseline.raws[n]]
+    if changed:
+        raise _Conflict(changed)
+    ws = Workspace(folder)
+    if members:
+        model = ws.model(ds) or ws.create(ds, version=OSSIE_VERSION, split=True)
+        model.document = with_datasets(model.document, list(members.values()), reader=reader)
+        reasons = ossie_validity_errors(model.document)
+        if reasons:
+            raise OssieDocumentInvalidError(name=ds, reasons=reasons)
+    write = ws.plan(retired=list(members))
+    for legacy_file in folder.legacy_files:
+        if legacy_file not in write.model_writes and legacy_file not in write.deletes:
+            write.model_writes[legacy_file] = folder.texts[legacy_file]
+    return write
+
+
+async def _into_documents(storage: StorageBackend, baseline: _Baseline, *, dry_run: bool) -> list[DocumentOutcome]:
+    """``baseline``'s datasource in the stored format: its 2.0 standalone datasets in its datasource model."""
+    ds = baseline.data_source
+    outcomes: list[DocumentOutcome] = []
+    members = await _upgraded_members(storage, baseline, outcomes)
+    shown = [f"{ds}.{n}" for n in members]
+    if dry_run:
+        return outcomes + [DocumentOutcome(kind="dataset", name=s, status=WOULD_UPGRADE,
+                                           detail="into the datasource model") for s in shown]
+    reader = (await storage._reading(ds)).reader
+    try:
+        await storage._write_folder(ds, lambda folder: _stored_form(folder, baseline=baseline, members=members,
+                                                                    reader=reader), legacy=list(members))
+    except _Conflict as exc:
+        return outcomes + exc.outcomes
+    except (OssieDocumentInvalidError, ModelResolutionError) as exc:
+        return outcomes + [DocumentOutcome(kind="dataset", name=s, status=NOT_UPGRADED, detail=str(exc))
+                           for s in shown]
+    return outcomes + [DocumentOutcome(kind="dataset", name=s, status="upgraded") for s in shown]
 
 
 async def _unreadable(load: Awaitable[Any]) -> str:
@@ -230,8 +347,11 @@ async def upgrade_store(
     try:
         with warnings.catch_warnings(), one_upgrade_pass():
             warnings.simplefilter("ignore", SlayerStoredUpgradeNeededWarning)
+            baselines = await _baselines(storage, data_source=data_source)
             plans, outcomes = await _plans(storage, data_source=data_source)
             outcomes += [await _outcome(storage, plan, dry_run=dry_run) for plan in plans]
+            for baseline in baselines:
+                outcomes += await _into_documents(storage, baseline, dry_run=dry_run)
             outcomes += [await _semantic_model_outcome(storage, data_source=d, name=n)
                          for d, n in await storage.list_semantic_models(data_source=data_source)]
     finally:

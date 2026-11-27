@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from tests._dev2243_fixtures import STORAGES
 from tests._dev2474_fixtures import (
@@ -297,9 +298,14 @@ async def test_annotations_follow_the_semantic_model_reference(tmp_path: Path) -
 
 async def test_an_unresolved_mapping_annotates_nothing(tmp_path: Path) -> None:
     storage = await flights_store("yaml", tmp_path)
-    model_file = tmp_path / "store" / "semantic_models" / FLIGHTS_DS / f"{FLIGHTS_MODEL}.yaml"
-    model_file.write_text(example("flights.semantic_model.yaml").replace(
-        "  - name: dep_delay\n    expression:\n      sql: dep_delay\n", ""), encoding="utf-8")
+    for path in (tmp_path / "store" / "semantic_models" / FLIGHTS_DS).glob("*.yaml"):  # a hand edit
+        stored = yaml.safe_load(path.read_text(encoding="utf-8"))
+        entities = [stored["dataset"]] if "dataset" in stored else stored.get("datasets") or []
+        for entity in entities:
+            fields = entity.get("fields") or []
+            if any(f["name"] == "dep_delay" for f in fields):
+                entity["fields"] = [f for f in fields if f["name"] != "dep_delay"]
+                path.write_text(yaml.safe_dump(stored, sort_keys=False), encoding="utf-8")
     flight_only = edited(delays_mapping(), lambda d: concept_mapping(d, "Flight").pop("link_mappings"))
     await storage.save_ontology_mapping_text(data_source=FLIGHTS_DS, name=DELAYS_MAPPING, text=flight_only)
     assert await field_annotations(storage, "FLIGHT.arr_delay") == []

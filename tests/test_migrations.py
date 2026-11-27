@@ -20,6 +20,7 @@ from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import open_connection, transaction
+from tests._stored_format_fixtures import slayer_entry
 
 
 # --- Pure migrate() unit tests --------------------------------------------
@@ -285,6 +286,22 @@ async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch: pytest.
         assert loaded.meta == {"upgraded": True}
 
 
+def _dataset_document(base: Path, *, data_source: str, name: str) -> dict:
+    """The YAML store's dataset document declaring dataset ``name``, found by content."""
+    hits = [doc for p in sorted((base / "semantic_models" / data_source).glob("*.yaml"))
+            if isinstance(doc := yaml.safe_load(p.read_text(encoding="utf-8")), dict)
+            and (doc.get("dataset") or {}).get("name") == name]
+    assert len(hits) == 1, f"dataset document {name!r}: {len(hits)}"
+    return hits[0]
+
+
+def _assert_current(document: dict) -> None:
+    """An Ossie dataset document whose ``SLAYER`` entry, when present, is at the current payload version."""
+    assert document["version"] == "0.3.0.dev0"
+    entry = slayer_entry(document["dataset"])
+    assert entry is None or entry["version"] == 3
+
+
 async def test_yaml_round_trip_preserves_version() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
@@ -293,11 +310,9 @@ async def test_yaml_round_trip_preserves_version() -> None:
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
-        # And confirm it actually hit the file at the current version, in
-        # the v4 namespaced layout.
-        on_disk_path = Path(storage.models_dir) / "ds" / "orders.yaml"
-        on_disk = yaml.safe_load(await asyncio.to_thread(on_disk_path.read_text))
-        assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
+        # And confirm it hit the datasource folder as a current dataset document.
+        on_disk = await asyncio.to_thread(_dataset_document, Path(tmpdir), data_source="ds", name="orders")
+        _assert_current(on_disk)
 
 
 # --- v1 → v2 migration: dim+measure → columns + fields → measures ---------
@@ -629,13 +644,12 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
         assert [c.name for c in loaded.fields] == ["status", "revenue"]
         assert loaded.metrics == []
 
-        # Re-save and confirm current version on disk at the v4 path.
+        # Re-save and confirm a current dataset document on disk.
         await storage.save_dataset(loaded)
-        new_path = Path(models_dir) / "demo" / "orders.yaml"
-        on_disk = yaml.safe_load(await asyncio.to_thread(new_path.read_text))
-        assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert "fields" in on_disk
-        assert "dimensions" not in on_disk
+        on_disk = await asyncio.to_thread(_dataset_document, Path(tmpdir), data_source="demo", name="orders")
+        _assert_current(on_disk)
+        assert "fields" in on_disk["dataset"]
+        assert "dimensions" not in on_disk["dataset"]
 
 
 async def test_v1_sqlite_round_trip_to_v2() -> None:

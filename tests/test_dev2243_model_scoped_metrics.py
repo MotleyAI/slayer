@@ -557,9 +557,10 @@ async def test_a_document_dataset_metric_using_agg_is_kept_in_its_slayer_entry(s
     assert table(agg, REGION, "v") == table(ref, REGION, "v")
     doc = yaml.safe_load(await stored_text(shop))
     orders = _ds(doc, "orders")
-    assert [m["name"] for m in orders["metrics"]] == ["total_revenue"]
-    assert "rev_agg" not in yaml.safe_dump(without_extensions(orders))
-    assert any("rev_agg" in yaml.safe_dump(data) for data in slayer_entries(orders))
+    # Core holds the export's rendering; the metric's SLAYER entry restores the formula as written.
+    [rev_agg] = [m for m in orders["metrics"] if m["name"] == "rev_agg"]
+    assert rev_agg["expression"] == {"sql": "SUM(amount)"}
+    assert any("AGG(total_revenue)" in yaml.safe_dump(data) for data in slayer_entries(rev_agg))
     assert "rev_agg" not in yaml.safe_dump(slayer_entries(doc))
 
 

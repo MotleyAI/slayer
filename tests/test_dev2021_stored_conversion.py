@@ -29,7 +29,9 @@ from tests._stored_upgrade_fixtures import (
     memory_v2,
     orders_v10,
     query_backed_v10,
-    raw_doc,
+    raw_ossie,
+    assert_current,
+    source_queries,
     raw_store,
     region_join,
     regions_v10,
@@ -128,9 +130,9 @@ class TestDimension:
         assert again == model
         assert _conversion_warnings(caught, document="rev_by_tier", column="tier_label") != []
         await storage.save_dataset(model)
-        doc = await raw_doc(storage, "rev_by_tier")
-        assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
-        [stage] = doc["source_queries"]
+        doc = await raw_ossie(storage, "rev_by_tier")
+        assert_current(doc)
+        [stage] = source_queries(doc["dataset"])
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
         assert all("columns" not in e for e in stage.get("extensions") or [])
         async with owned_query_engine(storage=storage) as engine:

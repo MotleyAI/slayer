@@ -883,6 +883,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             compact=compact,
             inherited_errors=inherited_errors,
             model_metrics=await storage.list_model_scoped_metrics(datasource_name),
+            ignored=await storage.ignored_entities(datasource_name),
         )
 
     @tool()

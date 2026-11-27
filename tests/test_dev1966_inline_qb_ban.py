@@ -10,7 +10,6 @@ import tempfile
 from typing import Any, AsyncIterator, Dict
 
 import pytest
-import yaml
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
@@ -29,6 +28,7 @@ from tests._dev1966_fixtures import (
     rev_by_status_dataset,
     rows_by,
 )
+from tests._stored_format_fixtures import hand_edit_stage
 
 INLINE_QB: Dict[str, Any] = {
     "name": "iqb",
@@ -97,12 +97,7 @@ class TestStoredModelsReject:
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
             await storage.save_dataset(rev_by_status_dataset(), _validate=False)
-            path = storage._dataset_path("test", "rev_by_status")
-            with open(path) as fh:
-                raw = yaml.safe_load(fh)
-            raw["source_queries"][0]["population"] = INLINE_QB
-            with open(path, "w") as fh:
-                yaml.safe_dump(raw, fh)
+            hand_edit_stage(tmp, "rev_by_status", {"population": INLINE_QB}, reader="postgres")
             reloaded = YAMLStorage(base_dir=tmp)
             with pytest.raises(StoredDocumentLoadError, match="(?i)inline") as exc:
                 await reloaded.get_dataset("rev_by_status", data_source="test")

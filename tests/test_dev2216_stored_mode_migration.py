@@ -18,7 +18,8 @@ from tests._stored_upgrade_fixtures import (
     memory_v2,
     orders_v10,
     query_backed_v10,
-    raw_doc,
+    raw_ossie,
+    source_queries,
     raw_store,
     rev_query,
 )
@@ -130,5 +131,5 @@ class TestStorage:
         model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
         assert [s.to_many_handling for s in model.source_queries or []] == [mode]
-        (raw_stage,) = (await raw_doc(storage, "rev_q"))["source_queries"]
+        (raw_stage,) = source_queries((await raw_ossie(storage, "rev_q"))["dataset"])
         assert raw_stage.get("to_many_handling") == mode

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict
 
@@ -916,6 +917,21 @@ _HOOKS: dict[str, tuple[str, dict[str, str], Callable[[StorageBackend, SlayerDat
 }
 
 
+#: Hooks reached only for a 2.0 standalone dataset: a stored-format dataset is read and written without them.
+_STANDALONE_HOOKS = frozenset({"get_model", "update_column_sampled"})
+#: Hooks reached only on a store without the stored format: a built-in store's sample moves a 2.0 dataset into it.
+_NO_STORED_FORMAT = frozenset({"update_column_sampled"})
+
+
+async def _as_standalone(storage: YAMLStorage, dataset: SlayerDataset) -> None:
+    """Store ``dataset`` as a 2.0 standalone row instead of in its datasource model."""
+    await storage.delete_dataset(dataset.name, data_source=DS)
+    folder = os.path.join(storage.base_dir, "models", DS)
+    os.makedirs(folder, exist_ok=True)
+    data = dataset.model_copy(update={"semantic_model": None}).model_dump(mode="json", exclude_none=True)
+    Path(folder, f"{dataset.name}.yaml").write_text(yaml.safe_dump(data))
+
+
 async def _old_hook_reached(ctx: Ctx, *, old: str) -> Observed:
     new, keywords, call = _HOOKS[old]
     back = {o: n for n, o in keywords.items()}
@@ -926,14 +942,20 @@ async def _old_hook_reached(ctx: Ctx, *, old: str) -> Observed:
         return await getattr(YAMLStorage, new)(self, *args, **{back.get(k, k): v for k, v in kwargs.items()})
 
     plain_base, base = ctx.tmp_path / "plain", ctx.tmp_path / "hooks"
-    plain, _ = await seeded_shop(plain_base), await seeded_shop(base)
+    plain, hooked = await seeded_shop(plain_base), await seeded_shop(base)
     dataset = await plain.get_dataset("orders", data_source=DS)
     assert dataset is not None
-    backend = type("Backend1x", (YAMLStorage,), {old: hook})(base_dir=str(base))
+    if old in _STANDALONE_HOOKS:
+        for store in (plain, hooked):
+            assert isinstance(store, YAMLStorage)
+            await _as_standalone(store, dataset)
+    configured: dict[str, Any] = {"_supports_stored_format": lambda self: False} if old in _NO_STORED_FORMAT else {}
+    backend = type("Backend1x", (YAMLStorage,), {old: hook, **configured})(base_dir=str(base))
+    reference = type("Backend2x", (YAMLStorage,), configured)(base_dir=str(plain_base)) if configured else plain
     got = await call(backend, dataset)
     assert reached
     assert set(reached) == {old}
-    assert got == await call(plain, dataset)
+    assert got == await call(reference, dataset)
     return Observed()
 
 

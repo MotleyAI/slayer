@@ -116,30 +116,37 @@ def apply_dataset_entry(dataset: SlayerDataset, entry: Entry | None, *, notes: l
     if payload.default_time_dimension is None or dataset.get_field(payload.default_time_dimension) is not None:
         update["default_time_dimension"] = payload.default_time_dimension
     source = payload.source
-    if source != ext.SourceStructure():
+    written: tuple[int | None, ...] = ()
+    if source.source_kind is not None and entry.matched:
+        update["source_kind"] = source.source_kind
+    if source.model_copy(update={"source_kind": None}) != ext.SourceStructure():
         if not entry.matched:
             notes.append(ExtensionNote(kind="dataset", entity=dataset.name,
                                        message=f"dataset {dataset.name!r}: {STALE}; its source is the document's"))
         elif source.source_queries:
-            update.update(sql=None, sql_table=None, filters=[], query_variables=dict(source.query_variables),
+            update.update(sql=None, sql_table=None, filters=list(source.filters or []),
+                          query_variables=dict(source.query_variables),
                           source_queries=[SlayerQuery.model_validate(q) for q in source.source_queries])
+            written = tuple(q.get("version") if isinstance(q, dict) else None for q in source.source_queries)
         else:
-            update.update(sql_table=source.sql_table, sql=source.sql, filters=list(source.filters or []))
-    taken = {f.name.casefold() for f in dataset.fields} | {m.name.casefold() for m in dataset.metrics}
+            update.update(sql_table=source.sql_table, sql=source.sql, filters=list(source.filters or []),
+                          query_variables=dict(source.query_variables))
+    # Exact names: a case twin core cannot hold (a grandfathered collision) lives here, and is warned on load.
+    taken = {f.name for f in dataset.fields} | {m.name for m in dataset.metrics}
     fields = list(dataset.fields)
     for extra in payload.fields:
-        if extra.name.casefold() in taken:
+        if extra.name in taken:
             notes.append(ExtensionNote(kind="field", entity=extra.name, message=(
                 f"SLayer-only field {extra.name!r} collides with a declared name; ignored")))
             continue
-        taken.add(extra.name.casefold())
+        taken.add(extra.name)
         if (sql := payload.legacy_sql.get(extra.name)) is not None:
             extra = extra.model_copy(update={"expression": _dialect_only(sql, target=target)})
         fields.append(extra)
     update["fields"] = fields
     update["metrics"] = [*dataset.metrics, *payload.metrics]
     update["relationships"] = [*dataset.relationships, *payload.relationships]
-    return dataset.model_copy(update=update)
+    return dataset.model_copy(update=update).with_stage_versions(written)
 
 
 class Restored(BaseModel):

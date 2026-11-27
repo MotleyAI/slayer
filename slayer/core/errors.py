@@ -1572,6 +1572,32 @@ class NamespaceCollisionError(SlayerError):
         ))
 
 
+class ModelResolutionError(SlayerError):
+    """A split model document whose dataset documents do not resolve; ``files`` names every file involved."""
+
+    def __init__(self, *, model: str, files: Sequence[str], reasons: Sequence[str]) -> None:
+        self.model = model
+        self.files = list(files)
+        self.reasons = list(reasons)
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Semantic model {model!r} does not resolve:\n" + "\n".join(f"  - {r}" for r in self.reasons),
+        ))
+
+
+class UnreferenceableNameError(SlayerError):
+    """A save that adds a name SLayer cannot reference yet."""
+
+    def __init__(self, *, kind: str, name: str, reason: str) -> None:
+        self.kind = kind
+        self.name = name
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"The {kind} name {name!r} {reason}; SLayer cannot reference it yet, so it cannot be authored.",
+            suggestion="Choose a name of letters, digits and underscores.",
+        ))
+
+
 class SemanticModelsUnsupportedError(SlayerError):
     """A storage backend that does not implement the semantic-model hooks."""
 

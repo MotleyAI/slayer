@@ -29,8 +29,8 @@ from tests._ossie_vocabulary_fixtures import (
     shop_customers,
     shop_orders,
     shop_store,
-    stored_document,
 )
+from tests._stored_upgrade_fixtures import ossie_dataset, source_queries
 
 PRE_2_0_QUERY_KEYS = {"source_model", "measures", "filters", "formula", "column", "dimension", "joins",
                       "target_model", "model"}
@@ -129,8 +129,7 @@ async def test_a_nested_query_is_stored_in_ossie_keys(backend: str, tmp_path: Pa
          "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}], "filter": ["orders.amount > 0"],
          "order": [{"field": "total"}]}]})
     await storage.save_dataset(saved)
-    doc = stored_document(backend=backend, base=str(tmp_path), name="by_region")
-    [stage] = doc["source_queries"]
+    [stage] = source_queries(ossie_dataset(backend=backend, base=str(tmp_path), name="by_region"))
     assert_ossie_stage(stage)
 
 
