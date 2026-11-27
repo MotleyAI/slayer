@@ -291,7 +291,7 @@ def _node_dependencies(
     host = reachable.get(dataset_name)
     if host is None:
         return []
-    col = host.get_field(col_name, quoted=True)
+    col = host.get_field(col_name, exact=True)
     if col is None:
         return []
     return _field_dependencies(
@@ -695,7 +695,7 @@ def _dataset_reads(
                                              dialect=dialect):
             for name in path:
                 out.setdefault(name, set())
-            field = owner.get_field(leaf, quoted=True)
+            field = owner.get_field(leaf, exact=True)
             if field is not None and windowed_field(field, dialect=dialect):
                 out[owner.name].add(field.name)
     return out

@@ -242,7 +242,7 @@ class TestQualification:
         assert [d.field for d in _stage_of(model).dimensions or []] == ["upper(customers.Regions.label)"]
 
     async def test_a_quoted_hop_in_another_case_does_not_resolve(self, tmp_path, shop_ds) -> None:
-        storage = await _quoted_hop_store(tmp_path, shop_ds, written='customers."REGIONS".lbl')
+        storage = await _quoted_hop_store(tmp_path, shop_ds, written='customers."regions".lbl')
         with pytest.raises(StoredDocumentLoadError, match="does not resolve"):
             await storage.get_dataset("quoted_hop", data_source=DS)
 
@@ -257,7 +257,7 @@ class TestQualification:
     async def test_an_extension_column_reading_a_quoted_hop_in_another_case_does_not_resolve(
             self, tmp_path, shop_ds) -> None:
         storage = await _quoted_hop_store(tmp_path, shop_ds, written="customers.cl",
-                                          columns=({"name": "cl", "sql": 'lower("REGIONS".lbl)'},))
+                                          columns=({"name": "cl", "sql": 'lower("regions".lbl)'},))
         with pytest.raises(StoredDocumentLoadError, match="does not resolve"):
             await storage.get_dataset("quoted_hop", data_source=DS)
 

@@ -1079,7 +1079,7 @@ def _extension_field(dataset: SlayerDataset | None, name: str) -> DatasetField |
     """``dataset``'s query-local field or metric ``name``."""
     if dataset is None or name not in dataset.query_local_names:
         return None
-    return dataset.get_field(name, quoted=True) or dataset.get_metric(name, quoted=True)
+    return dataset.get_field(name, exact=True) or dataset.get_metric(name, exact=True)
 
 
 def _field_definition_refs(ref: _FramedRef, *, scope: QueryScope) -> list[_FramedRef]:

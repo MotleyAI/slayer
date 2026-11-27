@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, 
 from slayer.core.enums import TEMPORAL_DATATYPES, RelationshipCardinality, JoinType
 from slayer.core.errors import DefaultTimeDimensionTypeError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.names import normalized_name
 from slayer.core.query import DatasetExtension, OrderItem, QueryDimension, QueryMetric, SlayerQuery, map_filter
 from slayer.core.spine_names import TIME_SPINE_FIELD, TIME_SPINE_FIELD_TYPE, TIME_SPINE_DATASET
 from slayer.core.syntax import respell_path_heads, text_paths
@@ -72,8 +73,15 @@ class _SpineRespeller:
         self.found.add(spelling)
         return TIME_SPINE_DATASET
 
+    def quoted_name(self, spelling: str) -> Optional[str]:
+        """A quoted head in the spine's Ossie normalized form."""
+        if spelling != normalized_name(TIME_SPINE_DATASET) or self.keep(spelling):
+            return None
+        self.found.add(spelling)
+        return TIME_SPINE_DATASET
+
     def text(self, text: str) -> str:
-        return respell_path_heads(text, respell=self.name)
+        return respell_path_heads(text, respell=self.name, respell_quoted=self.quoted_name)
 
     def relationships(self, relationships: List[DatasetRelationship]) -> List[DatasetRelationship]:
         return [j.model_copy(update={"to": self.name(j.to) or j.to}) for j in relationships]

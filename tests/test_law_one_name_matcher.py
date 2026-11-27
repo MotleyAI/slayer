@@ -38,7 +38,7 @@ class TestContract:
             match_name(name="REVENUE", declared=DECLARED, quoted=False)
         assert sorted(err.value.candidates) == ["Revenue", "revenue"]
 
-    @pytest.mark.parametrize(("name", "expected"), [("amount", "amount"), ("Amount", None), ("REVENUE", None)])
+    @pytest.mark.parametrize(("name", "expected"), [("amount", "amount"), ("Amount", None), ("rEVENUE", None)])
     def test_quoted_names_match_exactly(self, name: str, expected: str | None) -> None:
         assert match_name(name=name, declared=DECLARED, quoted=True) == expected
 
