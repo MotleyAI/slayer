@@ -6,7 +6,7 @@
 
 A lightweight, open-source semantic layer by [MotleyAI](https://github.com/motleyai). Agents describe what data they want — metrics, dimensions, filters — and SLayer generates the SQL.
 
-[GitHub](https://github.com/MotleyAI/slayer) | [PyPI](https://pypi.org/project/motley-slayer/) | [Discord](https://discord.gg/egWxMctHCA)
+[GitHub](https://github.com/MotleyAI/slayer) | [PyPI](https://pypi.org/project/motley-slayer/)
 
 **Upgrading from 1.x?** See [Upgrading to 2.0](upgrading/2.0.md) for every breaking change and how to migrate.
 

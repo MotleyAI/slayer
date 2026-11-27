@@ -1,4 +1,4 @@
-version: 30
+version: 32
 name: regions
 sql_table: regions
 source_kind: table
