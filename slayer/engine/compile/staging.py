@@ -1,9 +1,8 @@
 """The one materialisation-staging pass (DEV-1800 D3).
 
 Assigns every ``ValueSlot`` in a plan exactly one ``Stage`` (which relation in
-the emitted pipeline it materialises in), a ``needs_field`` flag (must it be
-projected as a field for a later stage / consumer), and — for a transform —
-its ``series`` regime. Producer bodies are staged by their own compilation,
+the emitted pipeline it materialises in) and a ``needs_field`` flag (must it be
+projected as a field for a later stage / consumer). Producer bodies are staged by their own compilation,
 so this pass never recurses into them; it reads the
 attach plans only to classify placeholders and join-back keys.
 
@@ -25,12 +24,10 @@ from slayer.core.keys import (
     LiteralKey,
     TimeTruncKey,
     TRANSFORM_KINDS,
-    TransformKey,
     ValueKey,
     window_kwarg_of,
 )
 from slayer.engine.compile.projection import _iter_slot_deps
-from slayer.engine.compile.shift import _series_mode
 from slayer.ir.planned import (
     MaskEntry,
     MaskTyping,
@@ -59,16 +56,6 @@ def _placeholder_phases(
         for sub in attach.substitutions:
             target.add(sub.placeholder)
     return row, combined
-
-
-def _placeholder_to_original(
-    attach_plans: List[RegroupAttachPlan],
-) -> Dict[ValueKey, ValueKey]:
-    return {
-        sub.placeholder: sub.original_key
-        for attach in attach_plans
-        for sub in attach.substitutions
-    }
 
 
 class _SlotStager:
@@ -192,14 +179,13 @@ def stage_slots(
     projection: List[SlotId],
     grain: Optional[List[SlotId]],
 ) -> Tuple[List[ValueSlot], List[ValueSlot], List[ValueSlot]]:
-    """Return the three slot lists with ``stage`` / ``needs_field`` / ``series``
-    assigned. Producer bodies are staged separately; this pass classifies only
-    this plan's own slots."""
+    """Return the three slot lists with ``stage`` / ``needs_field`` assigned.
+    Producer bodies are staged separately; this pass classifies only this plan's
+    own slots."""
     all_slots = [*row_slots, *aggregate_slots, *combined_expression_slots]
     by_key: Dict[ValueKey, ValueSlot] = {s.key: s for s in all_slots}
     by_id: Dict[SlotId, ValueSlot] = {s.id: s for s in all_slots}
     row_ph, combined_ph = _placeholder_phases(regroup_attach_plans)
-    to_original = _placeholder_to_original(regroup_attach_plans)
 
     stager = _SlotStager(
         by_key=by_key, row_placeholders=row_ph, combined_placeholders=combined_ph,
@@ -214,32 +200,19 @@ def stage_slots(
     )
 
     return (
-        _assign(row_slots, stages=stages, needs_field=needs_field, to_original=to_original),
-        _assign(aggregate_slots, stages=stages, needs_field=needs_field, to_original=to_original),
-        _assign(combined_expression_slots, stages=stages, needs_field=needs_field,
-                to_original=to_original),
+        _assign(row_slots, stages=stages, needs_field=needs_field),
+        _assign(aggregate_slots, stages=stages, needs_field=needs_field),
+        _assign(combined_expression_slots, stages=stages, needs_field=needs_field),
     )
 
 
 def _assign(
-    slots: List[ValueSlot],
-    *,
-    stages: Dict[SlotId, Stage],
-    needs_field: Set[SlotId],
-    to_original: Dict[ValueKey, ValueKey],
+    slots: List[ValueSlot], *, stages: Dict[SlotId, Stage], needs_field: Set[SlotId],
 ) -> List[ValueSlot]:
-    out: List[ValueSlot] = []
-    for s in slots:
-        series: Optional[bool] = (
-            _series_mode(s.key.input, to_original=to_original)
-            if isinstance(s.key, TransformKey) else None
-        )
-        out.append(s.model_copy(update={
-            "stage": stages[s.id],
-            "needs_field": s.id in needs_field,
-            "series": series,
-        }))
-    return out
+    return [
+        s.model_copy(update={"stage": stages[s.id], "needs_field": s.id in needs_field})
+        for s in slots
+    ]
 
 
 def _direct_deps(slot: ValueSlot, *, by_key: Dict[ValueKey, ValueSlot]) -> List[ValueSlot]:

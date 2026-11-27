@@ -3,8 +3,7 @@ its phase (from the consumer position) and routing (from its resolved home)."""
 
 from __future__ import annotations
 
-from types import MappingProxyType
-from typing import Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
@@ -32,7 +31,6 @@ from slayer.core.keys import (
     window_kwarg_of,
 )
 from slayer.core.scope import DatasetScope
-from slayer.engine.compile.shift import _series_mode
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
     combined_kind,
@@ -74,8 +72,6 @@ class RootDisposition(BaseModel):
     #: metrics containing that root).
     consumer_public_names: Tuple[str, ...] = ()
     declared_type: Optional[DataType] = None
-    #: ``time_shift`` candidates only: shifts its materialised series.
-    series: Optional[bool] = None
 
 
 def _routes_reaggregation(k: ValueKey) -> bool:
@@ -118,8 +114,6 @@ class TransformRouting(BaseModel):
     route: bool = True
     in_place: frozenset = frozenset()
     rows_are_host_cells: bool = True
-    #: A spine plan: every ``time_shift`` reads a shifted producer over the moved spine bounds (Axiom 15).
-    spine: bool = False
 
 
 class _Walker:
@@ -129,10 +123,8 @@ class _Walker:
         self, *, prebound: PreboundQuery, scope: DatasetScope,
         bundle: ResolvedSourceBundle, homes: AggregateHomes,
         transforms: TransformRouting = TransformRouting(),
-        originals: Mapping[ValueKey, ValueKey] = MappingProxyType({}),
     ) -> None:
         self.out: List[RootDisposition] = []
-        self.originals = originals
         self.homes = homes
         n_grain = prebound.n_dims + prebound.n_time_dimensions
         self.classes = position_classes(prebound.declared_metrics, n_grain=n_grain)
@@ -166,20 +158,18 @@ class _Walker:
         )
 
     def routes(self, k: ValueKey) -> bool:
-        """Whether transform ``k`` evaluates in its own domain producer."""
+        """Whether transform ``k`` evaluates in its own domain producer; a ``time_shift`` reads its shifted producer."""
         # A dimensionless plan has one cell, the unit.
         if not (self.transforms.route and self.grain and is_transform(k)) or k in self.transforms.in_place:
             return False
-        if isinstance(k, TransformKey) and k.op == "time_shift" and not _series_mode(k.input, to_original=self.originals):
+        if isinstance(k, TransformKey) and k.op == "time_shift":
             return False
         return not (self.host_cells and self._over_host_cells(k))
 
     def emit(self, root: ValueKey, phase: RootPhase, routing: Routing, *,
-             names: Tuple[str, ...] = (), declared_type: Optional[DataType] = None,
-             series: Optional[bool] = None) -> None:
+             names: Tuple[str, ...] = (), declared_type: Optional[DataType] = None) -> None:
         d = RootDisposition(root=root, phase=phase, routing=routing,
-                            consumer_public_names=names, declared_type=declared_type,
-                            series=series)
+                            consumer_public_names=names, declared_type=declared_type)
         if d not in self.out:
             self.out.append(d)
 
@@ -287,8 +277,7 @@ class _Walker:
     ) -> None:
         k = n.key
         if isinstance(k, TransformKey) and k.op == "time_shift":
-            self.emit(k, "combined", "shifted",
-                      series=False if self.transforms.spine else _series_mode(k.input, to_original=self.originals))
+            self.emit(k, "combined", "shifted")
         kind = combined_kind(k, homes=self.homes)
         admitted = kind is not None and self.classes.combined_admits(n, position=position, root=root)
         if self.local_broadcasts(k):
@@ -326,11 +315,9 @@ def discover_roots(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
     scope: DatasetScope, bundle: ResolvedSourceBundle, homes: AggregateHomes,
     transforms: TransformRouting = TransformRouting(route=False),
-    originals: Mapping[ValueKey, ValueKey] = MappingProxyType({}),
 ) -> List[RootDisposition]:
-    """Every producer root of ``prebound``, one disposition per consumer occurrence, routed by its home; an attached
-    value's original from ``originals``."""
-    w = _Walker(prebound=prebound, scope=scope, bundle=bundle, homes=homes, transforms=transforms, originals=originals)
+    """Every producer root of ``prebound``, one disposition per consumer occurrence, routed by its home."""
+    w = _Walker(prebound=prebound, scope=scope, bundle=bundle, homes=homes, transforms=transforms)
     metric_typed = frozenset(
         i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.METRIC
     )

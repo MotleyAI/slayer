@@ -72,10 +72,6 @@ class AttachTable:
     def original(self, key: AttachedKey) -> ValueKey:
         return self.typings[key.attach].original
 
-    def originals_of(self, keys: Sequence[ValueKey]) -> Dict[ValueKey, ValueKey]:
-        """Each attached value ``keys`` read, to its original."""
-        return {k: self.original(k) for k in attached_reads(keys) if k.attach in self.typings}
-
     def edge(self, keys: Sequence[AttachedKey], *, phase: str) -> RegroupAttachPlan:
         """``keys`` (one producer's answers, joined alike) attached to their reader at ``phase``."""
         template = self.template(keys[0])

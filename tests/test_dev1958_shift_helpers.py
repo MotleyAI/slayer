@@ -1,5 +1,4 @@
-"""Design D10: ``shift_offset_of`` parses a time_shift key's offset once for planner
-and emitter; ``_series_mode`` has one definition in ``compile/shift.py``."""
+"""Design D10: ``shift_offset_of`` parses a time_shift key's offset once for planner and emitter."""
 
 from __future__ import annotations
 
@@ -8,7 +7,6 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.keys import FieldKey, TransformKey, shift_offset_of
-from slayer.engine.compile import shift, staging
 
 
 def _key(**kwargs) -> TransformKey:
@@ -36,7 +34,3 @@ class TestShiftOffsetOf:
         key = _key()
         with pytest.raises(ValueError, match="periods"):
             shift_offset_of(key)
-
-
-def test_series_mode_has_one_definition() -> None:
-    assert staging._series_mode is shift._series_mode
