@@ -166,7 +166,7 @@ class StoredDatasets(BaseModel):
         for exact in (True, False):
             for tier, declared in tiers:
                 try:
-                    found = match_name(name=token, declared=declared, quoted=exact)
+                    found = match_name(name=token, declared=declared, quoted=False, exact=exact)
                 except AmbiguousReferenceError:
                     return None
                 if found is not None:

@@ -166,3 +166,20 @@ async def probe_sqlite_integer_column(
             "probe sample saturated for %s.%s (>%d rows); cannot certify INT", table, column, PROBE_SCAN_CAP,
         )
     return verdict
+
+
+async def ingested_sqlite_type(
+    *, client: SqlClient, table: str, name: str, declared: DataType, schema: str | None = None,
+) -> DataType:
+    """The type SQLite ingestion gives column ``name`` declared ``declared``: a declared INTEGER refined by its stored
+    values, kept when the probe certifies nothing; any other declared type as is."""
+    if declared is not DataType.INTEGER or "." in name:
+        return declared
+    try:
+        verdict = await probe_sqlite_integer_column(client=client, table=table, column=name, schema=schema)
+    except (DatabaseUnavailable, AuthenticationRefused):
+        raise
+    except Exception as exc:
+        logger.warning("probe call raised for %s.%s; keeping declared INT: %s", table, name, exc)
+        return declared
+    return declared if verdict is None else verdict
