@@ -593,6 +593,19 @@ class UnsupportedServerFunctionError(QueryTypeError):
     """A library function the connected database cannot yet run with its portable meaning."""
 
 
+class TimeOfDayValueError(SlayerError):
+    """A result cell of a time-of-day column holding a value that is no time of day."""
+
+    def __init__(self, *, column: str, value: str) -> None:
+        self.column = column
+        self.value = value
+        super().__init__(
+            f"{type(self).__name__}: column {column!r} is a time of day (Time), but the database returned "
+            f"{value!r}, which is not one (00:00:00 to 23:59:59.999999). Fix the stored value, or type the field "
+            f"String."
+        )
+
+
 class UnreachableDefinitionError(SlayerError, ValueError):
     """A stored ``DatasetField.sql`` / ``DatasetField.filter`` / dataset filter naming a dataset no relationship path reaches from its dataset."""
 

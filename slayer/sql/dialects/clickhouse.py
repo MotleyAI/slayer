@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 from typing import Any, ClassVar, Optional
@@ -23,7 +23,8 @@ from slayer.core.keys import WindowKey
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity, TypeKind, kind_of
 from slayer.core.granularity import Granularity, bucket_type
 from slayer.core.json_path import JsonPath
-from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.errors import ServerVersionError
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.base import (
     AngleFn,
     NativeFn,
@@ -31,6 +32,7 @@ from slayer.sql.dialects.base import (
     LIST_POSITION,
     LIST_VALUE,
     PORTABLE_LIBRARY,
+    TIME_OF_DAY_TEXT,
     ExtremumFn,
     ListRelation,
     ServerProfile,
@@ -48,6 +50,8 @@ from slayer.sql.dialects.base import (
     literal_int,
     number_literal_text,
     pad_fill,
+    time_precision,
+    trimmed_fraction,
     zone_name,
 )
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
@@ -74,7 +78,8 @@ _NEVER_NULLABLE = (*exp.DataType.NESTED_TYPES, exp.DataType.Type.LOWCARDINALITY,
 
 
 _DECIMAL128_DIGITS, _DECIMAL256_DIGITS = 38, 76
-_TIME_OF_DAY_TYPES = frozenset({exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ})
+#: ``HH:MM`` text: ClickHouse would read it as minutes and seconds.
+_HOUR_MINUTE_TEXT = r"^[0-9]{2}:[0-9]{2}$"
 
 
 def _null_when_empty(quantile: Expression, *, value: Expression) -> Expression:
@@ -160,6 +165,9 @@ def _based_log(node: Expression) -> Expression:
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 _CORRELATED_MIN_VERSION = (25, 4, 0)
 _CORRELATED_DEFAULT_ON_VERSION = (25, 8, 0)
+_CH_TIME_SETTING = "enable_time_time64_type"
+_TIME_MIN_VERSION = (25, 6, 0)
+_TIME_DEFAULT_ON_VERSION = (25, 12, 0)
 _TIMEOUT_SETTING = "max_execution_time"
 # Reads, plus the settings SLayer sends with them.
 _READONLY_SETTING = "readonly"
@@ -207,19 +215,19 @@ def _exists_beside_array_join(statement: Expr) -> bool:
     )
 
 
-def _attach_ch_correlated_setting(ast: Expression) -> None:
-    """Force ``allow_experimental_correlated_subqueries = 1``, preserving other settings.
+def _attach_ch_setting(ast: Expression, name: str) -> None:
+    """Force ``name = 1``, preserving other settings.
 
     Any prior entry for this setting is dropped so a caller-supplied ``= 0`` can't leave
-    the correlated subquery emitted with the setting disabled.
+    the statement emitted with the setting disabled.
     """
     holder = _settings_holder(ast)
-    kept = [
-        s
-        for s in (holder.args.get("settings") or [])
-        if getattr(s.this, "name", None) != _CH_CORRELATED_SETTING
-    ]
-    holder.set("settings", [*kept, exp.var(_CH_CORRELATED_SETTING).eq(1)])
+    kept = [s for s in (holder.args.get("settings") or []) if getattr(s.this, "name", None) != name]
+    holder.set("settings", [*kept, exp.var(name).eq(1)])
+
+
+def _attach_ch_correlated_setting(ast: Expression) -> None:
+    _attach_ch_setting(ast, _CH_CORRELATED_SETTING)
 
 
 def _settings_holder(ast: Expression) -> Expression:
@@ -494,9 +502,9 @@ class ClickhouseDialect(SqlDialect):
         return exp.Round(this=exact, decimals=lit(digits))
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
-        """No time-of-day type (a ``TIME`` cast reads NULL); a ``DECIMAL`` rounds through a guard digit past its
-        precision, which Decimal256's 76 digits leave no room for at precision 76."""
-        if data_type.this in _TIME_OF_DAY_TYPES:
+        """No zoned time-of-day type; a ``DECIMAL`` rounds through a guard digit past its precision, which
+        Decimal256's 76 digits leave no room for at precision 76."""
+        if data_type.this is exp.DataType.Type.TIMETZ:
             return False
         parts = decimal_parts(data_type)
         if parts is not None and (parts[0] or 0) >= _DECIMAL256_DIGITS:
@@ -630,6 +638,80 @@ class ClickhouseDialect(SqlDialect):
         cast = exp.Anonymous(this="accurateCastOrNull", expressions=[as_text(value), lit(_spelled_type(to))])
         return _bool_as_int(cast, to)
 
+    time_of_day_parts: ClassVar[bool] = True
+    time_of_day_precision: ClassVar[Optional[int]] = 6
+    time_of_day_gated: ClassVar[bool] = True
+
+    def _time64(self, value: Expression, to: exp.DataType) -> Expression:
+        """``value`` as ``Time64(p)``, NULL kept: the type holds the fraction ``Time`` cannot."""
+        digits = time_precision(to)
+        return anon("accurateCastOrNull", value, lit(f"Time64({6 if digits is None else digits})"))
+
+    def build_time_literal(self, value: time) -> Expression:
+        return self._time64(lit(value.isoformat()), self.time_of_day_type())
+
+    def build_current_time(self) -> Expression:
+        return self._time64(self.build_current_timestamp(), self.time_of_day_type())
+
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """Text is read as a clock time: ``HH:MM`` gains its seconds, and ``TRY_CAST`` refuses a duration."""
+        if source is not None:
+            return self._time64(value, to)
+        text = as_text(value)
+        short = anon("match", text, lit(_HOUR_MINUTE_TEXT))
+        cast = self._time64(exp.If(this=short, true=anon("concat", text, lit(":00")), false=text.copy()), to)
+        if not try_:
+            return cast
+        return case((self.build_regexp_like(text, parse_regex(TIME_OF_DAY_TEXT), False), cast))
+
+    def build_time_text(self, value: Expression) -> Expression:
+        return trimmed_fraction(anon("toString", self._time64(value, self.time_of_day_type())))
+
+    def build_time_part(self, part: DatePart, expr: Expression) -> Expression:
+        """The part from the value's whole seconds: the date functions refuse a ``Time``."""
+        seconds = anon("toInt64", anon("floor", anon("toFloat64", expr)))
+        if part is DatePart.HOUR:
+            return anon("intDiv", seconds, lit(3600))
+        if part is DatePart.MINUTE:
+            return anon("intDiv", anon("modulo", seconds, lit(3600)), lit(60))
+        return anon("modulo", seconds, lit(60))
+
+    def time_setting_probe(self, profile: ServerProfile) -> Expression | None:
+        """Asked only where the setting exists and is not yet on by default."""
+        if not self.time_setting_needed(profile):
+            return None
+        return exp.select(anon("getSetting", exp.Literal.string(_CH_TIME_SETTING)))
+
+    def time_setting_needed(self, profile: ServerProfile) -> bool:
+        version = profile.version
+        return version is not None and _TIME_MIN_VERSION <= version < _TIME_DEFAULT_ON_VERSION
+
+    def time_of_day_refusal(self, profile: ServerProfile, *, construct: str) -> Optional[ServerVersionError]:
+        version = profile.version
+        if version is None or version < _TIME_MIN_VERSION:
+            detected = ("the server version could not be determined" if version is None
+                        else f"the server reports version {version[0]}.{version[1]}")
+            return ServerVersionError(
+                summary=f"{construct} is a time of day, which needs ClickHouse 25.6 or later; {detected}.",
+                suggestion="Upgrade the server to 25.6 or later.",
+            )
+        if not self.time_setting_needed(profile) or profile.time_types or profile.readonly not in (None, 1):
+            return None
+        level = ("the user's read-only level could not be determined" if profile.readonly is None
+                 else "the user is readonly = 1, which may not change it")
+        return ServerVersionError(
+            summary=f"{construct} is a time of day, which ClickHouse {version[0]}.{version[1]} runs only with the "
+            f"{_CH_TIME_SETTING} setting; it is off for this user, and {level}.",
+            suggestion=f"Enable {_CH_TIME_SETTING} in the user's settings profile, use readonly = 2, or upgrade the "
+            "server to 25.12 or later, where it is on by default.",
+        )
+
+    def attach_time_setting(self, statement: Expression) -> None:
+        if self.sends_time_setting:
+            _attach_ch_setting(statement, _CH_TIME_SETTING)
+
     def server_profile_sql(self) -> str | None:
         return "SELECT version(), getSetting('readonly')"
 
@@ -641,12 +723,14 @@ class ClickhouseDialect(SqlDialect):
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+        time_row: Sequence[Any] | None = None,
     ) -> ServerProfile:
         base = tuple(base_row or ())
         return ServerProfile(
             version=_parse_clickhouse_version(base[0]) if len(base) > 0 else None,
             readonly=_parse_readonly(base[1]) if len(base) > 1 else None,
             correlated_subqueries=_parse_bool_setting(correlated_row[0]) if correlated_row else None,
+            time_types=bool(_parse_bool_setting(time_row[0])) if time_row else False,
         )
 
     def timeout_permitted(self, profile: ServerProfile) -> bool:

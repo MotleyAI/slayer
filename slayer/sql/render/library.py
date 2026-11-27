@@ -89,7 +89,15 @@ def render_library_call(*, name: str, args: List[Expression], dialect: SqlDialec
         return dialect.build_json_value(args[0], parse_json_path(_text(args[1])), json_input(args[0], dialect=dialect))
     if name in REGEX_LIBRARY:
         return _render_regex(name=name, args=args, dialect=dialect)
+    if name == "current_time":
+        return _current_time(dialect)
     raise RuntimeError(f"library function {name!r} has no render path.")
+
+
+def _current_time(dialect: SqlDialect) -> Expression:
+    """Under a zone the stage's one clock reading in its wall clock, else the time of day of the database's ``now()``."""
+    now = dialect.zone_now if dialect.time_zone is not None else None
+    return dialect.build_current_time() if now is None else dialect.build_time_literal(now.time())
 
 
 def _split_part(args: List[Expression], *, dialect: SqlDialect) -> Expression:

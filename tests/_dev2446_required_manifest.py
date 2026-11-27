@@ -15,8 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
-    CastTypeError, ServerVersionError, UnknownFunctionError, UnknownMetricError,
-    UnsupportedServerFunctionError,
+    ServerVersionError, UnsupportedServerFunctionError,
 )
 from tests._ossie_gate import PASS, TIER1, Approx, Declared, Now, expand
 from tests._ossie_gate import gap as gap_state
@@ -24,8 +23,7 @@ from tests._ossie_gate import passes
 from tests._ossie_gate import refused as refused_state
 
 #: The issues that will add each family of missing constructs.
-TIME_OF_DAY = "DEV-2460"
-FAMILIES = frozenset({TIME_OF_DAY})
+FAMILIES: frozenset[str] = frozenset()
 
 Kind = Literal["scalar", "aggregate", "window", "reserved"]
 
@@ -124,8 +122,6 @@ OVER = "OVER (ORDER BY orders.amount)"
 JAN_15 = datetime.date(2024, 1, 15)
 JAN_15_1030 = datetime.datetime(2024, 1, 15, 10, 30)
 TEN_THIRTY = datetime.time(10, 30)
-#: Engines where ``CAST(… AS TIME)`` already answers outside strict.
-TIME_CASTS = frozenset({"duckdb", "postgres", "mysql", "tsql", "trino", "snowflake", "bigquery"})
 #: ISO numbering: row 3 is a Monday.
 DAYOFWEEK = 1
 #: The millisecond component of a whole-second timestamp.
@@ -208,10 +204,11 @@ ROWS: tuple[Row, ...] = (
     ok(NOW, "CURRENT_DATE", "CURRENT_DATE()", Now(kind="date")),
     ok(NOW, "CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP", Now(kind="timestamp")),
     ok(NOW, "CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP()", Now(kind="timestamp")),
-    gap(NOW, "CURRENT_TIME", "CURRENT_TIME", Now(kind="time"), issue=TIME_OF_DAY, fails_with=UnknownMetricError),
-    gap(NOW, "CURRENT_TIME", "CURRENT_TIME()", Now(kind="time"), issue=TIME_OF_DAY, fails_with=UnknownFunctionError),
+    ok(NOW, "CURRENT_TIME", "CURRENT_TIME", Now(kind="time")),
+    ok(NOW, "CURRENT_TIME", "CURRENT_TIME()", Now(kind="time")),
     *(ok(EXTRACTION, p, f"{p}({TS})", PARTS[p])
       for p in ("YEAR", "QUARTER", "MONTH", "DAY", "DAYOFYEAR", "HOUR", "MINUTE", "SECOND")),
+    ok(EXTRACTION, "HOUR", "HOUR(TIME '10:30:00')", 10),
     *(ok(ALT, f"EXTRACT({p})", f"EXTRACT({p} FROM {TS})", v) for p, v in PARTS.items()),
     *(ok(ALT, f"DATE_PART({p})", f"DATE_PART('{p.lower()}', {TS})", v) for p, v in PARTS.items()),
     *(ok(ALT, f"{fn}({p})", f"EXTRACT({p} FROM {TS})" if fn == "EXTRACT" else f"DATE_PART('{p.lower()}', {TS})", v)
@@ -224,12 +221,12 @@ ROWS: tuple[Row, ...] = (
     ok(ARITH, "DATEDIFF", "DATEDIFF(month, orders.order_date, DATE '2025-03-01')", 3),
     ok(BUILD, "DATE '2024-01-15'", "DATE '2024-01-15'", JAN_15),
     ok(BUILD, "TIMESTAMP_NTZ '2024-01-15 10:30:00'", "TIMESTAMP_NTZ '2024-01-15 10:30:00'", JAN_15_1030),
-    gap(BUILD, "TIME '10:30:00'", "TIME '10:30:00'", TEN_THIRTY, issue=TIME_OF_DAY, fails_with=ValueError),
+    ok(BUILD, "TIME '10:30:00'", "TIME '10:30:00'", TEN_THIRTY),
+    ok(BUILD, "TIME '10:30:00'", "TIME '10:30:00.123456'", datetime.time(10, 30, 0, 123456)),
     ok(BUILD, "CAST('2024-01-15' AS DATE)", "CAST('2024-01-15' AS DATE)", JAN_15),
     ok(BUILD, "CAST('2024-01-15 10:30:00' AS TIMESTAMP_NTZ)", "CAST('2024-01-15 10:30:00' AS TIMESTAMP_NTZ)",
        JAN_15_1030),
-    gap(BUILD, "CAST('10:30:00' AS TIME)", "CAST('10:30:00' AS TIME)", TEN_THIRTY, issue=TIME_OF_DAY,
-        fails_with=CastTypeError, holds_on=TIME_CASTS),
+    ok(BUILD, "CAST('10:30:00' AS TIME)", "CAST('10:30:00' AS TIME)", TEN_THIRTY),
     ok(BUILD, "TO_DATE", "TO_DATE('2024-01-15')", JAN_15),
     ok(BUILD, "TO_TIMESTAMP", "TO_TIMESTAMP('2024-01-15 10:30:00')", JAN_15_1030),
     ok(STRING, "CONCAT", "CONCAT(orders.status, '-', orders.note)", "pending-c"),
@@ -340,8 +337,7 @@ ROWS: tuple[Row, ...] = (
     ok(CAST, "CAST AS BOOLEAN", "CAST(0 AS BOOLEAN)", False),
     ok(CAST, "CAST AS DATE", "CAST('2024-01-15' AS DATE)", JAN_15),
     ok(CAST, "CAST AS TIMESTAMP", "CAST('2024-01-15 10:30:00' AS TIMESTAMP)", JAN_15_1030),
-    gap(CAST, "CAST AS TIME", "CAST('10:30:00' AS TIME)", TEN_THIRTY, issue=TIME_OF_DAY, fails_with=CastTypeError,
-        holds_on=TIME_CASTS),
+    ok(CAST, "CAST AS TIME", "CAST('10:30:00' AS TIME)", TEN_THIRTY),
     ok(CAST, "CAST AS VARCHAR", "CAST('abcdef' AS VARCHAR(3))", "abc"),
     ok(TRY_CAST, "TRY_CAST", "TRY_CAST('12' AS INTEGER)", 12),
     ok(TRY_CAST, "TRY_CAST", "TRY_CAST('x' AS INTEGER)", None),

@@ -17,7 +17,7 @@ in CI surfaces as a workflow failure, not a silent skip.
 import asyncio
 import math as _math
 import statistics
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 import tempfile
 from collections.abc import Iterator
 import uuid
@@ -2265,3 +2265,100 @@ class TestMySQLTimeZones:
         }))
         assert float(resp.data[0]["s"]) == sum(tz_amount(i) for i in TZ_ROWS), resp.sql
         assert _probe_count(mysql_no_tz_container) == probes
+
+
+# ---------------------------------------------------------------------------
+# Time of day (spec: queries/time-of-day): the driver returns a duration, and ``TIME`` also holds durations
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(params=["mysql", "mariadb"])
+def shifts_env(request: pytest.FixtureRequest) -> Iterator[SlayerQueryEngine]:
+    container = request.getfixturevalue(f"{request.param}_container")
+    db_name = _create_module_db(container)
+    conn = _admin_connect(container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            for table in ("shifts", "long_shifts"):
+                cur.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, starts_at TIME(6), label VARCHAR(20))")
+            cur.execute("INSERT INTO shifts VALUES (1, '09:30:00', 'a'), (2, '17:00:00.25', 'b'), (3, NULL, 'c')")
+            cur.execute("INSERT INTO long_shifts VALUES (1, '25:00:00', 'x'), (2, '-01:30:00', 'y')")
+    finally:
+        conn.close()
+    datasource = _ds_config(container, db_name).model_copy(update={"type": request.param})
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp())
+    run_sync(storage.save_datasource(datasource))
+    for table in ("shifts", "long_shifts"):
+        run_sync(storage.save_dataset(SlayerDataset(name=table, sql_table=table, data_source="testmysql", fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="starts_at", datatype=DataType.TIME),
+            DatasetField(name="label", datatype=DataType.STRING)])))
+    yield SlayerQueryEngine(storage=storage)
+    _drop_module_db(container, db_name)
+
+
+def _shift_query(**fields: Any) -> SlayerQuery:
+    return SlayerQuery.model_validate({"population": "shifts", **fields})
+
+
+async def _shift_value(engine: SlayerQueryEngine, expression: str) -> Any:
+    resp = await engine.execute(_shift_query(dimensions=[{"field": expression, "alias": "v"}], filter=["shifts.id = 1"]))
+    assert len(resp.data) == 1, resp.sql
+    return resp.data[0]["v"]
+
+
+@pytest.mark.integration
+class TestTimeOfDay:
+    async def test_a_time_column_is_a_time_of_day(self, shifts_env: SlayerQueryEngine) -> None:
+        rows = await shifts_env.execute(_shift_query(dimensions=["shifts.id", "shifts.starts_at"]))
+        ends = await shifts_env.execute(_shift_query(metrics=[{"metric": "min(shifts.starts_at)", "alias": "lo"},
+                                                              {"metric": "max(shifts.starts_at)", "alias": "hi"}]))
+        late = await shifts_env.execute(_shift_query(dimensions=["shifts.id"], filter=["shifts.starts_at >= '12:00'"]))
+        got = {int(r["shifts.id"]): r["shifts.starts_at"] for r in rows.data}
+        assert got == {1: time(9, 30), 2: time(17, 0, 0, 250000), 3: None}
+        assert all(v is None or type(v) is time for v in got.values()), got
+        assert ends.data == [{"lo": time(9, 30), "hi": time(17, 0, 0, 250000)}], ends.sql
+        assert [int(r["shifts.id"]) for r in late.data] == [2]
+
+    @pytest.mark.parametrize(("expression", "expected"), [
+        ("TIME '10:30:00'", time(10, 30)), ("TIME '10:30:00.123456'", time(10, 30, 0, 123456)),
+        ("CAST('10:30:00' AS TIME)", time(10, 30)), ("TRY_CAST('10:30:00' AS TIME)", time(10, 30)),
+        ("CAST(TIMESTAMP '2024-01-15 10:30:45' AS TIME)", time(10, 30, 45)),
+        ("TRY_CAST('25:00:00' AS TIME)", None), ("TRY_CAST('-01:00:00' AS TIME)", None),
+        ("TRY_CAST('bogus' AS TIME)", None),
+        ("TRY_CAST('10:30:00junk' AS TIME)", None), ("TRY_CAST('10:30:' AS TIME)", None),
+        ("TRY_CAST('1a:30' AS TIME)", None), ("TRY_CAST('10:30' AS TIME)", time(10, 30)),
+        ("TRY_CAST('10:30:45.5' AS TIME)", time(10, 30, 45, 500000)),
+        ("date_part('hour', shifts.starts_at)", 9), ("EXTRACT(MINUTE FROM shifts.starts_at)", 30),
+        ("SECOND(TIME '10:30:45')", 45), ("CAST(shifts.starts_at AS VARCHAR)", "09:30:00"),
+        ("CAST(TIME '10:30:00.5' AS VARCHAR)", "10:30:00.5"),
+    ])
+    async def test_a_construct(self, shifts_env: SlayerQueryEngine, expression: str, expected: Any) -> None:
+        got = await _shift_value(shifts_env, expression)
+        if isinstance(expected, int):
+            assert int(got) == expected
+            return
+        assert type(got) is type(expected), (got, expected)
+        assert got == expected
+
+    async def test_the_clock(self, shifts_env: SlayerQueryEngine) -> None:
+        resp = await shifts_env.execute(_shift_query(
+            dimensions=[{"field": "CURRENT_TIME", "alias": "ct"}, {"field": "current_time()", "alias": "fn"}]))
+        [row] = resp.data
+        assert type(row["ct"]) is time, row
+        assert row["ct"] == row["fn"], row
+
+    @pytest.mark.parametrize(("row", "stored"), [(1, "25:00:00"), (2, "-01:30:00")])
+    async def test_a_stored_duration_fails_the_query(self, shifts_env: SlayerQueryEngine, row: int, stored: str) -> None:
+        query = SlayerQuery.model_validate({
+            "population": "long_shifts", "dimensions": ["long_shifts.starts_at"],
+            "filter": [f"long_shifts.id = {row}"]})
+        with pytest.raises(core_errors.SlayerError) as info:
+            await shifts_env.execute(query)
+        assert "long_shifts.starts_at" in str(info.value)
+        assert stored in str(info.value)
+
+    async def test_time_columns_ingest_as_time(self, shifts_env: SlayerQueryEngine) -> None:
+        datasource = await shifts_env.storage.get_datasource("testmysql")
+        assert datasource is not None
+        datasets = await _ingest(datasource, include_tables=["shifts"])
+        assert {f.name: f.datatype for f in datasets[0].fields}["starts_at"] is DataType.TIME

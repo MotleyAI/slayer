@@ -176,6 +176,8 @@ from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
     build_response_metadata,
+    time_of_day_cells,
+    time_of_day_columns,
     projection_result_keys,
 )
 from slayer.sql.definitions import with_converted_sql
@@ -189,7 +191,7 @@ from slayer.ir.source_bundle import (
     dataset_from_stage_schema,
 )
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
-from slayer.engine.statement_reads import StatementReads, statement_reads
+from slayer.engine.statement_reads import StatementReads, statement_reads, time_of_day_construct
 from slayer.engine.binding import collect_bind_records
 from slayer.engine.elaborate_env import check_result_names_case, check_stage_flatten_collision, saved_date_only_notices
 from slayer.engine.extensions import with_own_extension
@@ -831,6 +833,8 @@ class _Prepared(BaseModel):
     resolved_data_source: Optional[str] = None
     attributes: Any
     expected_columns: List[str]
+    #: The result columns planned as a time of day.
+    time_columns: List[str] = PydanticField(default_factory=list)
     # The persisted datasets the statement reads (drift-attribution scope).
     touched: Set[str]
     # The elements of those datasets it reads (drift attribution).
@@ -840,7 +844,7 @@ class _Prepared(BaseModel):
     population: Optional[str] = None
     population_inferred: bool = False
     row_sources: List[str] = PydanticField(default_factory=list)
-    #: The SQL evaluates ``now()`` / ``current_date()``: its result must never be cached.
+    #: The SQL evaluates ``now()`` / ``current_date()`` / ``current_time()``: its result must never be cached.
     reads_clock: bool = False
     time_zone: Optional[str] = None
     #: The zones the statement converts between.
@@ -1122,8 +1126,23 @@ class SlayerQueryEngine:
         }
         return lambda scoped, column: present.get((scoped, column))
 
+    async def _time_of_day_dialect(
+        self, sql_dialect: SqlDialect, *, datasource: DatasourceConfig, construct: str,
+    ) -> SqlDialect:
+        """``sql_dialect`` for a statement with a time of day, on a database that gates one: refused where the
+        server or the user cannot run it, else carrying the profile and whether to send the time-type setting."""
+        try:
+            profile = await self.client_for(datasource).server_profile()
+        except Exception:  # noqa: BLE001 — an unreadable profile is refused like an unknown server; the next query re-probes
+            profile = ServerProfile()
+        refusal = sql_dialect.time_of_day_refusal(profile, construct=construct)
+        if refusal is not None:
+            raise refusal
+        return sql_dialect.model_copy(update={
+            "server_profile": profile, "sends_time_setting": sql_dialect.time_setting_needed(profile)})
+
     async def _render_dialect(
-        self, *, dialect: str, datasource: DatasourceConfig, planned_list,
+        self, *, dialect: str, datasource: DatasourceConfig, planned_list, bundle: ResolvedSourceBundle,
     ) -> "str | SqlDialect":
         """The datasource's own dialect (a MariaDB source renders through ``MariadbDialect``, not its sqlglot
         name's), carrying the server profile when rendering the plan reads it; an unreadable profile renders
@@ -1132,6 +1151,9 @@ class SlayerQueryEngine:
         if sql_dialect.sqlglot_name != dialect:
             sql_dialect = get_dialect(dialect)
         check_library_support(sql_dialect, planned_keys(planned_list))
+        construct = time_of_day_construct(plans=planned_list, bundle=bundle) if sql_dialect.time_of_day_gated else None
+        if construct is not None:
+            return await self._time_of_day_dialect(sql_dialect, datasource=datasource, construct=construct)
         if not sql_dialect.profile_needed(planned_keys(planned_list)):
             return sql_dialect
         try:
@@ -1507,6 +1529,7 @@ class SlayerQueryEngine:
             resolved_data_source=datasource.name,
             attributes=attributes,
             expected_columns=list(expected_columns),
+            time_columns=time_of_day_columns(root_planned=root_planned),
             touched=rendered.reads,
             reads=rendered.element_reads,
             dataset=rendered.dataset,
@@ -1668,7 +1691,8 @@ class SlayerQueryEngine:
 
         # Plan the DAG (root last) and compose the whole chain as one statement.
         planned_list = plan_stages(queries=[*normed_named.values(), query], bundle=bundle)
-        render_dialect = await self._render_dialect(dialect=dialect, datasource=datasource, planned_list=planned_list)
+        render_dialect = await self._render_dialect(
+            dialect=dialect, datasource=datasource, planned_list=planned_list, bundle=bundle)
         with collect_stale_spellings() as render_stale_spellings, collect_zone_warnings() as zone_warnings:
             built = build_planned_statement(
                 planned_list, bundle=bundle, dialect=render_dialect,
@@ -2113,7 +2137,7 @@ class SlayerQueryEngine:
         rows = get_dialect(prepared.dialect).decode_result_keys(
             result.rows, aliases=prepared.expected_columns,
         )
-        return result.model_copy(update={"rows": rows})
+        return result.model_copy(update={"rows": time_of_day_cells(rows, columns=prepared.time_columns)})
 
     async def _scan_one_table_values(
         self,
@@ -2519,8 +2543,11 @@ class SlayerQueryEngine:
         }), datasource=datasource)
         planned = plan_stages(queries=[probe_query], bundle=bundle)
         root = planned[-1]
+        render_dialect = await self._render_dialect(
+            dialect=dialect, datasource=datasource, planned_list=planned, bundle=bundle,
+        )
         built = build_planned_statement(
-            planned, bundle=bundle, dialect=dialect,
+            planned, bundle=bundle, dialect=render_dialect,
             projection_aliases=projection_result_keys(root_planned=root), type_probe=True,
         )
         return built, dialect, root

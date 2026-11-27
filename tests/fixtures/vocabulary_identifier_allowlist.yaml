@@ -310,6 +310,7 @@ carve_outs:
   - {name: columns, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
   - {name: create_model_from_query, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
   - {name: create_model_from_query_sync, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: time_columns, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
   - {name: delete_model_by_name, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
   - {name: detect_join_cardinality, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
   - {name: edit_model_remove, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
@@ -325,6 +326,8 @@ carve_outs:
   - {name: column, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
   - {name: expected_columns, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
   - {name: measures, file: slayer/engine/response_meta.py, reason: "deprecated twin until 3.0"}
+  - {name: columns, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
+  - {name: time_of_day_columns, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
   - {name: from_columns, file: slayer/engine/stage_edges.py, reason: "Ossie's own wire name"}
   - {name: column_pairs, file: slayer/facade/catalog.py, reason: "Ossie's own wire name"}
   - {name: join_type, file: slayer/facade/catalog.py, reason: "SQL JOIN as an operation"}
@@ -419,6 +422,12 @@ carve_outs:
   - {name: collect_model_entity_pairs, file: slayer/search/render.py, reason: "deprecated twin until 3.0"}
   - {name: _model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
   - {name: model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
+  - {name: ColumnSource, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _every_column, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _listed_column, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _one_column, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column_sources, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: Columns, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: ColumnsFor, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: PercentileColumns, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}

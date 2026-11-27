@@ -368,6 +368,17 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     json_db_types: ClassVar[frozenset[str]] = frozenset()
     like_brackets: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
+    # A bare ``TIME`` is ``TIME(7)`` here.
+    time_of_day_precision: ClassVar[Optional[int]] = 6
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """Trailing zeros leave through spaces: ``TRIM(TRAILING …)`` needs SQL Server 2022."""
+        text = exp.Cast(this=exp.Cast(this=value, to=self.time_of_day_type()), to=exp.DataType.build("VARCHAR(15)"))
+        spaced = anon("RTRIM", anon("REPLACE", text, lit("0"), lit(" ")))
+        kept = anon("REPLACE", spaced, lit(" "), lit("0"))
+        whole = anon("LEFT", kept, exp.Sub(this=anon("LEN", kept), expression=lit(1)))
+        return case((exp.EQ(this=anon("RIGHT", kept, lit(1)), expression=lit(".")), whole), default=kept.copy())
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"CONCAT_WS", "PI", "GREATEST", "LEAST"})
 
     def rewrite_window_key(self, key: WindowKey) -> ValueKey:
@@ -403,6 +414,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+        time_row: Sequence[Any] | None = None,
     ) -> ServerProfile:
         major = base_row[0] if base_row else None
         try:

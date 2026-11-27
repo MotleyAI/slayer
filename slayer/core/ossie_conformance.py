@@ -64,9 +64,7 @@ FRAME_BOUND_ORDER = {"unbounded preceding": 0, "preceding": 1, "current row": 2,
                      "unbounded following": 4}
 #: ``CAST`` target types Ossie defines (the first word of the written type).
 OSSIE_CAST_TYPES = frozenset({"VARCHAR", "STRING", "INTEGER", "INT", "BIGINT", "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE",
-                              "BOOLEAN", "DATE", "TIMESTAMP", "TIMESTAMP_NTZ"})
-#: Bare Ossie keywords SLayer cannot evaluate yet (the time-of-day type comes with DEV-2282).
-UNSUPPORTED_OSSIE_KEYWORDS = frozenset({"current_time"})
+                              "BOOLEAN", "DATE", "TIME", "TIMESTAMP", "TIMESTAMP_NTZ"})
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _ISO_TIME = re.compile(r"[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?")
 _ISO_ZONE = re.compile(r"Z|[+-]\d{2}:?\d{2}")
@@ -211,8 +209,6 @@ def _operator(node: Any, out: FilterReading, allowed: frozenset[str], operands: 
 def _reference_node(node: Any, out: FilterReading) -> None:
     if node.evaluated:
         _refuse(out, "AGG(…) is reserved to model-scoped metrics")
-    if isinstance(node, Ref) and not node.quoted and node.name.lower() in UNSUPPORTED_OSSIE_KEYWORDS:
-        _refuse(out, f"{node.name} is not supported yet")
     out.references.append(node)
 
 
@@ -327,7 +323,7 @@ def _string_literals(node: Any) -> List[str]:
     if isinstance(node, Literal) and isinstance(node.value, str):
         return [node.value]
     if isinstance(node, TupleLit):
-        return [e.value for e in node.elements if isinstance(e.value, str)]
+        return [e.value for e in node.elements if isinstance(e, Literal) and isinstance(e.value, str)]
     if isinstance(node, BoundVariable):
         return [v for v in node.values if isinstance(v, str)]
     return []

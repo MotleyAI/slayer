@@ -9,7 +9,7 @@ import os
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, time
 from decimal import Decimal
 from functools import partial
 from typing import Any, Callable, Dict, Final, List, Mapping, Optional, Tuple, TypeGuard, cast
@@ -65,7 +65,7 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
-from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, DIGITS_SCALARS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, integer_valued, list_valued, numeric_valued, WindowFrameSpec, WindowKey, SPINE_TOKEN
+from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, DIGITS_SCALARS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, integer_valued, list_valued, numeric_valued, WindowFrameSpec, WindowKey, SPINE_TOKEN, value_type
 from slayer.core.relationship_walker import (
     canonical_token,
     observe_read,
@@ -109,7 +109,7 @@ from slayer.core.time_zones import check_bucketed_zones
 from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params, check_percentile_fraction
 from slayer.core.query import TimeDimension
 from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
-from slayer.core.time_points import is_time_point, parse_temporal_value
+from slayer.core.time_points import TIME_OF_DAY_FORMS, is_time_point, parse_temporal_value, parse_time_of_day
 from slayer.core.time_zones import CIVIL
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -711,7 +711,10 @@ def _bind_leaf(
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
     if isinstance(parsed, TemporalLiteral):
-        return LiteralKey(value=_temporal_literal_value(parsed))
+        value = _temporal_literal_value(parsed)
+        if isinstance(value, time):
+            bundle_dialect(bundle).time_of_day_type()  # refused where the database has no time of day
+        return LiteralKey(value=value)
     if isinstance(parsed, StarSource):
         return _bare_star(scope=scope)
     if not isinstance(parsed, (Ref, DottedRef)):
@@ -787,7 +790,15 @@ def _with_hint(error: UnknownReferenceError, *, hint: str) -> UnknownReferenceEr
 
 
 def _temporal_literal_value(parsed: TemporalLiteral):
-    """A ``DATE '…'`` / ``TIMESTAMP '…'`` literal's value, checked like an ISO literal in a date position."""
+    """A ``DATE '…'`` / ``TIMESTAMP '…'`` / ``TIME '…'`` literal's value, checked like an ISO literal in its position."""
+    if parsed.kind == "time":
+        moment = parse_time_of_day(parsed.text)
+        if moment is None:
+            raise TimeLiteralError(
+                summary=f"TIME '{parsed.text}' is not a valid time literal.",
+                suggestion=f"write a time of day: {TIME_OF_DAY_FORMS}.",
+            )
+        return moment
     value = parse_temporal_value(parsed.text)
     if parsed.kind == "date" and isinstance(value, datetime):
         value = None
@@ -822,13 +833,44 @@ def _bind_cast(
         raise CastTypeError(summary=str(e), suggestion="cast to a type this database has.") from None
     data_type, element_type = cast_slayer_type(parsed.type_text, dialect=bundle.dialect)
     field_type = scope_field_type(scope=scope, bundle=bundle)
+    temporal_source = _time_cast_source(parsed, source=source, data_type=data_type, field_type=field_type)
     if parsed.try_ and data_type in NUMERIC_DATATYPES and boolean_valued(source, field_type=field_type):
         source = CastKey(source=source, type_text="INT", data_type=DataType.INTEGER)  # a boolean reads as its 1 / 0
     return CastKey(
         source=source, type_text=parsed.type_text, data_type=data_type, try_=parsed.try_,
         element_type=element_type,
         numeric_source=_cast_source(source, field_type=field_type),
+        temporal_source=temporal_source,
     )
+
+
+#: What converts to a time of day: text (or an untyped value), a timestamp, a time of day.
+_TIME_CAST_SOURCES = frozenset({DataType.STRING, DataType.DATETIME, DataType.DATETIME_TZ, DataType.TIME, DataType.OPAQUE})
+
+
+def _time_cast_source(
+    parsed: Cast, *, source: ValueKey, data_type: DataType, field_type: FieldTypeFn,
+) -> Optional[DataType]:
+    """The source type a cast to or from a time of day converts by (``None``: text, or no time of day involved);
+    refuses a source that names no time of day, and a time of day cast to anything but text."""
+    source_type = value_type(source, field_type=field_type)
+    written = canonical_metric_text(parsed)
+    if data_type is DataType.TIME:
+        if source_type is not None and source_type not in _TIME_CAST_SOURCES:
+            raise CastTypeError(
+                summary=f"`{written}` casts a {source_type.value} value to a time of day.",
+                suggestion="cast text ('HH:MM:SS'), a timestamp or a time of day.",
+            )
+        return source_type if source_type in (DataType.DATETIME, DataType.DATETIME_TZ, DataType.TIME) else None
+    if source_type is not DataType.TIME:
+        return None
+    if data_type is not DataType.STRING:
+        raise CastTypeError(
+            summary=f"`{written}` casts a time of day (Time) to {parsed.type_text}.",
+            suggestion="a time of day casts to TIME or to a character type; read its parts with hour(), minute() "
+            "and second().",
+        )
+    return DataType.TIME
 
 
 def _reject_placeholders(parsed: ParsedExpr, *, text: Optional[str] = None) -> None:
@@ -902,7 +944,8 @@ def _bind_in(
         )
     field = _bind(parsed.left, **ctx)
     values = tuple(
-        LiteralKey(value=normalize_scalar(elt.value))
+        LiteralKey(value=_temporal_literal_value(elt) if isinstance(elt, TemporalLiteral)
+                   else normalize_scalar(elt.value))
         for elt in parsed.right.elements
     )
     # SQL three-valued logic makes NULL in the list a silent trap:

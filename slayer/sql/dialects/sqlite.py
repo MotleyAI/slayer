@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from calendar import monthrange
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Context, Decimal
 from functools import lru_cache
@@ -27,7 +27,7 @@ from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath
 from slayer.core.like_pattern import LikePattern, LikeWildcard, parse_like
 from slayer.core.regex_pattern import RegexGroupRef, RegexPattern, RegexReplacement, parse_replacement
-from slayer.core.time_points import parse_temporal_value
+from slayer.core.time_points import parse_temporal_value, parse_time_of_day
 from slayer.core.time_zones import from_zone
 from slayer.sql.dialects.base import (
     COMPARISON_NODES,
@@ -51,8 +51,11 @@ from slayer.sql.dialects.base import (
     iso_text,
     lit,
     slayer_type_of,
+    time_precision,
+    trimmed_fraction,
     zone_name,
 )
+from slayer.sql.column_sources import ColumnSource
 from slayer.sql.dialects.patterns import PYTHON, RegexFlavour, like_text
 from slayer.sql.dialects.reflection import (
     CatalogConnection,
@@ -65,6 +68,7 @@ from slayer.sql.dialects.reflection import (
     column_from_sa_type,
     fetch,
     keys_of_reads,
+    time_of_day_type,
 )
 
 # Rows sampled to certify integers; a sample of ``PROBE_SCAN_CAP + 1`` rows is saturated.
@@ -453,6 +457,34 @@ def _slayer_timestamp_text(value) -> Optional[str]:
     return None if moment is None else moment.isoformat(sep=" ", timespec="microseconds")
 
 
+def _time_text(value: time) -> str:
+    """The canonical text of a time of day: ``HH:MM:SS.ffffff``."""
+    return value.isoformat(timespec="microseconds")
+
+
+def _slayer_time_text(value):
+    """Stored time-of-day text in its canonical form; any other value as stored."""
+    moment = parse_time_of_day(value) if isinstance(value, str) else None
+    return value if moment is None else _time_text(moment)
+
+
+def _slayer_time_cast(value, precision):
+    """Time-of-day or timestamp text as canonical time-of-day text rounded to ``precision`` digits, else NULL."""
+    if not isinstance(value, str):
+        return None
+    moment = parse_time_of_day(value)
+    if moment is None:
+        stamp = _parse_sqlite_temporal(value.strip())
+        if stamp is None or len(value.strip()) == 10:
+            return None
+        moment = stamp.time()
+    unit = 10 ** (6 - int(precision))
+    micros = (round(moment.microsecond / unit) * unit) if unit > 1 else moment.microsecond
+    # Rounding past the last microsecond of a second carries; past the day it stays at its last instant.
+    carried = datetime.combine(date.min, moment.replace(microsecond=0)) + timedelta(microseconds=micros)
+    return _time_text(carried.time() if carried.date() == date.min else moment.replace(microsecond=1_000_000 - unit))
+
+
 #: The zone-conversion function (queries/time-zones).
 CONVERT_TZ_FUNCTION = "slayer_convert_tz"
 
@@ -737,6 +769,8 @@ _SCALAR_UDFS: tuple[tuple[str, int, Callable[..., Any], bool], ...] = (
     ("power", 2, _pow, False),
     ("slayer_date_add", 3, _slayer_date_add, False),
     ("slayer_timestamp_text", 1, _slayer_timestamp_text, True),
+    ("slayer_time_text", 1, _slayer_time_text, True),
+    ("slayer_time_cast", 2, _slayer_time_cast, True),
     (CONVERT_TZ_FUNCTION, 3, _slayer_convert_tz, True),
     ("slayer_try_cast", 2, _slayer_try_cast, False),
     ("slayer_try_cast", 3, _slayer_try_integer, False),
@@ -957,6 +991,34 @@ class SqliteDialect(SqlDialect):
             for i, name in enumerate(columns)
         }
 
+    def declared_types_select(self, sources: Sequence[ColumnSource]) -> Expression | None:
+        """The declared type of each plain column read: a stored time of day is text to the census."""
+        name, declared = (exp.column(exp.to_identifier(c, quoted=True)) for c in ("name", "type"))
+        selects = []
+        for source in sources:
+            # No schema: SQLite resolves the table as the statement does.
+            schema = [] if source.schema_name is None else [lit(source.schema_name)]
+            columns = exp.Table(this=anon("pragma_table_xinfo", lit(source.table), *schema))
+            if source.result is None or source.column is None:
+                selects.append(exp.select(name.copy(), declared.copy()).from_(columns))
+                continue
+            same = exp.EQ(this=exp.Lower(this=name.copy()), expression=lit(source.column.lower()))
+            selects.append(exp.select(lit(source.result).as_("name"), declared.copy()).from_(columns).where(same))
+        if not selects:
+            return None
+        query = selects[0]
+        for select in selects[1:]:
+            query = exp.union(query, select, distinct=False)
+        return query
+
+    def declared_result_types(self, rows: Sequence[Sequence[Any]]) -> dict[str, ResultColumnType]:
+        """A result's time-of-day type when every column it may read declares that type; else the census decides."""
+        found: dict[str, set[DataType | None]] = {}
+        for result, declared in rows:
+            found.setdefault(str(result), set()).add(time_of_day_type(str(declared or "")))
+        agreed = {result: next(iter(kinds)) for result, kinds in found.items() if len(kinds) == 1}
+        return {result: ResultColumnType(type=kind) for result, kind in agreed.items() if kind is not None}
+
     regex_flavour: ClassVar[Optional[RegexFlavour]] = PYTHON
     json_db_types: ClassVar[frozenset[str]] = frozenset()
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
@@ -1078,8 +1140,10 @@ class SqliteDialect(SqlDialect):
         return anon("JSON_TYPE", value, text), anon("JSON_EXTRACT", value, text)
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
-        """No time-of-day type, and a timestamp only unzoned and without precision: SQLite keeps none of them."""
+        """A time of day only unzoned, and a timestamp only unzoned and without precision: SQLite keeps no other."""
         t = data_type.this
+        if t is exp.DataType.Type.TIME:
+            return (time_precision(data_type) or 0) <= 6
         if t in exp.DataType.TEMPORAL_TYPES and t not in _DATE_CAST_TYPES:
             return t in _PLAIN_TIMESTAMP_CASTS and not data_type.expressions
         return super().cast_type_supported(data_type)
@@ -1090,6 +1154,29 @@ class SqliteDialect(SqlDialect):
         if to.this in _PLAIN_TIMESTAMP_CASTS or to.is_type(exp.DataType.Type.BOOLEAN):
             return self.build_try_cast(value, to)
         return super().build_cast(value, to)
+
+    time_of_day_parts: ClassVar[bool] = True
+    rounds_time_precision: ClassVar[bool] = True
+
+    def build_time_literal(self, value: time) -> Expression:
+        """A time of day lives in canonical ISO text here."""
+        return lit(_time_text(value))
+
+    def build_current_time(self) -> Expression:
+        return anon("slayer_time_cast", self.build_current_timestamp(), lit(6))
+
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """Converts as ``TRY_CAST`` does: text that names no time of day is NULL."""
+        digits = time_precision(to)
+        return anon("slayer_time_cast", as_text(value), lit(6 if digits is None else digits))
+
+    def build_time_text(self, value: Expression) -> Expression:
+        return trimmed_fraction(value)
+
+    def read_time_of_day(self, column: Expression) -> Expression:
+        return anon("slayer_time_text", column)
 
     def build_decimal_cast(
         self, value: Expression, to: exp.DataType, *, precision: int, scale: int, source: Optional[DataType],

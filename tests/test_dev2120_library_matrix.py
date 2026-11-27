@@ -19,6 +19,7 @@ from tests._dev2120_fixtures import (
     Case,
     contractors_engine,
     emit_contractors,
+    patch_profile,
     emit_lib,
     lib_engine,
     library_cases,
@@ -81,7 +82,9 @@ async def test_executes(engine, case: Case) -> None:
 
 @pytest.mark.parametrize("dialect", TIER1)
 @pytest.mark.parametrize("case", CASES, ids=CASE_IDS)
-async def test_emits(case: Case, dialect: str) -> None:
+async def test_emits(monkeypatch: pytest.MonkeyPatch, case: Case, dialect: str) -> None:
+    if dialect == "clickhouse":
+        patch_profile(monkeypatch, version=(25, 12, 0))  # a time of day needs a known server
     refused = REFUSED_FUNCTIONS.get(dialect, frozenset()) & set(case.covers)
     query = case.query()
     if not refused:

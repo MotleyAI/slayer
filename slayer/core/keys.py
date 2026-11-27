@@ -7,7 +7,7 @@ the same slot. Keys carry only what's needed to decide "are these the same slot?
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from enum import IntEnum
 from types import MappingProxyType
@@ -186,6 +186,7 @@ SCALAR_SPECS: Mapping[str, ScalarSpec] = MappingProxyType({
     "interval": _spec(2, 2, sql=False),  # parse-time spelling of date_add
     "current_date": _spec(0, 0, sql=False, ossie=(0,)),
     "now": _spec(0, 0, sql=False),
+    "current_time": _spec(0, 0, sql=False, result=DataType.TIME, ossie=(0,)),
 })
 
 SCALAR_FUNCTIONS: frozenset[str] = frozenset(SCALAR_SPECS)
@@ -238,7 +239,7 @@ SCALAR_PASSTHROUGH: frozenset[str] = frozenset(
 # Scalars whose second argument is a count of fractional digits.
 DIGITS_SCALARS: frozenset[str] = frozenset({"round", "trunc"})
 # Scalars whose value depends on when the query runs.
-CLOCK_FUNCTIONS: frozenset[str] = frozenset({"current_date", "now"})
+CLOCK_FUNCTIONS: frozenset[str] = frozenset({"current_date", "now", "current_time"})
 # Date scalars taking a closed unit word: (position of the unit argument, its vocabulary).
 DATE_UNIT_ARGS: Mapping[str, tuple[int, type[DatePart] | type[TimeGranularity]]] = MappingProxyType({
     "date_part": (0, DatePart),
@@ -284,7 +285,7 @@ class Phase(IntEnum):
     POST = 2
 
 
-Scalar = Union[Decimal, str, bool, None, datetime, date]
+Scalar = Union[Decimal, str, bool, None, datetime, date, time]
 
 
 def normalize_scalar(value):
@@ -298,7 +299,7 @@ def normalize_scalar(value):
         return value
     if value is None:
         return None
-    if isinstance(value, (Decimal, date)):
+    if isinstance(value, (Decimal, date, time)):
         return value
     if isinstance(value, int):
         return Decimal(value)
@@ -308,7 +309,7 @@ def normalize_scalar(value):
         return value
     raise TypeError(
         f"Cannot normalize scalar of type {type(value).__name__!r}: "
-        f"only int/float/Decimal/str/bool/None/date/datetime are accepted (got {value!r})."
+        f"only int/float/Decimal/str/bool/None/date/datetime/time are accepted (got {value!r})."
     )
 
 
@@ -381,6 +382,8 @@ def _typed_leaf(v):
         return ("__timestamp__", v)
     if isinstance(v, date):
         return ("__date__", v)
+    if isinstance(v, time):
+        return ("__time__", v)
     return ("__key__", v)
 
 
@@ -796,7 +799,7 @@ class ArithmeticKey(_FrozenKey, frozen=True):
         )
 
 
-_ScalarCallArg = Union["ValueKey", Decimal, str, bool, None, datetime, date]
+_ScalarCallArg = Union["ValueKey", Decimal, str, bool, None, datetime, date, time]
 
 
 def _arg_phase(arg) -> Optional[Phase]:
@@ -957,6 +960,8 @@ class CastKey(_FrozenKey, frozen=True):
     try_: bool = False
     element_type: Optional[DataType] = None
     numeric_source: Optional[DataType] = None
+    #: Where a time of day is cast to or from: the source's type when a timestamp or a time of day.
+    temporal_source: Optional[DataType] = None
 
     @property
     def phase(self) -> Phase:
@@ -2159,6 +2164,8 @@ def literal_type(value: object) -> Optional[DataType]:
         return DataType.DATETIME
     if isinstance(value, date):
         return DataType.DATE
+    if isinstance(value, time):
+        return DataType.TIME
     return None
 
 
