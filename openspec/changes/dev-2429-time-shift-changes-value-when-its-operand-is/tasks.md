@@ -1,10 +1,10 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 Add `tests/test_dev2429_moved_frame_shift.py`: the moved-frame seed (orders → customers, North 2023-12 20, 2024-01-10 30, 2024-02 40, 2024-04 30, 2024-05 5, 2024-06 7) and one executed test per scenario of "time_shift evaluates its operand in the moved frame" on SQLite and DuckDB; verify each fails on the current code for the documented reason (or passes where today's value is already right, e.g. plain `time_shift(sum, -1)`)
-- [ ] 1.2 Cover moved bounds staying frame bounds: a moved frame combined with `window=`, nested `cumsum` and a nested shift; open-ended ranges (lower only, upper only) and a relational frame bound (`ordered_at >= …`) beside `date_range`; verify by executed values
-- [ ] 1.3 Cover routing: shifts used only in a filter, only in the order, hidden inside a composite measure, and nested under another transform all read the moved frame; verify by executed values
-- [ ] 1.4 Golden SQL on postgres, sqlite, duckdb, tsql and bigquery for a shifted predicate, a shifted nested transform and a shifted cross-model composite; verify strict dialects render the predicate answer as a value
-- [ ] 1.5 Ask the user's approval to align `tests/test_dev1868_series_shift_exec.py` (date-range edge expectations become the moved-frame values; series-SQL-shape pins such as one `OVER (` and one `= 'a'` move to the producer form) and any other existing test pinning the series regime, listing each file and change; then align
+- [x] 1.1 Add `tests/test_dev2429_moved_frame_shift.py`: the moved-frame seed (orders → customers, North 2023-12 20, 2024-01-10 30, 2024-02 40, 2024-04 30, 2024-05 5, 2024-06 7) and one executed test per scenario of "time_shift evaluates its operand in the moved frame" on SQLite and DuckDB; verify each fails on the current code for the documented reason (or passes where today's value is already right, e.g. plain `time_shift(sum, -1)`)
+- [x] 1.2 Cover moved bounds staying frame bounds: a moved frame combined with `window=`, nested `cumsum` and a nested shift; open-ended ranges (lower only, upper only) and a relational frame bound (`ordered_at >= …`) beside `date_range`; verify by executed values
+- [x] 1.3 Cover routing: shifts used only in a filter, only in the order, hidden inside a composite measure, and nested under another transform all read the moved frame; verify by executed values
+- [x] 1.4 Golden SQL on postgres, sqlite, duckdb, tsql and bigquery for a shifted predicate, a shifted nested transform and a shifted cross-model composite; verify strict dialects render the predicate answer as a value
+- [x] 1.5 Ask the user's approval to align `tests/test_dev1868_series_shift_exec.py` (date-range edge expectations become the moved-frame values; series-SQL-shape pins such as one `OVER (` and one `= 'a'` move to the producer form) and any other existing test pinning the series regime, listing each file and change; then align
 
 ## 2. Planner: one shifted evaluation
 

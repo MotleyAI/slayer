@@ -177,7 +177,7 @@ FORMS = {
                         {("N", "2025-02"): 100.0, ("N", "2025-03"): 70.0, ("S", "2025-02"): 50.0,
                          ("S", "2025-03"): None}),
     # evaluation bounds reach January: the shifted running total starts before the frame
-    "series_shift": ("time_shift(cumsum(sum(orders.amount)), -1)",
+    "shifted_running_total": ("time_shift(cumsum(sum(orders.amount)), -1)",
                      {("N", "2025-02"): 100.0, ("N", "2025-03"): 170.0, ("S", "2025-02"): 50.0, ("S", "2025-03"): 50.0}),
     "nested_shift": ("time_shift(time_shift(cumsum(sum(orders.amount)), -1), -1)",
                      {("N", "2025-02"): None, ("N", "2025-03"): 100.0, ("S", "2025-02"): None,

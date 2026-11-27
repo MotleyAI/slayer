@@ -135,10 +135,13 @@ are read for North on SQLite and DuckDB.
 
 #### Scenario: Spine and non-spine agree
 
-- **WHEN** each shape above is evaluated over a month dimension on
+- **WHEN** each shape above, except the order position (spine queries refuse
+  transform order keys until DEV-2506), is evaluated over a month dimension on
   `time_spine.timestamp` with the same range and `population: "orders"`
 - **THEN** every bucket that has a row in the non-spine query carries the same
-  value in the spine query, by executed values
+  value in the spine query wherever the shifted evaluation reads no bucket that
+  only the spine query has (North's empty March holds a value for `coalesce`,
+  running totals, `lag`, nested shifts and windowed operands), by executed values
 
 ## MODIFIED Requirements
 

@@ -1,5 +1,5 @@
 """Plan-structure pins for the shifted producer (design D2/D4/D5): one
-``attach_phase="shifted"`` attach per non-series ``time_shift`` slot, per-leaf
+``attach_phase="shifted"`` attach per ``time_shift`` slot, per-leaf
 re-evaluate / carry classification, interning, and the ``PlannedQuery``
 validators over malformed shifted attaches."""
 
@@ -27,7 +27,7 @@ from tests._dev1832_fixtures import (
 
 SHARE = "sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.ordered_at])"
 REGION_SHARE = "sum(monthly.amount) / sum(monthly.amount, partition_by=[monthly.region])"
-SERIES = "time_shift(cumsum(sum(monthly.amount)), -1)"
+NESTED = "time_shift(cumsum(sum(monthly.amount)), -1)"
 
 
 def _bundle(root_name: str = "monthly") -> ResolvedSourceBundle:
@@ -48,9 +48,8 @@ def _slots(pq: PlannedQuery) -> list:
     return [*pq.row_slots, *pq.aggregate_slots, *pq.combined_expression_slots]
 
 
-def _shift_slots(pq: PlannedQuery, *, series: bool) -> list:
-    return [s for s in _slots(pq) if isinstance(s.key, TransformKey)
-            and s.key.op == "time_shift" and s.series is series]
+def _shift_slots(pq: PlannedQuery) -> list:
+    return [s for s in _slots(pq) if isinstance(s.key, TransformKey) and s.key.op == "time_shift"]
 
 
 def _shifted(pq: PlannedQuery) -> list[RegroupAttachPlan]:
@@ -73,9 +72,9 @@ def _attach(a: RegroupAttachPlan, **update) -> RegroupAttachPlan:
 
 
 class TestShiftedAttachShape:
-    def test_one_shifted_attach_per_non_series_slot(self) -> None:
+    def test_one_shifted_attach_per_slot(self) -> None:
         pq = _plan(f"time_shift({SHARE}, -1)")
-        [slot] = _shift_slots(pq, series=False)
+        [slot] = _shift_slots(pq)
         [attach] = _shifted(pq)
         assert attach.shift_of == slot.id
         assert attach.substitutions == []
@@ -103,16 +102,18 @@ class TestShiftedAttachShape:
         assert len(grain) == 3  # status + both month buckets
         assert {k for k, _ in attach.join_pairs} == grain
 
-    def test_series_slot_has_no_shifted_attach(self) -> None:
-        pq = _plan(SERIES)
-        assert _shift_slots(pq, series=True)
-        assert _shifted(pq) == []
-
-    def test_mixed_regimes_in_one_query(self) -> None:
-        pq = _plan(f"time_shift({SHARE}, -1)", SERIES)
-        [slot] = _shift_slots(pq, series=False)
+    def test_nested_transform_shift_has_one_shifted_attach(self) -> None:
+        pq = _plan(NESTED)
+        [slot] = _shift_slots(pq)
         [attach] = _shifted(pq)
         assert attach.shift_of == slot.id
+
+    def test_two_shifts_one_attach_each(self) -> None:
+        pq = _plan(f"time_shift({SHARE}, -1)", NESTED)
+        slots = _shift_slots(pq)
+        assert len(slots) == 2
+        assert {a.shift_of for a in _shifted(pq)} == {s.id for s in slots}
+        assert len(_shifted(pq)) == 2
 
 
 class TestLeafClassification:
@@ -155,7 +156,7 @@ class TestLeafClassification:
 
 class TestValidatorsRejectMalformedShiftedAttaches:
     def _valid(self):
-        pq = _plan(f"time_shift({SHARE}, -1)", SERIES)
+        pq = _plan(f"time_shift({SHARE}, -1)")
         [attach] = _shifted(pq)
         others = [a for a in pq.regroup_attach_plans if a is not attach]
         return pq, attach, others
@@ -174,13 +175,6 @@ class TestValidatorsRejectMalformedShiftedAttaches:
         pq, attach, others = self._valid()
         dim = next(s for s in pq.row_slots if not s.hidden)
         plans = [*others, _attach(attach, shift_of=dim.id)]
-        with pytest.raises(ValueError):
-            _rebuild(pq, regroup_attach_plans=plans)
-
-    def test_series_targeting_shifted_attach_rejected(self) -> None:
-        pq, attach, others = self._valid()
-        [series] = _shift_slots(pq, series=True)
-        plans = [*others, _attach(attach, shift_of=series.id)]
         with pytest.raises(ValueError):
             _rebuild(pq, regroup_attach_plans=plans)
 

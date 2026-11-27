@@ -257,16 +257,16 @@ async def test_sibling_rows_never_change_a_time_bucketed_transform(backend: str,
 
 
 # --------------------------------------------------------------------------- #
-# Calendar-step series regime and consecutive_periods read the domain
+# Calendar-step time_shift and consecutive_periods read the domain
 # --------------------------------------------------------------------------- #
-async def test_series_regime_shift_ignores_a_siblings_bucket(backend: str) -> None:
+async def test_a_shifted_running_total_ignores_a_siblings_bucket(backend: str) -> None:
     alone, both = await _daily_pair(backend, "time_shift(cumsum(sum(sales.amount)), -1)")
     # March reads February's running total: no cell, never the sibling's February row
     assert alone == {"2025-01": None, "2025-03": None}
     assert (both["2025-01"], both["2025-03"]) == (None, None)
 
 
-async def test_re_aggregation_regime_shift_is_unchanged(backend: str) -> None:
+async def test_a_shifted_aggregate_is_unchanged(backend: str) -> None:
     alone, both = await _daily_pair(backend, "time_shift(sum(sales.amount), -2)")
     assert alone["2025-03"] == both["2025-03"] == 10.0
 
