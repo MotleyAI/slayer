@@ -35,7 +35,7 @@ _FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _INLINE_CODE = re.compile(r"(`+).*?\1")
 _DESTINATION = r"(?:<([^>\n]+)>|((?:[^()\s]|\([^()\s]*\))+))"
 _INLINE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*" + _DESTINATION + r"(?:\s+\"[^\"]*\")?\s*\)")
-_REFERENCE_LINK = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*" + _DESTINATION)
+_REFERENCE_LINK = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*" + _DESTINATION, re.M)
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 #: Pages moved off old-word paths: old page -> new page, or new folder prefix (ending ``/``).
 MOVED_PAGES = {
@@ -242,13 +242,32 @@ def _prose_lines(markdown: str) -> list[tuple[int, str]]:
     return lines
 
 
+def _paragraphs(markdown: str) -> list[tuple[int, str]]:
+    """``(first line, text)`` per run of adjacent non-blank prose lines, so link text may wrap."""
+    paragraphs: list[tuple[int, list[str]]] = []
+    previous = -1
+    for lineno, line in _prose_lines(markdown):
+        if not line.strip():
+            previous = -1
+            continue
+        if lineno == previous + 1:
+            paragraphs[-1][1].append(_INLINE_CODE.sub("", line))
+        else:
+            paragraphs.append((lineno, [_INLINE_CODE.sub("", line)]))
+        previous = lineno
+    return [(start, "\n".join(lines)) for start, lines in paragraphs]
+
+
 def _link_targets(markdown: str) -> list[tuple[int, str]]:
     """``(line, target)`` per non-external link outside code, bare anchors included."""
     links: list[tuple[int, str]] = []
-    for lineno, line in _prose_lines(markdown):
-        prose = _INLINE_CODE.sub("", line)
-        matches = [*_INLINE_LINK.finditer(prose), *_REFERENCE_LINK.finditer(prose)]
-        links += [(lineno, t) for t in (m.group(1) or m.group(2) for m in matches) if not _SCHEME.match(t)]
+    for start, prose in _paragraphs(markdown):
+        matches = sorted([*_INLINE_LINK.finditer(prose), *_REFERENCE_LINK.finditer(prose)], key=lambda m: m.start())
+        links += [
+            (start + prose.count("\n", 0, m.start()), t)
+            for m in matches
+            if not _SCHEME.match(t := m.group(1) or m.group(2))
+        ]
     return links
 
 
@@ -306,6 +325,11 @@ def test_link_extraction() -> None:
         (1, "../concepts/datasets.md"), (1, "img/a.png"), (1, "b c.md"), (2, "./other.md"),
         (4, "guide_(new).md"), (13, "after.md"),
     ]
+
+
+def test_wrapped_link_extraction() -> None:
+    page = "Intro\nsee [the time\nzones](time.md#time-zones) and [a\n\nb](skip.md).\n[ref]: ./r.md\n"
+    assert _link_targets(page) == [(2, "time.md#time-zones"), (6, "./r.md")]
 
 
 # --------------------------------------------------------------------------- #
