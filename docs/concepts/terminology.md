@@ -1,4 +1,4 @@
-# Terminology
+# Glossary
 
 Key terms used throughout SLayer documentation and code.
 
@@ -6,7 +6,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Dataset** — A semantic layer definition that maps a database table, SQL subquery, or saved query to queryable fields. Defined as YAML files or auto-generated via ingestion.
 
-**Field** — The unified row-level building block of a dataset (`SlayerDataset.fields`). Each field has a `name`, `sql` expression, and `datatype` (one of Ossie's datatype names — `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` — or `Array` with an `element_type`). At query time a field can be used as a group-by key (a dimension), as the input to an aggregation (a metric), or both; a list field has rules of its own, see [List fields](queries.md#list-fields). Fields can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal field is already truncated to), `format`, `label`, and `meta`. `DatasetMetric` (named expression) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
+**Field** — The unified row-level building block of a dataset (`SlayerDataset.fields`). Each field has a `name`, `sql` expression, and `datatype` (one of Ossie's datatype names — `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` — or `Array` with an `element_type`). At query time a field can be used as a group-by key (a dimension), as the input to an aggregation (a metric), or both; a list field has rules of its own, see [List fields](filters.md#list-fields). Fields can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal field is already truncated to), `format`, `label`, and `meta`. `DatasetMetric` (named expression) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
 
 **Dimension** — How a field is *used* in a query when it's a GROUP BY key. The field itself isn't a dimension or metric intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the fields to group/filter by.
 
@@ -34,7 +34,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Label** — An optional human-readable display name for a metric entry, dimension, or time dimension. Separate from the technical `alias`, which is used as the result column key. Example: `{"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov", "label": "Average Order Value"}`.
 
-**Filter** — A condition that restricts which rows are included. Defined as an expression string: `"orders.status = 'completed'"`, `"orders.amount > 100"`. See [Filters](queries.md#filters).
+**Filter** — A condition that restricts which rows are included. Defined as an expression string: `"orders.status = 'completed'"`, `"orders.amount > 100"`. See [Filters](filters.md#filters).
 
 **Time dimension** — A dimension of type `time` or `date`, used for time-based grouping. When specified in `time_dimensions`, SLayer truncates it to the given granularity (e.g., monthly buckets). The same field can also be used as a regular dimension (without truncation).
 
