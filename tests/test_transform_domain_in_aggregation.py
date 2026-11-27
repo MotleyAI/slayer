@@ -142,6 +142,22 @@ async def test_a_carrier_keeps_cells_only_the_transforms_home_reaches(backend: s
     _assert_cells(_by(resp, ("customers.region",)), {"EAST": 1, "NORTH": 2})
 
 
+@pytest.mark.xfail(strict=True, reason="DEV-2511: the transform ranks the sibling dataset's cells")
+@pytest.mark.parametrize(("transform", "expected"), [
+    ("rank(sum(returns.amount), direction='asc')", {"EAST": 2, "NORTH": 1}),
+    ("percent_rank(sum(returns.amount))", {"EAST": 1.0, "NORTH": 0.0}),
+    ("rank(count(returns.return_id), direction='asc')", {"EAST": 1, "NORTH": 1}),
+], ids=["rank", "percent-rank", "tied-rank"])
+async def test_a_sibling_from_another_dataset_keeps_the_transforms_cells(backend: str, transform: str,
+                                                                         expected: dict) -> None:
+    async with seed_engine(backend) as eng:
+        resp = await run(eng, dimensions=["customers.region"],
+                         metrics=[_mt(f"sum({transform} + 0 * count(orders.order_id))")])
+    got = _by(resp, ("customers.region",))
+    # A cell only the sibling supplies has no transform value.
+    assert {k: got.get(k) for k in {*expected, *got}} == {**dict.fromkeys(got), **expected}, got
+
+
 # --------------------------------------------------------------------------- #
 # Plan-time invariant: a transform evaluated over a plan's rows has its operand grain
 # --------------------------------------------------------------------------- #

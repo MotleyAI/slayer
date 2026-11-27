@@ -4249,6 +4249,15 @@ def _producer_window_td(
     return td if windowed or (is_transform(root) and td in pks) else None
 
 
+def _local_regroup_domain(
+    answer: ValueKey, *, producer_aggs: Sequence[ValueKey],
+) -> Tuple[Optional[ValueKey], FrozenSet[ValueKey]]:
+    """A transform answer's producer is its domain: ``(domain_of, in_place)``."""
+    if is_transform(answer):
+        return answer, frozenset(producer_aggs)
+    return None, frozenset()
+
+
 def _synthesize_local_regroup(
     *, ctx: "_LocalRegroupContext", phase: Literal["row", "combined"], pks: Grain,
     windowed: bool, aggs: List[ValueKey], order_fn: Callable[[Grain], List[ValueKey]],
@@ -4297,7 +4306,7 @@ def _synthesize_local_regroup(
         ranking_candidates=prebound.ranking_candidates,
     )
     decision = _kernel_decision(answer=producer_aggs[0], windowed=windowed)
-    answer = own[aggs[0]]
+    domain_of, in_place = _local_regroup_domain(own[aggs[0]], producer_aggs=producer_aggs)
     producer_plan = compile_synthesized(
         prebound=producer_prebound,
         source_dataset=ctx.producer_source_dataset,
@@ -4307,8 +4316,8 @@ def _synthesize_local_regroup(
         producer_registry=ctx.producer_registry,
         population=ctx.population,
         kernel_answer=_kernel_answer(decision),
-        domain_of=answer if is_transform(answer) else None,
-        in_place=frozenset(producer_aggs) if is_transform(answer) else frozenset(),
+        domain_of=domain_of,
+        in_place=in_place,
     )
     # A union-grain producer MAY carry nested attaches at any depth; the
     # complete-grain assert is the admission rule.
