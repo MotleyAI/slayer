@@ -1876,7 +1876,7 @@ class TestParserAndBinderScalarSetsAgree:
         CASE rewrite targets, and the dialect-rendered date functions."""
         assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
             "like", "ilike", "iif", "date_part", "date_diff", "date_add", "interval",
-            "current_date", "now",
+            "current_date", "now", "current_time",
         }
 
 

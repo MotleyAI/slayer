@@ -5,7 +5,7 @@ claim is measured against the Ossie specification vendored in SLayer's test suit
 (26 November 2026), and names the tests that back it. The Tier-1 databases are SQLite, DuckDB, PostgreSQL, MySQL,
 ClickHouse, SQL Server, Trino, Snowflake and BigQuery. The compliance gate runs on SQLite and DuckDB on every pull
 request (`tests/test_ossie_gate.py`), on the others nightly (`tests/integration/test_integration_ossie_gate.py`), and on
-all nine weekly against upstream's `main`.
+all nine weekly against upstream's `main`. ClickHouse is measured on server 25.12.
 
 | Layer | Claim | Certified on |
 |---|---|---|
@@ -31,15 +31,15 @@ cases are:
 
 | Database | Pass | Refused | Gap |
 |---|---|---|---|
-| SQLite | 199 | 0 | 5 |
-| DuckDB | 201 | 0 | 3 |
-| PostgreSQL | 201 | 0 | 3 |
-| MySQL | 200 | 1 | 3 |
-| ClickHouse | 199 | 0 | 5 |
-| SQL Server | 197 | 4 | 3 |
-| Trino | 201 | 0 | 3 |
-| Snowflake | 201 | 0 | 3 |
-| BigQuery | 201 | 0 | 3 |
+| SQLite | 206 | 0 | 0 |
+| DuckDB | 206 | 0 | 0 |
+| PostgreSQL | 206 | 0 | 0 |
+| MySQL | 205 | 1 | 0 |
+| ClickHouse | 206 | 0 | 0 |
+| SQL Server | 202 | 4 | 0 |
+| Trino | 206 | 0 | 0 |
+| Snowflake | 206 | 0 | 0 |
+| BigQuery | 206 | 0 | 0 |
 
 | Construct | Example | Status |
 |---|---|---|
@@ -47,10 +47,6 @@ cases are:
 | `REGEXP_LIKE` | `REGEXP_LIKE(orders.status, '^pe')`, on SQL Server before 2025 | refused |
 | `REGEXP_EXTRACT` | `REGEXP_EXTRACT(orders.status, 'e.d')`, on SQL Server before 2025 | refused |
 | `REGEXP_REPLACE` | `REGEXP_REPLACE(orders.status, 'n', 'N')`, on SQL Server before 2025 | refused |
-| `CURRENT_TIME` | `CURRENT_TIME`, `CURRENT_TIME()` | planned |
-| `TIME '10:30:00'` | a time-of-day literal | planned |
-| `CAST('10:30:00' AS TIME)` | a cast to a time of day (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
-| `CAST AS TIME` | `CAST('10:30:00' AS TIME)` (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
 
 Ossie's window functions run in every position (see
 [SQL window functions](../concepts/expressions.md#sql-window-functions-over)); `COUNT(DISTINCT …)`, `MEDIAN` and
@@ -104,7 +100,5 @@ known not to follow Ossie yet:
 | `format-delimited-dataset-name` | a delimited dataset name (`"Order Lines"`) cannot be referenced | planned |
 | `format-quoted-column-expression` | a field expression naming a quoted column (`"Order Amount"`) is refused | planned |
 | `format-decimal-exact` | `Decimal` aggregates are not exact | planned |
-| `format-time-dimension` | a `Time` field cannot be a dimension | planned |
-| `format-time-aggregate` | a `Time` field cannot be aggregated (`MIN`, `MAX`) | planned |
 | `format-datetimetz-truncation` | truncating a `DateTimeTz` field drops its time zone | planned |
 | `format-datetimetz-offset-literal` | a timestamp literal with a UTC offset cannot be compared with a `DateTimeTz` field | planned |

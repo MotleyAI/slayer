@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
@@ -30,6 +30,7 @@ from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    trimmed_fraction,
     NativeFn,
     TransactionMode,
     set_statement,
@@ -158,6 +159,32 @@ class MysqlDialect(SqlDialect):
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
     regex_flavour: ClassVar[Optional[RegexFlavour]] = ICU
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY - {"regexp_count"}
+    time_of_day_parts: ClassVar[bool] = True
+    # A bare ``TIME`` keeps no fraction here.
+    time_of_day_precision: ClassVar[Optional[int]] = 6
+
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """``TIME`` also holds durations here: a text ``TRY_CAST`` keeps only a clock time inside the day."""
+        cast = super().build_time_cast(value, to, source=source, try_=False)
+        if source is not None or not try_:
+            return cast
+        day = exp.And(
+            this=exp.GTE(this=cast.copy(), expression=self.build_time_literal(time(0, 0))),
+            expression=exp.LT(this=cast.copy(), expression=exp.Cast(this=lit("24:00:00"), to=self.time_of_day_type())),
+        )
+        # The text is the cast's own ``HH:MM[:SS[.f…]]`` spelling: MySQL casts a valid prefix of any text.
+        text = as_text(value)
+        length = exp.Length(this=text.copy())
+        spelled = anon("LEFT", anon("TIME_FORMAT", cast.copy(), lit("%H:%i:%s.%f")), length.copy())
+        shaped = exp.or_(exp.In(this=length.copy(), expressions=[lit(5), lit(8)]),
+                         exp.Between(this=length, low=lit(10), high=lit(15)))
+        clock = exp.and_(shaped, exp.EQ(this=text, expression=spelled))
+        return case((exp.And(this=clock, expression=day), cast))
+
+    def build_time_text(self, value: Expression) -> Expression:
+        return trimmed_fraction(as_text(exp.Cast(this=value, to=self.time_of_day_type())))
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "GREATEST", "LEAST",
     })
@@ -209,6 +236,7 @@ class MysqlDialect(SqlDialect):
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+        time_row: Sequence[Any] | None = None,
     ) -> ServerProfile:
         match = _VERSION.match(str(base_row[0])) if base_row and base_row[0] is not None else None
         if match is None:

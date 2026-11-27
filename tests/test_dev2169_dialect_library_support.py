@@ -132,6 +132,8 @@ class LibCase(BaseModel):
     name: str
     build: Callable[[], Any]
     mentions: str
+    #: The ClickHouse server version the case needs known (a time of day is refused on an unknown one).
+    clickhouse_version: tuple[int, ...] | None = None
     datasets: Callable[[], list[SlayerDataset]] = lambda: [lib_dataset()]
 
 
@@ -192,6 +194,7 @@ FUNCTION_CASES = [
     _dim("regexp_replace", "regexp_replace", "regexp_replace(lib.tag, '[^0-9]', '')"),
     _dim("regexp_count", "regexp_count", "regexp_count(lib.tag, '[0-9]')"),
     _dim("try_cast", "try_cast", "TRY_CAST(lib.num_txt AS DOUBLE)", mentions="TRY_CAST"),
+    _dim("current_time", "current_time", "current_time()").model_copy(update={"clickhouse_version": (25, 12, 0)}),
 ]
 SPELLING_CASES = [
     _flt("spelling|tilde", "regexp_like", "lib.word ~ '^ad'"),
@@ -205,6 +208,7 @@ SPELLING_CASES = [
     _dim("spelling|jsonb_extract_path_text", "json_value", "jsonb_extract_path_text(lib.payload, 'a', 'b')"),
     _dim("spelling|position", "strpos", "POSITION(lib.p IN lib.s)"),
     _dim("spelling|returning", "json_value", "json_value(lib.payload, '$.qty' RETURNING INT)"),
+    _dim("spelling|current_time", "current_time", "CURRENT_TIME").model_copy(update={"clickhouse_version": (25, 12, 0)}),
 ]
 COERCION_CASES = [
     _flt("coerce|comparison", "try_cast", "lib.num_txt > 100", mentions="number"),
@@ -237,7 +241,9 @@ async def _emit(case: LibCase, ds_type: str) -> str:
 
 @pytest.mark.parametrize("ds_type", DS_TYPES)
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.case_id)
-async def test_translated_or_refused(case: LibCase, ds_type: str) -> None:
+async def test_translated_or_refused(case: LibCase, ds_type: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    if ds_type == "clickhouse" and case.clickhouse_version is not None:
+        patch_profile(monkeypatch, version=case.clickhouse_version)
     if supported(ds_type, case.name):
         assert_own_sql(await _emit(case, ds_type), ds_type=ds_type)
         return

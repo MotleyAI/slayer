@@ -86,6 +86,7 @@ from slayer.engine.elaborate_env import (
     check_computed_dimension,
     check_conditional_branches,
     check_date_operands,
+    check_time_of_day_operands,
     canonical_list_dimension,
     canonical_list_reads,
     check_list_dimension,
@@ -674,14 +675,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
-    check_conditional_branches(
-        roots=[
-            *(dm.bound.value_key for dm in declared_metrics),
-            *(bf.value_key for bf in bound_filters),
-            *(spec.bound.value_key for spec in order_specs),
-        ],
-        field_type=field_type,
-    )
+    typed_roots = [
+        *(dm.bound.value_key for dm in declared_metrics),
+        *(bf.value_key for bf in bound_filters),
+        *(spec.bound.value_key for spec in order_specs),
+    ]
+    check_conditional_branches(roots=typed_roots, field_type=field_type)
+    check_time_of_day_operands(roots=typed_roots, field_type=field_type)
     declared_metrics, bound_filters, order_specs = _map_bound_keys(
         lambda vk: canonical_list_reads(vk, typing=lists),
         declared_metrics=declared_metrics,

@@ -51,6 +51,12 @@ granularity defined on the datasource (fiscal years and the like). `month(x)` an
 `year`, `quarter`, `week`, `day`, `hour`, `minute`, `second` are integer extraction
 (`date_part('month', x)`, the month of year), never a bucket.
 
+## Time of day
+
+A `Time` field, `TIME '10:30'`, `current_time()` and `CAST(x AS TIME)` are a time of day: group, order,
+`min` / `max`, compare with another one or a `'HH:MM'` string, and read `hour` / `minute` / `second`.
+It takes no granularity, `date_range` or arithmetic.
+
 ## Time zones
 
 `"time_zone": "America/New_York"` on a query buckets, filters and returns timestamps as that zone's

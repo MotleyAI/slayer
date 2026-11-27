@@ -7,6 +7,7 @@ stored mapping.
 from __future__ import annotations
 
 import contextlib
+import importlib
 import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -24,7 +25,7 @@ from tests._dev2474_fixtures import (
 )
 from tests._engine_helpers import owned_query_engine
 
-BREAK = "OntologyMappingBreakError"
+BREAK = "StoredDependentBreakError"
 
 
 def without_dep_delay(document: dict[str, Any]) -> None:
@@ -268,7 +269,8 @@ async def test_live_schema_drops_a_field(tmp_path: Path, kind: str) -> None:
     await storage.save_datasource(DatasourceConfig(name=FLIGHTS_DS, type="duckdb", database=str(database)))
     async with owned_query_engine(storage=storage) as engine:
         entries = await engine.validate_datasets(data_source=FLIGHTS_DS)
-        with pytest.warns(Warning, match=FLIGHTS_MAPPING):
+        with pytest.warns(importlib.import_module("slayer.storage.dependents").StoredDependentUnresolvedWarning,
+                          match=FLIGHTS_MAPPING):
             await engine.apply_drift_deletes(entries)
 
     reopened = make_storage(kind, tmp_path)

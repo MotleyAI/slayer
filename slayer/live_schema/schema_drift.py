@@ -36,6 +36,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import QueryDimension, SlayerQuery, extension_dataset_names
 from slayer.core.refs import IDENTIFIER_RE
+from slayer.core.time_spine import default_time_field
 from slayer.core.vocabulary import attribute_used, name_twins, old_keywords
 from slayer.core.warnings import BrokenDependentWarning
 from slayer.sql.dialects.reflection import TableKeyReadFailure, info_schema_list_element
@@ -483,10 +484,10 @@ def data_type_bucket(dt: DataType) -> str:
 
 
 def _type_buckets_conflict(*, persisted: DataType, live: DataType, temporal_text: bool) -> bool:
-    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP over live TEXT is the dialect's own date storage."""
+    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP/TIME over live TEXT is the dialect's own storage of it."""
     if live is DataType.ARRAY and persisted is not DataType.ARRAY:
         return False
-    if temporal_text and live is DataType.STRING and persisted in TEMPORAL_DATATYPES:
+    if temporal_text and live is DataType.STRING and (persisted in TEMPORAL_DATATYPES or persisted.is_time_of_day):
         return False
     if live.is_opaque:
         return not persisted.is_opaque
@@ -510,9 +511,14 @@ def _field_finding(
                                element_type=element_type)
     if not _retyped(persisted=field.datatype, live=live_type, temporal_text=temporal_text):
         return None
+    # Re-ingest re-types a list column, and a time-of-day column under any stored type but a list or the time axis.
+    axis = default_time_field(dataset)
+    reingest = live_type is DataType.ARRAY or (
+        live_type is DataType.TIME and field.datatype is not DataType.ARRAY
+        and (axis is None or axis.name != field.name))
     return RetypeFinding.of(
         dataset=dataset, field=field, live_type=live_type, live_db_type=live_db_type,
-        remedy_kind="reingest" if live_type is DataType.ARRAY else "set_type",
+        remedy_kind="reingest" if reingest else "set_type",
     )
 
 

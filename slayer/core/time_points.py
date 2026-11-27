@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from types import MappingProxyType
 from typing import Callable, Literal, Mapping, Optional
 
@@ -83,6 +83,7 @@ class _Relative(BaseModel, frozen=True):
 _UNIT = r"([a-z_]\w*)"
 _N = r"([1-9]\d*)"
 _INSTANT_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?")
+_TIME_OF_DAY_RE = re.compile(r"(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?")
 _YEAR_RE = re.compile(r"(\d{4})")
 _QUARTER_RE = re.compile(r"(\d{4})-Q(\d)", re.IGNORECASE)
 _MONTH_RE = re.compile(r"(\d{4})-(\d{2})")
@@ -226,6 +227,22 @@ def parse_temporal_value(text: str) -> date | datetime | None:
     if not isinstance(parsed, Instant):
         return None
     return parsed.value.date() if _DAY_RE.fullmatch(text) else parsed.value
+
+
+#: The accepted forms of a time of day, quoted by its literal errors.
+TIME_OF_DAY_FORMS = "'HH:MM', 'HH:MM:SS' or 'HH:MM:SS.f' (one to six fraction digits, 00:00:00 to 23:59:59.999999, no date or zone)"
+
+
+def parse_time_of_day(text: str) -> time | None:
+    """``HH:MM[:SS[.f]]`` as a ``time``; ``None`` otherwise."""
+    m = _TIME_OF_DAY_RE.fullmatch(text.strip())
+    if m is None:
+        return None
+    h, mi, s, frac = m.groups()
+    try:
+        return time(int(h), int(mi), int(s or 0), int(frac.ljust(6, "0")) if frac else 0)
+    except ValueError:
+        return None
 
 
 def _span(start: datetime, unit: Granularity, count: int) -> Period:

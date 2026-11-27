@@ -80,7 +80,7 @@ AggregationToken = Literal[
 
 FunctionToken = Literal[
     "abs", "acos", "ascii", "asin", "atan", "atan2", "cbrt", "ceil", "ceiling", "chr", "coalesce", "concat",
-    "concat_ws", "contains", "contains_all", "contains_any", "cos", "current_date", "date_add", "date_diff",
+    "concat_ws", "contains", "contains_all", "contains_any", "cos", "current_date", "current_time", "date_add", "date_diff",
     "date_part", "degrees", "div", "ends_with", "exp", "floor", "greatest", "ifnull", "iif", "ilike", "instr",
     "interval", "json_value", "least", "left", "length", "like", "ln", "log", "log10", "log2", "lower", "lpad", "ltrim",
     "mod", "now", "nullif", "nullifzero", "pi", "pow", "power", "radians", "regexp_count", "regexp_extract",

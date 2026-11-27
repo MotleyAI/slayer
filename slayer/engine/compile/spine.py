@@ -18,7 +18,7 @@ from slayer.core.refs import bucket_remedy, key_display
 from slayer.core.relationship_walker import SPINE_TOKEN, reaches_spine, spine_token
 from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
 from slayer.core.time_points import add_units, floor_to
-from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, is_spine
+from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, check_default_time_dimension, is_spine
 from slayer.engine.compile.shift import is_placeholder
 from slayer.core.time_zones import CIVIL
 from slayer.engine.elaborate_env import (
@@ -128,6 +128,8 @@ def plan_spine(
 ) -> SpineFactor:
     """The host's bucket series, after checking every position the spine field appears in."""
     check_spine_raw_rows(raw_rows=not prebound.distinct_dimension_values)
+    for dataset in bundle.datasets_by_name.values():
+        check_default_time_dimension(dataset)  # the save-time check, for a dataset stored without it
     spine_tds = _checked_spine_time_dimensions(prebound=prebound, host=host, spine=spine, bundle=bundle)
     lowers, uppers = _spine_bounds(prebound=prebound, host=host, spine=spine, bundle=bundle)
     check_spine_lower_bound(has_lower=bool(lowers))

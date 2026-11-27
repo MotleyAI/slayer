@@ -448,6 +448,9 @@ def _date_cases() -> list[Case]:
         _f("current_date", ["current_date"], "date_diff('day', lib.ts, current_date()) > 0",
            [rid for rid, r in ROWS.items() if r["ts"] is not None]),
         _f("now", ["now"], "lib.ts < now()", [rid for rid, r in ROWS.items() if r["ts"] is not None]),
+        _f("current_time", ["current_time"],
+           "CAST(lib.ts AS TIME) <= current_time() OR CAST(lib.ts AS TIME) > current_time()",
+           [rid for rid, r in ROWS.items() if r["ts"] is not None]),
         _v("iif", ["iif"], "iif(lib.qty > 1, 'many', 'few')",
            every(lambda r: "many" if r["qty"] is not None and r["qty"] > 1 else "few")),
     ]

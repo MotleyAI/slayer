@@ -132,3 +132,16 @@ async def test_zoned_timestamp_with_precision_executes(pg) -> None:
     ))
     assert len(resp.data) == 1, resp.sql
     assert by_key(resp, "id", "x")[1] is not None, resp.sql
+
+
+@pytest.mark.parametrize(("expr", "expected"), [
+    ("TRY_CAST('24:00:00' AS TIME)", None), ("TRY_CAST('23:59:59.999999' AS TIME)", "23:59:59.999999"),
+    ("TRY_CAST('10:30' AS TIME)", "10:30:00"), ("TRY_CAST('bogus' AS TIME)", None),
+])
+async def test_try_cast_to_time_keeps_to_the_clock_day(pg, expr: str, expected) -> None:
+    engine, version_num = pg
+    if version_num < 160000:
+        pytest.skip("Postgres before 16 gets a plain CAST")
+    resp = await engine.execute(q(dimensions=["orders.id", {"field": expr, "alias": "x"}]))
+    values = {None if v is None else v.isoformat() for v in by_key(resp, "id", "x").values()}
+    assert values == {expected}, resp.sql

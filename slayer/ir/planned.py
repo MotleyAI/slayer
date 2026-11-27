@@ -921,11 +921,11 @@ def planned_keys(planned_list) -> Iterator[ValueKey]:
 
 
 def plans_read_clock(planned_list) -> bool:
-    """Whether any plan reads the clock at execution: ``now()`` anywhere, ``current_date()`` in a stage without a
-    zone (under one it is that day's literal)."""
+    """Whether any plan reads the clock at execution: ``now()`` / ``current_time()`` anywhere, ``current_date()`` in
+    a stage without a zone (under one it is that day's literal)."""
     def reads(planned, key) -> bool:
         zoned = planned.stage_bundle is not None and planned.stage_bundle.time_zone is not None
-        return isinstance(key, ScalarCallKey) and (key.name == "now" or (key.name in CLOCK_FUNCTIONS and not zoned))
+        return isinstance(key, ScalarCallKey) and (key.name in ("now", "current_time") or (key.name in CLOCK_FUNCTIONS and not zoned))
 
     return any(
         reads(planned, k)

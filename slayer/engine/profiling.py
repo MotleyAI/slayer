@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _MAX_CATEGORICAL_VALUES = 50
 _TEXT_SAMPLE_CAP = 20
 _CATEGORICAL_TYPES = (DataType.STRING, DataType.BOOLEAN)
-_NUMERIC_TEMPORAL_TYPES = NUMERIC_DATATYPES | TEMPORAL_DATATYPES
+_RANGE_TYPES = NUMERIC_DATATYPES | TEMPORAL_DATATYPES | {DataType.TIME}
 _ALL_NULL = "all NULL"
 _TTL_SECONDS = 3600.0
 _BREAKER_THRESHOLD = 3
@@ -139,7 +139,7 @@ def _is_profilable(field: DatasetField, *, dataset: SlayerDataset) -> bool:
     return (
         not field.hidden
         and not is_identifier(field=field, fields=dataset.fields)
-        and (kind in _CATEGORICAL_TYPES or kind in _NUMERIC_TEMPORAL_TYPES)
+        and (kind in _CATEGORICAL_TYPES or kind in _RANGE_TYPES)
     )
 
 
@@ -262,7 +262,7 @@ class _Run:
                 await self._on_failure(target=t, exc=exc)
                 continue
             await self._on_success(target=t, sample=sample)
-        numeric = [t for t in targets if _profile_type(t.field) in _NUMERIC_TEMPORAL_TYPES]
+        numeric = [t for t in targets if _profile_type(t.field) in _RANGE_TYPES]
         if numeric and not self.dataset_failed:
             await self._run_numeric(numeric)
         if not self.dataset_failed:

@@ -30,7 +30,7 @@ _OSSIE_FUNCTIONS_GATE: Mapping[str, int] = MappingProxyType({"SlayerModel": 32, 
 #: Ossie Layer 1 functions and spellings, reserved at ``_OSSIE_FUNCTIONS_GATE``.
 OSSIE_FUNCTION_NAMES = frozenset({
     "if", "nvl", "nvl2", "startswith", "endswith", "charindex", "truncate", "to_date", "to_timestamp", "zeroifnull",
-    "nullifzero", "radians", "degrees", "regexp_count",
+    "nullifzero", "radians", "degrees", "regexp_count", "current_time",
 })
 #: Ossie Layer 1 aggregates, reserved at the same (unreleased) gate.
 OSSIE_AGGREGATE_NAMES = frozenset({"sum_distinct", "avg_distinct", "percentile_disc", "percentile_approx"})

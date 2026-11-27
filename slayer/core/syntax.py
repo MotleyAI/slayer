@@ -111,7 +111,7 @@ class Literal(_BaseNode):
 
 
 class TemporalLiteral(_BaseNode):
-    """``DATE '…'`` / ``TIMESTAMP '…'``; the text is validated at binding."""
+    """``DATE '…'`` / ``TIMESTAMP '…'`` / ``TIME '…'``; the text is validated at binding."""
 
     kind: str
     text: str
@@ -134,7 +134,7 @@ class Placeholder(_BaseNode):
 class TupleLit(_BaseNode):
     """Literal-only list RHS for ``IN`` / ``NOT IN``."""
 
-    elements: Tuple[Literal, ...]
+    elements: Tuple[Literal | TemporalLiteral, ...]
 
 
 class ArrayLit(_BaseNode):
@@ -995,12 +995,9 @@ _TRIM_FORM = (_kw("trim") + LPAR + _kw("both", "leading", "trailing")) + _fail(
 # -- typed literals, intervals, clock keywords ----------------------------------
 
 #: Typed-literal keywords → their literal kind (Ossie's ``TIMESTAMP_NTZ`` is SLayer's naive ``TIMESTAMP``).
-_TEMPORAL_KINDS = {"date": "date", "timestamp": "timestamp", "timestamp_ntz": "timestamp"}
+_TEMPORAL_KINDS = {"date": "date", "timestamp": "timestamp", "timestamp_ntz": "timestamp", "time": "time"}
 _TEMPORAL = _on((_kw(*_TEMPORAL_KINDS) + _STRING),
                 lambda toks: TemporalLiteral(kind=_TEMPORAL_KINDS[toks[0].lower()], text=toks[1].value))
-_TIME_LITERAL = (_kw("time") + _STRING) + _fail(
-    "TIME '…' literals are not supported (there is no time-of-day type); compare with a TIMESTAMP '…' literal.",
-)
 _UNIT_WORDS = frozenset(g.value for g in TimeGranularity)
 
 
@@ -1054,7 +1051,8 @@ def _interval_node(toks: List[Any]) -> ScalarCall:
 
 
 _on(_INTERVAL, _interval_node)
-_CLOCK = _on((_kw("current_date", "current_timestamp") + ~pp.FollowedBy(LPAR)), lambda toks: ScalarCall(name="current_date" if toks[0].lower() == "current_date" else "now"))
+_CLOCK_KEYWORDS = {"current_date": "current_date", "current_timestamp": "now", "current_time": "current_time"}
+_CLOCK = _on((_kw(*_CLOCK_KEYWORDS) + ~pp.FollowedBy(LPAR)), lambda toks: ScalarCall(name=_CLOCK_KEYWORDS[toks[0].lower()]))
 
 # -- primary, postfix ----------------------------------------------------------
 
@@ -1062,9 +1060,9 @@ _PAREN = LPAR + expr + RPAR
 _PLACEHOLDER_ATOM = _PLACEHOLDER.copy().set_parse_action(_placeholder_node)
 _KEYWORD_LED = pp.FollowedBy(pp.Regex(
     r"(?i:case|cast|try_cast|extract|position|substring|trim|date|timestamp|timestamp_ntz|time|interval|current_date"
-    r"|current_timestamp"
+    r"|current_timestamp|current_time"
     r"|json_value)(?![A-Za-z0-9_])"
-)) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL | _INTERVAL | _CLOCK
+)) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _INTERVAL | _CLOCK
       | _JSON_VALUE_RETURNING)
 _ARRAY = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: ArrayLit(elements=tuple(toks[0])))
 _ATOM = (_KEYWORD_LED | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN | _ARRAY
@@ -1433,17 +1431,19 @@ def _in_rhs_elements(items: List[Any]) -> TupleLit | _ListItems:
     if any(isinstance(item, Placeholder) for item in elements):
         # Each variable's value decides once bound whether its item is a list or a scalar.
         return _ListItems(elements)
-    return TupleLit(elements=tuple(cast(Literal, item) for item in elements))
+    return TupleLit(elements=tuple(cast(Literal | TemporalLiteral, item) for item in elements))
 
 
-def _in_scalar_item(item: Any) -> Literal | Placeholder:
+def _in_scalar_item(item: Any) -> Literal | TemporalLiteral | Placeholder:
     if (isinstance(item, UnaryOp) and item.op == "-" and isinstance(item.operand, Literal)
             and isinstance(item.operand.value, Decimal)):
         item = Literal(value=-item.operand.value)
+    if isinstance(item, TemporalLiteral) and item.kind == "time":
+        return item
     if not isinstance(item, (Literal, Placeholder)):
         raise _Problem(
-            "every element on the right-hand side of in / not in must be a literal (string, number, or "
-            f"boolean); got {type(item).__name__}."
+            "every element on the right-hand side of in / not in must be a literal (string, number, boolean or "
+            f"TIME '…'); got {type(item).__name__}."
         )
     return item
 
@@ -1626,7 +1626,8 @@ def literal_comparisons(text: str) -> Tuple[LiteralComparison, ...]:
         for literal, other in _compared_literals(cmp):
             reading = _reference_reading(other)
             located = literals.get(id(literal))
-            if reading is not None and located is not None and located[0] is literal and isinstance(literal.value, str):
+            if (reading is not None and located is not None and located[0] is literal and isinstance(literal, Literal)
+                    and isinstance(literal.value, str)):
                 out.append(LiteralComparison(
                     value=literal.value, start=located[1], end=located[2], parts=reading[0], quoted=reading[1]))
     return tuple(sorted(out, key=lambda c: c.start))

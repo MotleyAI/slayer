@@ -19,7 +19,7 @@ from slayer.core.syntax import (
 from slayer.ontology.findings import OntologyFinding
 from slayer.ontology.names import identifier_key
 from slayer.ontology.ontology import Ontology, Relationship
-from slayer.ontology.scope import MappingScope
+from slayer.core.datasource_scope import DatasourceScope
 
 OBJECTS_STAGE = "ontology_check_objects"
 LINK_STAGE = "ontology_check_link_"
@@ -60,7 +60,7 @@ class UnresolvedMapping(BaseModel):
     problems: list[str]
 
 
-class StoredUse(MappingScope):
+class StoredUse(DatasourceScope):
     """One datasource's mappings and what they read, as a caller sees them."""
 
     mappings: list[MappingDocument] = []
@@ -408,7 +408,8 @@ def _enumerated(tree: Any, *, variable: str) -> list[Any] | None:
         if tree.op == "==" and (value := _literal(tree.right)) is not None:
             return [value]
         if tree.op == "in" and isinstance(tree.right, TupleLit):
-            return [e.value for e in tree.right.elements]
+            values = [e.value for e in tree.right.elements if isinstance(e, LiteralNode)]
+            return values if len(values) == len(tree.right.elements) else None
     if isinstance(tree, BoolOp) and tree.op == "or":
         parts = [_enumerated(o, variable=variable) for o in tree.operands]
         return None if any(p is None for p in parts) else [v for p in parts if p for v in p]

@@ -47,7 +47,7 @@ class TestTypeKindValuesMatchSqlglot:
 
     @pytest.mark.parametrize(
         "name",
-        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN", "ARRAY"],
+        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "TIME", "UNKNOWN", "ARRAY"],
     )
     def test_value_equals_sqlglot_name(self, name: str) -> None:
         assert getattr(TypeKind, name).value == name
@@ -63,7 +63,7 @@ class TestDataTypeIsOpaque:
 
     @pytest.mark.parametrize(
         "dt",
-        [m for m in DataType if m not in (DataType.OPAQUE, DataType.TIME)],
+        [m for m in DataType if m is not DataType.OPAQUE],
         ids=lambda m: m.name,
     )
     def test_every_other_member_is_not_opaque(self, dt: DataType) -> None:
@@ -96,4 +96,4 @@ class TestDefaultAggregationsByType:
         for key in DEFAULT_AGGREGATIONS_BY_TYPE.keys():
             assert isinstance(key, DataType)
             assert key.name in {
-                "STRING", "INTEGER", "DECIMAL", "FLOAT", "BOOLEAN", "DATE", "DATETIME", "DATETIME_TZ", "ARRAY"}
+                "STRING", "INTEGER", "DECIMAL", "FLOAT", "BOOLEAN", "DATE", "TIME", "DATETIME", "DATETIME_TZ", "ARRAY"}

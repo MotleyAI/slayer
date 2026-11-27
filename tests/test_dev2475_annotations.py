@@ -187,6 +187,19 @@ async def test_a_constraint_outside_the_plain_subset_is_shown_as_written(tmp_pat
     assert found["not_checked"] == ["DistanceGroup <= COUNT[Route]"]
 
 
+async def test_an_enumeration_of_time_literals_is_not_checked(tmp_path: Path) -> None:
+    constraint = "DistanceGroup in (TIME '09:00:00', TIME '17:00:00')"
+
+    def timed(document: dict[str, Any]) -> None:
+        component(document, "DistanceGroup")["requires"].append(constraint)
+
+    storage = await flights_store("yaml", tmp_path, mapping=False)
+    await storage.save_ontology_text(name=FLIGHTS, text=edited(ONTOLOGY, timed))
+    await storage.save_ontology_mapping_text(data_source=FLIGHTS_DS, name=FLIGHTS_MAPPING, text=MAPPING)
+    found = annotation(await field_annotations(storage, "ROUTE.dist_grp"), concept="DistanceGroup")
+    assert found["not_checked"] == [constraint]
+
+
 async def test_a_qualified_relationship_through_extends(tmp_path: Path) -> None:
     def hub(document: dict[str, Any]) -> None:
         document["ontology"].append({"concept": "Hub", "type": "EntityType", "extends": ["Airport"]})

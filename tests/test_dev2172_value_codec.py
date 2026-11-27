@@ -93,6 +93,8 @@ CASES: list[Case] = [
     Case(id="list-decimal", value=[BIG, Decimal("1E+3")], json_form=[BIG, Decimal("1E+3")], read_text=strict_json,
          raw=str(BIG), wire=True),
     Case(id="date", value=dt.date(2024, 2, 29), json_form="2024-02-29", text="2024-02-29"),
+    Case(id="time", value=dt.time(10, 30), json_form="10:30:00", text="10:30:00"),
+    Case(id="time-fraction", value=dt.time(10, 30, 0, 123456), json_form="10:30:00.123456", text="10:30:00.123456"),
     Case(id="timestamp", value=dt.datetime(2024, 2, 29, 10, 30), json_form="2024-02-29T10:30:00", read_text=_ts),
     Case(id="timestamp-tz", value=dt.datetime(2024, 2, 29, 10, 30, tzinfo=PLUS_TWO),
          json_form="2024-02-29T10:30:00+02:00", read_text=_offset),

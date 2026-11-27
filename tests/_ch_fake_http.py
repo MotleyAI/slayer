@@ -25,6 +25,9 @@ CH_TIMEOUT_KEY = "max_execution_time"
 CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 PROFILE_SQL = "SELECT version(), getSetting('readonly')"
 CORRELATED_SQL = f"SELECT getSetting('{CORRELATED_SETTING}')"
+TIME_SETTING = "enable_time_time64_type"
+TIME_SQL = f"SELECT getSetting('{TIME_SETTING}')"
+_READONLY_REFUSAL = "Code: 164. DB::Exception: Cannot modify setting in readonly mode. (READONLY)"
 
 
 class FakeResponse:
@@ -46,7 +49,7 @@ class FakeClickHouse:
     def __init__(self, *, readonly: int = 0, fail_marker: str | None = None,
                  fail_permission: bool = False, permission_delay: float = 0.0,
                  version: str = "24.3.1.1", correlated: bool = False,
-                 fail_correlated: bool = False) -> None:
+                 fail_correlated: bool = False, time_types: bool = False) -> None:
         self.readonly = readonly
         self.fail_marker = fail_marker
         self.fail_permission = fail_permission
@@ -54,6 +57,7 @@ class FakeClickHouse:
         self.version = version
         self.correlated = correlated
         self.fail_correlated = fail_correlated
+        self.time_types = time_types
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self._lock = threading.Lock()
 
@@ -74,10 +78,16 @@ class FakeClickHouse:
             return FakeResponse(status_code=200, body=_tsv(
                 [f"getSetting('{CORRELATED_SETTING}')"], ["Bool"], [["true" if self.correlated else "false"]],
             ))
+        if sql == TIME_SQL:
+            return FakeResponse(status_code=200, body=_tsv(
+                [f"getSetting('{TIME_SETTING}')"], ["Bool"], [["true" if self.time_types else "false"]],
+            ))
         if self.readonly == 1 and CH_TIMEOUT_KEY in params:
-            return FakeResponse(status_code=500, body="Code: 164. DB::Exception: Cannot modify setting in readonly mode. (READONLY)")
+            return FakeResponse(status_code=500, body=_READONLY_REFUSAL)
         if self.readonly == 1 and not self.correlated and f"{CORRELATED_SETTING} = 1" in sql:
-            return FakeResponse(status_code=500, body="Code: 164. DB::Exception: Cannot modify setting in readonly mode. (READONLY)")
+            return FakeResponse(status_code=500, body=_READONLY_REFUSAL)
+        if self.readonly == 1 and not self.time_types and f"{TIME_SETTING} = 1" in sql:
+            return FakeResponse(status_code=500, body=_READONLY_REFUSAL)
         if self.fail_marker is not None and self.fail_marker in sql:
             return FakeResponse(status_code=500, body="Code: 159. DB::Exception: boom. (TIMEOUT_EXCEEDED)")
         if sql.lower() == "select version()":
@@ -102,7 +112,7 @@ class FakeClickHouse:
 
     def user_statements(self) -> list[str]:
         """Statements other than the server-profile probes."""
-        return [sql for sql in self.statements() if sql not in (PROFILE_SQL, CORRELATED_SQL)]
+        return [sql for sql in self.statements() if sql not in (PROFILE_SQL, CORRELATED_SQL, TIME_SQL)]
 
 
 def ch_datasource(name: str = "fake_ch") -> DatasourceConfig:
