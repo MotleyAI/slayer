@@ -242,7 +242,7 @@ from slayer.ontology.use import ontology_checks
 from slayer.storage.base import StorageBackend, one_upgrade_pass, report_save_warnings, with_canonical_spellings
 from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
-from slayer.storage.ontology_documents import database_driven
+from slayer.storage.dependents import database_driven
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
 from slayer.core.models import DatasetRelationship
@@ -3718,28 +3718,20 @@ class SlayerQueryEngine:
             prior = await self.storage.get_dataset(dataset.name, data_source=prior_data_source or dataset.data_source)
         except StoredDocumentLoadError:
             prior = None
+        moved_from = prior_data_source if prior_data_source not in (None, dataset.data_source) else None
+        if moved_from is not None:
+            await self.storage.guard_dataset_deletion(name=dataset.name, data_source=moved_from)
         await self.storage.save_dataset(dataset, failures=failures)
         # Clean up the stale entry if the dataset moved datasource.
-        if (
-            prior_data_source is not None
-            and prior_data_source != dataset.data_source
-        ):
-            await self.storage.delete_dataset(
-                dataset.name, data_source=prior_data_source
-            )
+        if moved_from is not None:
+            await self.storage.delete_dataset(dataset.name, data_source=moved_from)
         payloads = await self._narrowed_access(dataset=dataset, prior=prior)
         unique = list({n.message: n for n in notices}.values())
         mismatches = await self.storage.ontology_mismatches(data_source=dataset.data_source, datasets=[dataset.name]) \
             if dataset.data_source else []
-        if warnings_out is not None:
-            warnings_out.extend([*unique, *payloads, *mismatches])
-            return dataset
-        report_save_warnings(None, mismatches)
-        # Last, as in query(): under ``-W error`` this raises after the save.
-        for notice in unique:
-            _warnings_module.warn(SlayerDateOnlyMidnightWarning(notice), stacklevel=2)
-        for payload in payloads:
-            _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=2)
+        _report_saved_dataset_warnings(
+            notices=unique, payloads=payloads, mismatches=mismatches, warnings_out=warnings_out,
+        )
         return dataset
 
     async def _prior_data_source(self, dataset: SlayerDataset) -> Optional[str]:
@@ -4052,6 +4044,21 @@ def _key_reads(*, dataset: SlayerDataset, keys: List[str], dialect: str) -> List
         else exp.maybe_parse(f.definition_sql or f.name, dialect=dialect)
         for f in (by_name[k] for k in keys)
     ]
+
+
+def _report_saved_dataset_warnings(
+    *, notices: Sequence[DateOnlyMidnightWarning], payloads: Sequence[NarrowedAccessWarning],
+    mismatches: Sequence[SlayerWarning], warnings_out: Optional[List[SlayerWarning]],
+) -> None:
+    """A dataset save's warnings into ``warnings_out``, else emitted — last, so under ``-W error`` they raise after the save."""
+    if warnings_out is not None:
+        warnings_out.extend([*notices, *payloads, *mismatches])
+        return
+    report_save_warnings(None, mismatches)
+    for notice in notices:
+        _warnings_module.warn(SlayerDateOnlyMidnightWarning(notice), stacklevel=3)
+    for payload in payloads:
+        _warnings_module.warn(SlayerNarrowedAccessWarning(payload), stacklevel=3)
 
 
 def _validate_relationship_keys(
