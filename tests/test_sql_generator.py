@@ -1392,7 +1392,10 @@ class TestFields:
             metrics=[QueryMetric(metric="sum(orders.revenue)"), QueryMetric(metric="last(sum(orders.revenue))", alias="latest_rev")],
         )
         sql = await _generate(generator, query, orders_dataset)
-        assert "FIRST_VALUE(" in sql
+        # The latest month's cell picked by the ranked kernel, never a FIRST_VALUE window.
+        assert "ROW_NUMBER()" in sql
+        assert "_ranked_rn" in sql
+        assert "FIRST_VALUE(" not in sql
         assert "DESC" in sql
 
     async def test_last_measure_type(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
@@ -1827,9 +1830,10 @@ class TestFields:
             filter=["last(change(sum(orders.revenue))) < 0"],
         )
         sql = await _generate(generator, query, orders_dataset)
-        assert "FIRST_VALUE" in sql  # last()
+        assert "ROW_NUMBER()" in sql  # last()
         assert "shifted_" in sql  # change() via self-join
-        assert "< 0" in post_filter_where(sql)
+        # last() is an aggregation attached to the query's rows, so its filter is the final select's WHERE.
+        assert "< 0" in sql.rsplit("WHERE", 1)[1]
 
     async def test_mixed_base_and_post_filters(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Base filters and post-filters should coexist correctly."""
@@ -8543,29 +8547,30 @@ def planets_dataset() -> SlayerDataset:
 
 
 class TestWindowFunctionInFilter:
-    """A query filter that references a ``DatasetField`` whose ``sql`` contains a window function (``OVER (...)``) no longer auto-promotes to a post-aggregation outer WHERE. The rank-family transforms (``rank`` / ``percent_rank`` / ``dense_rank`` / ``ntile``) cover top-N filtering in pure DSL, so the escape hatch is redundant. The engine raises a clear error directing the user to those transforms or to a multi-stage source_queries dataset."""
+    """A windowed field is a column of its dataset's materialised relation, so a query filter on it is a plain WHERE."""
 
-    async def test_filter_on_windowed_column_raises(
+    async def test_filter_on_windowed_column_applies_outside_the_window(
         self, generator: SQLGenerator, planets_dataset: SlayerDataset,
     ) -> None:
-        """Filtering on a field whose sql contains a window function raises with an actionable message at enrichment time."""
+        """The filter reads the materialised column; no WHERE holds a window."""
         query = SlayerQuery(
             population="planets",
             dimensions=["planets.name"],
             filter=["planets.rn <= 3"],
         )
-        with pytest.raises(ValueError) as excinfo:
-            await _generate(generator=generator, query=query, dataset=planets_dataset)
-        msg = str(excinfo.value).lower()
-        assert "window function" in msg or "rank" in msg, (
-            f"Expected the message to mention 'window function' and/or "
-            f"'rank' suggestion. Got: {excinfo.value}"
-        )
+        sql = await _generate(generator=generator, query=query, dataset=planets_dataset)
+        tree = sqlglot.parse_one(sql, dialect="postgres")
+        assert tree.find(exp.Window) is not None, sql
+        assert all(where.find(exp.Window) is None for where in tree.find_all(exp.Where)), sql
+        filters = [lte for lte in tree.find_all(exp.LTE) if lte.find_ancestor(exp.Where) is not None]
+        assert len(filters) == 1, sql
+        assert isinstance(filters[0].this, exp.Column), sql
+        assert filters[0].expression.sql() == "3", sql
 
     async def test_select_only_on_windowed_column_unchanged(
         self, generator: SQLGenerator, planets_dataset: SlayerDataset,
     ) -> None:
-        """A windowed DatasetField.sql is still legal as a *projection* — only as a filter target does it now error."""
+        """A windowed DatasetField.sql projects without a post-filter wrap."""
         query = SlayerQuery(
             population="planets",
             dimensions=["planets.name", "planets.rn"],

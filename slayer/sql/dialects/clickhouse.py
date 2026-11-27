@@ -10,18 +10,22 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Sequence
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
+from zoneinfo import ZoneInfo
 from typing import Any, ClassVar, Optional
 
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
+from slayer.core.keys import WindowKey
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity, TypeKind, kind_of
 from slayer.core.granularity import Granularity, bucket_type
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql.dialects.base import (
+    AngleFn,
     NativeFn,
     LIST_ELEMENT,
     LIST_POSITION,
@@ -41,10 +45,13 @@ from slayer.sql.dialects.base import (
     is_null,
     iso_text,
     lit,
+    literal_int,
     number_literal_text,
     pad_fill,
+    zone_name,
 )
 from slayer.sql.dialects._clickhouse_cells import array_reader, read_bool
+from slayer.sql.dialects._ordered_set_split import ranked_percentiles, split_percentile_selects
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
     TableLocation,
@@ -53,8 +60,11 @@ from slayer.sql.dialects.reflection import (
     col,
     eq_literal,
     relation,
+    unwrap_clickhouse_wrapper_str,
 )
 
+#: A ``DateTime`` / ``DateTime64`` type naming its zone: an instant.
+_ZONED_DATETIME = re.compile(r"^DateTime(64)?\s*\(.*'[^']+'\s*\)$", re.I)
 #: Byte-based string functions and their character (UTF-8) counterparts.
 _INDEX = "__slayer_i"
 _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.Upper: "upperUTF8"}
@@ -64,6 +74,13 @@ _NEVER_NULLABLE = (*exp.DataType.NESTED_TYPES, exp.DataType.Type.LOWCARDINALITY,
 
 
 _DECIMAL128_DIGITS, _DECIMAL256_DIGITS = 38, 76
+_TIME_OF_DAY_TYPES = frozenset({exp.DataType.Type.TIME, exp.DataType.Type.TIMETZ})
+
+
+def _null_when_empty(quantile: Expression, *, value: Expression) -> Expression:
+    """NULL over no non-NULL values: a quantile there is NaN or the type's default."""
+    empty = exp.EQ(this=exp.Count(this=value.copy()), expression=exp.Literal.number(0))
+    return exp.If(this=empty, true=exp.Null(), false=quantile)
 
 
 def _to_decimal(width: int) -> str:
@@ -257,6 +274,58 @@ class ClickhouseDialect(SqlDialect):
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"PI"})
 
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:
+        """ClickHouse's in-frame offsets read the whole partition; ``CUME_DIST`` as two counts; a sample statistic over
+        one row is NULL, not NaN; ``COUNT(x)`` as a sum of non-NULL flags (its own form misreads a Nullable column)."""
+        function = key.function
+        if function in ("lag", "lead"):
+            window.set("spec", exp.WindowSpec(kind="ROWS", start="UNBOUNDED", start_side="PRECEDING",
+                                              end="UNBOUNDED", end_side="FOLLOWING"))
+            return window
+        if function == "cume_dist":
+            peers = window.copy()
+            peers.set("this", exp.Count(this=exp.Star()))
+            peers.set("spec", exp.WindowSpec(kind="RANGE", start="UNBOUNDED", start_side="PRECEDING",
+                                             end="CURRENT ROW"))
+            total = exp.Window(this=exp.Count(this=exp.Star()),
+                               partition_by=[p.copy() for p in window.args.get("partition_by") or []] or None)
+            return exp.Div(this=peers, expression=total)
+        if function == "count" and not isinstance(window.this.this, exp.Star):
+            value = window.this.this
+            present = exp.If(this=exp.Not(this=exp.Is(this=value.copy(), expression=exp.Null())),
+                             true=exp.Literal.number(1), false=exp.Literal.number(0))
+            window.set("this", exp.Sum(this=present))
+            return window
+        if function in ("stddev", "stddev_samp", "variance", "var_samp"):
+            return exp.Case(ifs=[exp.If(this=anon("isNaN", window.copy()), true=exp.Null())], default=window)
+        return window
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``toTimeZone(v, Q)``; a naive value is first read as ``S`` wall clock."""
+        if source is not None:
+            value = exp.Anonymous(this="toDateTime64", expressions=[
+                exp.Anonymous(this="toString", expressions=[value]), exp.Literal.number(6), zone_name(source)])
+        return exp.Anonymous(this="toTimeZone", expressions=[value, zone_name(target)])
+
+    def zoned_timestamp_cast(self, value: Expression) -> Optional[Expression]:
+        """``toDateTime64(v, 6, Q)``: a plain cast drops the zone and with it the wall clock."""
+        return self.promote_to_timestamp(value) if self.time_zone is not None else None
+
+    def civil_read(self, value: Expression) -> Expression:
+        """Under a zone, ``DateTime64(6, Q)`` of the same wall clock: ClickHouse compares timestamps as instants."""
+        if self.time_zone is None:
+            return value
+        return exp.Anonymous(this="toDateTime64", expressions=[
+            exp.Anonymous(this="toString", expressions=[value]), exp.Literal.number(6), exp.Literal.string(self.time_zone)])
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Anonymous(this="toDateTime64", expressions=[
+            exp.Literal.string(iso_text(value)), exp.Literal.number(6), exp.Literal.string("UTC")])
+
+    def is_instant_db_type(self, type_name: str) -> bool:
+        """A ``DateTime`` / ``DateTime64`` naming a zone."""
+        return _ZONED_DATETIME.match(unwrap_clickhouse_wrapper_str(type_name)) is not None
+
     def list_length(self, values: Expression) -> Expression:
         return anon("length", values)
 
@@ -386,6 +455,9 @@ class ClickhouseDialect(SqlDialect):
     def cube_root(self, value: Expression) -> Expression:
         return anon("cbrt", value)
 
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        return anon(fn, value)
+
     def natural_log(self, value: Expression) -> Expression:
         """``ln`` is approximate (~1e-9); ``log2`` is exact."""
         return exp.Mul(this=anon("log2", value), expression=exp.Literal.number(repr(math.log(2))))
@@ -393,6 +465,20 @@ class ClickhouseDialect(SqlDialect):
     def build_is_not_distinct_from(self, left: Expression, right: Expression) -> Expression:
         """``isNotDistinctFrom`` is only allowed in ``JOIN ON``."""
         return self._expanded_null_safe_eq(left, right)
+
+    def number_to_boolean(self, value: Expression) -> Expression:
+        """A comparison yields UInt8; its own boolean results (``TRUE``, a predicate) are Bool."""
+        return exp.Cast(this=super().number_to_boolean(value), to=exp.DataType(this=exp.DataType.Type.BOOLEAN))
+
+    def build_round(self, value: Expression, digits: Expression) -> Optional[Expression]:
+        """A number literal is exact, though ClickHouse reads it as a Float64 whose ties ``round`` breaks to even."""
+        known = literal_int(digits)
+        text = number_literal_text(value)
+        if known is None or known < 0 or text is None:
+            return None
+        if max(Decimal(text).adjusted() + 1, 0) + known + 1 > _DECIMAL128_DIGITS:  # no room for the guard digit
+            return None
+        return self.round_half_away(value, known)
 
     def round_half_away(self, value: Expression, digits: int) -> Expression:
         """``round`` breaks a Float64 tie to even: the value is read as a Decimal truncated one digit past ``digits`` (a
@@ -408,8 +494,10 @@ class ClickhouseDialect(SqlDialect):
         return exp.Round(this=exact, decimals=lit(digits))
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
-        """A ``DECIMAL`` rounds through a guard digit past its precision, which Decimal256's 76 digits leave no room
-        for at precision 76."""
+        """No time-of-day type (a ``TIME`` cast reads NULL); a ``DECIMAL`` rounds through a guard digit past its
+        precision, which Decimal256's 76 digits leave no room for at precision 76."""
+        if data_type.this in _TIME_OF_DAY_TYPES:
+            return False
         parts = decimal_parts(data_type)
         if parts is not None and (parts[0] or 0) >= _DECIMAL256_DIGITS:
             return False
@@ -468,6 +556,9 @@ class ClickhouseDialect(SqlDialect):
     ) -> Expression:
         return anon("replaceRegexpAll", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("countMatches", value, self.regex_text(pattern, case_insensitive=case_insensitive))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """A native input is serialised from the cast's operand: a ``CAST(… AS JSON)`` needs an experimental
@@ -602,9 +693,9 @@ class ClickhouseDialect(SqlDialect):
         """ORDER BY a projection's expression, not its alias: a dotted alias such as
         ``orders.created_at`` resolves to the source column of that name.
 
-        A windowed projection keeps its alias.
+        A windowed projection keeps its alias. ``PERCENTILE_DISC`` is ranked: no native quantile picks ``⌈p·n⌉``.
         """
-        statement = statement.copy()
+        statement = split_percentile_selects(statement.copy(), columns=ranked_percentiles)
         for select in statement.find_all(exp.Select):
             order = select.args.get("order")
             if order is None:
@@ -627,7 +718,9 @@ class ClickhouseDialect(SqlDialect):
         ))
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
-        return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6)])
+        """``toDateTime64(x, 6)``; under a zone ``DateTime64(6, zone)``, the type a converted value has."""
+        zone = [exp.Literal.string(self.time_zone)] if self.time_zone is not None else []
+        return exp.Anonymous(this="toDateTime64", expressions=[expr.copy(), exp.Literal.number(6), *zone])
 
     def demote_to_date(self, expr: Expression) -> Expression:
         return exp.Anonymous(this="toDate", expressions=[expr])
@@ -644,6 +737,10 @@ class ClickhouseDialect(SqlDialect):
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:
             return exp.Anonymous(this="toDate", expressions=[exp.Literal.string(value.isoformat())])
+        if self.time_zone is not None:
+            # A converted value's type: the zone's wall clock.
+            zoned = exp.DataType.build(f"DateTime64(6, '{self.time_zone}')", dialect="clickhouse")
+            return exp.Cast(this=exp.Literal.string(iso_text(value)), to=zoned)
         return self.promote_to_timestamp(exp.Literal.string(iso_text(value)))
 
     def build_current_date(self) -> Expression:
@@ -654,6 +751,9 @@ class ClickhouseDialect(SqlDialect):
 
     def _date_part(self, part: DatePart, expr: Expression) -> Expression:
         """``to<Part>`` functions; ``toDayOfWeek`` is ISO (Monday=1) in its default mode."""
+        if part is DatePart.MILLISECOND:
+            micros = anon("toUnixTimestamp64Micro", anon("toDateTime64", expr, lit(6)))
+            return anon("intDiv", anon("positiveModulo", micros, lit(1_000_000)), lit(1000))
         return exp.Anonymous(this=_CH_PART_FUNCTIONS[part], expressions=[expr])
 
     def build_date_diff(
@@ -678,12 +778,25 @@ class ClickhouseDialect(SqlDialect):
         )
         return exp.Anonymous(this=_CH_ADD_FUNCTIONS[unit], expressions=[base, count.copy()])
 
-    def build_median(self, inner: Expression) -> Expression:
-        """ClickHouse: ``quantile(0.5)(x)``."""
-        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner)
+    def build_median(self, inner: Expression, *, input_type: Optional[DataType] = None) -> Expression:
+        """ClickHouse: ``quantileExactInclusive(0.5)(x)``."""
+        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner, input_type=input_type)
 
     def build_percentile(
-        self, p: Expression, col_expr: Expression,
+        self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,
     ) -> Expression:
-        """ClickHouse: parametric ``quantile(p)(x)`` syntax."""
-        return exp.Quantile(this=col_expr.copy(), quantile=p.copy())
+        """ClickHouse: the exact ``quantileExactInclusive(p)(x)`` (R-7, as ``PERCENTILE_CONT``); it refuses a
+        ``Decimal`` and a wide integer (``Int128`` …), read as a float (it interpolates in ``Float64`` anyway)."""
+        value = col_expr.copy()
+        if input_type is DataType.DECIMAL or kind_of(input_type) is TypeKind.INT:
+            value = exp.Anonymous(this="toFloat64", expressions=[value])
+        return _null_when_empty(
+            exp.ParameterizedAgg(this="quantileExactInclusive", expressions=[p.copy()], params=[value]),
+            value=col_expr,
+        )
+
+    def build_percentile_approx(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType] = None,
+    ) -> Expression:
+        """ClickHouse: the sampled ``quantile(p)(x)``."""
+        return _null_when_empty(exp.Quantile(this=col_expr.copy(), quantile=p.copy()), value=col_expr)

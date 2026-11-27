@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlglot
 from sqlglot import exp
 
 import pytest
@@ -11,6 +10,9 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import OrderItem, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.dialects.mysql import MysqlDialect
+from slayer.sql.dialects.postgres import PostgresDialect
+from slayer.sql.render.parse import parse_expression
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers_mapped
 
 from tests._dev1965_fixtures import assert_single_top_level_with, cumsum_chain, gen, parse
 from tests._engine_helpers import _engine_generate
@@ -30,22 +32,19 @@ def test_mysql_log_native_flags() -> None:
     assert d.should_use_native_log(2) is True
 
 
-# Median / percentile — not supported on MySQL
+# Median / percentile: the ordered-set aggregate, split into a window subquery at render
 
 
-def test_mysql_build_median_raises_not_implemented() -> None:
+def test_mysql_build_median_is_percentile_cont_at_half() -> None:
+    median = MysqlDialect().build_median(exp.column("amount"))
+    assert isinstance(median, exp.WithinGroup)
+    assert median.this.this.name == "0.5"
+
+
+def test_mysql_render_reads_no_ordered_set_aggregate() -> None:
     d = MysqlDialect()
-    inner = sqlglot.parse_one("amount", dialect="mysql")
-    with pytest.raises(NotImplementedError, match="median.*MySQL"):
-        d.build_median(inner)
-
-
-def test_mysql_build_percentile_raises_not_implemented() -> None:
-    d = MysqlDialect()
-    p = exp.Literal.number("0.5")
-    col_expr = exp.column("amount")
-    with pytest.raises(NotImplementedError, match="percentile.*MySQL"):
-        d.build_percentile(p=p, col_expr=col_expr)
+    select = exp.select(d.build_percentile(p=exp.Literal.number("0.9"), col_expr=exp.column("amount"))).from_("t")
+    assert not list(d.rewrite_statement(select).find_all(exp.WithinGroup))
 
 
 # stat aggs: var_samp / var_pop via Anonymous (sqlglot mis-renames otherwise)
@@ -296,3 +295,64 @@ def test_mysql_native_null_placement_is_left_alone() -> None:
         exp.Ordered(this=exp.column("a", quoted=True), desc=True, nulls_first=False),
     )
     assert MysqlDialect().rewrite_statement(statement).sql(dialect="mysql").endswith("ORDER BY `a` DESC")
+
+
+# A Mode B division is true division: MySQL's ``/`` keeps only ``div_precision_increment`` extra digits.
+
+
+def test_mysql_true_division_reads_the_dividend_as_a_double() -> None:
+    quotient = exp.Div(this=exp.Div(this=exp.column("a"), expression=exp.column("b")), expression=exp.column("c"))
+    sql = MysqlDialect().true_division(quotient).sql(dialect="mysql")
+    assert sql == "CAST(a AS DOUBLE) / b / c"
+
+
+def test_mysql_true_division_keeps_a_double_dividend() -> None:
+    quotient = exp.Div(this=exp.Cast(this=exp.column("a"), to=exp.DataType.build("DOUBLE")), expression=exp.column("b"))
+    assert MysqlDialect().true_division(quotient).sql(dialect="mysql") == "CAST(a AS DOUBLE) / b"
+
+
+async def test_mysql_query_division_is_true_division() -> None:
+    query = SlayerQuery.model_validate({"population": "orders", "distinct_dimension_values": False,
+                                        "dimensions": ["orders.id", "orders.amount / orders.id"]})
+    orders = SlayerDataset(name="orders", sql_table="orders", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="amount", datatype=DataType.INTEGER)])
+    sql = await _engine_generate(query=query, dataset=orders, dialect="mysql")
+    assert "CAST(orders.amount AS DOUBLE) / " in sql
+
+
+def test_mysql_parsed_variances_keep_mysqls_names() -> None:
+    """sqlglot writes VAR_SAMP as VARIANCE, MySQL's population variance, and VAR_POP as VARIANCE_POP, no function."""
+    tree = parse("SELECT VAR_SAMP(a), VAR_POP(a) FROM t", dialect="mysql")
+    assert MysqlDialect().rewrite_target_ast(tree).sql(dialect="mysql") == "SELECT VAR_SAMP(a), VAR_POP(a) FROM t"
+
+
+def test_mysql_variance_rename_rewrites_its_argument_too() -> None:
+    tree = parse("SELECT VAR_SAMP(TRUNC(a)) FROM t", dialect="postgres")
+    assert MysqlDialect().rewrite_target_ast(tree).sql(dialect="mysql") == "SELECT VAR_SAMP(TRUNCATE(a, 0)) FROM t"
+
+
+@pytest.mark.parametrize(("text", "emitted"), [
+    ("VARIANCE(a)", "VAR_POP(a)"), ("VAR_SAMP(a)", "VAR_SAMP(a)"), ("VAR_POP(a)", "VAR_POP(a)"),
+    ("STD(a)", "STDDEV_POP(a)"), ("STDDEV(a)", "STDDEV_POP(a)"), ("STDDEV_SAMP(a)", "STDDEV_SAMP(a)"),
+    ("t.variance + variance(x)", "t.variance + VAR_POP(x)"), ("'VARIANCE(x)'", "'VARIANCE(x)'"),
+])
+def test_mysql_text_keeps_its_statistics_meaning(text: str, emitted: str) -> None:
+    mysql = MysqlDialect()
+    assert parse_expression(sql=text, target_dialect=mysql, parse_dialect=mysql).sql(dialect="mysql") == emitted
+
+
+@pytest.mark.parametrize(("text", "emitted"), [
+    ("VARIANCE(a)", "VAR_SAMP(a)"), ("STDDEV(a)", "STDDEV_SAMP(a)"), ("VAR_POP(a)", "VAR_POP(a)"),
+    ("STDDEV_POP(a)", "STDDEV_POP(a)"),
+])
+def test_portable_statistics_keep_their_meaning_on_mysql(text: str, emitted: str) -> None:
+    tree = parse_expression(sql=text, target_dialect=MysqlDialect(), parse_dialect=PostgresDialect())
+    assert tree.sql(dialect="mysql") == emitted
+
+
+def test_a_respelled_statistic_maps_back_to_its_source() -> None:
+    text, origin = prequote_reserved_identifiers_mapped("1 + std(a)", dialect="mysql")
+    assert text == "1 + STDDEV_POP(a)"
+    assert len(origin) == len(text)
+    assert [origin[i] for i in (0, 4, text.index("("), text.index("a"))] == [0, 4, 7, 8]

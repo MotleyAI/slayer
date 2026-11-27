@@ -13,6 +13,8 @@ from typing import Dict, Iterator, List, Optional, Set, Tuple, TypeVar
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
+from slayer.sql.zoned_reads import READ_TAG
+
 UNTRUSTED_HOP = "slayer_untrusted_hop"
 # Under the save-time reserved ``__slayer_`` prefix: no column or field read through the projection can collide.
 _DIMENSION_PREFIX = "__slayer_d"
@@ -62,7 +64,7 @@ def _scope_columns(node: Expr, shadowed: frozenset[str] = frozenset()) -> Iterat
 
 
 def _sources(select: exp.Select) -> List[Expr]:
-    from_ = select.args.get("from")
+    from_ = select.args.get("from_")
     out = [from_.this] if from_ is not None else []
     return out + [j.this for j in select.args.get("joins") or []]
 
@@ -165,7 +167,7 @@ class _Projection:
 
     def _outer_parts(self) -> Iterator[Expr]:
         for key, value in self.select.args.items():
-            if key in ("from", "joins", "where"):
+            if key in ("from_", "joins", "where"):
                 continue
             for v in value if isinstance(value, list) else [value]:
                 if isinstance(v, Expr):
@@ -173,8 +175,8 @@ class _Projection:
         for j in self.outer_joins:
             if j is not self.root:
                 yield j
-        if self.select.args.get("from") is not None:
-            yield self.select.args["from"]
+        if self.select.args.get("from_") is not None:
+            yield self.select.args["from_"]
 
     def apply(self) -> None:
         inside, valued, outside = self._split_where()
@@ -262,6 +264,8 @@ class _Projection:
             if ident not in self.names:
                 self.names[ident] = self._name(column)
                 source = exp.Column(this=column.this.copy(), table=exp.to_identifier(column.table))
+                if READ_TAG in column.meta:  # the read moved inside keeps how the read path read it
+                    source.meta[READ_TAG] = column.meta[READ_TAG]
                 aliased = source.as_(_ident(column, self.names[ident]))
                 if ident in grouped:
                     group.append(source)

@@ -2,8 +2,8 @@
 
 Mirror of test_integration_postgres.py, exercising the MySQL
 dialect's variance-decomposition path for corr/covar_*, the MySQL-specific
-``VAR_SAMP``/``VAR_POP`` Anonymous overrides, and the NotImplementedError
-emitted for median/percentile.
+``VAR_SAMP``/``VAR_POP`` Anonymous overrides, and median/percentile interpolated
+over windows.
 
 Skipped silently when:
 - ``testcontainers[mysql]`` is not installed (importorskip)
@@ -14,6 +14,7 @@ The CI workflow at .github/workflows/integration-mysql.yml asserts
 in CI surfaces as a workflow failure, not a silent skip.
 """
 
+import asyncio
 import math as _math
 import statistics
 from datetime import date, timedelta
@@ -36,10 +37,27 @@ from tests._dev1737_fixtures import (
     matrix_query,
     server_seed_statements,
 )
+from tests._dev2000_fixtures import (
+    DS as TZ_DS,
+    MARKS as TZ_MARKS,
+    NY as TZ_NY,
+    ROWS as TZ_ROWS,
+    TOKYO as TZ_TOKYO,
+    amount as tz_amount,
+    day as tz_day,
+    instant_typing_queries,
+    local as tz_local,
+    marks_dataset as tz_marks_dataset,
+    orders_dataset as tz_orders_dataset,
+    orders_naive_instant_dataset,
+    row_values,
+)
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
+from tests.integration import _dev2458_matrix as dev2458
 
 from slayer.async_utils import run_sync
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
@@ -82,11 +100,21 @@ from tests._dev2101_fixtures import (
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
+    REFUSED_FUNCTIONS,
     check_library,
     check_native_json,
     lib_dataset,
     lib_query,
     server_table_statements as dev2120_table_statements,
+)
+from tests._dev2457_fixtures import server_statements as window_statements, window_datasets
+from tests._dev2457_matrix import (
+    CASE_IDS as WINDOW_CASE_IDS,
+    CASES as WINDOW_CASES,
+    WindowCase,
+    assert_typed_refusal,
+    check_case,
+    window_values,
 )
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
@@ -930,34 +958,68 @@ class TestRollupIngestionMySQL:
 
 
 # ---------------------------------------------------------------------------
-# Median / percentile — MySQL raises NotImplementedError
+# Median / percentile — interpolated over windows
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-class TestMySQLMedianPercentileRaises:
-    async def test_median_raises(self, mysql_env: SlayerQueryEngine) -> None:
+class TestMySQLMedianPercentile:
+    async def test_median(self, mysql_env: SlayerQueryEngine) -> None:
+        # amounts = [100, 200, 50, 150, 75, 300] -> median 125
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
-        with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
-            await mysql_env.execute(query=query)
+        result = await mysql_env.execute(query=query)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
-    async def test_median_grouped_raises(self, mysql_env: SlayerQueryEngine) -> None:
-        """Grouped median path goes through the same dialect hook; must also raise."""
+    async def test_percentile_quartiles(self, mysql_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"metric": "percentile(orders.total, p=0.25)"}, {"metric": "percentile(orders.total, p=0.75)"}],
+        })
+        row = (await mysql_env.execute(query=query)).data[0]
+        assert float(row["orders.total_percentile_p_0_25"]) == pytest.approx(81.25)
+        assert float(row["orders.total_percentile_p_0_75"]) == pytest.approx(187.5)
+
+    async def test_median_grouped(self, mysql_env: SlayerQueryEngine) -> None:
+        # completed: [100, 150, 200] -> 150; pending: [50, 300] -> 175; cancelled: [75] -> 75
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "median(orders.total)"}],
             "dimensions": ["orders.status"],
         })
-        with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
-            await mysql_env.execute(query=query)
+        result = await mysql_env.execute(query=query)
+        by_status = {r["orders.status"]: float(r["orders.total_median"]) for r in result.data}
+        assert by_status == pytest.approx({"completed": 150, "pending": 175, "cancelled": 75})
 
-    async def test_percentile_raises(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({
-            "population": "orders",
-            "metrics": [{"metric": "percentile(orders.total, p=0.5)"}],
-        })
-        with pytest.raises(NotImplementedError, match="(?i)percentile.*mysql"):
-            await mysql_env.execute(query=query)
+
+@pytest.fixture(scope="module")
+def _mysql_dev2458_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in dev2458.statements(dialect="mysql"):
+                    cur.execute(stmt)
+            conn.commit()
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dev2458")))
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        for model in dev2458.datasets(data_source="testmysql"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+class TestMySQLDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles — the ordered-set split's discrete pick, executed."""
+
+    @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_exact],
+                             ids=lambda c: c.__name__)
+    async def test_matrix(self, _mysql_dev2458_storage, check) -> None:
+        await dev2458.run_check(check, storage=_mysql_dev2458_storage)
 
 
 # ---------------------------------------------------------------------------
@@ -1279,15 +1341,16 @@ def planets_mysql_env(mysql_container):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_mysql_raises(planets_mysql_env) -> None:
+async def test_filter_on_windowed_column_mysql(planets_mysql_env) -> None:
+    """A filter on a windowed field applies outside the materialised window."""
     engine = planets_mysql_env
     query = SlayerQuery(
         population="planets",
         dimensions=["planets.name"],
         filter=["planets.rn <= 3"],
     )
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await engine.execute(query)
+    result = await engine.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Neptune"}
 
 
 # ---------------------------------------------------------------------------
@@ -1709,7 +1772,8 @@ def _mysql_dev2120_storage(mysql_container, tmp_path_factory):
 @pytest.mark.integration
 class TestMySQLPortableLibrary:
     async def test_library(self, _mysql_dev2120_storage) -> None:
-        await check_library(SlayerQueryEngine(storage=_mysql_dev2120_storage))
+        await check_library(SlayerQueryEngine(storage=_mysql_dev2120_storage), gated=REFUSED_FUNCTIONS["mysql"],
+                            refusal="MySQL")
 
     async def test_native_json_column(self, _mysql_dev2120_storage) -> None:
         await check_native_json(SlayerQueryEngine(storage=_mysql_dev2120_storage))
@@ -1719,6 +1783,53 @@ class TestMySQLPortableLibrary:
         for filt, expected in (("lib.word = 'ada'", {3, 4}), ("lib.word IN ('paid')", {1, 2}), ("lib.word LIKE 'ada%'", {3, 4})):
             resp = await engine.execute(lib_query(filter=[filt]))
             assert {int(r["lib.id"]) for r in resp.data} == expected, (filt, resp.sql)
+
+
+# ---------------------------------------------------------------------------
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error; NULL sorts as the largest value in a window's ordering)
+# ---------------------------------------------------------------------------
+
+_RANGE_OFFSET = "SUM(scores.score) OVER (ORDER BY scores.score{nulls} RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)"
+
+
+@pytest.fixture(scope="module")
+def _mysql_windows_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in window_statements("mysql"):
+                    cur.execute(stmt)
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_windows")))
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        for model in window_datasets(data_source="testmysql"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.fixture
+def mysql_windows(_mysql_windows_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_mysql_windows_storage)
+
+
+@pytest.mark.integration
+class TestMySQLWindows:
+    @pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+    async def test_the_matrix(self, mysql_windows: SlayerQueryEngine, case: WindowCase) -> None:
+        await check_case(mysql_windows, case)
+
+    async def test_a_placement_the_database_cannot_give_is_refused(self, mysql_windows: SlayerQueryEngine) -> None:
+        await assert_typed_refusal(mysql_windows, "scores", _RANGE_OFFSET.format(nulls=""), r"scores\.score", "MySQL")
+
+    async def test_a_stated_placement_the_database_can_give_runs(self, mysql_windows: SlayerQueryEngine) -> None:
+        got = await window_values(mysql_windows, "scores", _RANGE_OFFSET.format(nulls=" NULLS FIRST"))
+        assert {k: None if v is None else float(v) for k, v in got.items()} == {1: 10.0, 2: None, 3: 5.0}
 
 
 @pytest.fixture
@@ -1979,3 +2090,178 @@ def test_queries_keep_their_timeout_on_a_read_only_session(read_only_ds: Datasou
     finally:
         client.close()
     assert [float(r["t"]) for r in rows] == [_TIMEOUT_SET[ds_type]]
+
+
+# ---------------------------------------------------------------------------
+# Time zones (spec: queries/time-zones › Executed per dialect; MySQL without time-zone tables)
+# ---------------------------------------------------------------------------
+
+_TZ_SESSION = "--default-time-zone=+05:30"
+_TZ_MARKER = "tz_marker_total"
+
+
+def _tz_container(*, skip_tz_tables: bool) -> MySqlContainer:
+    container = MySqlContainer(
+        "mysql:8.0", username="slayer", password="slayer",  # NOSONAR(S2068) — testcontainer credentials
+        dbname="slayer_root", root_password="root",  # NOSONAR(S2068) — testcontainer credentials
+    ).with_command(_TZ_SESSION)
+    return container.with_env("MYSQL_INITDB_SKIP_TZINFO", "1") if skip_tz_tables else container
+
+
+@pytest.fixture(scope="module")
+def mysql_tz_container():
+    """A MySQL server with time-zone tables and a +05:30 session zone."""
+    with _tz_container(skip_tz_tables=False) as c:
+        yield c
+
+
+@pytest.fixture(scope="module")
+def mysql_no_tz_container():
+    """A MySQL server without time-zone tables."""
+    with _tz_container(skip_tz_tables=True) as c:
+        yield c
+
+
+def _seed_tz_db(container) -> str:
+    db_name = _create_module_db(container)
+    conn = _admin_connect(container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET time_zone = '+00:00'")  # TIMESTAMP rows hold the UTC instants of ordered_at
+            cur.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount DOUBLE, ordered_at DATETIME, "
+                "paid_at TIMESTAMP NULL, local_slot DATETIME, order_day DATE, created_raw DATETIME)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                [(i, a, ts, ts, slot, d, ts) for i, (a, ts, slot, d) in TZ_ROWS.items()],
+            )
+            cur.execute("CREATE TABLE marks (marked_at DATETIME PRIMARY KEY, label VARCHAR(32))")
+            cur.executemany("INSERT INTO marks VALUES (%s, %s)", list(TZ_MARKS.items()))
+            cur.execute("SET GLOBAL log_output = 'TABLE'")
+            cur.execute("SET GLOBAL general_log = 'ON'")
+    finally:
+        conn.close()
+    return db_name
+
+
+def _probe_count(container) -> int:
+    conn = _admin_connect(container)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM mysql.general_log WHERE command_type = 'Query' "
+                "AND argument LIKE %s AND argument NOT LIKE %s",
+                ("%CONVERT_TZ('2000-01-01 00:00:00', '+00:00'%", "%general_log%"),
+            )
+            row = cur.fetchone()
+            assert row is not None
+            return int(row[0])
+    finally:
+        conn.close()
+
+
+def _data_statements(container) -> int:
+    conn = _admin_connect(container)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM mysql.general_log WHERE command_type = 'Query' "
+                "AND argument LIKE %s AND argument NOT LIKE %s",
+                (f"%{_TZ_MARKER}%", "%general_log%"),
+            )
+            row = cur.fetchone()
+            assert row is not None
+            return int(row[0])
+    finally:
+        conn.close()
+
+
+def _tz_storage(container, db_name: str, base_dir: str) -> YAMLStorage:
+    storage = YAMLStorage(base_dir=base_dir)
+    ds = DatasourceConfig.model_validate({**_ds_config(container, db_name).model_dump(), "name": TZ_DS, "time_zone": "UTC"})
+    run_sync(storage.save_datasource(ds))
+    run_sync(storage.save_dataset(tz_orders_dataset()))
+    run_sync(storage.save_dataset(orders_naive_instant_dataset()))
+    run_sync(storage.save_dataset(tz_marks_dataset()))
+    return storage
+
+
+@pytest.fixture
+def mysql_tz_env(mysql_tz_container, tmp_path) -> Iterator[SlayerQueryEngine]:
+    db_name = _seed_tz_db(mysql_tz_container)
+    try:
+        yield SlayerQueryEngine(storage=_tz_storage(mysql_tz_container, db_name, str(tmp_path / "store")))
+    finally:
+        _drop_module_db(mysql_tz_container, db_name)
+
+
+@pytest.fixture
+def mysql_no_tz_env(mysql_no_tz_container, tmp_path) -> Iterator[SlayerQueryEngine]:
+    db_name = _seed_tz_db(mysql_no_tz_container)
+    try:
+        yield SlayerQueryEngine(storage=_tz_storage(mysql_no_tz_container, db_name, str(tmp_path / "store")))
+    finally:
+        _drop_module_db(mysql_no_tz_container, db_name)
+
+
+def _local_day_query(field: str, *, zone: str = TZ_NY) -> SlayerQuery:
+    return SlayerQuery.model_validate({
+        "population": "orders", "time_zone": zone, "metrics": [{"metric": "sum(orders.amount)", "alias": _TZ_MARKER}],
+        "time_dimensions": [{"field": f"orders.{field}", "granularity": "day"}],
+    })
+
+
+@pytest.mark.integration
+class TestMySQLTimeZones:
+    @pytest.mark.parametrize("field", ["ordered_at", "paid_at"])
+    async def test_local_day_under_a_non_utc_session(self, mysql_tz_env: SlayerQueryEngine, field: str) -> None:
+        resp = await mysql_tz_env.execute(_local_day_query(field))
+        got = {tz_day(r[f"orders.{field}"]): float(r[_TZ_MARKER]) for r in resp.data}
+        assert got == {tz_local(i, TZ_NY).date(): tz_amount(i) for i in TZ_ROWS}, resp.sql
+
+    async def test_the_zone_probe_runs_once_per_engine(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
+        before = _probe_count(mysql_tz_container)
+        await mysql_tz_env.execute(_local_day_query("ordered_at"))
+        await mysql_tz_env.execute(_local_day_query("paid_at"))
+        assert _probe_count(mysql_tz_container) - before == 2  # New York and the datasource's UTC
+
+    async def test_concurrent_statements_share_the_probe(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
+        before = _probe_count(mysql_tz_container)
+        await asyncio.gather(*(mysql_tz_env.execute(_local_day_query("ordered_at")) for _ in range(4)))
+        assert _probe_count(mysql_tz_container) - before == 2  # New York and the datasource's UTC
+
+    async def test_each_zone_probes_once(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
+        before = _probe_count(mysql_tz_container)
+        for zone in (TZ_NY, TZ_TOKYO, TZ_NY, TZ_TOKYO):
+            await mysql_tz_env.execute(_local_day_query("ordered_at", zone=zone))
+        assert _probe_count(mysql_tz_container) - before == 3  # New York, Tokyo and the datasource's UTC
+
+    async def test_instant_typing_changes_nothing_without_a_zone(self, mysql_tz_env: SlayerQueryEngine) -> None:
+        for zoned, naive in zip(instant_typing_queries("orders"), instant_typing_queries("orders_naive")):
+            got, want = await mysql_tz_env.execute(zoned), await mysql_tz_env.execute(naive)
+            assert row_values(got) == row_values(want), got.sql
+
+    async def test_missing_time_zone_tables_fail_before_the_statement(
+        self, mysql_no_tz_env: SlayerQueryEngine, mysql_no_tz_container,
+    ) -> None:
+        probes, data = _probe_count(mysql_no_tz_container), _data_statements(mysql_no_tz_container)
+        query = _local_day_query("ordered_at")
+        for _ in range(2):
+            with pytest.raises(core_errors.TimeZoneError) as info:
+                await mysql_no_tz_env.execute(query)
+            message = str(info.value)
+            assert TZ_NY in message, message
+            assert "time zone tables" in message.lower().replace("-", " "), message
+        assert _probe_count(mysql_no_tz_container) - probes == 1
+        assert _data_statements(mysql_no_tz_container) == data
+
+    async def test_a_zoned_query_converting_nothing_needs_no_zone_tables(
+        self, mysql_no_tz_env: SlayerQueryEngine, mysql_no_tz_container,
+    ) -> None:
+        probes = _probe_count(mysql_no_tz_container)
+        resp = await mysql_no_tz_env.execute(SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TZ_NY, "metrics": [{"metric": "sum(orders.amount)", "alias": "s"}],
+        }))
+        assert float(resp.data[0]["s"]) == sum(tz_amount(i) for i in TZ_ROWS), resp.sql
+        assert _probe_count(mysql_no_tz_container) == probes

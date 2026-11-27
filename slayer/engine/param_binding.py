@@ -11,7 +11,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER
+from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER, PERCENTILE_AGGREGATIONS
 from slayer.core.errors import (
     AggregationArgumentError,
     CircularRelationshipPathError,
@@ -44,6 +44,9 @@ from slayer.core.models import (
     reserved_window_param_message,
 )
 from slayer.core.scope import resolve_generated_field
+from slayer.core.syntax import (
+    BoundVariable, Literal, NamedArg, Placeholder, UnaryOp, canonical_metric_text, parse_expr,
+)
 from slayer.engine.population.anchors import anchor_route, find_anchor
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -57,6 +60,49 @@ from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 
 Path = Tuple[str, ...]
+
+
+def check_percentile_fraction(*, agg: str, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...]) -> None:
+    """Refuse a percentile's ``p`` (``args`` after the value, or named) that is not one numeric literal in [0, 1]."""
+    if agg not in PERCENTILE_AGGREGATIONS:
+        return
+    positional = [a for a in args if not isinstance(a, NamedArg)]
+    named = [v for k, v in kwargs if k.lower() == "p"] + [
+        a.value for a in args if isinstance(a, NamedArg) and a.name.lower() == "p"]
+    if positional and named:
+        raise AggregationArgumentError(f"Aggregation '{agg}' got parameter 'p' both positionally and by name.")
+    value = next(iter([*positional, *named]), None)
+    node = _unquoted(value)
+    if value is None or isinstance(node, (Placeholder, BoundVariable)):  # a variable is judged once bound
+        return
+    number = _signed_number(node)
+    if number is None:
+        raise AggregationArgumentError(
+            f"Aggregation '{agg}' parameter 'p' must be a numeric literal in [0, 1]; "
+            f"got {canonical_metric_text(value)!r}."
+        )
+    if not (number.is_finite() and 0 <= number <= 1):
+        raise AggregationArgumentError(f"Aggregation '{agg}' parameter 'p' must be in [0, 1]; got {number}.")
+
+
+def _unquoted(value: Any) -> Any:
+    """A string argument read as its unquoted Mode-B spelling, as binding reads it; ``None`` when that does not
+    parse."""
+    if not (isinstance(value, Literal) and isinstance(value.value, str)):
+        return value
+    try:
+        return parse_expr(value.value)
+    except ValueError:
+        return None
+
+
+def _signed_number(node: Any) -> Optional[Decimal]:
+    """An optionally negated numeric literal's value, else ``None``."""
+    negative = isinstance(node, UnaryOp) and node.op == "-"
+    node = node.operand if negative else node
+    if not isinstance(node, Literal) or isinstance(node.value, bool) or not isinstance(node.value, (int, Decimal)):
+        return None
+    return -Decimal(node.value) if negative else Decimal(node.value)
 FieldRef = Union[FieldKey, FieldSqlKey]
 #: Binds a query-side string argument as its unquoted spelling; raises ``QuotedArgumentRefused``.
 QuotedArgumentBinder = Callable[[str], Any]

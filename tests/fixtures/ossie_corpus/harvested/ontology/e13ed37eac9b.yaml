@@ -1,0 +1,27 @@
+document:
+  version: 0.3.0.dev0
+  name: sales
+  prefixes:
+    foaf: http://xmlns.com/foaf/0.1/
+  requires:
+  - orders.total > 0
+  ontology:
+  - concept: Order
+    type: EntityType
+    extends:
+    - Record
+    identify_by:
+    - order_id
+    iri: http://example.org/Order
+    relationships:
+    - name: order_id
+      verbalizes:
+      - '{Order} is identified by {OrderId}'
+      iri: http://example.org/orderId
+      roles:
+      - concept: OrderId
+        name: identifier
+    derived_by:
+    - 1 = 1
+    - 1 = 1
+files: {}

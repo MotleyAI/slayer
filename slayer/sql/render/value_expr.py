@@ -4,7 +4,7 @@ rather than by call site so one key can't render two ways. Field-like leaves anc
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
@@ -30,6 +30,7 @@ from slayer.core.keys import (
     TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
+    WindowKey,
     ValueKey,
     _FrozenKey,
     aggregation_source_type,
@@ -51,6 +52,7 @@ from slayer.sql.render.parse import (  # noqa: F401 — re-exported render surfa
 # The pure operator / scalar / literal composers live in the scope-free leaf
 # module ``row_expr`` so ``ScopeFrame`` can reuse them; re-imported
 # here so this module keeps its full render surface.
+from slayer.sql.render.window import render_window
 from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render surface
     DATE_FUNCTIONS,
     _literal,
@@ -95,6 +97,10 @@ def _wrap_cast_for_type(
         return expr
     if isinstance(expr, exp.Column):
         return expr
+    if dt in (DataType.DATETIME, DataType.DATETIME_TZ):
+        zoned = dialect.zoned_timestamp_cast(expr)
+        if zoned is not None:
+            return zoned
     target = data_type_target(dt)
     if isinstance(expr, exp.Cast):
         existing = expr.args.get("to")
@@ -351,7 +357,8 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
             detail="a nested-aggregate source must desugar to a producer",
         )
     else:
-        assert not isinstance(key.source, TimePointCmpKey)  # lowered by the checker before planning
+        # Lowered before planning: a comparison by the checker, a row-level window to a windowed column.
+        assert not isinstance(key.source, (TimePointCmpKey, WindowKey))
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,
         )
@@ -440,7 +447,12 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             operands = [_paren_if_binary(o) for o in operands]
         if op == "%":
             return render_modulo(key=key, operands=operands, dialect=ctx.dialect, field_type=_known_field_types(ctx))
-        return render_arithmetic(op=op, operands=operands)
+        rendered = render_arithmetic(op=op, operands=operands)
+        return ctx.dialect.true_division(rendered) if op == "/" else rendered
+
+    if isinstance(key, WindowKey):
+        return render_window(key, part=lambda a: render_value_key(key=cast(ValueKey, a), ctx=ctx), dialect=ctx.dialect,
+                             field_type=_known_field_types(ctx))
 
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":

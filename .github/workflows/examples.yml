@@ -6,10 +6,10 @@ name: Examples
 permissions:
   contents: read
 
-# A new push to the same PR cancels its run in flight.
+# A new push to a PR cancels that PR's run still in progress; other runs never cancel or queue.
 concurrency:
-  group: examples-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Caught daily; PRs run it only when they change the root image or the examples.
 on:

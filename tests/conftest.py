@@ -254,6 +254,12 @@ def _enable_scope_validation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _enable_zoned_read_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """System principle 12: every emitted temporal dataset read must carry the read path's tag."""
+    monkeypatch.setenv("SLAYER_VALIDATE_ZONED_READS", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_statement_render_during_composition(monkeypatch: pytest.MonkeyPatch) -> None:
     """python.sql.arc42.md §3.1: rendering a statement inside an AST builder fails the test."""
     statement_render_law.install(monkeypatch)

@@ -404,25 +404,9 @@ class TestSlayerModel:
         """A transform name acts as a transform only in call position."""
         assert DatasetMetric(name="cumsum", expression="sum(revenue)").name == "cumsum"
 
-    def test_model_measure_formula_with_raw_over_raises(self) -> None:
-        """A ``DatasetMetric`` expression containing raw `OVER (...)` SQL
-        cannot be parsed by SLayer's expression grammar (Python AST) and would
-        produce invalid SQL on every dialect if used as a filter. Reject at
-        construction time with an actionable error pointing at SLayer's
-        ``rank()`` / ``first()`` / ``last()`` / ``lag()`` / ``lead()`` transforms
-        or a ``DatasetField.sql``-with-window pattern.
-        """
-        with pytest.raises(ValueError) as excinfo:
-            DatasetMetric(
-                name="top_3",
-                expression="row_number() over (order by mass desc) <= 3",
-            )
-        msg = str(excinfo.value)
-        assert "window function" in msg.lower(), msg
-        assert any(
-            keyword in msg
-            for keyword in ("rank(", "first(", "last(", "lag(", "lead(", "Column.sql", "multi-stage")
-        ), msg
+    def test_model_measure_formula_with_raw_over_constructs(self) -> None:
+        metric = DatasetMetric(name="top_3", expression="row_number() over (order by mass desc) <= 3")
+        assert metric.expression == "row_number() over (order by mass desc) <= 3"
 
     def test_filter_bare_column_allowed(self) -> None:
         """Bare field names in dataset filters are valid."""

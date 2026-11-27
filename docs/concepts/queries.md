@@ -19,6 +19,7 @@ A `SlayerQuery` specifies what data to retrieve from a dataset.
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap time bounds to bucket boundaries and exclude the current incomplete bucket — see [Time](time.md#whole_periods_only) |
+| `time_zone` | str | No | IANA zone timestamps are bucketed, filtered and returned in; a stage without one takes the final stage's — see [Time zones](time.md#time-zones) |
 | `to_many_handling` | str | No | How an aggregate resolves query dimensions [unattributable from its root](#cross-dataset-metrics). Omitted (the default) or `associate`: per-cell value over the distinct associated rows; or `error` (refuse). Semi-join-pushed filters are always applied and never error. |
 
 A key a query, refinement or entry does not read is refused with an `UnknownKeyError` naming it, its location and the keys that object takes; a camelCase spelling of a key it takes (`timeDimensions`, `dateRange`) is read as the snake_case key. On a query (not a [refinement](#refining-a-saved-query)), `null` for a setting that cannot be null, such as `whole_periods_only` or `distinct_dimension_values`, means its default.
@@ -278,7 +279,7 @@ Query results are returned as a `SlayerResponse`:
 | `population_inferred` | bool | Whether the rows were inferred (no `population` given, or a saved stage's pinned anchor) |
 | `row_sources` | list[str] | The datasets whose rows supplied the result; `["unit"]` with no dimensions |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.metrics`, each a dict of column alias → FieldMetadata (label, format) |
-| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a value repeated by the deprecated `broadcast` mode (`"broadcast"` — `metric`, `location`, per-dimension `dimensions[].reason`, and `partition_by`, the dimensions giving the same values without a warning), a distinct-entity attribution over an unattributable dimension (`"associated"` — `metric`, `location`, `dimensions`; cells overlap and are not additive), an aggregate over a dataset no relationship path reaches (`"unrelated_dataset"` — `dataset`, `population`, `metrics`, `location`), a semi-join-pushed filter (`"semi_join_pushed"` — `metric` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `field`, `granularities`, `location`), a [list](#list-fields) read as its element set (`"whole_list"` — `operation`: `group` or `count_distinct`, `list`), and a deprecated input form that was converted (`"deprecated_input"` — `old`, `new`, `removal`; see [Upgrading to 2.0](../upgrading/2.0.md)) |
+| `warnings` | list[SlayerWarning] | Advisories, discriminated by `kind`: input normalizations (`"normalization"`), a value repeated by the deprecated `broadcast` mode (`"broadcast"` — `metric`, `location`, per-dimension `dimensions[].reason`, and `partition_by`, the dimensions giving the same values without a warning), a distinct-entity attribution over an unattributable dimension (`"associated"` — `metric`, `location`, `dimensions`; cells overlap and are not additive), an aggregate over a dataset no relationship path reaches (`"unrelated_dataset"` — `dataset`, `population`, `metrics`, `location`), a semi-join-pushed filter (`"semi_join_pushed"` — `metric` (`null` for a population-level push), `location`, `filter_text`), a query run without its statement timeout (`"statement_timeout_skipped"` — `datasource`, `timeout_seconds`, `reason`: `readonly_user` or `timeout_rejected`), [`whole_periods_only`](time.md#whole_periods_only) over non-nesting granularities (`"whole_periods_non_nesting"` — `field`, `granularities`, `location`), a [list](#list-fields) read as its element set (`"whole_list"` — `operation`: `group` or `count_distinct`, `list`), a timestamp read as stored under a query zone because it has no source zone (`"time_zone_undeclared"` — `dataset`, `field`, `path`, `time_zone`; see [Time zones](time.md#time-zones)), and a deprecated input form that was converted (`"deprecated_input"` — `old`, `new`, `removal`; see [Upgrading to 2.0](../upgrading/2.0.md)) |
 
 `columns` — and the key order of each row in `data` — follows the order you
 declared fields in the query: dimensions, then time dimensions, then metrics,
@@ -484,16 +485,12 @@ The [list functions](references.md#lists) test a whole list, and [Database suppo
 
 ### Window functions in filters
 
-Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
-
-* **Raw `OVER (...)` in filter strings is rejected at SlayerQuery construction.** Inline window-function SQL inside a query filter or `DatasetMetric.expression` is not parseable by SLayer's expression grammar.
-* **Filtering on a `DatasetField` whose `sql` contains a window function is rejected at enrichment.** A query filter `"orders.rn <= 3"` against a field whose `sql` is `row_number() over (...)` raises with a suggestion to use a rank-family transform.
-
-Use one of:
-
-* `rank(<metric>, direction='desc') <= N` (or `dense_rank` / `percent_rank` / `ntile(<metric>, n=N)`) for ranking — simpler and dialect-portable. Pass `partition_by=` to rank within groups.
-* `first(x)` / `last(x)` / `lag(x, n)` / `lead(x, n)` for time-based window transforms.
-* A multi-stage `source_queries` dataset where the window computation lives in an earlier stage.
+A filter may hold a window function. A row-level one (no aggregate among its operands) is a column of its dataset,
+computed before the query's filters, so `ROW_NUMBER() OVER (PARTITION BY orders.region ORDER BY orders.ordered_at) = 1`
+keeps each region's first order whatever else the query filters. A measure-level one (`RANK() OVER (ORDER BY
+SUM(orders.amount) DESC) = 1`) filters cells, like a transform. See
+[SQL window functions](expressions.md#sql-window-functions-over). Under `conformance="ossie-l3"` a window in the
+filter is Ossie's `E_WINDOW_IN_WHERE`.
 
 ### Variables
 
@@ -592,7 +589,7 @@ await engine.execute("monthly_revenue", refine={"order": [{"field": "revenue", "
 
 - `dimensions` and `metrics` are appended; an entry identical to a saved one (`orders.region`, or its pre-2.0 spelling `region`) collapses, and a same-named entry that differs raises `RefinementConflictError`.
 - `time_dimensions` merge per (field, granularity): a refinement may add a `date_range` or `label` the saved one lacks, but a different value conflicts — narrow a saved window with a filter on the time field instead.
-- `filter` conditions are appended to the saved ones, skipping any the saved filter already has (the merged filter is then a list); `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values` and `to_many_handling` replace the saved value (`{"limit": null}` clears a saved limit; a null `to_many_handling` keeps the saved mode).
+- `filter` conditions are appended to the saved ones, skipping any the saved filter already has (the merged filter is then a list); `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`, `distinct_dimension_values`, `to_many_handling` and `time_zone` replace the saved value (`{"limit": null}` clears a saved limit, `{"time_zone": null}` a saved zone; a null `to_many_handling` keeps the saved mode).
 - `population`, `name` and `variables` are not refinable; `refine` with a query object or list is an error.
 
 For a multi-stage saved query only the final stage is refined, so it can use only what the earlier stages project: refining `[{"name": "per_customer", ...}, {"population": "per_customer", "metrics": [{"metric": "avg(per_customer.revenue)", "alias": "avg_revenue"}]}]` with `{"dimensions": ["per_customer.region"]}` averages per region, provided `per_customer` projects `region`.
@@ -613,6 +610,7 @@ Omit `population` and the rows are the **row supply**:
 - A metric whose aggregates don't reach every dimension (`partition_by=`, an [unrelated dataset](#cross-dataset-metrics)) supplies the rows of the **dimension anchor** that agree with it.
 - With no metrics, the rows are the dimension anchor's: the smallest dataset that determines every dimension along to-one paths, read from the dimensions only, never from filters or metrics. Dimension groups no relationship path connects take the product of their anchors.
 - With no dimensions there is exactly one row, even when a filter matches nothing.
+- Only `metrics` supply rows: an aggregate in a filter, an order entry or a computed dimension reads them and adds none.
 - Filters restrict every home's rows (and the anchor's) before anything is counted. They never pick where rows come from, so adding a filter never adds a row or changes a result key — except a computed dimension read from an aggregate over the filtered rows.
 
 <!-- doc-check: not-a-query -->

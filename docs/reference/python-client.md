@@ -120,6 +120,23 @@ await client.replace_semantic_model("sales", data_source="mydb", content=new_tex
 await client.delete_semantic_model("sales", data_source="mydb")  # deletes its datasets too; False when absent
 ```
 
+### Ontologies and mappings
+
+Async methods, each with a `_sync` twin. See [Ontologies and mappings](../concepts/ontologies.md).
+
+```python
+name = await client.create_ontology(content=open("flights.ontology.yaml").read())   # stored under its own name
+notes = await client.create_ontology_mapping(data_source="flights", content=open("flights.mapping.yaml").read())
+await client.list_ontologies()                                  # [{"name": "Flights"}]
+await client.list_ontology_mappings(data_source="flights")      # [{"data_source": "flights", "name": "flights_mapping"}]
+text = await client.get_ontology("Flights")                     # the stored text; None when absent
+await client.replace_ontology_mapping("flights_mapping", data_source="flights", content=new_text)
+await client.delete_ontology_mapping("flights_mapping", data_source="flights")
+await client.delete_ontology("Flights")                         # refused while a mapping resolves against it
+```
+
+A refused document raises a `ValueError` listing every problem. `create_ontology`, `replace_ontology`, `create_ontology_mapping`, `replace_ontology_mapping`, `create_semantic_model` and `replace_semantic_model` take `warnings_out`, a list receiving the identifier and multiplicity mismatches the save touches (without it they are Python warnings).
+
 ### Inspect
 
 `inspect` / `inspect_sync` is a point lookup: the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`dataset` grouped by datasource, or `datasource`); other kinds raise. Subsumes `datasets_summary` / `list_datasources`.

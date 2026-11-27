@@ -31,6 +31,7 @@ from slayer.inspect.collection_render import (
 )
 from slayer.inspect.dataset_render import (
     _TRUNCATION_MARKER,
+    _resolve_inspect_sections,
     _truncate_description,
     load_visible_datasets,
     dataset_skeleton_fields,
@@ -49,6 +50,12 @@ from slayer.search.render import (
     expression_text,
     render_model_scoped_metric_text,
 )
+from slayer.inspect.ontology_render import (
+    capped_descriptions, dataset_concept_lines, dataset_concepts_payload, field_concept_lines, ontology_document_view,
+    relationship_concept_lines,
+)
+from slayer.ontology.use import DatasetAnnotations, FieldAnnotation, RelationshipAnnotation
+from slayer.search.concepts import concept_annotations
 from slayer.storage.base import StorageBackend
 
 try:  # SlayerQueryEngine is only needed for the dataset sample-data path.
@@ -57,7 +64,8 @@ except Exception:  # pragma: no cover - engine import always succeeds in-repo
     SlayerQueryEngine = None  # type: ignore[assignment, misc]
 
 VALID_ENTITY_TYPES = {
-    "datasource", "dataset", "field", "metric", "aggregation", "memory", "semantic_model",
+    "datasource", "dataset", "field", "metric", "aggregation", "memory", "semantic_model", "ontology",
+    "ontology_mapping",
 }
 _VALID_FORMATS = {"markdown", "json"}
 
@@ -92,6 +100,23 @@ def load_warnings(dataset: SlayerDataset, *, kind: str | None = None, name: str 
     out = [f"{k} {e.name!r}: {e.load_warning}" for k, entities in (("field", dataset.fields), ("metric", dataset.metrics))
            for e in entities if e.load_warning and wanted(k, e.name)]
     return out + [n.message for n in dataset.extension_notes if wanted(n.kind, n.entity)]
+
+
+def _with_concepts(payload: dict[str, Any], *, dataset: SlayerDataset, held: DatasetAnnotations) -> dict[str, Any]:
+    """A full dataset json ``payload`` with its, its fields' and its relationships' concepts."""
+    payload.update(dataset_concepts_payload(held))
+    for entry in payload.get("fields") or []:
+        entry["concepts"] = [a.model_dump() for a in held.of_field(entry["name"])]
+    for entry in payload.get("relationships") or []:
+        entry["concepts"] = [a.model_dump() for a in held.of_relationship(
+            dataset=dataset.name, to=entry["to"], from_columns=entry["from_columns"], to_columns=entry["to_columns"])]
+    return payload
+
+
+def _field_concepts(held: DatasetAnnotations, *, dataset: SlayerDataset, ontology: str) -> list[tuple[str, str]]:
+    """Each ``(concept, field name)`` of ``dataset`` annotated from ``ontology``, entity concepts included."""
+    return [(concept, field.name) for field in dataset.fields for a in held.of_field(field.name)
+            if a.ontology == ontology for concept in (a.concept, a.entity) if concept is not None]
 
 
 def _warn_line(*, arg: str, entity_type: str) -> str:
@@ -237,6 +262,9 @@ class InspectService:
             )
         if entity_type == "semantic_model":
             return await self._inspect_semantic_model(reference=reference, fmt=fmt, warnings=warnings)
+        if entity_type in ("ontology", "ontology_mapping"):
+            return await self._inspect_ontology_document(reference=reference, kind=entity_type, compact=compact,
+                                                         fmt=fmt, warnings=warnings)
         # field / metric / aggregation
         return await self._inspect_leaf(
             reference=reference, entity_type=entity_type, compact=compact,
@@ -673,6 +701,7 @@ class InspectService:
                 "canonical_id": ds_name,
                 "entity_type": "datasource",
                 "description": trunc_desc,
+                **({"time_zone": cfg.time_zone} if cfg is not None and cfg.time_zone else {}),
                 "granularities": granularities,
                 "datasets": [
                     dataset_skeleton_fields(
@@ -686,6 +715,8 @@ class InspectService:
         md_lines: list[str] = [f"Datasource: {ds_name}"]
         if trunc_desc:
             md_lines.append(f"Description: {trunc_desc}")
+        if cfg is not None and cfg.time_zone:
+            md_lines.append(f"Time zone: {cfg.time_zone}")
         if granularities:
             md_lines.append("Custom granularities: " + ", ".join(
                 f"`{g['name']}` ({g['multiple']} × {g['base']} from {g['origin']})" for g in granularities
@@ -734,27 +765,11 @@ class InspectService:
                 f"(reference '{reference}')."
             ))
         warnings = [*warnings, *load_warnings(dataset)]
+        held = await self._dataset_concepts(dataset, max_chars=descriptions_max_chars)
         if compact:
-            # DB-free skeleton; short-circuits the full renderer's DB work.
-            saved_queries = saved_queries_index(
-                await self._load_visible_datasets(ds_name), max_chars=descriptions_max_chars,
-            ).get(dataset.name)
-            if fmt == "json":
-                payload = dict(dataset_skeleton_fields(
-                    dataset=dataset, max_chars=descriptions_max_chars, saved_queries=saved_queries,
-                ))
-                payload["canonical_id"] = canonical
-                payload["entity_type"] = "dataset"
-                payload["warnings"] = warnings
-                return _OneResult(
-                    canonical, False, json.dumps(payload, indent=2, default=str),
-                )
-            body = render_dataset_skeleton(
-                dataset=dataset, max_chars=descriptions_max_chars, saved_queries=saved_queries,
-            )
-            return _OneResult(canonical, False, self._markdown_with_warnings(
-                f"# `{dataset.name}`\n{body}", warnings,
-            ))
+            return await self._compact_dataset(dataset=dataset, data_source=ds_name, canonical=canonical, held=held,
+                                               fmt=fmt, descriptions_max_chars=descriptions_max_chars,
+                                               warnings=warnings)
         rendered = await render_dataset_inspection(
             dataset=dataset,
             storage=self._storage,
@@ -766,15 +781,78 @@ class InspectService:
             descriptions_max_chars=descriptions_max_chars,
         )
         if fmt == "json":
-            payload = json.loads(rendered)
+            payload = _with_concepts(json.loads(rendered), dataset=dataset, held=held)
             payload["canonical_id"] = canonical
             payload["warnings"] = warnings
             return _OneResult(
                 canonical, False, json.dumps(payload, indent=2, default=str),
             )
+        concepts = await self._dataset_concept_markdown(dataset, held, sections=sections)
         return _OneResult(
-            canonical, False, self._markdown_with_warnings(rendered, warnings),
+            canonical, False, self._markdown_with_warnings("\n\n".join([rendered, *concepts]), warnings),
         )
+
+    async def _compact_dataset(self, *, dataset: SlayerDataset, data_source: str, canonical: str,
+                               held: DatasetAnnotations, fmt: str, descriptions_max_chars: int | None,
+                               warnings: list[str]) -> _OneResult:
+        """DB-free skeleton; short-circuits the full renderer's DB work."""
+        saved_queries = saved_queries_index(
+            await self._load_visible_datasets(data_source), max_chars=descriptions_max_chars,
+        ).get(dataset.name)
+        if fmt == "json":
+            payload = dict(dataset_skeleton_fields(
+                dataset=dataset, max_chars=descriptions_max_chars, saved_queries=saved_queries,
+            ))
+            payload.update(dataset_concepts_payload(held))
+            payload["canonical_id"] = canonical
+            payload["entity_type"] = "dataset"
+            payload["warnings"] = warnings
+            return _OneResult(
+                canonical, False, json.dumps(payload, indent=2, default=str),
+            )
+        body = "\n".join([render_dataset_skeleton(
+            dataset=dataset, max_chars=descriptions_max_chars, saved_queries=saved_queries,
+        ), *dataset_concept_lines(held)])
+        return _OneResult(canonical, False, self._markdown_with_warnings(
+            f"# `{dataset.name}`\n{body}", warnings,
+        ))
+
+    async def _dataset_concepts(self, dataset: SlayerDataset, *, max_chars: int | None = None) -> DatasetAnnotations:
+        """``dataset``'s concept annotations as the caller sees them, descriptions cut to ``max_chars``."""
+        held = await concept_annotations(self._storage, dataset.data_source) if dataset.data_source else None
+        return capped_descriptions(held.of(dataset.name), max_chars) if held is not None else DatasetAnnotations()
+
+    async def _dataset_concept_markdown(self, dataset: SlayerDataset, held: DatasetAnnotations, *,
+                                        sections: list[str] | None) -> list[str]:
+        """The ontology section of a full dataset view: its concepts, and its visible fields' and its relationships'
+        when those sections are shown."""
+        if held.empty and not held.lineups:
+            return []
+        shown, _ = _resolve_inspect_sections(sections)
+        lines = [*dataset_concept_lines(held)]
+        for field in (f for f in dataset.fields if not f.hidden and "fields" in shown):
+            found = field_concept_lines(held.of_field(field.name))
+            lines += [f"Field `{field.name}`:", *found[1:]] if found else []
+        if "relationships" in shown:
+            peers, _ = await self._storage.load_datasets(data_source=dataset.data_source)
+            for name, lined_up in self._relationship_concepts(dataset, held, peers=peers):
+                lines += relationship_concept_lines(name, lined_up)
+        return ["## Ontology concepts\n" + "\n".join(lines)] if lines else []
+
+    @staticmethod
+    def _relationship_concepts(dataset: SlayerDataset, held: DatasetAnnotations, *,
+                               peers: list[SlayerDataset]) -> list[tuple[str, list[RelationshipAnnotation]]]:
+        """Each relationship to or from ``dataset`` and the ontology relationships it lines up with."""
+        out: list[tuple[str, list[RelationshipAnnotation]]] = []
+        declared = [(dataset, r) for r in dataset.relationships] + [
+            (p, r) for p in peers if p.name != dataset.name for r in p.relationships if r.to == dataset.name]
+        for owner, relationship in declared:
+            found = held.of_relationship(dataset=owner.name, to=relationship.to,
+                                         from_columns=[a for a, _ in relationship.column_pairs],
+                                         to_columns=[b for _, b in relationship.column_pairs])
+            if found:
+                out.append((relationship.name or f"{owner.name} → {relationship.to}", found))
+        return out
 
     async def _resolve_dataset_canonical(self, reference: str) -> str | None:
         """Resolve ``reference`` to a ``<ds>.<dataset>`` id, even when the resolver picked a same-named datasource."""
@@ -845,11 +923,13 @@ class InspectService:
             if p.canonical_id == canonical and p.kind == entity_type
         ]
         if len(matches) == 1:
+            concepts = (await self._dataset_concepts(dataset, max_chars=descriptions_max_chars)).of_field(leaf) \
+                if entity_type == "field" else []
             body = self._render_leaf_entry(
                 entry=matches[0], canonical=canonical, entity_type=entity_type,
                 compact=compact, fmt=fmt,
                 descriptions_max_chars=descriptions_max_chars,
-                warnings=warnings,
+                warnings=warnings, concepts=concepts,
             )
             return _OneResult(canonical, False, body)
         return _OneResult(canonical, True, self._leaf_lookup_error(
@@ -895,6 +975,45 @@ class InspectService:
                   "Model-scoped metrics:" if metrics else "Model-scoped metrics: _(none)_",
                   *(f"- `{m.name}`: {expression_text(m.expression)}" for m in metrics)]
         return _OneResult(canonical, False, self._markdown_with_warnings("\n".join(lines), warnings))
+
+    async def _inspect_ontology_document(self, *, reference: str, kind: str, compact: bool, fmt: str,
+                                         warnings: list[str]) -> _OneResult:
+        """An ontology (``Name``) or a mapping (``<datasource>.<name>``): compact, its description, what it names and,
+        for a mapping, whether it resolves; full, its stored text."""
+        found = await self._ontology_documents_named(reference, kind=kind)
+        if len(found) != 1:
+            what = "no" if not found else "more than one"
+            label = "ontology" if kind == "ontology" else "mapping; pass '<datasource>.<name>'"
+            return _OneResult(None, True, f"'{reference}' names {what} {label}.")
+        ds, name = found[0]
+        text = await (self._storage.get_ontology_text(name) if ds is None
+                      else self._storage.get_ontology_mapping_text(name, ds)) or ""
+        problems = await self._storage.ontology_mapping_problems(name, ds) if ds is not None else None
+        fields = await self._concept_fields(name) if ds is None else None
+        rendered = ontology_document_view(kind=kind, name=name, data_source=ds, text=text, problems=problems,
+                                          compact=compact, fmt=fmt, fields=fields)
+        canonical = name if ds is None else f"{ds}.{name}"
+        return _OneResult(canonical, False, rendered if fmt == "json" else self._markdown_with_warnings(rendered,
+                                                                                                       warnings))
+
+    async def _ontology_documents_named(self, reference: str, *, kind: str) -> list[tuple[str | None, str]]:
+        """The ``(datasource, name)`` of each ontology (datasource ``None``) or mapping ``reference`` names."""
+        if kind == "ontology":
+            return [(None, n) for n in await self._storage.list_ontologies() if n == reference]
+        ds_hint, _, name = reference.partition(".") if "." in reference else ("", "", reference)
+        return [(ds, n) for ds, n in await self._storage.list_ontology_mappings(ds_hint or None) if n == name]
+
+    async def _concept_fields(self, ontology: str) -> dict[str, list[str]]:
+        """The canonical ids of the visible fields annotated with each concept of ``ontology``."""
+        out: dict[str, set[str]] = {}
+        for data_source in sorted({ds for ds, _ in await self._storage.list_ontology_mappings()}):
+            held = await concept_annotations(self._storage, data_source)
+            if held is None:
+                continue
+            for dataset in (await self._storage.load_datasets(data_source=data_source))[0]:
+                for concept, field_name in _field_concepts(held.of(dataset.name), dataset=dataset, ontology=ontology):
+                    out.setdefault(concept, set()).add(f"{data_source}.{dataset.name}.{field_name}")
+        return {concept: sorted(ids) for concept, ids in out.items()}
 
     async def _inspect_model_scoped(self, *, reference: str, fmt: str, warnings: list[str]) -> _OneResult | None:
         """A bare model-scoped metric name, rendered as such; ``None`` when no datasource declares one."""
@@ -959,6 +1078,7 @@ class InspectService:
         fmt: str,
         descriptions_max_chars: int | None,
         warnings: list[str],
+        concepts: list[FieldAnnotation] | None = None,
     ) -> str:
         trunc_desc = _truncate_description(
             text=entry.description, max_chars=descriptions_max_chars,
@@ -978,9 +1098,12 @@ class InspectService:
             }
             if show_full:
                 payload["text"] = full_text
+            if concepts:
+                payload["concepts"] = [a.model_dump() for a in concepts]
             payload["warnings"] = warnings
             return json.dumps(payload)
-        body = full_text if show_full else (trunc_desc or "")
+        body = "\n".join(p for p in [full_text if show_full else (trunc_desc or ""),
+                                     *field_concept_lines(concepts or [])] if p)
         return self._markdown_with_warnings(body, warnings)
 
     @staticmethod

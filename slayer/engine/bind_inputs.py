@@ -37,12 +37,21 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    lower_collapsing_constituents,
+    default_nested_grains,
     lower_sugar_transforms,
-    normalize_transform_constituents,
     attached_operand_keys,
+    explicit_ranking_key,
+    is_ranked_over_cells,
     is_reaggregation_key,
     rewrite_rank_partition_keys,
+    operand_constituents,
+    settle_ranked_grains,
+    unmark_written_grains,
+    written_grained_aggregates,
+    source_anchor_path,
+    substitute_value_keys,
+    transform_operand_grain,
+    value_grain,
     walk_value_keys,
     window_kwarg_of,
 )
@@ -103,14 +112,20 @@ from slayer.engine.elaborate_env import (
     time_dimension_type,
     check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
+    check_window_keys_in_operand_grain,
     check_time_transforms_resolved,
+    check_ranking_key_determined,
+    grain_display,
     coerce_text_numbers,
     coerce_zoned_comparisons,
     resolve_time_points,
     date_only_notices,
 )
-from slayer.engine.cardinality.relationship_safety import assert_partition_key_analysable
+from slayer.engine.cardinality.relationship_safety import (
+    assert_partition_key_analysable, grain_determines, grain_member_attributable,
+)
 from slayer.engine.population.home import as_home_field
+from slayer.engine.ranked_planner import temporal_row_dimension_key
 from slayer.engine.key_metadata import (
     SlotTyping,
     bundle_dialect,
@@ -151,7 +166,7 @@ from slayer.ir.bound import (
     DeclaredMetric,
     OrderSpec,
 )
-from slayer.ir.prebound import ModePolicy, PreboundQuery, partition_declared_metrics
+from slayer.ir.prebound import ModePolicy, PreboundQuery, partition_declared_metrics, walk_key_path
 from slayer.ir.source_bundle import InnerRestriction, ResolvedSourceBundle, resolve_scope
 from slayer.sql.naming import canonical_aggregate_alias, flat_name as _flatten_dotted, expression_text_alias
 
@@ -167,7 +182,8 @@ _TIME_NEEDING_TRANSFORM_OPS = TIME_TRANSFORMS
 
 
 def _attach_time_keys(key: ValueKey, *, td_key: TimeTruncKey) -> ValueKey:
-    """Set ``time_key=td_key`` on every time-needing TransformKey with a null one (identity-preserving)."""
+    """Set ``time_key=td_key`` on every time-needing TransformKey with a null one, and rank an unkeyed ``first`` /
+    ``last`` over an aggregate by it (identity-preserving)."""
     rebuilt = cast(ValueKey, key.map_children(lambda c: _attach_time_keys(c, td_key=td_key)))
     if (
         isinstance(rebuilt, TransformKey)
@@ -175,6 +191,8 @@ def _attach_time_keys(key: ValueKey, *, td_key: TimeTruncKey) -> ValueKey:
         and rebuilt.time_key is None
     ):
         return rebuilt.model_copy(update={"time_key": td_key})
+    if is_ranked_over_cells(rebuilt) and not rebuilt.args and window_kwarg_of(rebuilt) is None:
+        return rebuilt.model_copy(update={"args": (td_key,)})
     return rebuilt
 
 
@@ -781,20 +799,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         _td_key_set.add(vk)
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
-    # Normalise transform constituents (D4b, Axiom 11.1): an ungrained, non-windowed,
-    # local inner aggregate inside a transform constituent (metric/filter/order, not
-    # dimensions) is explicitly grained at the query grain — BEFORE partition-key
-    # validation, so the synthesized keys face the same attributability / resolution
-    # checks as a user-written partition_by=. Every dependent set below (dim-agg,
-    # combined-consumer, reagg-operand) is computed AFTER, over the normalised keys.
     _query_grain = Grain.of([*_dim_key_set, *_td_key_set])
-    declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lambda vk: normalize_transform_constituents(vk, query_grain=_query_grain),
-        declared_metrics=declared_metrics,
-        bound_filters=bound_filters,
-        order_specs=order_specs,
-        skip_dimensions=True,
-    )
 
     # An aggregate's "must be a query dimension" rule is positional — judged by the
     # checker after typing. A transform nested in an attached operand declares an
@@ -838,6 +843,49 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
+    # A ranked aggregation's grain drops its ranking key (semantics Axiom 5), before any grain is read: the
+    # dimensions settle first, and every other position reads them, and the grain, as settled.
+    def _settle(vk: ValueKey) -> ValueKey:
+        return settle_ranked_grains(vk, query_grain=_query_grain, active_bucket=active_td_key, row_default_key=_default_key)
+
+    _default_key = _row_default_key_resolver(
+        row_keys=[dm.bound.value_key for dm in declared_metrics[:n_dims + n_tds]], scope=scope, bundle=bundle,
+    )
+    n_grain = n_dims + n_tds
+    settled_dims = [_settle(dm.bound.value_key) for dm in declared_metrics[:n_grain]]
+    renamed = {dm.bound.value_key: s for dm, s in zip(declared_metrics, settled_dims) if s != dm.bound.value_key}
+    _query_grain = Grain.of(settled_dims)
+    if renamed:
+        declared_metrics, bound_filters, order_specs = _map_bound_keys(
+            lambda vk: substitute_value_keys(key=vk, mapping=renamed),
+            declared_metrics=declared_metrics,
+            bound_filters=bound_filters,
+            order_specs=order_specs,
+            skip_dimensions=True,
+        )
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: default_nested_grains(vk, query_grain=_query_grain, active_bucket=active_td_key),
+        declared_metrics=declared_metrics,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+        skip_dimensions=True,
+    )
+    # collected after the defaulting, so a written aggregate compares with its nested grains defaulted too
+    _written = written_grained_aggregates([
+        *settled_dims, *(dm.bound.value_key for dm in declared_metrics[n_grain:]),
+        *(bf.value_key for bf in bound_filters), *(sp.bound.value_key for sp in order_specs),
+    ])
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: _settle(unmark_written_grains(vk, written=_written)),
+        declared_metrics=declared_metrics,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+        skip_dimensions=True,
+    )
+    declared_metrics = [
+        dm.model_copy(update={"bound": dm.bound.model_copy(update={"value_key": s})})
+        for dm, s in zip(declared_metrics, settled_dims)
+    ] + declared_metrics[n_grain:]
     check_transform_partition_keys_in_operand_grain(
         roots=[
             *(dm.bound.value_key for dm in declared_metrics),
@@ -846,22 +894,26 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         ],
         query_grain=_query_grain, active_bucket=active_td_key,
     )
+    check_window_keys_in_operand_grain(
+        roots=[
+            *(dm.bound.value_key for dm in declared_metrics),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        query_grain=_query_grain, active_bucket=active_td_key,
+        root=scope.population.name if scope.population is not None else None,
+    )
 
     check_temporal_axis(
         declared_metrics, bound_filters=bound_filters, order_specs=order_specs,
         query_grain=_query_grain, active_bucket=active_td_key,
     )
-
-    # Lower a collapsing transform constituent (first/last, D4c) to an exact
-    # per-partition pick AFTER the axis check (which sees the raw transform); the
-    # synthesized max's partition_by is a carrier grain key, validated inside the
-    # carrier sub-plan, so it runs after _rw. All positions.
-    declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lower_collapsing_constituents,
-        declared_metrics=declared_metrics,
-        bound_filters=bound_filters,
-        order_specs=order_specs,
-    )
+    if scope.population is not None:
+        _check_ranking_keys_determined(
+            [*(dm.bound.value_key for dm in declared_metrics), *(bf.value_key for bf in bound_filters),
+             *(sp.bound.value_key for sp in order_specs)],
+            query_grain=_query_grain, active_bucket=active_td_key, host=scope.population, bundle=bundle,
+        )
     declared_metrics, bound_filters, order_specs, main_time_key = _home_value_positions(
         declared_metrics, bound_filters=bound_filters, order_specs=order_specs, n_grain=n_dims + n_tds,
         n_date_range=n_date_range, active_td_key=active_td_key, scope=scope, bundle=bundle,
@@ -888,6 +940,86 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
 
 # Helpers
+
+
+def _check_ranking_keys_determined(
+    roots: List[ValueKey], *, query_grain: Grain, active_bucket: Optional[TimeTruncKey],
+    host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    """A ranked aggregation's key is a field of its home dataset (semantics Axiom 2.4). Over an aggregate: a grain
+    member, a field the grain pins, or an attached value at a grain the operand determines; over rows, an attached
+    value at a grain the home's rows determine (row-level keys are judged by closure at plan time)."""
+    for k in (k for root in roots for k in walk_value_keys(root)):
+        if not isinstance(k, AggregateKey):
+            continue
+        rk = explicit_ranking_key(k)
+        if rk is None or rk == active_bucket:  # the time axis is check_temporal_axis's
+            continue
+        if is_ranked_over_cells(k):
+            _check_key_over_cells(k, rk=rk, query_grain=query_grain, active_bucket=active_bucket, host=host,
+                                  bundle=bundle)
+        else:
+            _check_key_over_rows(k, rk=rk, query_grain=query_grain, active_bucket=active_bucket, host=host,
+                                 bundle=bundle)
+
+
+def _row_default_key_resolver(
+    *, row_keys: List[ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Callable[[AggregateKey], Optional[ValueKey]]:
+    """A ranked aggregation's default ranking key among the query's dimensions: the first temporal row-level one its
+    home determines, by the predicate its explicit key meets (functional-form › Default ranking key)."""
+    host = scope.population
+    if host is None:
+        return lambda _agg: None
+
+    def determined(key: ValueKey, *, path: Tuple[str, ...], home: SlayerDataset) -> bool:
+        try:
+            return grain_member_attributable(
+                key=key, target_path=path, root_dataset=home, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+                host_dataset=host, host_name=host.name,
+            )
+        except UnresolvableDimensionRelationshipError:
+            return False
+
+    def resolve(agg: AggregateKey) -> Optional[ValueKey]:
+        path = source_anchor_path(agg.source)
+        home = walk_key_path(dataset=host, path=path, bundle=bundle) if path else host
+        if home is None:
+            return None
+        candidates = row_keys if not path else [k for k in row_keys if determined(k, path=path, home=home)]
+        return temporal_row_dimension_key(row_keys=candidates, source_dataset=host, bundle=bundle)
+
+    return resolve
+
+
+def _check_key_over_cells(
+    k: AggregateKey, *, rk: ValueKey, query_grain: Grain, active_bucket: Optional[TimeTruncKey],
+    host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    operand = transform_operand_grain(k.source, query_grain=query_grain, active_bucket=active_bucket)
+    check_ranking_key_determined(term=k, key=rk, home=f"the operand grain ({grain_display(operand)})", determined=all(
+        m in operand or grain_determines(
+            key=m, grain=operand, host_dataset=host, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+        )
+        for m in value_grain(rk, query_grain=query_grain, active_bucket=active_bucket)
+    ))
+
+
+def _check_key_over_rows(
+    k: AggregateKey, *, rk: ValueKey, query_grain: Grain, active_bucket: Optional[TimeTruncKey],
+    host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    path = source_anchor_path(k.source)
+    home = walk_key_path(dataset=host, path=path, bundle=bundle)
+    if home is None:
+        return
+    check_ranking_key_determined(term=k, key=rk, home=f"the rows of {home.name}", determined=all(
+        grain_member_attributable(
+            key=m, target_path=path, root_dataset=home, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+            host_dataset=host, host_name=host.name,
+        )
+        for c in operand_constituents(rk) for m in value_grain(c, query_grain=query_grain, active_bucket=active_bucket)
+    ))
 
 
 def _home_reading(key: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ValueKey:
@@ -1977,6 +2109,8 @@ def _check_time_dimension(
         requested_granularity=granularity,
         bucketed_leaves=btd.bucketed_leaves,
         is_expression=btd.is_expression,
+        zone=bundle.time_zone,
+        bucketed_zones=btd.bucketed_zones,
     )
     assert field_type is not None  # the checker refuses a non-temporal one
     return field_type

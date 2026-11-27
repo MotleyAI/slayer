@@ -6,10 +6,12 @@ import math
 import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
-from decimal import ROUND_HALF_UP, Context, Decimal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Context, Decimal
 from functools import lru_cache
 from urllib.parse import unquote
 
+from fractions import Fraction
 from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, Optional
 
@@ -26,6 +28,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.like_pattern import LikePattern, LikeWildcard, parse_like
 from slayer.core.regex_pattern import RegexGroupRef, RegexPattern, RegexReplacement, parse_replacement
 from slayer.core.time_points import parse_temporal_value
+from slayer.core.time_zones import from_zone
 from slayer.sql.dialects.base import (
     COMPARISON_NODES,
     FALSE_WORDS,
@@ -48,6 +51,7 @@ from slayer.sql.dialects.base import (
     iso_text,
     lit,
     slayer_type_of,
+    zone_name,
 )
 from slayer.sql.dialects.patterns import PYTHON, RegexFlavour, like_text
 from slayer.sql.dialects.reflection import (
@@ -229,18 +233,19 @@ class _PercentileContAgg:
 
 
 class _PercentileDiscAgg:
-    """2-arg PERCENTILE_DISC(value, p): smallest value v with cume_dist(v) >= p."""
+    """2-arg PERCENTILE_DISC(value, p) over any ordered type: smallest value v with cume_dist(v) >= p."""
 
     def __init__(self) -> None:
-        self._vals: list[float] = []
-        self._p: float | None = None
+        self._vals: list[Any] = []
+        self._p: Fraction | None = None
 
     def step(self, value, p) -> None:
         if p is not None:
-            p_float = float(p)
-            if not 0.0 <= p_float <= 1.0:
-                raise ValueError(f"percentile p must be in [0, 1], got {p_float}")
-            self._p = p_float
+            # Text keeps every digit of the literal (a SQLite REAL would round it); a Fraction multiplies exactly.
+            exact = Fraction(Decimal(p if isinstance(p, str) else str(p)))
+            if not 0 <= exact <= 1:
+                raise ValueError(f"percentile p must be in [0, 1], got {exact}")
+            self._p = exact
         if value is not None:
             self._vals.append(value)
 
@@ -249,29 +254,56 @@ class _PercentileDiscAgg:
             return None
         s = sorted(self._vals)
         n = len(s)
-        # Smallest k with cume_dist (k+1)/n >= p.
+        # Smallest k with cume_dist (k+1)/n >= p; exact, so p·n never rounds past an integer.
         k = max(0, math.ceil(self._p * n) - 1)
         return s[k]
 
 
-class _OneVarWelford:
-    """Welford ``(n, mean, M2)`` state for the 1-arg stat aggregates; NULLs skipped."""
+class _OneVarMoments:
+    """Exact ``(n, Σx, Σx²)`` state for the 1-arg stat aggregates, NULLs skipped: constant memory, and a row leaving a
+    window frame is removed exactly, whatever its magnitude."""
 
     def __init__(self) -> None:
         self._n: int = 0
-        self._mean: float = 0.0
-        self._m2: float = 0.0
+        self._nonfinite: int = 0
+        self._sum = Fraction(0)
+        self._sum_sq = Fraction(0)
 
-    def step(self, value) -> None:
+    def _add(self, value, sign: int) -> None:
         if value is None:
             return
-        self._n += 1
-        delta = value - self._mean
-        self._mean += delta / self._n
-        self._m2 += delta * (value - self._mean)
+        self._n += sign
+        if isinstance(value, float) and not math.isfinite(value):
+            self._nonfinite += sign
+            return
+        x = Fraction(value)
+        self._sum += sign * x
+        self._sum_sq += sign * x * x
+
+    def step(self, value) -> None:
+        self._add(value, 1)
+
+    def inverse(self, value) -> None:
+        """Remove ``value``: the row leaving a window frame."""
+        self._add(value, -1)
+
+    @property
+    def _m2(self) -> float:
+        """The sum of squared deviations from the mean, rounded once; NaN beside an infinite or NaN row."""
+        if self._nonfinite:
+            return math.nan
+        return float(self._sum_sq - self._sum * self._sum / self._n) if self._n else 0.0
+
+    def finalize(self) -> float | None:
+        """Each statistic's result; the state alone has none."""
+        return None
+
+    def value(self) -> float | None:
+        """The current frame's result, as a window function."""
+        return self.finalize()
 
 
-class _StddevSampAgg(_OneVarWelford):
+class _StddevSampAgg(_OneVarMoments):
     """Sample standard deviation. NULL when N <= 1."""
 
     def finalize(self) -> float | None:
@@ -280,7 +312,7 @@ class _StddevSampAgg(_OneVarWelford):
         return math.sqrt(self._m2 / (self._n - 1))
 
 
-class _StddevPopAgg(_OneVarWelford):
+class _StddevPopAgg(_OneVarMoments):
     """Population standard deviation. NULL at N=0; 0 at N=1."""
 
     def finalize(self) -> float | None:
@@ -291,7 +323,7 @@ class _StddevPopAgg(_OneVarWelford):
         return math.sqrt(self._m2 / self._n)
 
 
-class _VarSampAgg(_OneVarWelford):
+class _VarSampAgg(_OneVarMoments):
     """Sample variance. NULL when N <= 1."""
 
     def finalize(self) -> float | None:
@@ -300,7 +332,7 @@ class _VarSampAgg(_OneVarWelford):
         return self._m2 / (self._n - 1)
 
 
-class _VarPopAgg(_OneVarWelford):
+class _VarPopAgg(_OneVarMoments):
     """Population variance. NULL at N=0; 0 at N=1."""
 
     def finalize(self) -> float | None:
@@ -421,6 +453,23 @@ def _slayer_timestamp_text(value) -> Optional[str]:
     return None if moment is None else moment.isoformat(sep=" ", timespec="microseconds")
 
 
+#: The zone-conversion function (queries/time-zones).
+CONVERT_TZ_FUNCTION = "slayer_convert_tz"
+
+
+def _slayer_convert_tz(value, source, target) -> Optional[str]:
+    """ISO text as ``target`` wall clock ``YYYY-MM-DD HH:MM:SS.ffffff``: offset text is an instant, naive text is
+    ``source`` wall clock (the Postgres DST rule); NULL on NULL or malformed input."""
+    if not isinstance(value, str) or not value or not isinstance(source, str) or not isinstance(target, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+        instant = moment if moment.tzinfo is not None else from_zone(moment, source)
+        return instant.astimezone(ZoneInfo(target)).replace(tzinfo=None).isoformat(sep=" ", timespec="microseconds")
+    except (ValueError, OverflowError, ZoneInfoNotFoundError):
+        return None
+
+
 def _slayer_date_add(ts, n, unit):
     """``ts`` moved by ``n`` ``unit``s, month-based moves clamped at month-end; NULL on NULL / malformed input."""
     moment = _parse_sqlite_temporal(ts)
@@ -498,6 +547,19 @@ def _round(x, digits):
     return _sqlite_number(_half_away(exact, int(digits)), integer=isinstance(x, int))
 
 
+def _trunc_digits(x, digits):
+    """``trunc(x, digits)``: toward zero; a negative ``digits`` truncates left of the decimal point."""
+    exact = _exact(x) if isinstance(x, (int, float)) else None
+    if exact is None or digits is None:
+        return None
+    exponent = -int(digits)
+    if exponent <= int(exact.as_tuple().exponent):
+        return x
+    context = Context(prec=max(exact.adjusted() - exponent + 2, 1))
+    truncated = exact.quantize(Decimal(1).scaleb(exponent), rounding=ROUND_DOWN, context=context)
+    return _sqlite_number(truncated, integer=isinstance(x, int))
+
+
 def _sqlite_number(value: Decimal, *, integer: bool):
     """``value`` as SQLite stores it: an INTEGER when wanted and in range, else a REAL."""
     return int(value) if integer and _INT64_MIN <= value <= _INT64_MAX else float(value)
@@ -564,6 +626,12 @@ def _regexp_like(value, pattern, flags):
     if value is None or pattern is None:
         return None
     return int(_compiled(pattern, flags or "").search(str(value)) is not None)
+
+
+def _regexp_count(value, pattern, flags):
+    if value is None or pattern is None:
+        return None
+    return sum(1 for _ in _compiled(pattern, flags or "").finditer(str(value)))
 
 
 def _regexp_extract(value, pattern, group):
@@ -643,6 +711,7 @@ _TEXT_UDFS: dict = {
     "slayer_regexp_like": (3, _regexp_like),
     "slayer_regexp_extract": (3, _regexp_extract),
     "slayer_regexp_replace": (4, _regexp_replace),
+    "slayer_regexp_count": (3, _regexp_count),
     # SQLAlchemy's pysqlite registers ``floor`` as ``math.floor``, which fails on NULL.
     "floor": (1, _nulls(lambda x: float(math.floor(x)) if isinstance(x, float) else math.floor(x))),
     "slayer_fmod": (2, _fmod),
@@ -650,7 +719,8 @@ _TEXT_UDFS: dict = {
     "slayer_pi": (0, lambda: math.pi),
     "slayer_cbrt": (1, _nulls(math.cbrt)),  # exact on perfect cubes, unlike abs(x) ** (1 / 3)
     "slayer_atan2": (2, _nulls(math.atan2)),
-    **{f"slayer_{name}": (1, _nulls(getattr(math, name))) for name in ("sin", "cos", "tan", "asin", "acos", "atan")},
+    **{f"slayer_{name}": (1, _nulls(getattr(math, name)))
+       for name in ("sin", "cos", "tan", "asin", "acos", "atan", "radians", "degrees")},
 }
 
 #: Every scalar function SLayer registers on a connection: ``(name, narg, fn, deterministic)``.
@@ -667,10 +737,12 @@ _SCALAR_UDFS: tuple[tuple[str, int, Callable[..., Any], bool], ...] = (
     ("power", 2, _pow, False),
     ("slayer_date_add", 3, _slayer_date_add, False),
     ("slayer_timestamp_text", 1, _slayer_timestamp_text, True),
+    (CONVERT_TZ_FUNCTION, 3, _slayer_convert_tz, True),
     ("slayer_try_cast", 2, _slayer_try_cast, False),
     ("slayer_try_cast", 3, _slayer_try_integer, False),
     ("slayer_cast_decimal", 3, _slayer_cast_decimal, True),
     ("slayer_round", 2, _round, True),
+    ("slayer_trunc", 2, _trunc_digits, True),
 )
 
 #: Every aggregate SLayer registers, the statistical ones also under the names sqlglot rewrites them to on SQLite.
@@ -702,7 +774,10 @@ def register_sqlite_udfs(dbapi_connection) -> None:
         else:
             dbapi_connection.create_function(name, narg, fn)
     for name, narg, cls in _AGGREGATE_UDFS:
-        dbapi_connection.create_aggregate(name, narg, cls)
+        if issubclass(cls, _OneVarMoments):
+            dbapi_connection.create_window_function(name, narg, cls)  # also usable under OVER
+        else:
+            dbapi_connection.create_aggregate(name, narg, cls)
 
 
 def _like_source(pattern: LikePattern) -> str:
@@ -815,8 +890,15 @@ class SqliteDialect(SqlDialect):
     url_scheme: str | None = "sqlite"
     result_census_rows: int | None = PROBE_SCAN_CAP + 1
 
-    # Structure comes from SQLite's own catalog, scoped to the table's schema (none is ``main``), never the Inspector.
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``slayer_convert_tz(v, S, Q)``; an instant's text carries its offset (UTC when it carries none)."""
+        return exp.Anonymous(this=CONVERT_TZ_FUNCTION,
+                             expressions=[value, zone_name(source or ZoneInfo("UTC")), zone_name(target)])
 
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Literal.string(f"{iso_text(value)}+00:00")
+
+    # Structure comes from SQLite's own catalog, scoped to the table's schema (none is ``main``), never the Inspector.
     def reflect_columns(
         self, *, connection: CatalogConnection | None, inspector: Any,  # NOSONAR(S1172) — hook signature
         table: str, schema: str | None, catalog: str | None,  # NOSONAR(S1172) — hook signature
@@ -913,6 +995,12 @@ class SqliteDialect(SqlDialect):
         non-negative."""
         known = literal_int(digits)
         return None if known is not None and known >= 0 else anon("slayer_round", value, digits)
+
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:  # NOSONAR(S1172) — hook signature
+        return anon("slayer_trunc", value, digits)
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("slayer_regexp_count", value, self.regex_text(pattern), lit("i" if case_insensitive else ""))
 
     def build_extremum(self, fn: ExtremumFn, args: tuple[Expression, ...]) -> Expression:
         """Scalar ``MAX`` / ``MIN`` propagate NULL: each term coalesces to a present argument."""
@@ -1107,6 +1195,10 @@ class SqliteDialect(SqlDialect):
             )), expression=exp.Literal.number(3))
         if part is DatePart.DAY_OF_WEEK:
             return exp.Add(this=exp.Paren(this=_days_since_monday(expr)), expression=exp.Literal.number(1))
+        if part is DatePart.MILLISECOND:
+            # ``YYYY-MM-DD HH:MM:SS.ffffff``: the first three fraction digits, truncated (``%f`` rounds).
+            digits = exp.Substring(this=_timestamp_text(expr), start=lit(21), length=lit(3))
+            return exp.Cast(this=digits, to=exp.DataType.build("INTEGER"))
         if part in (DatePart.WEEK, DatePart.ISO_YEAR):
             # Thursday of the ISO week: its year is the ISO year, its day-of-year fixes the week.
             thursday = exp.Anonymous(this="DATE", expressions=[expr, exp.DPipe(
@@ -1145,15 +1237,22 @@ class SqliteDialect(SqlDialect):
         """DATETIME-wrap: a bare-date text sorts before the same day's DATETIME frame bound."""
         return exp.Anonymous(this="DATETIME", expressions=[expr])
 
-    def build_median(self, inner: Expression) -> Expression:
+    def build_median(self, inner: Expression, *, input_type: Optional[DataType] = None) -> Expression:
         """SQLite: ``exp.Median``, emitted as the registered ``PERCENTILE_CONT(x, 0.5)`` UDF."""
         return exp.Median(this=inner.copy())
 
     def build_percentile(
-        self, p: Expression, col_expr: Expression,
+        self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,
     ) -> Expression:
         """SQLite: ``percentile_cont(value, p)`` — registered UDF."""
         return exp.PercentileCont(this=col_expr.copy(), expression=p.copy())
+
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """SQLite: ``percentile_disc(value, p)`` — registered UDF; a literal ``p`` passed as text, every digit kept."""
+        exact = exp.Literal.string(p.this) if isinstance(p, exp.Literal) and p.is_number else p.copy()
+        return exp.PercentileDisc(this=col_expr.copy(), expression=exact)
 
     def rewrite_parsed_ast(self, tree: Expression) -> Expression:
         """Emit JSON extraction in the ``json_extract(...)`` function-call form."""

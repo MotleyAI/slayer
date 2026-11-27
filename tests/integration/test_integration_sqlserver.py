@@ -13,8 +13,8 @@ test_integration_postgres.py focused on T-SQL specifics:
   via the ``exp.Anonymous`` overrides in ``TsqlDialect``).
 * ``CORR`` / ``COVAR_SAMP`` / ``COVAR_POP`` via the variance-decomposition
   formula (no native function in T-SQL).
-* ``MEDIAN`` / ``PERCENTILE_CONT`` as GROUP BY aggregates raise
-  ``NotImplementedError`` — ``PERCENTILE_CONT`` in T-SQL is window-only.
+* ``MEDIAN`` / ``PERCENTILE_CONT`` read a window per row (``PERCENTILE_CONT`` in
+  T-SQL is window-only), regrouped.
 * Native ``LOG10`` (``TsqlDialect.log10_native = True``).
 
 The pytest job's CI step (.github/workflows/integration-sqlserver.yml)
@@ -69,6 +69,7 @@ from tests._dev1737_fixtures import (
 )
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
+from tests.integration import _dev2458_matrix as dev2458
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 from slayer.async_utils import run_sync
@@ -87,6 +88,7 @@ from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
+from sqlglot import exp
 from tests.integration._dev2015_server import (
     check_all,
     server_datasets,
@@ -126,6 +128,8 @@ from tests._dev2120_fixtures import (
     lib_dataset,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2457_fixtures import server_statements as window_statements, window_datasets
+from tests._dev2457_matrix import CASE_IDS as WINDOW_CASE_IDS, CASES as WINDOW_CASES, WindowCase, check_case
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
@@ -948,34 +952,97 @@ class TestRollupIngestionSQLServer:
 
 
 # ---------------------------------------------------------------------------
-# Median / percentile — T-SQL raises NotImplementedError
+# Exponent-form numeric text cast to DECIMAL
+# ---------------------------------------------------------------------------
+
+
+def _decimal_cast_sql(text: str, *, try_: bool) -> str:
+    cast = TsqlDialect().build_decimal_cast(exp.Literal.string(text), exp.DataType.build("DECIMAL(10, 2)"),
+                                            precision=10, scale=2, source=None, try_=try_)
+    return f"SELECT {cast.sql(dialect='tsql')}"
+
+
+@pytest.mark.integration
+class TestSQLServerExponentText:
+    """SQL Server reads ``''``, ``'+'`` and ``'-'`` as INT 0, so an exponent without digits must not reach that read."""
+
+    @pytest.mark.parametrize("text", ["1e", "1e-", "1e+", "1e 1", "e1", "+-1e1"])
+    def test_try_cast_of_malformed_exponent_text_is_null(self, sqlserver_container, text: str) -> None:
+        with disposable_engine(_admin_url(sqlserver_container)) as engine, engine.connect() as conn:
+            assert conn.exec_driver_sql(_decimal_cast_sql(text, try_=True)).scalar() is None
+
+    @pytest.mark.parametrize("text", ["1e", "1e-"])
+    def test_cast_of_malformed_exponent_text_fails(self, sqlserver_container, text: str) -> None:
+        sql = _decimal_cast_sql(text, try_=False)
+        with disposable_engine(_admin_url(sqlserver_container)) as engine, engine.connect() as conn:
+            with pytest.raises(sqlalchemy.exc.DBAPIError):
+                conn.exec_driver_sql(sql)
+
+    @pytest.mark.parametrize(("text", "value"), [("1.2345e1", "12.35"), ("-1.5E-1", "-0.15"), ("12e+0", "12.00")])
+    def test_exponent_text_casts_exactly(self, sqlserver_container, text: str, value: str) -> None:
+        with disposable_engine(_admin_url(sqlserver_container)) as engine, engine.connect() as conn:
+            assert conn.exec_driver_sql(_decimal_cast_sql(text, try_=False)).scalar() == Decimal(value)
+
+
+# ---------------------------------------------------------------------------
+# Median / percentile — a window per row
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-class TestSQLServerMedianPercentileRaises:
-    async def test_median_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
+class TestSQLServerMedianPercentile:
+    async def test_median(self, sqlserver_env: SlayerQueryEngine) -> None:
+        # amounts = [100, 200, 50, 150, 75, 300] -> median 125
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
-        with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
-            await sqlserver_env.execute(query=query)
+        result = await sqlserver_env.execute(query=query)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
-    async def test_median_grouped_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
-        """Grouped median goes through the same TsqlDialect.build_median hook."""
+    async def test_percentile_quartiles(self, sqlserver_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"metric": "percentile(orders.total, p=0.25)"}, {"metric": "percentile(orders.total, p=0.75)"}],
+        })
+        row = (await sqlserver_env.execute(query=query)).data[0]
+        assert float(row["orders.total_percentile_p_0_25"]) == pytest.approx(81.25)
+        assert float(row["orders.total_percentile_p_0_75"]) == pytest.approx(187.5)
+
+    async def test_median_grouped(self, sqlserver_env: SlayerQueryEngine) -> None:
+        # completed: [100, 150, 200] -> 150; pending: [50, 300] -> 175; cancelled: [75] -> 75
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "median(orders.total)"}],
             "dimensions": ["orders.status"],
         })
-        with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
-            await sqlserver_env.execute(query=query)
+        result = await sqlserver_env.execute(query=query)
+        by_status = {r["orders.status"]: float(r["orders.total_median"]) for r in result.data}
+        assert by_status == pytest.approx({"completed": 150, "pending": 175, "cancelled": 75})
 
-    async def test_percentile_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({
-            "population": "orders",
-            "metrics": [{"metric": "percentile(orders.total, p=0.5)"}],
-        })
-        with pytest.raises(NotImplementedError, match="(?i)percentile.*t-sql"):
-            await sqlserver_env.execute(query=query)
+
+@pytest.fixture(scope="module")
+def _sqlserver_dev2458_storage(sqlserver_container, tmp_path_factory):
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in dev2458.statements(dialect="tsql"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_dev2458")))
+        ds = _ds_config(sqlserver_container, db_name)
+        run_sync(storage.save_datasource(ds))
+        for model in dev2458.datasets(data_source=ds.name):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.mark.integration
+class TestSQLServerDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles — native numeric PERCENTILE_DISC, the split for text and date."""
+
+    @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_types], ids=lambda c: c.__name__)
+    async def test_matrix(self, _sqlserver_dev2458_storage, check) -> None:
+        await dev2458.run_check(check, storage=_sqlserver_dev2458_storage)
 
 
 # ---------------------------------------------------------------------------
@@ -1304,15 +1371,16 @@ def planets_sqlserver_env(sqlserver_container):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_sqlserver_raises(planets_sqlserver_env) -> None:
+async def test_filter_on_windowed_column_sqlserver(planets_sqlserver_env) -> None:
+    """A filter on a windowed field applies outside the materialised window."""
     engine = planets_sqlserver_env
     query = SlayerQuery(
         population="planets",
         dimensions=["planets.name"],
         filter=["planets.rn <= 3"],
     )
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await engine.execute(query)
+    result = await engine.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Neptune"}
 
 
 # ---------------------------------------------------------------------------
@@ -1740,6 +1808,40 @@ class TestSQLServerPortableLibrary:
 
     async def test_library_on_2025(self, _sqlserver_2025_dev2120_storage) -> None:
         await check_library(SlayerQueryEngine(storage=_sqlserver_2025_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _sqlserver_windows_storage(sqlserver_container, tmp_path_factory):
+    db_name = _create_module_db(sqlserver_container)
+    try:
+        with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in window_statements("tsql"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_windows")))
+        run_sync(storage.save_datasource(_ds_config(sqlserver_container, db_name)))
+        for model in window_datasets(data_source="testmssql"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(sqlserver_container, db_name)
+
+
+@pytest.fixture
+def sqlserver_windows(_sqlserver_windows_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_sqlserver_windows_storage)
+
+
+@pytest.mark.integration
+class TestSQLServerWindows:
+    @pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+    async def test_the_matrix(self, sqlserver_windows: SlayerQueryEngine, case: WindowCase) -> None:
+        await check_case(sqlserver_windows, case)
 
 
 # ---------------------------------------------------------------------------

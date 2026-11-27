@@ -15,7 +15,10 @@ from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.root_scope import qualified_siblings
 
-__all__ = ["check_forms", "check_metric_forms", "qualified_siblings", "sibling_names", "with_converted_sql"]
+__all__ = [
+    "check_forms", "check_metric_forms", "qualified_siblings", "sibling_names",
+    "with_converted_sql",
+]
 
 
 def check_metric_forms(dataset: SlayerDataset, *, ds_type: str | None) -> None:

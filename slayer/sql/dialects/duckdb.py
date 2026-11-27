@@ -9,6 +9,8 @@ the Postgres catalog queries duckdb-engine inherits.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlglot
@@ -18,6 +20,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 from sqlalchemy.engine.url import URL
 
+from slayer.core.keys import WindowKey
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.core.enums import DataType
@@ -36,6 +39,8 @@ from slayer.sql.dialects.base import (
     lit,
     pad_fill,
     text_try_cast,
+    at_time_zone,
+    iso_text,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import (
@@ -110,8 +115,11 @@ def _plain_index_columns(sql: str | None) -> list[str] | None:
 
 class DuckdbDialect(SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
+    windowed_holistic: ClassVar[frozenset[str]] = frozenset({"count_distinct", "median", "percentile_cont"})
     sqlglot_name: str = "duckdb"
     number_cast_rounds: ClassVar[bool] = True
+    #: An unsigned HUGEINT stays below 10^39.
+    _WIDEST_INTEGER: ClassVar[tuple[str, int]] = ("HUGEINT", 38)
     array_cast_types: ClassVar[bool] = True
     unsigned_cast_types: ClassVar[frozenset[DType]] = frozenset({
         exp.DataType.Type.UTINYINT, exp.DataType.Type.USMALLINT, exp.DataType.Type.UINT, exp.DataType.Type.UBIGINT,
@@ -125,6 +133,7 @@ class DuckdbDialect(SqlDialect):
     log2_native: bool = True
     max_identifier_bytes: int | None = 256  # safe documented ceiling
     approx_count_distinct_native: bool = True
+    approx_percentile_native: bool = True
     url_scheme: str | None = "duckdb"
     catalog_qualified_schema_tokens: bool = True
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
@@ -134,6 +143,19 @@ class DuckdbDialect(SqlDialect):
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
     })
+
+    def window_call(self, key: WindowKey, args: list[Expression], *, input_type: Optional[DataType] = None) -> Expression:
+        """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` windows only as ``quantile_cont(x, p)``."""
+        if key.function == "percentile_cont":
+            return exp.Anonymous(this="quantile_cont", expressions=args)
+        return super().window_call(key, args, input_type=input_type)
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``(v AT TIME ZONE S) AT TIME ZONE Q``; an instant: ``v AT TIME ZONE Q``."""
+        return at_time_zone(value, source=source, target=target)
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"), to=exp.DataType.build("TIMESTAMPTZ"))
 
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
@@ -161,6 +183,13 @@ class DuckdbDialect(SqlDialect):
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement), lit("g"))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("LEN", anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive)))
+
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:
+        """``TRUNC(x, d)`` arrived in DuckDB 1.5."""
+        return self.rounded_trunc(value, digits, integer=integer)
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         text = lit(path.text)

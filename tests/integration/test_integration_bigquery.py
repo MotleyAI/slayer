@@ -56,6 +56,7 @@ from tests._sql_mode_retype_fixtures import (
     stale_sql_dataset,
 )
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
+from tests.integration import _dev2458_matrix as dev2458
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
     keyword_universe,
@@ -556,3 +557,25 @@ def test_warm_statement_costs_one_request(bq_dataset, monkeypatch: pytest.Monkey
         sql=lambda marker: f"SELECT '{marker}' AS m",
     )
     assert_one_request_each(sent)
+
+
+# --------------------------------------------------------------------------- #
+# Spec: aggregations/distinct-and-percentiles — the analytic PERCENTILE_DISC collapsed by MAX (NULL keys, no GROUP BY,
+# several keys) and percentile_approx as the exact percentile.
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def bq_dev2458(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    for stmt in dev2458.statements(dialect="bigquery", prefix=f"{dataset_id}."):
+        client.query(stmt).result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_dev2458")))
+    run_sync(storage.save_datasource(ds))
+    for model in dev2458.datasets(data_source=ds.name):
+        run_sync(storage.save_dataset(model))
+    return storage
+
+
+@pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_exact], ids=lambda c: c.__name__)
+async def test_distinct_and_percentiles(bq_dev2458, check) -> None:
+    await dev2458.run_check(check, storage=bq_dev2458)

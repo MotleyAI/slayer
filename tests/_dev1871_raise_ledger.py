@@ -65,7 +65,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="internal", family="internal", user=False, owner="compiler"),
     _row(module=_EE, function="check_temporal_axis", exc="TimeAxisError",
          message="The operand of …() is at a grain that does not contain the time axis '…', so it does not vary along it."
-         + AT + "transform …"
+         + AT + "… …"
          + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_WD, function="parse_window_duration", exc="WindowDurationError",
@@ -182,7 +182,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="'…' is not a number, so it cannot meet the number `…`."
          + SUGGEST + "Compare with a number (e.g. 100), or compare text with text.",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
-    _row(module=_EE, function="_numeric_scalar_args", exc="ScalarOperandTypeError",
+    _row(module=_EE, function="_raise_numeric_text", exc="ScalarOperandTypeError",
          message="…() reads numbers, but `…` is TEXT."
          + SUGGEST + "Convert numbers stored as text: …(TRY_CAST(… AS DOUBLE)).",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
@@ -205,8 +205,8 @@ ROWS: Tuple[LedgerRow, ...] = (
          "or compare it with a plain value.",
          category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="check_time_transforms_resolved", exc="TimeAxisError",
-         message="The transform requires an unambiguous time dimension."
-         + AT + "transform …" + SUGGEST + "…",
+         message="The … requires an unambiguous time dimension."
+         + AT + "… …" + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
          message="The partition_by field '…' is ambiguous — it is a time dimension at multiple granularities."
@@ -327,6 +327,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "filter …"
          + SUGGEST + "Fix the referenced field's SQL, or remove the filter.",
          category="checker", family="filters", user=True, owner="checker"),
+    _row(module=_EE, function="check_ranking_key_determined", exc="UnsafeRelationshipInputError",
+         message="The ranking key … is not determined by …; each ranked row needs one key value."
+         + AT + "aggregation …"
+         + SUGGEST + "Rank by a field of the ranked dataset, or by an aggregate grained within it.",
+         category="checker", family="ranking-key", user=True, owner="checker"),
     _row(module=_EE, function="check_reaggregation_no_window", exc="ReaggregationError",
          message="The re-aggregation cannot carry window= on its outer aggregation."
          + AT + "metric …"
@@ -405,11 +410,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="The dataset filter references metric …. Dataset filters can only reference row-level fields (WHERE)."
          + AT + "dataset filter …"
          + SUGGEST + "Use query-level filters for metric conditions.",
-         category="checker", family="model-filters", user=True, owner="checker"),
-    _row(module=_EE, function="validate_dataset_filter", exc="DatasetFilterError",
-         message="The dataset filter references field … whose SQL contains a window function."
-         + AT + "dataset filter …"
-         + SUGGEST + "Factor it into a multi-stage source_queries dataset or use a rank-family transform at query time.",
          category="checker", family="model-filters", user=True, owner="checker"),
     # Two sites: leaf-collision disambiguation and same-field multi-granularity.
     _row(module=_BI, function="_resolve_main_time_dimension", exc="AmbiguousReferenceError", message="",
@@ -552,4 +552,13 @@ ROWS: Tuple[LedgerRow, ...] = (
          message='Order key … is a list, which has no sort order.'
          + SUGGEST + 'Order by a scalar field, or by length(...) of the list.',
          category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function="check_row_window", exc="WindowFunctionError",
+         message="The window `…` names no dataset, so no rows to run over: it reads no field, or only the time "
+         "spine's." + SUGGEST + "Read a field of the dataset whose rows it numbers or aggregates, e.g. ORDER BY "
+         "orders.id.",
+         category="checker", family="windows", user=True, owner="checker"),
+    _row(module=_EE, function="_check_window_operands", exc="WindowFunctionError",
+         message="The window `…` reads `…` per cell, but it is neither aggregate-valued nor a member of the "
+         "window's operand grain." + SUGGEST + "Add `…` as a dimension, or aggregate it.",
+         category="checker", family="windows", user=True, owner="checker"),
 )

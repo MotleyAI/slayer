@@ -1,8 +1,8 @@
 """MysqlDialect.
 
-MySQL has no native ``PERCENTILE_CONT`` (``build_median`` / ``build_percentile``
-raise ``NotImplementedError``) and no native ``CORR`` / ``COVAR_SAMP`` /
-``COVAR_POP`` (uses the variance-decomposition formula).
+MySQL has no ``PERCENTILE_CONT`` (it is interpolated over ``ROW_NUMBER`` / ``COUNT``
+windows) and no native ``CORR`` / ``COVAR_SAMP`` / ``COVAR_POP`` (uses the
+variance-decomposition formula).
 
 ``var_samp`` / ``var_pop`` need the ``exp.Anonymous`` workaround because
 sqlglot's MySQL transpiler rewrites them to ``VARIANCE`` (which on MySQL
@@ -13,17 +13,19 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import Field
 from sqlalchemy.engine.url import URL
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, NUMERIC_DATATYPES, TimeGranularity
 from slayer.core.granularity import bucket_type
-from slayer.core.errors import ReadOnlyConnectionError, UnsupportedServerFunctionError
+from slayer.core.errors import ReadOnlyConnectionError, TimeZoneError, UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
@@ -52,7 +54,10 @@ from slayer.sql.dialects.base import (
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
+    iso_text,
+    zone_name,
 )
+from slayer.sql.dialects._ordered_set_split import ranked_percentiles, split_percentile_selects
 from slayer.sql.dialects.patterns import ICU, RegexFlavour
 from slayer.sql.dialects.reflection import (
     ResultColumnType,
@@ -76,6 +81,7 @@ _GATED_FUNCTIONS = REGEX_LIBRARY | {"json_value"}
 # The session read-only from connect, through the drivers' one init statement.
 _INIT_COMMAND = "init_command"
 _READ_ONLY_SESSION = "SET SESSION TRANSACTION READ ONLY"
+_UTC_OFFSET = "+00:00"
 
 
 def _numeric_try_cast(key: object) -> bool:
@@ -124,6 +130,16 @@ def _native_null_keys(term: exp.Ordered) -> list[exp.Ordered]:
     ]
 
 
+#: sqlglot writes these as VARIANCE / VARIANCE_POP / STDDEV: population, no function, population on MySQL.
+_MYSQL_STATISTIC_NAMES: dict[type[Expression], str] = {
+    exp.Variance: "VAR_SAMP", exp.VariancePop: "VAR_POP", exp.Stddev: "STDDEV_SAMP",
+}
+
+
+def _is_double(node: Expression) -> bool:
+    return isinstance(node, exp.Cast) and node.to.is_type(exp.DataType.Type.DOUBLE)
+
+
 class MysqlDialect(SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "mysql"
@@ -133,15 +149,54 @@ class MysqlDialect(SqlDialect):
         exp.DataType.Type.UBIGINT, exp.DataType.Type.UDECIMAL,
     })
     database_name: ClassVar[str] = "MySQL"
+    nulls_clause: bool = False
+    # ``AVG`` over integers keeps only ``div_precision_increment`` decimals.
+    integer_avg: bool = True
+    avg_input_type: str = "DOUBLE"
     ds_type_aliases: frozenset[str] = frozenset({"mysql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     sa_backend_names: frozenset[str] = frozenset({"mysql"})
     regex_flavour: ClassVar[Optional[RegexFlavour]] = ICU
-    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY - {"regexp_count"}
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CONCAT_WS", "GREATEST", "LEAST",
     })
     extremum_propagates_null: ClassVar[bool] = True
+    zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``CONVERT_TZ(v, S, Q)``; an instant (a ``TIMESTAMP``) from its epoch seconds, independent of the session
+        zone."""
+        if source is None:
+            epoch = exp.Anonymous(this="UNIX_TIMESTAMP", expressions=[value])
+            value = exp.DateAdd(this=exp.Literal.string("1970-01-01"), expression=epoch, unit=exp.var("SECOND"))
+            source_tz: Expression = exp.Literal.string(_UTC_OFFSET)
+        else:
+            source_tz = zone_name(source)
+        return exp.ConvertTimezone(source_tz=source_tz, target_tz=zone_name(target), timestamp=value)
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Anonymous(this="CONVERT_TZ", expressions=[
+            exp.Literal.string(iso_text(value)), exp.Literal.string(_UTC_OFFSET), exp.var("@@session.time_zone")])
+
+    def converted_zones(self, statement: Expr, *, zones: Iterable[str]) -> list[str]:
+        named = {zone.name for node in statement.find_all(exp.ConvertTimezone)
+                 for zone in (node.args.get("source_tz"), node.args.get("target_tz")) if isinstance(zone, exp.Literal)}
+        return sorted(named.intersection(zones))
+
+    def zone_probe(self, zone: ZoneInfo) -> Optional[exp.Select]:
+        """``CONVERT_TZ`` is NULL for a named zone the server's time zone tables do not hold."""
+        return exp.select(exp.ConvertTimezone(
+            source_tz=exp.Literal.string(_UTC_OFFSET), target_tz=zone_name(zone),
+            timestamp=exp.Literal.string("2000-01-01 00:00:00"),
+        ).as_("z"))
+
+    def unresolved_zone_error(self, zone: ZoneInfo) -> TimeZoneError:
+        return TimeZoneError(
+            f"{self.database_name} cannot resolve time zone {zone.key!r}: its time zone tables are not loaded. Load "
+            f"them with mysql_tzinfo_to_sql (see the MySQL manual, 'MySQL Server Time Zone Support'), then retry.",
+            zone=zone.key,
+        )
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
         """Regex and numeric ``TRY_CAST`` need MySQL 8.0, ``json_value`` 8.0.21: the version decides."""
@@ -327,19 +382,33 @@ class MysqlDialect(SqlDialect):
 
     def rewrite_target_ast(self, tree: Expression) -> Expression:
         """MySQL's ``TRUNCATE`` has no single-argument form — ``TRUNCATE(x)`` is
-        a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``."""
+        a syntax error. A 1-arg ``trunc(x)`` becomes ``TRUNCATE(x, 0)``; the sample and population statistics keep
+        MySQL's names."""
         def _fix(node: Expression) -> Expression:
             if isinstance(node, exp.Trunc) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
+            name = _MYSQL_STATISTIC_NAMES.get(type(node))
+            if name is not None:
+                # ``transform`` skips a replaced node's children, so they are rewritten here.
+                return exp.Anonymous(this=name, expressions=[node.this.transform(_fix)])
             return node
         return tree.transform(_fix)
+
+    def true_division(self, quotient: Expression) -> Expression:
+        """The dividend as a ``DOUBLE``: MySQL's ``/`` keeps only ``div_precision_increment`` extra decimal digits."""
+        dividend = quotient
+        while isinstance(dividend, exp.Div) and isinstance(dividend.this, exp.Div):
+            dividend = dividend.this
+        if isinstance(dividend, exp.Div) and not _is_double(dividend.this):
+            dividend.set("this", exp.Cast(this=dividend.this, to=exp.DataType.build("DOUBLE")))
+        return quotient
 
     def rewrite_statement(self, statement: Expression) -> Expression:
         """Emulate NULL placement on each ORDER BY term as written, so an alias stays an alias.
 
         sqlglot's emulation inlines an aliased projection, which ``ONLY_FULL_GROUP_BY`` can fail to match.
         """
-        statement = statement.copy()
+        statement = split_percentile_selects(statement.copy(), columns=ranked_percentiles)
         for select in statement.find_all(exp.Select):
             order = select.args.get("order")
             if order is not None:
@@ -382,6 +451,8 @@ class MysqlDialect(SqlDialect):
             )
         if part is DatePart.DAY_OF_WEEK:
             return exp.Add(this=exp.Anonymous(this="WEEKDAY", expressions=[expr]), expression=exp.Literal.number(1))
+        if part is DatePart.MILLISECOND:
+            return exp.Floor(this=exp.Div(this=exp.Anonymous(this="MICROSECOND", expressions=[expr]), expression=lit(1000)))
         return exp.Anonymous(this=_MYSQL_PART_FUNCTIONS[part], expressions=[expr])
 
     def _day_gap(self, *, start: Expression, end: Expression) -> Expression:
@@ -396,25 +467,6 @@ class MysqlDialect(SqlDialect):
         """``DATE_ADD`` clamps at month-end and keeps a DATE a DATE for day-or-coarser units."""
         word = "WEEK" if unit is TimeGranularity.WEEK_SUNDAY else unit.value.upper()
         return exp.DateAdd(this=expr.copy(), expression=count.copy(), unit=exp.var(word))
-
-    def build_median(self, inner: Expression) -> Expression:
-        # ``MariadbDialect`` inherits this, so never suggest "use MariaDB".
-        raise NotImplementedError(
-            "Aggregation 'median' is not supported on MySQL: MySQL has no native "
-            "MEDIAN/PERCENTILE_CONT function and no Python UDF mechanism. "
-            "Use a datasource with native percentile support (Postgres, DuckDB, "
-            "ClickHouse, SQLite via UDF) or compute the value client-side."
-        )
-
-    def build_percentile(
-        self, p: Expression, col_expr: Expression,
-    ) -> Expression:
-        raise NotImplementedError(
-            "Aggregation 'percentile' is not supported on MySQL: "
-            "MySQL has no native PERCENTILE_CONT. "
-            "Use a datasource with native percentile support (Postgres, DuckDB, "
-            "ClickHouse, SQLite via UDF) or compute the value client-side."
-        )
 
     def build_stat_agg_1arg(
         self, agg_name: StatAgg1Name, col_expr: Expression,

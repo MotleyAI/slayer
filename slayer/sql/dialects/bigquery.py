@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from collections.abc import Sequence
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine.url import URL
 from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
-from sqlglot.expressions.core import Expression
+from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.granularity import bucket_type
@@ -23,6 +25,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
+    AngleFn,
     DEFAULT_DECIMAL_PRECISION,
     NativeFn,
     COMPARISON_NODES,
@@ -49,6 +52,10 @@ from slayer.sql.dialects.base import (
     number_literal_text,
     operand_copy,
     text_try_cast,
+    zone_name,
+)
+from slayer.sql.dialects._ordered_set_split import (
+    Columns, PercentileColumns, complement_fraction, discrete_percentile, split_percentile_selects,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
@@ -136,6 +143,26 @@ def _durable_oauth_material(raw: str) -> str:
     return json.dumps(durable, sort_keys=True, default=str)
 
 
+def _analytic(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
+    """``F(v, p) OVER (PARTITION BY <keys>)`` per row, its MAX per group; a descending ``PERCENTILE_DISC`` is ranked
+    (no ascending fraction picks its value)."""
+
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+        if descending and function is exp.PercentileDisc:
+            return discrete_percentile(p, value, partition, descending=True)
+        fraction = complement_fraction(p) if descending else p
+        window = exp.Window(this=function(this=value.copy(), expression=fraction.copy()),
+                            partition_by=[k.copy() for k in partition])
+        return [window], lambda reads: exp.Max(this=reads[0])
+
+    return columns
+
+
+def _percentile_columns(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    kind = type(node.this)
+    return _analytic(kind) if kind in (exp.PercentileCont, exp.PercentileDisc) else None
+
+
 class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     """BigQuery dialect."""
     enforces_unique_keys: ClassVar[bool] = False
@@ -162,6 +189,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     regex_flavour: ClassVar[Optional[RegexFlavour]] = RE2
     like_escape_clause: ClassVar[bool] = False
     zoned_timestamp_db_types: ClassVar[frozenset[str]] = frozenset({"TIMESTAMP"})
+    naive_instant_reads: ClassVar[bool] = True
     json_db_types: ClassVar[frozenset[str]] = frozenset({"JSON"})
 
     database_name: ClassVar[str] = "BigQuery"
@@ -172,8 +200,20 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     })
     extremum_propagates_null: ClassVar[bool] = True
 
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``DATETIME(TIMESTAMP(v, S), Q)``; an instant (a ``TIMESTAMP``): ``DATETIME(v, Q)``."""
+        instant = value if source is None else exp.Timestamp(this=value, zone=zone_name(source))
+        return exp.Datetime(this=instant, expression=zone_name(target))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Timestamp(this=exp.Literal.string(f"{iso_text(value)}+00"))
+
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """``PERCENTILE_CONT`` and ``PERCENTILE_DISC`` are analytic only."""
+        return split_percentile_selects(statement.copy(), columns=_percentile_columns)
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
         """``BIGNUMERIC`` holds 38 integer and 38 fractional digits; a wider ``DECIMAL`` cannot be expressed."""
@@ -307,6 +347,21 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        """``REGEXP_EXTRACT_ALL`` takes at most one capturing group: every group becomes non-capturing."""
+        matches = anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive,
+                                                                     capture=0))
+        return case((exp.Not(this=any_null(value)), anon("ARRAY_LENGTH", matches)))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """No ``RADIANS`` / ``DEGREES``: scaled by π (``ACOS(-1)``)."""
+        pi = anon("ACOS", lit(-1))
+        if fn == "radians":
+            return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=pi)), expression=lit(180))
+        # A FLOAT64 factor: INT64 * 180 can overflow.
+        factor = exp.Literal.number("180.0")
+        return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=factor)), expression=pi)
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_VALUE", _json_document(value, native=native), lit(path.text))

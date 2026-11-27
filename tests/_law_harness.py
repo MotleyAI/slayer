@@ -473,14 +473,18 @@ ROOTLESS_METRICS = {
     "rank": "rank(sum(orders.amount), direction='desc')",
     "cumsum": "cumsum(sum(orders.amount))",
     "last": "last(sum(orders.amount))",
+    "wcust": "count(customers.*, window='90d')",
+    "wrev": "sum(orders.amount, window='90d')",
 }
 #: Each metric's value in a cell it lacks (Axiom 4).
-ROOTLESS_EMPTY = {"vis": 0, "tix": 0, "cust": 0}
+ROOTLESS_EMPTY = {"vis": 0, "tix": 0, "cust": 0, "wcust": 0}
 #: A metric that needs a dimension among the query's.
 ROOTLESS_REQUIRES = {"part": "customers.region"}
-#: Time-ordered transforms: they need a family with a time dimension.
-ROOTLESS_TIMED = frozenset({"lag", "cumsum", "last"})
+#: Time-ordered transforms and windowed aggregates: they need a family with a time dimension.
+ROOTLESS_TIMED = frozenset({"lag", "cumsum", "last", "wcust", "wrev"})
 ROOTLESS_TRANSFORMS = ("lag", "prank", "ntile", "rank", "cumsum", "last")
+#: Producers whose rows and values must not depend on a sibling that adds rows.
+ROOTLESS_SIBLING_CHECKED = (*ROOTLESS_TRANSFORMS, "wcust", "wrev")
 ROOTLESS_FILTERS = {
     "f0": None,
     "fa": "orders.amount > 60",
@@ -488,7 +492,7 @@ ROOTLESS_FILTERS = {
     "fr": "returns.amount > 20",
     "fz": "1 = 0",
 }
-N_ROOTLESS = 36
+N_ROOTLESS = 40
 ROOTLESS_DUCKDB_STRIDE = 4
 
 
@@ -536,7 +540,7 @@ def sample_rootless_shapes() -> Tuple[RootlessShape, ...]:
         family = next(f for j in range(len(families))
                       if _rootless_allowed(f := families[(i + j) % len(families)], key))
         cores.append((family, (key, "rev" if key == "ret" else "ret"), ftags[i % len(ftags)]))
-    for key in ROOTLESS_TRANSFORMS:  # unfiltered beside a sibling that adds rows
+    for key in ROOTLESS_SIBLING_CHECKED:  # unfiltered beside a sibling that adds rows
         cores.append(("region_month" if key in ROOTLESS_TIMED else "region", (key, "ret"), "f0"))
     while len(cores) < N_ROOTLESS:
         family = rng.choice(families)

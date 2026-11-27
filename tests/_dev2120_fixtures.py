@@ -28,8 +28,8 @@ from slayer.storage.sqlite_conn import transaction
 from tests._dev1737_fixtures import SERVER_TYPES, TableSpec, as_temporal, seed_backend
 from tests._dev2101_fixtures import emit
 from tests._engine_helpers import seeded_exec_engine
+from tests._ossie_gate import TIER1 as TIER1  # re-exported: the one Tier-1 list
 
-TIER1 = ("sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "trino", "snowflake", "bigquery")
 EXEC_BACKENDS = ("sqlite", "duckdb")
 IDS = tuple(range(1, 11))
 
@@ -45,6 +45,15 @@ SPELLINGS = frozenset({
     "strpos", "POSITION", "date_trunc", "json_extract", "json_extract_scalar",
     "json_extract_path_text", "jsonb_extract_path_text",
 })
+#: Ossie Layer 1 functions added to ``SCALAR_SPECS`` after the first library.
+OSSIE_FUNCTIONS = frozenset({"zeroifnull", "nullifzero", "radians", "degrees", "regexp_count"})
+#: Ossie spellings of library nodes, part words and literal keywords.
+OSSIE_SPELLINGS = frozenset({
+    "if", "nvl", "nvl2", "startswith", "endswith", "charindex", "truncate", "to_date", "to_timestamp",
+    "TIMESTAMP_NTZ", "dayofweek", "millisecond",
+})
+#: Library functions a Tier-1 dialect refuses for want of a translation.
+REFUSED_FUNCTIONS = {"mysql": frozenset({"regexp_count"})}
 #: Mode-B operators whose meaning the library fixes.
 OPERATORS = frozenset({
     "=", "<>", "<", "<=", ">", ">=", "IN", "BETWEEN", "IS DISTINCT FROM",
@@ -623,13 +632,62 @@ def _numeric_semantics_cases() -> list[Case]:
     ]
 
 
+@_nulls
+def trunc_to(x: float, d: int) -> float:
+    """``x`` truncated toward zero to ``d`` fractional digits."""
+    scale = Decimal(10) ** -d
+    return float((Decimal(str(x)) / scale).to_integral_value(rounding="ROUND_DOWN") * scale)
+
+
+def _ossie_cases() -> list[Case]:
+    x = lambda r: r["x"]  # noqa: E731
+    word = lambda r: r["word"]  # noqa: E731
+    return [
+        _v("zeroifnull|int", ["zeroifnull"], "zeroifnull(lib.a)", every(lambda r: 0 if r["a"] is None else r["a"])),
+        _v("zeroifnull|double", ["zeroifnull"], "ZEROIFNULL(lib.x)", every(lambda r: 0.0 if x(r) is None else x(r))),
+        _v("nullifzero", ["nullifzero"], "nullifzero(lib.b)", every(lambda r: None if r["b"] in (0, None) else r["b"])),
+        _v("radians", ["radians"], "radians(lib.x)", every(lambda r: None if x(r) is None else math.radians(x(r)))),
+        _v("degrees", ["degrees"], "degrees(lib.x)", every(lambda r: None if x(r) is None else math.degrees(x(r)))),
+        _v("trunc|digits", ["trunc", "/"], "trunc(lib.x / 3, 2)",
+           every(lambda r: None if x(r) is None else trunc_to(x(r) / 3, 2))),
+        _v("trunc|column-digits", ["trunc"], "trunc(lib.x, lib.n)", every(lambda r: trunc_to(x(r), r["n"]))),
+        _v("trunc|decimal-negative-digits", ["trunc"], "trunc(lib.g, -1)", only({1: 1230})),
+        _v("trunc|decimal-digits", ["trunc"], "trunc(lib.g, 2)", only({1: 1234.56})),
+        _v("trunc|decimal-zero-digits", ["trunc"], "trunc(lib.d, 0)", only({1: 2, 2: -2})),
+        _v("truncate", ["truncate"], "TRUNCATE(lib.x, 1)", every(lambda r: trunc_to(x(r), 1))),
+        _v("regexp_count|plain", ["regexp_count"], "regexp_count(lib.word, 'a')",
+           every(lambda r: None if word(r) is None else word(r).count("a"))),
+        _v("regexp_count|flag-i", ["regexp_count"], "REGEXP_COUNT(lib.word, 'a', 'i')",
+           every(lambda r: None if word(r) is None else word(r).lower().count("a"))),
+        _v("regexp_count|class", ["regexp_count"], "regexp_count(lib.code, '[0-9]')",
+           every(lambda r: None if r["code"] is None else sum(ch in "0123456789" for ch in r["code"]))),
+        _v("regexp_count|alternation", ["regexp_count"], "regexp_count(lib.word, 'aa|ad')",
+           every(lambda r: None if word(r) is None else word(r).count("ad"))),
+        _v("if", ["if"], "IF(lib.qty > 1, 'many', 'few')",
+           every(lambda r: "many" if r["qty"] is not None and r["qty"] > 1 else "few")),
+        _v("nvl", ["nvl"], "NVL(lib.a, -100)", every(lambda r: -100 if r["a"] is None else r["a"])),
+        _v("nvl2", ["nvl2"], "NVL2(lib.a, 'y', 'n')", every(lambda r: "n" if r["a"] is None else "y")),
+        _v("startswith", ["startswith"], "STARTSWITH(lib.s, 'a/')",
+           every(lambda r: None if r["s"] is None else r["s"].startswith("a/"))),
+        _v("endswith", ["endswith"], "ENDSWITH(lib.s, 'c')",
+           every(lambda r: None if r["s"] is None else r["s"].endswith("c"))),
+        _v("charindex", ["charindex"], "CHARINDEX(lib.p, lib.s)", every(lambda r: pg_strpos(r["s"], r["p"]))),
+        _v("to_date", ["to_date"], "TO_DATE(json_value(lib.payload, '$.d'))", only({10: date(2024, 2, 29)})),
+        _v("to_timestamp", ["to_timestamp"], "TO_TIMESTAMP(json_value(lib.payload, '$.t'))",
+           only({10: datetime(2024, 2, 29, 10, 0)})),
+        _f("timestamp_ntz", ["TIMESTAMP_NTZ"], "lib.ts >= TIMESTAMP_NTZ '2025-03-01 00:00:00'", [1, 2, 3, 7, 9, 10]),
+        _v("dayofweek", ["dayofweek"], "EXTRACT(DAYOFWEEK FROM lib.ts)", _on_ts(lambda t: t.isoweekday())),
+        _v("millisecond", ["millisecond"], "date_part('millisecond', lib.ts)", _on_ts(lambda t: t.microsecond // 1000)),
+    ]
+
+
 def library_cases() -> list[Case]:
     return [*_string_cases(), *_math_cases(), *_date_cases(), *_like_cases(), *_regex_cases(),
-            *_json_cases(), *_returning_cases(), *_coercion_cases(), *_numeric_semantics_cases()]
+            *_json_cases(), *_returning_cases(), *_coercion_cases(), *_numeric_semantics_cases(), *_ossie_cases()]
 
 
 def required_names() -> frozenset[str]:
-    return frozenset(SCALAR_SPECS) | NEW_FUNCTIONS | SPELLINGS | OPERATORS
+    return frozenset(SCALAR_SPECS) | NEW_FUNCTIONS | SPELLINGS | OPERATORS | OSSIE_FUNCTIONS | OSSIE_SPELLINGS
 
 
 # --------------------------------------------------------------------------- #
@@ -805,7 +863,7 @@ async def check_native_json(engine: SlayerQueryEngine, *, dataset: str = "docs",
             assert_cell(got[rid], value, where=f"{expr} id={rid}")
 
 
-REGEX_NAMES = frozenset({"regexp_like", "regexp_extract", "regexp_replace", "~", "~*", "!~", "!~*"})
+REGEX_NAMES = frozenset({"regexp_like", "regexp_extract", "regexp_replace", "regexp_count", "~", "~*", "!~", "!~*"})
 
 
 async def check_library(engine: SlayerQueryEngine, *, gated: frozenset[str] = frozenset(),
