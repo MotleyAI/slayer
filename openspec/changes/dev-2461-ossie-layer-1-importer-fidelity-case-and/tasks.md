@@ -1,14 +1,14 @@
 ## 1. Tests (pr-tests)
 
-- [ ] 1.1 Write `tests/test_dev2461_importer_fidelity.py`, all through `import_osi`, checked against a raw-SQL oracle per group on DuckDB and SQLite, in a typed and an untyped document. Verify that the untyped SQLite cases fail before implementation and everything else passes. It covers:
+- [x] 1.1 Write `tests/test_dev2461_importer_fidelity.py`, all through `import_osi`, checked against a raw-SQL oracle per group on DuckDB and SQLite, in a typed and an untyped document. Verify that everything passes before implementation: a document metric reads an untyped SQLite field without the String-field check, so the SQLite typing defect is covered by 1.4. It covers:
   - the fifteen scalar / `CASE` forms (dataset metrics, model-scoped metrics and fields; the probe list is in design.md "Context");
   - the `ARRAY_AGG(DISTINCT x)` pins (DuckDB values, SQLite typed list error);
   - symmetric `FIRST_VALUE` / `LAST_VALUE` import scenarios (ascending, descending, explicit `NULLS FIRST`, NULL keys) against the oracle, differing from `first` / `last`.
-- [ ] 1.2 Add the quoted-name tests: normalized match, exact beats normalized, ambiguity, a must-quote name, per-segment, result keys, strict `ossie-l3` (`E_NAME_NOT_FOUND` for `"Customers"`), source-column passthrough, and the round trip through YAML and SQLite stores and export. Verify the new-rule cases fail before implementation.
-- [ ] 1.3 Add the table-driven `declared_name` parity test against the vendored `tests/fixtures/ossie_corpus/validation/validate.py` (design decision 12). Verify it fails before implementation.
-- [ ] 1.4 Add the SQLite typing tests: the untyped REAL / INTEGER / expression fields aggregate, the ingestion-parity branches, and the empty-table expression staying String. Verify each fails or passes before implementation as the current behaviour predicts.
-- [ ] 1.5 Add the corpus not-evaluable manifest to `tests/test_dev2243_corpus.py` (design decision 8). Verify it passes on today's code.
-- [ ] 1.6 Align the existing tests listed in design decision 9, respelling each "wrong case" to one that still misses. Verify the aligned tests pass on today's code.
+- [x] 1.2 Add the quoted-name tests: normalized match, exact beats normalized, ambiguity, a must-quote name, per-segment, result keys, strict `ossie-l3` (`E_NAME_NOT_FOUND` for `"Customers"`), source-column passthrough, and the round trip through YAML and SQLite stores and export. Verify the new-rule cases fail before implementation.
+- [x] 1.3 Add the table-driven `declared_name` parity test against the vendored `tests/fixtures/ossie_corpus/validation/validate.py` (design decision 12). Verify it fails before implementation.
+- [x] 1.4 Add the SQLite typing tests: the untyped REAL / INTEGER / expression fields aggregate, the ingestion-parity branches, and the empty-table expression staying String. Verify each fails or passes before implementation as the current behaviour predicts.
+- [x] 1.5 Add the corpus not-evaluable manifest to `tests/test_dev2243_corpus.py` (design decision 8). Verify it passes on today's code.
+- [x] 1.6 Align the existing tests listed in design decision 9, respelling each "wrong case" to one that still misses. Verify the aligned tests pass on today's code.
 
 ## 2. Quoted names (pr-implement)
 

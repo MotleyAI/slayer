@@ -288,17 +288,17 @@ async def test_double_quoted_hop_and_leaf_are_repaired(tmp_path, regions_ds, bac
 
 
 async def test_double_quoted_leaf_in_the_wrong_case_stays_verbatim(tmp_path, regions_ds):
-    stage = rev_query(filters=['"Regions"."OPENED_ON" >= \'2024/01/01\''])
+    stage = rev_query(filters=['"Regions"."opened_on" >= \'2024/01/01\''])
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend="yaml",
                                   models=_case_sensitive_models(), stage=stage)
-    assert await _loaded_filters(storage) == [f'{QUOTED_ROUTE}."OPENED_ON" >= \'2024/01/01\'']
+    assert await _loaded_filters(storage) == [f'{QUOTED_ROUTE}."opened_on" >= \'2024/01/01\'']
 
 
 async def test_double_quoted_hop_in_the_wrong_case_is_never_repaired(tmp_path, regions_ds):
-    stage = rev_query(filters=['"REGIONS"."Opened_On" >= \'2024/01/01\''])
+    stage = rev_query(filters=['"regions"."Opened_On" >= \'2024/01/01\''])
     storage = await _routed_store(tmp_path=tmp_path, ds=regions_ds, backend="yaml",
                                   models=_case_sensitive_models(), stage=stage)
-    with pytest.raises(StoredDocumentLoadError, match="REGIONS"):
+    with pytest.raises(StoredDocumentLoadError, match="regions"):
         await _loaded_filters(storage)
 
 

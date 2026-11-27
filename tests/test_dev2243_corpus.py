@@ -354,6 +354,57 @@ async def test_store_load_save_unchanged_and_export_reproduce_the_text(path: Pat
         assert exported.text == text
 
 
+#: Reason category per ``not_evaluable`` message fragment, first match wins.
+REASON_CATEGORIES: list[tuple[str, str]] = [
+    ("AGG(source.<measure>)", "source measure"),
+    ("reads the unqualified field", "unqualified field"),
+    ("outside an aggregate", "unaggregated field"),
+    ("over no dataset", "aggregate over no dataset"),
+    ("has no readable SQL expression", "no readable SQL"),
+    ("is not an expression SLayer can parse", "unparseable"),
+]
+
+_UNQUALIFIED = "unqualified field"
+#: Every (document, entity, reason category) the corpus import reports as not evaluable.
+NOT_EVALUABLE: set[tuple[str, str, str]] = {
+    ("compliance/wide_table/retail/retail_model.ossie.yaml", "amount_less_order", "unaggregated field"),
+    ("compliance/wide_table/retail/retail_model.ossie.yaml", "row_count", "aggregate over no dataset"),
+    ("harvested/0c27bf637ef2.yaml", "revenue_total", "source measure"),
+    ("harvested/0c27bf637ef2.yaml", "revenue_per_order", "source measure"),
+    ("harvested/0c27bf637ef2.yaml", "revenue_per_customer", "source measure"),
+    ("harvested/269cda93ab10.yaml", "total_revenue", _UNQUALIFIED),
+    ("harvested/28a63afb0c2a.yaml", "total_amount", _UNQUALIFIED),
+    ("harvested/58a8515b964f.yaml", "revenue", "unparseable"),
+    ("harvested/adcaa27290a5.yaml", "order_count", "no readable SQL"),
+    ("harvested/e6812ba8ec56.yaml", "order_count", "no readable SQL"),
+    *((f"harvested/{doc}.yaml", "revenue", _UNQUALIFIED) for doc in (
+        "09e96abe49a4", "0a107b598974", "12b3ebf4d61a", "152a03e0a8d9", "15e90d3dc133", "1be05c26429a",
+        "1e1ac992b757", "219d5b4b9c8e", "2288c5df1e07", "2f598a144bcd", "3209a46ce384", "3f7c4b0da522",
+        "410933204047", "43608890e589", "44b51e773704", "46b1ba475f36", "46bb58d4041d", "4a4d578675f8",
+        "520ad754ea22", "5a76ced78444", "65e6087eb8a0", "6890d4f2d89a", "7553c303a86e", "85d2776829c7",
+        "a64c02c5e57c", "c76bb508c214", "cb9561c6ceb0", "ccf9e973719e", "d836503015e6", "dc8637aa5487",
+        "e985772b62fb", "f380135a88da")),
+}
+
+
+def _category(message: str) -> str:
+    return next((category for fragment, category in REASON_CATEGORIES if fragment in message), message)
+
+
+def test_the_not_evaluable_manifest_names_corpus_documents() -> None:
+    assert {d for d, _, _ in NOT_EVALUABLE} <= set(IDS)
+
+
+@pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
+async def test_the_import_reports_only_known_unevaluable_entities(path: Path, tmp_path: Path) -> None:
+    """Spec: A new not-evaluable entity fails the corpus test."""
+    doc_id = path.relative_to(ROOT).as_posix()
+    async with _env("yaml", tmp_path) as (storage, _engine):
+        result = await importer_module().import_osi(storage=storage, path=path, data_source=DS)
+    reported = {(doc_id, e.entity, _category(e.message)) for e in result.entries if e.kind == "not_evaluable"}
+    assert reported == {entry for entry in NOT_EVALUABLE if entry[0] == doc_id}
+
+
 @pytest.mark.parametrize("path", DOCUMENTS, ids=IDS)
 async def test_every_corpus_document_round_trips(path: Path, tmp_path: Path) -> None:
     """Every corpus document round-trips."""
