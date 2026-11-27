@@ -583,30 +583,10 @@ async def _sqlite_probe_integer_columns(
     schema, table = location.schema_name, location.name
     out: list[IntrospectedColumn] = []
     for col in columns:
-        if col.type is not DataType.INTEGER or "." in col.name:
-            out.append(col)
-            continue
-        try:
-            verdict = await sqlite_introspect.probe_sqlite_integer_column(
-                client=client,
-                table=table,
-                column=col.name,
-                schema=schema,
-            )
-        except UNREACHABLE:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "probe call raised for %s.%s; keeping declared INT: %s",
-                sql_table,
-                col.name,
-                exc,
-            )
-            verdict = None
-        if verdict is None or verdict is DataType.INTEGER:
-            out.append(col)
-            continue
-        out.append(col.model_copy(update={
+        verdict = await sqlite_introspect.ingested_sqlite_type(
+            client=client, table=table, name=col.name, declared=col.type, schema=schema,
+        )
+        out.append(col if verdict is col.type else col.model_copy(update={
             "type": verdict,
             "is_float": verdict is DataType.FLOAT,
         }))

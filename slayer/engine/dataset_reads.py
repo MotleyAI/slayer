@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TypeVar
 
-from slayer.core.errors import AmbiguousRelationshipPathError, CircularRelationshipPathError
+from slayer.core.errors import AmbiguousReferenceError, AmbiguousRelationshipPathError, CircularRelationshipPathError
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
+from slayer.core.names import match_name
 from slayer.core.relationship_walker import OrientedRelationship, walk
-from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, extension_dataset_names
 from slayer.core.syntax import drop_root_hop, text_paths
 from slayer.engine.extensions import QueryScope, extension_of, query_reference_parts, query_scopes
@@ -51,6 +53,20 @@ def placeholder(identity: Identity) -> SlayerDataset:
     """Stand-in for a stored dataset that cannot be loaded: no source, fields or relationships, so a path can only end on it."""
     data_source, name = identity
     return SlayerDataset.model_construct(name=name, data_source=data_source)
+
+
+_Named = TypeVar("_Named", DatasetField, DatasetMetric)
+
+
+def _reached(declared: Sequence[_Named], *, name: str) -> list[_Named]:
+    """Every declaration a leaf of unknown quoting may name: its exact spelling, else each one equal up to case (a
+    superset of the normalized-form match), so reads over-approximate."""
+    try:
+        found = match_name(name=name, declared=[d.name for d in declared if d.name is not None], quoted=False)
+        hits = [] if found is None else [found]
+    except AmbiguousReferenceError as err:
+        hits = list(err.candidates)
+    return [d for d in declared if d.name in hits]
 
 
 def _is_placeholder(dataset: SlayerDataset) -> bool:
@@ -138,20 +154,20 @@ class _Reads:
                 self.metric(host=dataset, name=metric.name, scope=scope)
 
     def field(self, *, host: SlayerDataset, name: str, scope: QueryScope) -> None:
-        col = host.get_field(name, quoted=True)
-        if col is None or not self._first_visit(host, f"field:{name}"):
-            return
-        if col.definition_sql is not None and not is_trivial_base(field=col):
-            self.fragment(col.definition_sql, host=host, scope=scope)
-        if col.filter:
-            self.fragment(col.filter, host=host, scope=scope)
+        for col in _reached(host.fields, name=name):
+            if not self._first_visit(host, f"field:{col.name}"):
+                continue
+            if col.definition_sql is not None and not is_trivial_base(field=col):
+                self.fragment(col.definition_sql, host=host, scope=scope)
+            if col.filter:
+                self.fragment(col.filter, host=host, scope=scope)
 
     def metric(self, *, host: SlayerDataset, name: str, scope: QueryScope) -> None:
-        metric = host.get_metric(name)
-        if metric is None or not metric.text or not self._first_visit(host, f"metric:{name}"):
-            return
-        for parts in text_paths(metric.text, root=None):
-            self.ref(parts, host=host, scope=scope)
+        for metric in _reached(host.metrics, name=name):
+            if not metric.text or not self._first_visit(host, f"metric:{metric.name}"):
+                continue
+            for parts in text_paths(metric.text, root=None):
+                self.ref(parts, host=host, scope=scope)
 
     def _first_visit(self, host: SlayerDataset, key: str) -> bool:
         mark = (id(host), key)

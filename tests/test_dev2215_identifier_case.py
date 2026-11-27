@@ -87,9 +87,9 @@ class TestFolding:
             await engine.execute(query)
 
     @pytest.mark.parametrize("query", [
-        q(dimensions=['"ORDERS".status'], metrics=[m("count(orders.*)", "n")]),
-        q(metrics=[m('count("ORDERS".*)', "n")]),
-        q(time_dimensions=[{"field": '"ORDERS".created_at', "granularity": "month"}], metrics=[m("count(orders.*)", "n")]),
+        q(dimensions=['"Orders".status'], metrics=[m("count(orders.*)", "n")]),
+        q(metrics=[m('count("Orders".*)', "n")]),
+        q(time_dimensions=[{"field": '"Orders".created_at', "granularity": "month"}], metrics=[m("count(orders.*)", "n")]),
     ], ids=["dimension", "star", "time-dimension"])
     async def test_a_quoted_root_qualifier_is_exact(self, engine: SlayerQueryEngine, query: Any) -> None:
         with pytest.raises(UnknownReferenceError):
@@ -110,7 +110,7 @@ class TestFolding:
         assert quoted.columns == plain.columns
         assert sorted_rows(quoted) == sorted_rows(plain)
 
-    @pytest.mark.parametrize(("column", "error"), [('orders."status"', None), ('orders."STATUS"', UnknownReferenceError)])
+    @pytest.mark.parametrize(("column", "error"), [('orders."status"', None), ('orders."Status"', UnknownReferenceError)])
     async def test_a_quoted_order_column_is_exact(self, engine: SlayerQueryEngine, column: str,
                                                   error: type[SlayerError] | None) -> None:
         query = q(metrics=[m("count(orders.*)", "n")], dimensions=["orders.region"], order=[{"field": column, "direction": "desc"}])
@@ -125,8 +125,8 @@ class TestFolding:
         assert num(single(resp, "n")) == 6.0
 
     @pytest.mark.parametrize(("ref", "error"), [
-        ("ITEMS.value", None), ('"items".value', None), ('"ITEMS".value', UnresolvableDimensionRelationshipError),
-        ("items.VALUE", None), ('items."value"', None), ('items."VALUE"', UnknownReferenceError),
+        ("ITEMS.value", None), ('"items".value', None), ('"Items".value', UnresolvableDimensionRelationshipError),
+        ("items.VALUE", None), ('items."value"', None), ('items."Value"', UnknownReferenceError),
     ])
     async def test_a_list_element_reference_follows_quoting(self, ref: str, error: type[SlayerError] | None) -> None:
         stages: list[Any] = [
@@ -340,7 +340,7 @@ async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
 
 @pytest.mark.parametrize(("parts", "quoted", "expected"), [
     (("Foo", "BAR"), (True, False), "Foo.bar"),
-    (("FOO", "bar"), (True, False), None),
+    (("foo", "bar"), (True, False), None),
     (("foo", "Bar"), (False, True), None),
     (("FOO", "BAR"), (), "Foo.bar"),
 ])

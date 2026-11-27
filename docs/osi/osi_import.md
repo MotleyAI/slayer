@@ -73,6 +73,8 @@ Each report entry names its document and entity:
 
 Whether SLayer can evaluate an entity is never checked at import: upstream's TPC-DS example, for instance, is stored whole, and its window-function metrics evaluate. A `FIRST_VALUE` / `LAST_VALUE` window keeps its form: it is never rewritten into SLayer's `first` / `last`, which skip NULL ranking keys.
 
+`CASE` and scalar functions around aggregates (`IFF(SUM(amount) > 0, SUM(amount), 0)`, `ZEROIFNULL(SUM(amount))`) evaluate as written in each result group. `ARRAY_AGG(DISTINCT x)` reads as `collect(x)`: NULLs dropped, `[]` for a group with no value, elements sorted; a database without lists refuses it.
+
 ## Re-importing a 1.x Import
 
 SLayer 1.x converted each document into standalone datasets and attached each model-level metric to an anchor dataset. Importing the same document again replaces those datasets with the native document:
