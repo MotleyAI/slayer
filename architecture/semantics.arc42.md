@@ -212,6 +212,7 @@ principles every layer obeys.
       the operand grain; otherwise the transform fails with the `partition_by=` remedy.
       Steps along the axis are calendar steps: a bucket absent from the series is a gap,
       never a neighbour; `lag` / `lead` alone step over the domain's cells (11.6).
+      A frame bound selects which buckets are shown; `time_shift(E, k)` reads `E` evaluated with the frame moved by `k`, an axis-free constituent keeping its in-frame value. [enforced: test:tests/test_dev2429_moved_frame_shift.py]
     - **11.4 Position.** As a measure, filter or order key the result is broadcast onto
       the query grain (Axiom 10; a finer result is Axiom 6's implicit collapse); as an
       aggregation-source constituent or aggregation parameter it is an opaque dataset at its result grain (2.3);

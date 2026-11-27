@@ -1,6 +1,6 @@
 """The one discovery walk (design D1, D6): ``discover_roots``
 yields one ``RootDisposition`` per consumer occurrence (root, phase, routing,
-consumer names, declared type, shift ``series``)."""
+consumer names, declared type)."""
 
 from __future__ import annotations
 
@@ -272,24 +272,17 @@ class TestConsumerNames:
 
 
 class TestShiftCandidates:
-    @pytest.mark.parametrize(("formula", "series"), [
-        pytest.param("time_shift(sum(orders.amount), -1)", False, id="re-aggregating"),
-        pytest.param("time_shift(cumsum(sum(orders.amount)), -1)", True, id="series"),
+    @pytest.mark.parametrize("formula", [
+        pytest.param("time_shift(sum(orders.amount), -1)", id="aggregate"),
+        pytest.param("time_shift(cumsum(sum(orders.amount)), -1)", id="nested-transform"),
     ])
-    def test_time_shift_carries_series(self, formula, series):
+    def test_time_shift_routes_to_the_shifted_producer(self, formula):
         ds = _discover(q(time_dimensions=month_td(),
                          metrics=[QueryMetric(metric=formula, alias="ts")]),
                        _bundle(dev1836_datasets()))
         [d] = [d for d in ds
                if isinstance(d.root, TransformKey) and d.root.op == "time_shift"]
-        assert (d.phase, d.routing, d.series) == ("combined", "shifted", series)
-
-    def test_non_shift_disposition_has_no_series(self):
-        ds = _discover(q(dimensions=["orders.status"],
-                         metrics=[QueryMetric(metric="sum(customers.spend)", alias="cm")]),
-                       _bundle(dev1836_datasets()))
-        assert ds
-        assert all(d.series is None for d in ds)
+        assert (d.phase, d.routing) == ("combined", "shifted")
 
 
 class TestOccurrenceOrder:

@@ -9,10 +9,7 @@ level above the deepest transform it reads, composites rendering inline — so a
 value's stage is a function of its term alone.
 
 Stages are inspected off the ``PlannedQuery`` that ``plan_query`` produces, so
-the assertions bind the planner's *output*, not any internal function name. The
-detailed re-aggregation-vs-series SQL regime per shape is pinned by
-``tests/test_dev1800_golden_sql.py`` (shifted-CTE vs window, byte for byte);
-here ``series`` is checked only for the two anchor shapes.
+the assertions bind the planner's *output*, not any internal function name.
 """
 
 from __future__ import annotations
@@ -377,22 +374,6 @@ class TestNeedsColumn:
         [comp] = [s for s in targets if isinstance(s.key, ArithmeticKey)]
         assert _stage(comp).kind == StageKind.DERIVED
         assert comp.needs_field is True
-
-
-# --------------------------------------------------------------------------- #
-# time_shift regime is a planner fact (D6). The full matrix is golden-pinned;
-# here the two anchor shapes only.
-# --------------------------------------------------------------------------- #
-class TestSeriesRegime:
-    def test_local_change_is_reaggregation(self) -> None:
-        pq = _plan(metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="c")])
-        [ts] = [s for s in _transform_slots(pq) if _op(s) == "time_shift"]
-        assert ts.series is False
-
-    def test_predicate_uses_series(self) -> None:
-        pq = _plan(metrics=[QueryMetric(metric="consecutive_periods(sum(orders.amount) > 0)", alias="p")])
-        [cp] = [s for s in _transform_slots(pq) if _op(s) == "consecutive_periods"]
-        assert cp.series is True
 
 
 # --------------------------------------------------------------------------- #

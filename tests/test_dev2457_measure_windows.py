@@ -165,8 +165,9 @@ class TestPositions:
     async def test_a_time_transform_inside_a_window_needs_a_time_dimension(
         self, engine: SlayerQueryEngine, metric: str,
     ) -> None:
+        body = grouped("orders", REGION, metric)
         with pytest.raises(TimeAxisError):
-            await run(engine, grouped("orders", REGION, metric))
+            await run(engine, body)
 
     async def test_in_dimension_position_without_an_explicit_grain_is_refused(self, engine: SlayerQueryEngine) -> None:
         body = {"population": "orders", **_query(dimension=RANK, metrics={"m": REVENUE})}
@@ -237,7 +238,7 @@ class TestInvariance:
         assert _cells(of_customers, value="rk") == {**RANK_OF_CUSTOMER, 4: None}
 
 
-async def test_a_shifted_window_shifts_its_series_like_its_transform_twin(backend: str) -> None:
+async def test_a_shifted_window_reads_the_moved_frame_like_its_transform_twin(backend: str) -> None:
     window = "RANK() OVER (ORDER BY SUM(orders.amount) DESC)"
     twin = "rank(sum(orders.amount), direction='desc')"
     async with window_engine(backend) as eng:
@@ -247,7 +248,8 @@ async def test_a_shifted_window_shifts_its_series_like_its_transform_twin(backen
             "metrics": [{"metric": f"time_shift({window}, -1)", "alias": "w"},
                         {"metric": f"time_shift({twin}, -1)", "alias": "t"}]})
     got = {day(r["d"]): (r["w"], r["t"]) for r in resp.data}
-    assert got == {"2024-01-02": (None, None), "2024-01-03": (2, 2)}
+    # Ranked over the moved frame (from 01-01: day sums 120 / 70 / 90).
+    assert got == {"2024-01-02": (1, 1), "2024-01-03": (3, 3)}
 
 
 _DAY_KEY = TimeTruncKey(source=FieldKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.DAY)

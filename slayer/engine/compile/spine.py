@@ -142,6 +142,13 @@ def plan_spine(
     )
 
 
+def spine_upper_bound(factor: SpineFactor, *, spine: FieldKey) -> BoundFilter:
+    """``factor``'s upper bound on ``spine``, explicit even when ``now`` implies it."""
+    upper = factor.upper
+    point = upper.date() if upper == datetime(upper.year, upper.month, upper.day) else upper
+    return bound_filter_from_key(ArithmeticKey(op="<", operands=(spine, LiteralKey(value=point))))
+
+
 def _checked_spine_time_dimensions(
     *, prebound: PreboundQuery, host: SlayerDataset, spine: FieldKey, bundle: ResolvedSourceBundle,
 ) -> List[TimeTruncKey]:
@@ -243,23 +250,3 @@ def check_axis_rebucket(
         zone=bundle.time_zone, bucketed_zones=((name, zone),) if zoned and zone is not None else (),
     )
 
-
-def shifted_spine_bounds(
-    *, prebound: PreboundQuery, spine: Optional[FieldKey], periods: int, unit: Granularity,
-) -> List[BoundFilter]:
-    """The host's spine bounds moved by ``periods`` ``unit`` steps: the range a shifted
-    producer reads its buckets from."""
-    if spine is None:
-        return []
-    out: List[BoundFilter] = []
-    for bf in prebound.bound_filters:
-        for conjunct in split_top_level_and(bf.value_key):
-            if not is_frame_bound(key=conjunct, time_fields={spine}):
-                continue
-            assert isinstance(conjunct, ArithmeticKey)
-            kind, value = _bound(conjunct, spine)
-            steps = periods if kind == "lower" else periods + 1
-            moved = LiteralKey(value=add_units(floor_to(value, unit), unit, steps))
-            key = ArithmeticKey(op=">=" if kind == "lower" else "<", operands=(spine, moved))
-            out.append(bound_filter_from_key(key))
-    return out

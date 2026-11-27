@@ -12,53 +12,46 @@ the remaining unsupported shapes.
 
 `time_shift` (and therefore `change` / `change_pct`, which desugar onto it)
 SHALL accept an input that is an arithmetic / scalar-call composite whose
-slottable leaves are all aggregates (literals and arbitrary nesting allowed).
-Two evaluation regimes apply, selected by the input's type, and each input
-evaluates under exactly one:
+slottable leaves are all aggregates (literals and arbitrary nesting allowed),
+and an input containing a nested transform anywhere in its tree or a top-level
+aggregate-typed predicate (`IN` / comparison over aggregates; `time_shift` only —
+`change` / `change_pct` reject boolean-shaped inputs). Every input SHALL
+evaluate by the one rule of "time_shift evaluates its operand in the moved
+frame"; no input's evaluation SHALL depend on how it is built — a bare
+aggregate, a local or cross-model composite, a predicate and a nested transform
+are evaluated alike.
 
-- **Re-aggregation regime**: a bare aggregate or a composite whose aggregate
-  leaves are all local. The result SHALL equal the composite evaluated over the
-  shifted time bucket's aggregates within the same partition — matching what
-  the same composite measure would return for that bucket — and SHALL be NULL
-  when the shifted bucket has no rows, including under NULL-absorbing wrappers
-  such as `coalesce`. Aggregation parameters, parameter fragments, and column
-  filters SHALL apply per leaf without leaking between leaves. **Every leaf
-  keeps its own grain** (Axioms 10 and 11.1): a leaf whose grain — its explicit
-  `partition_by=`, else the query grain — contains the time axis, and any
-  ranked or windowed leaf, is evaluated afresh over the shifted evaluation's
-  rows at that grain; a leaf whose grain does not contain the axis is constant
-  along the axis and contributes its unshifted value. A partition key that is
-  attributable across a join is honoured the same way; a partition key whose
-  dependency closure crosses a fanning or unproven hop from the leaf's home
-  resolves per the mode (`queries/attribution-modes` › Unattributable explicit
-  partition keys resolve per the mode): under the default and `"associate"` the
-  leaf reads its associated cell at the shifted bucket, and under `"broadcast"`
-  and `"error"` the query fails with the typed partition-key error, never a
-  multiplied value.
-- **Series regime**: an input containing a nested transform anywhere in
-  its tree, a cross-model aggregate leaf inside a composite (a bare cross-model
-  aggregate stays re-aggregation), or a top-level aggregate-typed
-  predicate (`IN` / comparison over aggregates; `time_shift` only —
-  `change` / `change_pct` reject boolean-shaped inputs). The input's
-  materialised result series is shifted: each row reads the series value at the
-  shifted bucket within the same partition, and a shifted bucket absent from
-  the series — filtered out, outside the query's date range, or before the
-  series' first bucket — yields NULL. The series is computed exactly once (row
-  filters and joins apply to it once, never re-applied by the shift), and
-  adding the shifted measure SHALL NOT change the row count or any other
-  column's values.
+The result SHALL equal the input evaluated at the shifted time bucket within the
+same partition — matching what the same expression as a measure would return
+for that bucket in the query with its frame moved by the shift — and SHALL be
+NULL when the input has no cell at the shifted bucket, including under
+NULL-absorbing wrappers such as `coalesce`. Aggregation parameters, parameter
+fragments, and column filters SHALL apply per leaf without leaking between
+leaves. **Every constituent keeps its own grain** (Axioms 10 and 11.1): a
+constituent whose grain — its explicit `partition_by=`, else the query grain —
+contains the time axis, and any ranked or windowed leaf, is evaluated afresh in
+the shifted evaluation at that grain; a constituent whose grain does not contain
+the axis is constant along the axis and contributes its unshifted, in-frame
+value. A partition key that is attributable across a join is honoured the same
+way; a partition key whose dependency closure crosses a fanning or unproven hop
+from the leaf's home resolves per the mode (`queries/attribution-modes` ›
+Unattributable explicit partition keys resolve per the mode): under the default
+and `"associate"` the leaf reads its associated cell at the shifted bucket, and
+under `"broadcast"` and `"error"` the query fails with the typed partition-key
+error, never a multiplied value. Adding the shifted measure SHALL NOT change the
+row count or any other column's values.
 
-**Frame rule.** In the re-aggregation regime a frame bound — `date_range`, or
-a relational bound with a temporal literal on the raw column of one of the
-query's time dimensions — constrains the visible buckets only: the shifted
-evaluation of every leaf whose grain contains the axis reaches outside it, so
-the earliest visible bucket is never short-changed. Every other predicate,
-including a population predicate conjoined with a frame bound and every
-model-level filter, applies to the shifted evaluation unchanged, and a
-population restriction the query resolves by association restricts the shifted
-evaluation the same way.
+**Frame rule.** A frame bound — `date_range`, or a relational bound with a
+temporal literal on the raw column of one of the query's time dimensions —
+selects the visible buckets. In the shifted evaluation every frame bound on the
+time axis's column is moved so that it covers exactly the source buckets of the
+visible buckets, so the earliest visible bucket is never short-changed. Every
+other predicate, including a frame bound on another time dimension, a population
+predicate conjoined with a frame bound and every model-level filter, applies to
+the shifted evaluation unchanged, and a population restriction the query
+resolves by association restricts the shifted evaluation the same way.
 
-**Join-back.** In both regimes a row reads the shifted relation at the bucket
+**Join-back.** A row reads the shifted relation at the bucket
 containing its own bucket offset by the shift, matched on every other member of
 the shifted relation's grain — every projected dimension and secondary time
 dimension, except those an operand whose leaves are all coarser does not carry
@@ -106,18 +99,18 @@ aligned to the bucket it is the bucket containing the offset instant.
 
 - **WHEN** a query with a month time dimension requests
   `time_shift(cumsum(sum(revenue)), -1)`
-- **THEN** each row carries the previous bucket's cumulative sum — the value the
-  inner transform's own series holds at the shifted bucket — with NULL at the
-  series' first bucket, correct by hand-computed executed values on SQLite and
-  DuckDB, and the inner series is computed once
+- **THEN** each row carries the previous bucket's cumulative sum — with no frame
+  bound, the value the inner transform holds at the shifted bucket — with NULL
+  at the first bucket, correct by hand-computed executed values on SQLite and
+  DuckDB
 
 #### Scenario: Cross-model aggregate leaf inside a composite shifts
 
 - **WHEN** a `time_shift` composite input contains an aggregate over another
   model's column (dotted path), alone or mixed with local aggregate leaves
-- **THEN** the composed series' shifted value is correct by executed values —
-  never the former cross-model-leaf rejection — and the cross-model operand is
-  computed in its producer exactly once
+- **THEN** the composite's shifted value is correct by executed values — never
+  the former cross-model-leaf rejection — and equals the composite's value at
+  the shifted bucket
 
 #### Scenario: Aggregate-typed predicate input shifts as a boolean series
 
@@ -204,8 +197,8 @@ aligned to the bucket it is the bucket containing the offset instant.
 - **WHEN** a query over `monthly` by `region` and month with the filter
   `ordered_at >= '2024-02-01' and region = 'North'` requests
   `time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)`
-- **THEN** Feb North carries 20 and Mar North 40 — the bound is stripped from
-  the shifted evaluation while the region predicate restricts it — by executed
+- **THEN** Feb North carries 20 and Mar North 40 — the bound is moved in the
+  shifted evaluation while the region predicate restricts it — by executed
   values
 
 #### Scenario: Population restriction by association reaches the shifted evaluation
@@ -491,8 +484,8 @@ SHALL be legal in measure, filter and ORDER BY positions whatever its other oper
 a local aggregate, a cross-model aggregate, another transform, or a literal, in any
 nesting. Every operand the composite needs SHALL be materialised for it, including a local
 aggregate that appears nowhere else in the query, and the composite SHALL evaluate to the
-same value whether or not any operand is also selected on its own. The transform's own
-regime (re-aggregation or series) SHALL be unchanged by the composite around it. No such
+same value whether or not any operand is also selected on its own. The transform's value
+SHALL be unchanged by the composite around it. No such
 composite SHALL fail with an internal render error. The scenarios below run under
 `to_many_handling: "broadcast"`, where a cross-model inner over an order month repeats
 its total.
@@ -1405,3 +1398,146 @@ Scenarios marked "the city seed" use one dataset `orders(id, customer_id, region
 #### Scenario: A mixed-operand measure beside a computed dimension
 - **WHEN** a city-seed query's dimensions are `orders.region` and the computed dimension `sum(orders.amount, partition_by=orders.city)`, and it selects `rank(share, direction='desc')`
 - **THEN** the four cells (North 35, North 70, South 50, South 60) read 4, 1, 3, 2, and a dimension `rank(sum(orders.amount), direction='desc')` is still refused with the existing computed-dimension error
+
+### Requirement: time_shift evaluates its operand in the moved frame
+
+`time_shift(E, k)` (and therefore `change` / `change_pct`) SHALL read, at each
+visible cell, the value `E` takes at the shifted bucket in the same query with
+its frame moved by `k`: every frame bound on the time axis's column moves so
+that the frame covers exactly the source buckets of the visible buckets, in
+whole buckets, and every other filter is unchanged. The rule SHALL hold for
+every operand alike — a bare or composite aggregate, a cross-model leaf, a
+predicate, a nested transform — so two operands equal at every cell of every
+query shift to equal values. Consequently:
+
+- an aggregate (plain, windowed, ranked or cross-model) and a nested `time_shift`
+  / `change` / `change_pct` read their source bucket even when it lies outside
+  the visible frame, and a forward shift reads after it;
+- a nested frame-relative transform (`cumsum`, `lag`, `lead`, the rank family,
+  `consecutive_periods`) evaluates over the moved frame — a running total
+  restarts at the moved frame's first bucket, and `lag` steps over the moved
+  frame's cells;
+- a constituent whose grain does not contain the time axis keeps its in-frame
+  value;
+- a windowed constituent reads rows before the moved frame exactly as a windowed
+  aggregate reads rows before the visible frame;
+- shifts whose moved frames differ are evaluated separately.
+
+Unshifted transforms are unchanged: `cumsum` accumulates from the first visible
+bucket and `lag` / `lead` step over the visible cells.
+
+Scenarios marked "the moved-frame seed" use `orders(region, amount, ordered_at)`
+joined many-to-one to `customers(id, spend)` with North `sum(amount)` by month
+2023-12 20, 2024-01 30 (dated 2024-01-10), 2024-02 40, 2024-04 30, 2024-05 5,
+2024-06 7 and no March rows, queried by `orders.region` and the month of
+`orders.ordered_at` with `"date_range": ["2024-02-01", "2024-05-31"]`; values
+are read for North on SQLite and DuckDB.
+
+#### Scenario: An equal rewrite shifts to the same value
+
+- **WHEN** the moved-frame seed query requests `time_shift(sum(orders.amount), -1)`
+  and `time_shift(sum(orders.amount) + 0 * cumsum(sum(orders.amount)), -1)`
+- **THEN** both read Feb 30, Apr NULL and May 30, by executed values
+
+#### Scenario: change and change_pct of an equal rewrite agree
+
+- **WHEN** the moved-frame seed query requests `change` and `change_pct` of
+  `sum(orders.amount)` and of `sum(orders.amount) + 0 * cumsum(sum(orders.amount))`
+- **THEN** both `change` columns read Feb 10, Apr NULL, May −25 and both
+  `change_pct` columns read Feb ⅓, Apr NULL, May −⅚, by executed values
+
+#### Scenario: A NULL-absorbing equal rewrite agrees
+
+- **WHEN** the moved-frame seed query requests
+  `time_shift(coalesce(sum(orders.amount), 0), -1)` and
+  `time_shift(coalesce(sum(orders.amount), 0) + 0 * cumsum(sum(orders.amount)), -1)`
+- **THEN** the two columns are equal in every row, by executed values
+
+#### Scenario: A shifted running total reads the moved frame
+
+- **WHEN** the moved-frame seed query requests
+  `time_shift(cumsum(sum(orders.amount)), -1)` and `cumsum(sum(orders.amount))`
+- **THEN** the shift reads Feb 30, Apr NULL, May 100 — the running total from
+  January, the moved frame's first bucket — while the unshifted running total
+  reads Feb 40, Apr 70, May 75, by executed values
+
+#### Scenario: Two offsets read their own moved frames
+
+- **WHEN** the same query also requests `time_shift(cumsum(sum(orders.amount)), -2)`
+- **THEN** it reads Feb 20, Apr 90, May NULL — the running total from December —
+  while the `-1` shift keeps its values, by executed values
+
+#### Scenario: A shifted lag steps over the moved frame
+
+- **WHEN** the moved-frame seed query requests `lag(sum(orders.amount))` and
+  `time_shift(lag(sum(orders.amount)), -1)`
+- **THEN** `lag` reads Feb NULL, Apr 40, May 30 and the shift reads Feb NULL,
+  Apr NULL, May 40, by executed values
+
+#### Scenario: A nested shift reads outside the frame
+
+- **WHEN** the moved-frame seed query requests
+  `time_shift(time_shift(sum(orders.amount), -1), -1)`
+- **THEN** it reads Feb 20 (December's sum), Apr NULL and May NULL, by executed
+  values
+
+#### Scenario: A shifted predicate reads outside the frame
+
+- **WHEN** the moved-frame seed query requests `time_shift(sum(orders.amount) > 35, -1)`
+- **THEN** it reads Feb false, Apr NULL and May false, by executed values
+
+#### Scenario: A cross-model operand reads outside the frame
+
+- **WHEN** the moved-frame seed query requests
+  `time_shift(sum(customers.spend), -1)` and
+  `time_shift(sum(orders.amount) + sum(customers.spend), -1)`
+- **THEN** each row's values equal `sum(customers.spend)` and
+  `sum(orders.amount) + sum(customers.spend)` at the shifted bucket of the same
+  query with `"date_range": ["2024-01-01", "2024-04-30"]`, and Feb is non-NULL
+  for both, by executed values
+
+#### Scenario: A forward shift reads after the frame
+
+- **WHEN** the moved-frame seed query requests `time_shift(sum(orders.amount), 1)`
+- **THEN** it reads Feb NULL, Apr 5 and May 7, by executed values
+
+#### Scenario: An unaligned shift reads the whole source bucket
+
+- **WHEN** the moved-frame seed query requests
+  `time_shift(sum(orders.amount), -1, 'day')`, over the plain month dimension
+  and over a month dimension on `time_spine.timestamp` with the same range
+- **THEN** Feb reads 30 — all of January, whose row is dated 2024-01-10 — on
+  both, by executed values
+
+#### Scenario: A shifted windowed operand reads before the moved frame
+
+- **WHEN** the moved-frame seed query requests
+  `time_shift(sum(orders.amount, window='60d'), -1)`
+- **THEN** Feb equals `sum(orders.amount, window='60d')` at January in the same
+  query without a date range — December's row included — by executed values
+
+#### Scenario: A year-over-year running total
+
+- **WHEN** a monthly query with `"date_range": "2025"` requests
+  `time_shift(cumsum(sum(orders.amount)), -1, 'year')`
+- **THEN** each 2025 month equals `cumsum(sum(orders.amount))` at the same month
+  of 2024 in the query with `"date_range": "2024"`, by executed values
+
+#### Scenario: Filter and order positions read the same rule
+
+- **WHEN** the moved-frame seed query filters on
+  `time_shift(sum(orders.amount) + 0 * cumsum(sum(orders.amount)), -1) > 25`,
+  once as a filter and once as an order key over `sum(orders.amount)`
+- **THEN** the filter keeps exactly the rows `time_shift(sum(orders.amount), -1) > 25`
+  keeps (Feb and May), and the order equals ordering by that shift, by executed
+  values
+
+#### Scenario: Spine and non-spine agree
+
+- **WHEN** each shape above, except the order position (spine queries refuse
+  transform order keys until DEV-2506), is evaluated over a month dimension on
+  `time_spine.timestamp` with the same range and `population: "orders"`
+- **THEN** every bucket that has a row in the non-spine query carries the same
+  value in the spine query wherever the shifted evaluation reads no bucket that
+  only the spine query has (North's empty March holds a value for `coalesce`,
+  running totals, `lag`, nested shifts and windowed operands), by executed values

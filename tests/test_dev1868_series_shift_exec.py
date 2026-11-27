@@ -1,7 +1,5 @@
-"""Series-regime ``time_shift`` (spec: queries/transforms,
-composite-input requirement): nested-transform inputs, cross-dataset composite
-leaves, and aggregate-typed predicate inputs shift the materialised series;
-NULL outside it. Row-level leaves stay fail-closed."""
+"""Composite-input ``time_shift`` (spec: queries/transforms): nested-transform inputs, cross-dataset composite
+leaves and aggregate-typed predicate inputs read the moved frame. Row-level leaves stay fail-closed."""
 
 from __future__ import annotations
 
@@ -15,7 +13,6 @@ from tests._dev1846_fixtures import (
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
-    gen,
     make_exec_engine,
     month_td,
 )
@@ -92,14 +89,6 @@ class TestNestedTransformInput:
             else:
                 assert float(cell) == pytest.approx(value)
 
-    async def test_inner_series_is_computed_once(self) -> None:
-        sql = await gen(_q(
-            time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
-                                   alias="t")],
-        ))
-        assert len(re.findall(r"OVER\s*\(", sql)) == 1, sql
-
 
 class TestCrossModelCompositeLeaf:
     async def test_shifts_the_composed_series(self, exec_engine) -> None:
@@ -110,15 +99,6 @@ class TestCrossModelCompositeLeaf:
                 alias="t")],
         ))
         _assert_months(resp, name="t", expected=SHIFTED_REV_PLUS_FACTOR)
-
-    async def test_cross_model_operand_has_one_producer(self) -> None:
-        sql = await gen(_q(
-            time_dimensions=month_td(),
-            metrics=[QueryMetric(
-                metric="time_shift(sum(sales.revenue) + sum(regions.factor), -1)",
-                alias="t")],
-        ))
-        assert len(set(re.findall(r"_cm_\w*factor\w*", sql))) == 1, sql
 
 
 class TestAggregateTypedPredicateInput:
@@ -152,21 +132,19 @@ class TestAggregateTypedPredicateInput:
             await exec_engine.execute(query)
 
 
-class TestSeriesEdgeVsReaggregation:
-    """The regime boundary at the date_range edge: series inputs yield NULL
-    outside the materialised series; re-aggregation inputs may resolve the
-    shifted bucket from source rows outside the range."""
+class TestDateRangeEdge:
+    """At the date_range edge every input reads its source bucket in the moved frame."""
 
-    async def test_series_input_is_null_outside_the_range(self, exec_engine) -> None:
+    async def test_nested_transform_input_reads_the_moved_frame(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
             metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t")],
         ))
         _assert_months(resp, name="t",
-                       expected={"2024-02": None, "2024-03": 100.0})
+                       expected={"2024-02": 60.0, "2024-03": 160.0})
 
-    async def test_predicate_input_is_null_outside_the_range(
+    async def test_predicate_input_reads_the_moved_frame(
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(_q(
@@ -175,7 +153,7 @@ class TestSeriesEdgeVsReaggregation:
                                    alias="t")],
         ))
         _assert_months(resp, name="t",
-                       expected={"2024-02": None, "2024-03": True}, boolean=True)
+                       expected={"2024-02": False, "2024-03": True}, boolean=True)
 
     async def test_bare_leaf_keeps_the_lookback(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
@@ -204,14 +182,6 @@ class TestFiltersApplyOnce:
                                    alias="t")],
         ))
         _assert_months(resp, name="t", expected=SHIFTED_CUMSUM_STATUS_A)
-
-    async def test_the_predicate_renders_once(self) -> None:
-        sql = await gen(_q(
-            time_dimensions=month_td(), filter=["sales.status = 'a'"],
-            metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
-                                   alias="t")],
-        ))
-        assert sql.count("= 'a'") == 1, sql
 
 
 class TestManyToOneCalendarShift:

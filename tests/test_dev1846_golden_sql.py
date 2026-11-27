@@ -112,8 +112,7 @@ def _cases() -> dict:
             {"metric": "consecutive_periods((sum(sales.revenue) > 0) + (sum(sales.cost) > 0))",
              "alias": "x"},
         ]),
-        # Still fail-closed — records the raise. The DEV-1868 series-regime
-        # lifts moved the ts_* shapes to tests/test_dev1868_golden_sql.py.
+        # Still fail-closed — records the raise. The ts_* shapes live in tests/test_dev1868_golden_sql.py.
         "reject/cp_string_family": _q(metrics=[
             {"metric": "consecutive_periods(lower(max(sales.sku)))", "alias": "x"},
         ]),

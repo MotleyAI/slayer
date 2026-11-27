@@ -88,7 +88,7 @@ from slayer.sql.naming import (
     ROW_IDENTITY_FIELD, canonical_aggregate_alias, flat_name, identified_datasets, pick_slot_alias, slot_result_key,
 )
 from slayer.sql.dialects.base import LIST_POSITION
-from slayer.core.time_bounds import strip_frame_bounds
+from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import DatasetScope, PassThrough, StageField, StageSchema, host_dataset_name
 from slayer.engine.elaborate_env import (
@@ -165,10 +165,10 @@ from slayer.engine.compile.projection import (
     _iter_slot_deps,
 )
 from slayer.engine.compile.spine import (
-    check_axis_rebucket, check_off_spine_order_keys, host_mask, is_spine_bound, plan_spine, shifted_spine_bounds,
-    spine_field,
+    check_axis_rebucket, check_off_spine_order_keys, host_mask, is_spine_bound, plan_spine, spine_field,
+    spine_upper_bound,
 )
-from slayer.engine.compile.shift import carried_placeholders, is_placeholder
+from slayer.engine.compile.shift import MovedFrame, carried_placeholders, is_placeholder, moved_frame
 from slayer.engine.compile.staging import stage_slots
 from slayer.engine.stage_edges import inherited_edges, pass_through
 from slayer.engine.key_metadata import (
@@ -1220,22 +1220,40 @@ def _synthesize_wrap_attach(
 _SHIFTED_ANSWER = "shifted"
 
 
-def _frame_free_filters(
-    *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
-    time_fields: AbstractSet[ValueKey],
-) -> List[BoundFilter]:
-    """Every field mask of the population (any stratum) minus every frame bound."""
+class _ShiftedFrame(BaseModel):
+    """The population's date ranges and field masks a shifted producer inherits, the first ``n_date_range`` the date
+    ranges; ``spine_upper`` is the spine frame's upper bound, explicit even when ``now`` implies it."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    filters: List[BoundFilter]
+    n_date_range: int
+    spine_upper: Optional[BoundFilter] = None
+
+    def moved(self, key: TransformKey, *, date_axis: bool) -> MovedFrame:
+        """These filters with the frame on ``key``'s axis moved by its shift."""
+        axis = key.time_key
+        assert isinstance(axis, TimeTruncKey)
+        upper = self.spine_upper
+        on_axis = [upper] if upper is not None and is_frame_bound(key=upper.value_key, time_fields={axis.source}) else []
+        periods, unit = shift_offset_of(key)
+        return moved_frame(
+            filters=[*self.filters, *on_axis], n_date_range=self.n_date_range, axis=axis, periods=periods,
+            date_axis=date_axis, unit=unit or axis.granularity,
+        )
+
+
+def _shifted_frame(
+    *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping], spine_upper: Optional[BoundFilter],
+) -> _ShiftedFrame:
+    """Every date range and field mask of the population (any stratum), with the spine frame's upper bound."""
     out: List[BoundFilter] = []
+    n_date_range = 0
     for idx, bf, ct in _population_filters(prebound, filter_typings):
-        if ct.typing != MaskTyping.FIELD or idx < prebound.n_date_range:
-            continue
-        residual = strip_frame_bounds(key=bf.value_key, time_fields=time_fields)
-        if residual is None:
-            continue
-        out.append(bf if residual is bf.value_key else substitute_in_bound_filter(
-            bf, {bf.value_key: residual},
-        ))
-    return out
+        if idx < prebound.n_date_range or ct.typing == MaskTyping.FIELD:
+            out.append(bf)
+            n_date_range += idx < prebound.n_date_range
+    return _ShiftedFrame(filters=out, n_date_range=n_date_range, spine_upper=spine_upper)
 
 
 def _plan_shifted_attaches(
@@ -1244,7 +1262,7 @@ def _plan_shifted_attaches(
     attaches: Sequence[RegroupAttachPlan],
     prebound: PreboundQuery,
     rewritten: PreboundQuery,
-    filter_typings: Sequence[ConjunctTyping],
+    shifted_frame: _ShiftedFrame,
     scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
@@ -1254,7 +1272,7 @@ def _plan_shifted_attaches(
     homes: AggregateHomes,
     candidates: AbstractSet[ValueKey],
 ) -> List[RegroupAttachPlan]:
-    """One frame-free producer per non-series ``time_shift`` slot, each leaf at its own
+    """One producer per ``time_shift`` slot over its moved frame, each leaf at its own
     grain (carried or re-evaluated), looked up by the slot on the shifted bucket."""
     to_original = {
         sub.placeholder: sub.original_key for a in attaches for sub in a.substitutions
@@ -1276,10 +1294,7 @@ def _plan_shifted_attaches(
         dm.bound.value_key: dm.declared_name
         for dm in prebound.declared_metrics[:n_grain] if dm.declared_name is not None
     }
-    inherited = _frame_free_filters(
-        prebound=prebound, filter_typings=filter_typings,
-        time_fields=frozenset(k.source for k in td_keys if isinstance(k, TimeTruncKey)),
-    )
+    axis_typing = SlotTyping(scope=scope, bundle=bundle)
     producer_dataset = scope.population
     kernel_root = producer_dataset or bundle.population
     # A bare answer is named like its combined producer: the metric's public name.
@@ -1305,14 +1320,11 @@ def _plan_shifted_attaches(
             td_keys=td_keys, active_bucket=prebound.main_time_key,
         )
         aliases, alias_hint = _shifted_answer_aliases(answer=answer, public_alias=public_alias)
-        periods, shift_unit = shift_offset_of(key)
+        frame = shifted_frame.moved(key, date_axis=axis_typing.value_type(key.time_key.source) is DataType.DATE)
         producer_prebound, ordered_pks = _regroup_producer_prebound(
             pks=sorted(pks, key=lambda k: consumer_order.get(k, len(consumer_order))),
             aggs=[answer], dataset=producer_dataset, bundle=bundle,
-            inherited=[*inherited, *shifted_spine_bounds(
-                prebound=prebound, spine=spine_field(producer_dataset, bundle=bundle), periods=periods,
-                unit=shift_unit or key.time_key.granularity,
-            )], n_date_range=0,
+            inherited=frame.filters, n_date_range=frame.n_frame,
             public_alias_by_agg=aliases,
             grain_name_by_key=grain_name_by_key,
             window_td_key=window_td,
@@ -4731,7 +4743,7 @@ class _Routed(BaseModel):
     attaches: List[RegroupAttachPlan]
     population: Population
     producer_registry: Dict[Hashable, PlannedQuery]
-    #: Non-series ``time_shift`` roots, each answered by a shifted producer.
+    #: ``time_shift`` roots, each answered by a shifted producer.
     shift_candidates: FrozenSet[ValueKey]
     kernel_answer: Optional[AggregateKey] = None
     #: Every aggregate's home, each rebuilt aggregate keeping its original's.
@@ -4744,7 +4756,7 @@ class _Routed(BaseModel):
 
 def _shift_candidates(dispositions: Sequence[RootDisposition]) -> FrozenSet[ValueKey]:
     return frozenset(
-        d.root for d in dispositions if d.routing == "shifted" and d.series is False
+        d.root for d in dispositions if d.routing == "shifted"
     )
 
 
@@ -4768,7 +4780,6 @@ def _route_top_level(
         transforms=TransformRouting(
             route=spine_field(scope.population, bundle=bundle) is None,
             rows_are_host_cells=supply is None or not supply.branches,
-            spine=spine_field(scope.population, bundle=bundle) is not None,
         ),
     )
     routed_prebound, attaches = _plan_regroups(
@@ -4796,11 +4807,10 @@ def _route_producer(
     producer_registry: Dict[Hashable, PlannedQuery],
 ) -> _Routed:
     prebound, scope, bundle = env.prebound, env.scope, env.bundle
-    on_spine = spine_field(scope.population, bundle=bundle) is not None
     _assert_in_place_transform_grains(prebound, in_place=context.in_place)
     dispositions = discover_roots(
         prebound, filter_typings=env.filter_typings, scope=scope, bundle=bundle, homes=env.homes,
-        transforms=TransformRouting(in_place=context.in_place, spine=on_spine),
+        transforms=TransformRouting(in_place=context.in_place),
     )
     routed_prebound, attaches = _plan_regroups(
         prebound=prebound, filter_typings=list(env.filter_typings),
@@ -5260,13 +5270,18 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
 
     regroup_attach_plans = [*regroup_attach_plans, *_plan_shifted_attaches(
         slots=projection.registry.slots, attaches=regroup_attach_plans,
-        prebound=typed_prebound, rewritten=prebound, filter_typings=filter_typings,
+        prebound=typed_prebound, rewritten=prebound,
+        shifted_frame=_shifted_frame(
+            prebound=typed_prebound, filter_typings=filter_typings,
+            spine_upper=spine_upper_bound(spine_factor, spine=spine)
+            if spine_factor is not None and spine is not None else None,
+        ),
         scope=scope, bundle=bundle, stage_schemas=stage_schemas,
         producer_source_dataset=_producer_source_dataset_name,
         producer_registry=producer_registry, population=population,
         candidates=routed.shift_candidates, homes=routed.homes,
     )]
-    # Assign every slot its materialisation stage / needs-field / series fact;
+    # Assign every slot its materialisation stage / needs-field fact;
     # producer bodies were staged by their own compilation.
     row_slots, agg_slots, combined_slots = stage_slots(
         row_slots=row_slots,
@@ -5279,12 +5294,6 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         grain=grain,
     )
 
-    if spine_factor is not None:
-        # Over the spine every time_shift reads its shifted producer (its series evaluated over the moved bounds).
-        combined_slots = [
-            s.model_copy(update={"series": False})
-            if isinstance(s.key, TransformKey) and s.key.op == "time_shift" else s for s in combined_slots
-        ]
     _assert_no_inline_kernel_aggregates(
         slots=[*agg_slots, *combined_slots], kernel_answer=routed.kernel_answer,
         attaches=regroup_attach_plans,
@@ -5315,8 +5324,11 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         mode_policy=prebound.mode_policy,
         domain=_plan_domain(
             attaches=regroup_attach_plans, agg_slots=agg_slots, grain=grain,
-            # A shifted producer looks its operand up for every host cell too (the re-aggregation regime).
-            host=routed.domain_of not in {dm.bound.value_key for dm in typed_prebound.declared_metrics},
+            # A shifted producer looks its operand up for every host cell too; a transform operand keeps its own domain.
+            host=not any(
+                dm.bound.value_key == routed.domain_of or (is_transform(dm.bound.value_key) and not dm.is_dimension)
+                for dm in typed_prebound.declared_metrics
+            ),
         ) if routed.domain_of is not None else None,
     )
     return planned

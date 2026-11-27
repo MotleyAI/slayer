@@ -69,11 +69,10 @@ def _monthly_plan(expression: str) -> PlannedQuery:
 
 
 def _shifted(pq: PlannedQuery):
-    """The one shifted attach, pinned to the one non-series ``time_shift`` slot."""
+    """The one shifted attach, pinned to the one ``time_shift`` slot."""
     [attach] = [a for a in pq.regroup_attach_plans if a.attach_phase == "shifted"]
     [slot] = [s for s in (*pq.row_slots, *pq.aggregate_slots, *pq.combined_expression_slots)
-              if isinstance(s.key, TransformKey) and s.key.op == "time_shift"
-              and s.series is False]
+              if isinstance(s.key, TransformKey) and s.key.op == "time_shift"]
     assert attach.attach_phase == "shifted"
     assert attach.shift_of == slot.id
     return attach
