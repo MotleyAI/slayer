@@ -1,4 +1,4 @@
-"""Schema drift drops exactly the broken edge and replays through model editing."""
+"""Schema drift drops exactly the broken edge and replays through dataset editing."""
 
 from __future__ import annotations
 
@@ -19,12 +19,13 @@ from tests._dev2073_fixtures import (
     SHIPPING_PAIRS,
     Live,
     addresses_dataset,
-    join_to,
+    relationship_to,
     live,
     named_pair,
     orders_with,
-    stored_joins,
+    stored_relationships,
 )
+from tests._mcp_results import text_blocks
 
 # Live orders has lost billing_address_id; every other modelled column survives.
 LIVE_WITHOUT_BILLING = """
@@ -72,19 +73,19 @@ class TestDropAddressesOneEdge:
         finally:
             await engine.aclose()
         assert result.errors == []
-        assert await stored_joins(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
+        assert await stored_relationships(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
 
     async def test_json_removal_replays_through_edit_model(self, drifted: Live) -> None:
         entry = await _orders_entry(drifted)
         server = create_mcp_server(storage=drifted.storage, _seed_help=False)
-        blocks, _ = await server.call_tool(
+        blocks = text_blocks(await server.call_tool(
             name="edit_dataset",
             arguments={"dataset_name": "orders", "remove": entry.remove.model_dump(mode="json")},
-        )
+        ))
         (block,) = blocks
         assert isinstance(block, TextContent)
         assert '"success": true' in block.text
-        assert await stored_joins(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
+        assert await stored_relationships(drifted.storage) == [("shipping_address", SHIPPING_PAIRS)]
 
 
 class TestQueryBackedCascadeFollowsTheEdge:
@@ -92,9 +93,9 @@ class TestQueryBackedCascadeFollowsTheEdge:
     async def test_only_a_stage_walking_the_dropped_edge_is_whole_dropped(self, drifted: Live, prefix: str) -> None:
         for name, edge in (("by_shipping", "shipping_address"), ("by_billing", "billing_address")):
             stage = SlayerQuery.model_validate(
-                {"population": "orders", "dimensions": [f"{prefix}{edge}.city"], "metrics": [{"metric": "count(*)"}]},
+                {"population": "orders", "dimensions": [f"{prefix}{edge}.city"], "metrics": [{"metric": "count(orders.*)"}]},
             )
-            await drifted.storage.save_dataset(SlayerDataset(name=name, data_source=DS, source_queries=[stage]))
+            await drifted.engine().save_dataset(SlayerDataset(name=name, data_source=DS, source_queries=[stage]))
         models = list((await drifted.datasets()).values())
         whole = [e for e in await validate_datasource(datasource=drifted.ds, datasets=models, client=drifted.client())
                  if isinstance(e, WholeDatasetDelete)]
@@ -120,7 +121,7 @@ def _route_datasets() -> list[SlayerDataset]:
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                      DatasetField(name="email", datatype=DataType.STRING),
                      *(DatasetField(name=fk, datatype=DataType.INTEGER) for fk in fks)],
-            relationships=[join_to([[fk, "id"]], target=_ROUTE_FKS[fk]) for fk in fks],
+            relationships=[relationship_to([[fk, "id"]], target=_ROUTE_FKS[fk]) for fk in fks],
         )
         for table, fks in _ROUTE_TABLES.items()
     ]
@@ -147,7 +148,7 @@ class TestEveryHopOfTheRouteCounts:
                 await lv.storage.save_dataset(model)
             for name, dim in (("full", "subscription.customer.consumer.email"), ("short", "consumer.email")):
                 stage = SlayerQuery.model_validate(
-                    {"population": "invoice", "dimensions": [dim], "metrics": [{"metric": "count(*)"}]},
+                    {"population": "invoice", "dimensions": [dim], "metrics": [{"metric": "count(invoice.*)"}]},
                 )
                 await lv.storage.save_dataset(SlayerDataset(name=name, data_source=DS, source_queries=[stage]))
             models = list((await lv.datasets()).values())
@@ -167,7 +168,7 @@ class TestNonParallelDropReportsTheTarget:
                 name="orders", data_source=DS, sql_table="orders",
                 fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                          DatasetField(name="customer_id", datatype=DataType.INTEGER)],
-                relationships=[join_to([["customer_id", "id"]], target="customers")],
+                relationships=[relationship_to([["customer_id", "id"]], target="customers")],
             )
             for model in (customers, orders):
                 await lv.storage.save_dataset(model)

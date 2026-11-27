@@ -15,7 +15,8 @@ from sqlalchemy.exc import DatabaseError, OperationalError
 from slayer.core.enums import DataType, NUMERIC_DATATYPES
 from slayer.core.relationship_edges import edge_reference
 from slayer.core.relationship_walker import OrientedRelationship, canonical_token, neighbors
-from slayer.core.models import DatasetField, SlayerDataset, field_type_text, is_identifier
+from slayer.core.models import DatasetField, RelationshipOrigin, SlayerDataset, field_type_text, is_identifier
+from slayer.core.names import qualified_reference
 from slayer.core.query import (
     SlayerQuery,
     extension_variable_refs,
@@ -64,7 +65,8 @@ _INSPECT_SECTIONS_OMITTABLE = ("samples", "learnings", "saved_queries")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
 _NONE_PLACEHOLDER = "_(none)_"
-_COUNT_STAR = "count(*)"
+def _count_star(dataset: SlayerDataset) -> str:
+    return f"count({qualified_reference(dataset.name)}.*)"
 
 
 def _escape_md_cell(value: Any) -> str:
@@ -197,7 +199,7 @@ def _markdown_table(rows: list[dict[str, Any]], fields: list[str]) -> str:
 
 def _render_field_type(field: DatasetField) -> str:
     """``datatype`` cell; opaque fields get their raw DB type and a not-queryable marker, a list its operations."""
-    if not field.datatype.is_opaque:
+    if field.datatype is None or not field.datatype.is_opaque:
         return field_type_text(field)
     detail = field.db_type or "unrecognized DB type"
     return f"{field.datatype} ({detail}; not queryable)"
@@ -215,7 +217,7 @@ def _choose_sample_dims(
         # Also excludes opaque fields, which can't be GROUP BY'd.
         if c.datatype not in (DataType.STRING, DataType.BOOLEAN):
             continue
-        dims.append(c.name)
+        dims.append(qualified_reference(dataset.name, c.name))
         dim_names.add(c.name)
         if len(dims) >= 2:
             break
@@ -232,7 +234,7 @@ def _choose_sample_agg(
     Restricted aggs without ``avg`` → first zero-arg-safe one, else the first allowed (intentional).
     Opaque fields are skipped: no equality operator, so they'd sink the whole profile query.
     """
-    if field.datatype.is_opaque:
+    if field.datatype is None or field.datatype.is_opaque:
         return None
     if field.datatype is DataType.ARRAY:
         return "count"
@@ -259,14 +261,14 @@ def _build_sample_query_args(
     metric_types = metric_types or {}
     dims, dim_names = _choose_sample_dims(dataset)
 
-    metrics: list[dict[str, str]] = [{"metric": _COUNT_STAR}]
+    metrics: list[dict[str, str]] = [{"metric": _count_star(dataset)}]
     for c in dataset.fields:
         if c.hidden or is_identifier(field=c, fields=dataset.fields) or c.name in dim_names:
             continue
         agg = _choose_sample_agg(c, metric_types=metric_types)
         if agg is None:
             continue
-        metrics.append({"metric": f"{agg}({c.name})"})
+        metrics.append({"metric": f"{agg}({qualified_reference(dataset.name, c.name)})"})
 
     return {
         "population": dataset.name,
@@ -302,7 +304,7 @@ async def _get_row_count(
     try:
         q = SlayerQuery.model_validate({
             "population": dataset.name,
-            "metrics": [{"metric": _COUNT_STAR}],
+            "metrics": [{"metric": _count_star(dataset)}],
         })
         r = await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception:
@@ -510,6 +512,16 @@ def _render_variables_line(variables: dict[str, list[str]]) -> str | None:
     return f"Variables: {', '.join(parts)}"
 
 
+def _inherited_origin(*, dataset: SlayerDataset, hop: OrientedRelationship) -> RelationshipOrigin | None:
+    """The edge an inherited outgoing ``hop`` of ``dataset`` derives from; ``None`` for any other hop."""
+    if hop.declaring_dataset != dataset.name or hop.source_dataset != dataset.name:
+        return None
+    pairs = set(hop.column_pairs)
+    found = next((j for j in dataset.relationships
+                  if j.to == hop.to and j.name == hop.name and set(j.column_pairs) == pairs), None)
+    return None if found is None else found.inherited_from
+
+
 async def _oriented_hops(
     dataset: SlayerDataset, storage: StorageBackend, *, failures: DocumentLoadFailures,
 ) -> list[OrientedRelationship]:
@@ -608,10 +620,13 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
     # Informs the sample query's avg vs count_distinct choice.
     metric_types: dict[str, ResultColumnType] = {}
     if engine is not None and "samples" in included_set:
-        metric_types = await engine.get_result_column_types(
-            dataset_name=dataset.name,
-            data_source=dataset.data_source or None,
-        )
+        try:
+            metric_types = await engine.get_result_column_types(
+                dataset_name=dataset.name,
+                data_source=dataset.data_source or None,
+            )
+        except ValueError:  # SlayerError included
+            pass  # an unplannable dataset still renders; the profile reports its error
 
     visible_fields = [c for c in dataset.fields if not c.hidden]
     if "fields" in included_set:
@@ -624,9 +639,10 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 "datatype": _render_field_type(c),
                 "primary_key": "yes" if c.primary_key else "",
                 "unique": "yes" if c.unique else "",
-                "sql": c.sql if c.sql else c.name,
+                "sql": c.definition_sql or c.name,
                 "allowed_aggregations": aggs,
                 "filter": c.filter,
+                "time_zone": c.time_zone,
                 "label": c.label,
                 "description": _truncate_description(c.description, descriptions_max_chars),
                 "meta": _format_meta(c.meta),
@@ -634,7 +650,8 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             })
         col_columns = [
             "name", "datatype", "primary_key", "unique", "sql", "allowed_aggregations",
-            "filter", "label", "description", "meta", "sampled",
+            "filter", *(["time_zone"] if any(c.time_zone for c in visible_fields) else []),
+            "label", "description", "meta", "sampled",
         ]
         if not show_sql:
             col_columns = [c for c in col_columns if c not in ("sql", "filter")]
@@ -653,7 +670,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         for mm in dataset.metrics:
             metric_rows.append({
                 "name": mm.name,
-                "expression": mm.expression,
+                "expression": mm.text,
                 "label": mm.label,
                 "description": _truncate_description(mm.description, descriptions_max_chars),
                 "meta": _format_meta(mm.meta),
@@ -704,21 +721,27 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             f"## Aggregations ({len(dataset.aggregations)} — names only)\n\n{csv}"
         )
 
+    inherited_error: str | None = None
+    if engine is not None and dataset.source_queries:
+        relationships, inherited_error = await engine.relationships_as_read(dataset)
+        dataset = dataset.model_copy(update={"relationships": relationships})
     hops = await _oriented_hops(dataset, storage, failures=failures)
+    origins = [_inherited_origin(dataset=dataset, hop=h) for h in hops]
     if "relationships" in included_set:
         relationship_rows: list[dict[str, Any]] = []
-        for h in hops:
+        for h, origin in zip(hops, origins):
             relationship_rows.append({
                 "name": h.name or "",
                 "to": h.to,
                 "keys": "; ".join(f"{src} = {tgt}" for src, tgt in h.column_pairs),
                 "cardinality": str(h.cardinality) if h.cardinality else "",
+                "inherited": "" if origin is None else f"inherited from {origin.dataset_spelling}.{origin.relationship}",
             })
         out_sections.append(
             f"## Relationships ({len(relationship_rows)})\n\n"
             + _markdown_table(
                 rows=relationship_rows,
-                fields=["name", "to", "keys", "cardinality"],
+                fields=["name", "to", "keys", "cardinality", *(["inherited"] if any(origins) else [])],
             )
         )
     elif hops:
@@ -726,6 +749,8 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         out_sections.append(
             f"## Relationships ({len(hops)} — names only)\n\n{csv}"
         )
+    if inherited_error is not None and "relationships" in included_set:
+        out_sections.append(f"> Inherited relationships could not be derived: {inherited_error}")
 
     sample_sql: str | None = None
     sample_data: dict[str, Any] | None = None
@@ -748,7 +773,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 if not _is_unsupported_grouping_error(exc):
                     raise
                 minimal_args = dict(query_args)
-                minimal_args["metrics"] = [{"metric": _COUNT_STAR}]
+                minimal_args["metrics"] = [{"metric": _count_star(dataset)}]
                 minimal_args["dimensions"] = []
                 sample_query = SlayerQuery.model_validate(minimal_args)
                 try:
@@ -866,12 +891,13 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     # Opaque fields only (see _render_field_type).
                     **(
                         {"db_type": c.db_type, "queryable": False}
-                        if c.datatype.is_opaque else {}
+                        if c.datatype is not None and c.datatype.is_opaque else {}
                     ),
                     "primary_key": c.primary_key,
                     "unique": c.unique,
                     **({"granularity": str(c.granularity)} if c.granularity is not None else {}),
-                    **({"sql": c.sql} if show_sql else {}),
+                    **({"time_zone": c.time_zone} if c.time_zone is not None else {}),
+                    **({"sql": c.definition_sql} if show_sql else {}),
                     "allowed_aggregations": c.allowed_aggregations,
                     **({"filter": c.filter} if show_sql else {}),
                     "label": c.label,
@@ -893,7 +919,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             payload["metrics"] = [
                 {
                     "name": mm.name,
-                    "expression": mm.expression,
+                    "expression": mm.text,
                     "label": mm.label,
                     "description": _truncate_description(
                         mm.description, descriptions_max_chars,
@@ -934,9 +960,15 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     "from_columns": [src for src, _ in h.column_pairs],
                     "to_columns": [tgt for _, tgt in h.column_pairs],
                     "cardinality": h.cardinality,
+                    **({} if origin is None else {
+                        "inherited": True,
+                        "inherited_from": {"dataset": origin.dataset_spelling, "relationship": origin.relationship},
+                    }),
                 }
-                for h in hops
+                for h, origin in zip(hops, origins)
             ]
+            if dataset.source_queries:
+                payload["inherited_relationships_error"] = inherited_error
         elif hops:
             payload["relationships_names"] = [canonical_token(h) for h in hops]
 

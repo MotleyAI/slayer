@@ -18,7 +18,6 @@ The `sql_focus` view ([views.c4](views.c4)):
 flowchart TD
   %% sql_focus: SQL generation in context
   subgraph core["Core domain models"]
-    core__query["Query"]
     core__models["Models"]
   end
   subgraph sql["SQL generation"]
@@ -38,10 +37,7 @@ flowchart TD
   end
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
-  core__models -.-> sql__window_detect
-  core__query -.-> sql__window_detect
   sql__render --> sql__dialects
-  sql__sql_predicate --> sql__window_detect
   database --> sql
   engine --> sql
   importers --> sql
@@ -51,7 +47,7 @@ flowchart TD
   storage --> sql
   usage_reporting__features --> sql
   classDef leaf fill:none;
-  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,database,live_schema,ir,storage,importers,usage_reporting__features leaf;
+  class core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine,database,live_schema,ir,storage,importers,usage_reporting__features leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:sql_focus -->
@@ -66,8 +62,9 @@ flowchart TD
    [enforced: test:tests/test_law_no_statement_reparse.py]
    [enforced: test:tests/test_law_no_emitted_reparse.py]
 2. **Dialect quirks live only in `dialects/`** — one file per Tier-1 dialect,
-   data-shaped Tier-2 table; everything not explicitly overridden goes through
-   sqlglot transpilation. No `if dialect == …` outside `dialects/`. [review]
+   data-shaped Tier-2 table, and one for the Ossie document dialect; everything
+   not explicitly overridden goes through sqlglot transpilation. No
+   `if dialect == …` outside `dialects/`. [review]
 3. **One naming authority**: `slayer/sql/naming.py` owns every alias and
    result-key decision (dotted result keys, flat inner names, mangling,
    identifier-length fitting, CTE names). [review]
@@ -104,6 +101,7 @@ flowchart TD
     [enforced: test:tests/test_dev1837_dimension_measure_matrix.py]
     [enforced: test:tests/test_dev2063_grain_guarantee.py]
 13. **One relation door**: a model reaches SQL only through one door, as its filtered dataset (semantics Axiom 3.3) — never as its bare table, and never filtered afterwards by an enclosing WHERE. [enforced: test:tests/test_law_relation_door.py]
+14. **Emitted types are logical types**: on every dialect a rendered value has the type its key derives (system P10), and a DATE meeting a TIMESTAMP reads as its midnight instant. [enforced: test:tests/test_dev2018_logical_types.py]
 
 ## 4. Rationale
 

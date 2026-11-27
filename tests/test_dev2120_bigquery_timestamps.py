@@ -8,6 +8,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.dialects import base as dialects_base
@@ -23,7 +24,8 @@ from tests._engine_helpers import _engine_generate
 def _zoned_lib() -> SlayerDataset:
     base = lib_dataset()
     return base.model_copy(update={"fields": [
-        c.model_copy(update={"db_type": "TIMESTAMP"}) if c.name == "ts" else c for c in base.fields]})
+        c.model_copy(update={"db_type": "TIMESTAMP", "datatype": DataType.DATETIME_TZ}) if c.name == "ts" else c
+        for c in base.fields]})
 
 
 async def _sql(expr: str, *, dialect: str = "bigquery", filtered: bool = False, zoned: bool = False) -> str:
@@ -38,64 +40,64 @@ class TestNaiveValues:
         assert "CURRENT_DATETIME()" in sql, sql
         assert "CURRENT_TIMESTAMP" not in sql, sql
 
-    @pytest.mark.parametrize("expr", ["TRY_CAST(code AS TIMESTAMP)", "json_value(payload, '$.t' RETURNING TIMESTAMP)"])
+    @pytest.mark.parametrize("expr", ["TRY_CAST(lib.code AS TIMESTAMP)", "json_value(lib.payload, '$.t' RETURNING TIMESTAMP)"])
     async def test_portable_timestamp_casts_read_as_datetime(self, expr: str) -> None:
         sql = await _sql(expr)
         assert "AS DATETIME)" in sql, sql
         assert "AS TIMESTAMP)" not in sql, sql
 
     async def test_author_cast_is_the_databases_own(self) -> None:
-        assert "CAST(LIB.CODE AS TIMESTAMP)" in await _sql("CAST(code AS TIMESTAMP)")
+        assert "CAST(LIB.CODE AS TIMESTAMP)" in await _sql("CAST(lib.code AS TIMESTAMP)")
 
     @pytest.mark.parametrize("unit", ["hour", "day", "week", "month"])
     async def test_date_add_stays_datetime(self, unit: str) -> None:
-        sql = await _sql(f"date_add(ts, 1, '{unit}')")
+        sql = await _sql(f"date_add(lib.ts, 1, '{unit}')")
         assert "DATETIME_ADD(CAST(LIB.TS AS DATETIME)" in sql, sql
         assert "TIMESTAMP" not in sql, sql
 
     async def test_sub_day_date_diff_uses_datetime_functions(self) -> None:
-        sql = await _sql("date_diff('hour', ts, now())")
+        sql = await _sql("date_diff('hour', lib.ts, now())")
         assert "DATETIME_DIFF(" in sql, sql
         assert "DATETIME_TRUNC(" in sql, sql
         assert "TIMESTAMP_" not in sql, sql
 
     async def test_naive_column_compares_with_now_directly(self) -> None:
-        assert "WHERE LIB.TS < CURRENT_DATETIME()" in await _sql("ts < now()", filtered=True)
+        assert "WHERE LIB.TS < CURRENT_DATETIME()" in await _sql("lib.ts < now()", filtered=True)
 
 
 class TestZonedColumn:
     @pytest.mark.parametrize(("expr", "where"), [
-        ("ts < now()", "LIB.TS < CAST(CURRENT_DATETIME() AS TIMESTAMP)"),
-        ("now() > ts", "CAST(CURRENT_DATETIME() AS TIMESTAMP) > LIB.TS"),
-        ("ts < date_add(now(), -1, 'day')", "LIB.TS < CAST(DATETIME_ADD(CURRENT_DATETIME(), INTERVAL -1 DAY) AS TIMESTAMP)"),
+        ("lib.ts < now()", "LIB.TS < CAST(CURRENT_DATETIME() AS TIMESTAMP)"),
+        ("now() > lib.ts", "CAST(CURRENT_DATETIME() AS TIMESTAMP) > LIB.TS"),
+        ("lib.ts < date_add(now(), -1, 'day')", "LIB.TS < CAST(DATETIME_ADD(CURRENT_DATETIME(), INTERVAL -1 DAY) AS TIMESTAMP)"),
     ])
     async def test_other_side_converts_and_the_column_stays_bare(self, expr: str, where: str) -> None:
         assert f"WHERE {where}" in await _sql(expr, filtered=True, zoned=True)
 
     async def test_temporal_literal_keeps_its_iso_text(self) -> None:
-        sql = await _sql("ts > TIMESTAMP '2024-01-01 10:00'", filtered=True, zoned=True)
+        sql = await _sql("lib.ts > TIMESTAMP '2024-01-01 10:00'", filtered=True, zoned=True)
         assert "WHERE LIB.TS > '2024-01-01 10:00:00'" in sql, sql
 
     async def test_column_against_itself_is_untouched(self) -> None:
-        assert "WHERE LIB.TS = LIB.TS" in await _sql("ts = ts", filtered=True, zoned=True)
+        assert "WHERE LIB.TS = LIB.TS" in await _sql("lib.ts = lib.ts", filtered=True, zoned=True)
 
     async def test_a_stage_reads_the_zoned_column_naive(self) -> None:
-        s1 = SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["id", "ts"]})
-        root = SlayerQuery.model_validate({"population": "s1", "dimensions": ["id"], "filter": ["ts < now()"]})
+        s1 = SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["lib.id", "lib.ts"]})
+        root = SlayerQuery.model_validate({"population": "s1", "dimensions": ["s1.id"], "filter": ["s1.ts < now()"]})
         sql = " ".join((await _engine_generate(query=[s1, root], dataset=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "CAST(LIB.TS AS DATETIME) AS `LIB___TS`" in sql, sql
         assert "WHERE S1.TS < CURRENT_DATETIME()" in sql, sql
 
     async def test_other_dialects_ignore_the_db_type(self) -> None:
-        zoned = await _sql("ts < now()", dialect="postgres", filtered=True, zoned=True)
-        assert zoned == await _sql("ts < now()", dialect="postgres", filtered=True)
+        zoned = await _sql("lib.ts < now()", dialect="postgres", filtered=True, zoned=True)
+        assert zoned == await _sql("lib.ts < now()", dialect="postgres", filtered=True)
 
 
 class TestZonedColumnReadsNaive:
     @pytest.mark.parametrize(("expr", "fragment"), [
-        ("ts", "CAST(LIB.TS AS DATETIME) AS `LIB___V`"),
-        ("coalesce(ts, now())", "COALESCE(CAST(LIB.TS AS DATETIME), CURRENT_DATETIME())"),
-        ("date_trunc('month', ts)", "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)"),
+        ("lib.ts", "CAST(LIB.TS AS DATETIME) AS `V`"),
+        ("coalesce(lib.ts, now())", "COALESCE(CAST(LIB.TS AS DATETIME), CURRENT_DATETIME())"),
+        ("date_trunc('month', lib.ts)", "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)"),
     ])
     async def test_value_positions(self, expr: str, fragment: str) -> None:
         assert fragment in await _sql(expr, zoned=True)
@@ -103,16 +105,16 @@ class TestZonedColumnReadsNaive:
     async def test_time_dimension_bucket_and_date_range(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "lib",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(lib.*)"}],
             "time_dimensions": [
-            {"field": "ts", "granularity": "month", "date_range": ["2024-01-01", "2024-03-31"]}],
+            {"field": "lib.ts", "granularity": "month", "date_range": ["2024-01-01", "2024-03-31"]}],
         })
         sql = " ".join((await _engine_generate(query=query, dataset=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)" in sql, sql
         assert "LIB.TS >= '2024-01-01 00:00:00'" in sql, sql
 
     @pytest.mark.parametrize(("formula", "fragment"), [
-        ("max(ts)", "MAX(CAST(LIB.TS AS DATETIME))"), ("count_distinct(ts)", "COUNT(DISTINCT CAST(LIB.TS AS DATETIME))"),
+        ("max(lib.ts)", "MAX(CAST(LIB.TS AS DATETIME))"), ("count_distinct(lib.ts)", "COUNT(DISTINCT CAST(LIB.TS AS DATETIME))"),
     ])
     async def test_aggregate_input_reads_naive(self, formula: str, fragment: str) -> None:
         query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": formula, "alias": "agg_v"}]})
@@ -122,8 +124,8 @@ class TestZonedColumnReadsNaive:
     async def test_derived_aggregate_source_reads_naive_once(self) -> None:
         base = _zoned_lib()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
-            name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", datatype=DataType.DATETIME, db_type="TIMESTAMP")]})
-        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "max(ts_shifted)",
+            name="ts_shifted", expression=ExpressionObject(dialects=[DialectEntry(dialect="BIGQUERY", expression="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)")]), datatype=DataType.DATETIME_TZ, db_type="TIMESTAMP")]})
+        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "max(lib.ts_shifted)",
                                                                                  "alias": "agg_v"}]})
         sql = " ".join((await _engine_generate(query=query, dataset=model, dialect="bigquery")).upper().split())
         assert "MAX(CAST(TIMESTAMP_ADD(LIB.TS, INTERVAL '1' HOUR) AS DATETIME))" in sql, sql
@@ -133,8 +135,8 @@ class TestZonedColumnReadsNaive:
     async def test_ranked_pick_reads_naive(self, agg: str) -> None:
         query = SlayerQuery.model_validate({
             "population": "lib",
-            "metrics": [{"metric": f"{agg}(ts)", "alias": "agg_v"}],
-            "time_dimensions": [{"field": "ts", "granularity": "month"}],
+            "metrics": [{"metric": f"{agg}(lib.ts)", "alias": "agg_v"}],
+            "time_dimensions": [{"field": "lib.ts", "granularity": "month"}],
         })
         sql = " ".join((await _engine_generate(query=query, dataset=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "CAST(LIB.TS AS DATETIME) AS _VAL_1" in sql, sql
@@ -142,9 +144,9 @@ class TestZonedColumnReadsNaive:
     async def test_derived_time_column_reads_naive(self) -> None:
         base = _zoned_lib()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
-            name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", datatype=DataType.DATETIME, db_type="TIMESTAMP")]})
-        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "count(*)"}],
-                                            "time_dimensions": [{"field": "ts_shifted", "granularity": "month"}]})
+            name="ts_shifted", expression=ExpressionObject(dialects=[DialectEntry(dialect="BIGQUERY", expression="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)")]), datatype=DataType.DATETIME_TZ, db_type="TIMESTAMP")]})
+        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "count(lib.*)"}],
+                                            "time_dimensions": [{"field": "lib.ts_shifted", "granularity": "month"}]})
         sql = " ".join((await _engine_generate(query=query, dataset=model, dialect="bigquery")).upper().split())
         assert "DATE_TRUNC(CAST(TIMESTAMP_ADD(LIB.TS, INTERVAL '1' HOUR) AS DATETIME), MONTH)" in sql, sql
 
@@ -156,10 +158,11 @@ class TestZonedColumnReadsNaive:
         a = SlayerDataset(name="a", sql_table="a", data_source="test", relationships=[
             DatasetRelationship(to="b", from_columns=["at"], to_columns=["bt"])], fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="at", sql="at_raw", datatype=DataType.DATETIME, db_type="TIMESTAMP"),
-            DatasetField(name="ts_shifted", sql="TIMESTAMP_ADD(at_raw, INTERVAL 1 HOUR)", datatype=DataType.DATETIME)])
+            DatasetField(name="at", expression="at_raw", datatype=DataType.DATETIME_TZ, db_type="TIMESTAMP"),
+            DatasetField(name="ts_shifted", expression=ExpressionObject(dialects=[DialectEntry(dialect="BIGQUERY", expression="TIMESTAMP_ADD(at_raw, INTERVAL 1 HOUR)")]), datatype=DataType.DATETIME)])
         b = SlayerDataset(name="b", sql_table="b", data_source="test", fields=[
-            DatasetField(name="bt", datatype=DataType.DATETIME, db_type=target_db_type, primary_key=True),
+            DatasetField(name="bt", datatype=DataType.DATETIME if target_db_type is None else DataType.DATETIME_TZ,
+                         db_type=target_db_type, primary_key=True),
             DatasetField(name="label", datatype=DataType.STRING)])
         query = SlayerQuery.model_validate({"population": "a", "dimensions": ["b.label"]})
         sql = await _engine_generate(query=query, dataset=a, extra_datasets=[b], dialect="bigquery")
@@ -170,8 +173,8 @@ class TestZonedColumnReadsNaive:
         a = SlayerDataset(name="a", sql_table="a", data_source="test", relationships=[
             DatasetRelationship(to="b", from_columns=["at"], to_columns=["bt"])], fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="at_copy", sql="at_raw", datatype=DataType.DATETIME),
-            DatasetField(name="at", sql="at_raw", datatype=DataType.DATETIME, db_type="TIMESTAMP")])
+            DatasetField(name="at_copy", expression="at_raw", datatype=DataType.DATETIME),
+            DatasetField(name="at", expression="at_raw", datatype=DataType.DATETIME_TZ, db_type="TIMESTAMP")])
         b = SlayerDataset(name="b", sql_table="b", data_source="test", fields=[
             DatasetField(name="bt", datatype=DataType.DATETIME, primary_key=True),
             DatasetField(name="label", datatype=DataType.STRING)])
@@ -200,9 +203,9 @@ class TestZonedColumnReadsNaive:
         assert "orders.order_date >= '2025-01-01 00:00:00'" in sql, sql
 
 
-def _zoned(datasets: list[SlayerDataset], columns: set[tuple[str, str]]) -> list[SlayerDataset]:
+def _zoned(datasets: list[SlayerDataset], fields: set[tuple[str, str]]) -> list[SlayerDataset]:
     return [m.model_copy(update={"fields": [
-        c.model_copy(update={"db_type": "TIMESTAMP", "datatype": DataType.DATETIME}) if (m.name, c.name) in columns else c
+        c.model_copy(update={"db_type": "TIMESTAMP", "datatype": DataType.DATETIME_TZ}) if (m.name, c.name) in fields else c
         for c in m.fields]}) for m in datasets]
 
 

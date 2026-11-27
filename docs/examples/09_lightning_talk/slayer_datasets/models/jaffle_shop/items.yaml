@@ -1,0 +1,60 @@
+version: 30
+name: items
+sql_table: items
+source_kind: table
+query_variables: {}
+data_source: jaffle_shop
+fields:
+- name: id
+  expression: id
+  datatype: String
+  primary_key: true
+  unique: false
+  label: Item ID
+  hidden: false
+- name: order_id
+  expression: order_id
+  datatype: String
+  primary_key: false
+  unique: false
+  description: Order this line belongs to.
+  label: Order
+  hidden: false
+- name: sku
+  expression: sku
+  datatype: String
+  primary_key: false
+  unique: false
+  description: Product sold on this line.
+  label: Product
+  hidden: false
+metrics:
+- expression: count(id)
+  name: units_sold
+  label: Units Sold
+  description: Number of item units sold.
+  datatype: Integer
+aggregations: []
+relationships:
+- to: orders
+  from_columns:
+  - order_id
+  to_columns:
+  - id
+  join_type: left
+  cardinality: many_to_one
+  trusted: true
+- to: products
+  from_columns:
+  - sku
+  to_columns:
+  - sku
+  join_type: left
+  cardinality: many_to_one
+  trusted: true
+enforced_keys:
+- - id
+filters: []
+description: "Order line items \u2014 one row per unit sold on an order."
+hidden: false
+access_tags: []

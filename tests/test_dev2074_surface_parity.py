@@ -5,11 +5,9 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from pathlib import Path
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
-import sqlalchemy as sa
 
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import PopulationErrorReason, PopulationInferenceError, UnresolvableDimensionRelationshipError
@@ -19,20 +17,9 @@ from slayer.core.time_spine import spine_dataset
 from slayer.engine.population.dimension_routing import route_dotted_target
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import (
-    OSIDataset,
-    OSIDialectExpression,
-    OSIDocument,
-    OSIExpression,
-    OSIField,
-    OSIMetric,
-    OSIRelationship,
-)
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import disposable_engine, seeded_exec_engine
-from tests._osi_helpers import run_converter
+from tests._engine_helpers import seeded_exec_engine
 
 EngineBuilder = Callable[[list[SlayerDataset]], Awaitable[SlayerQueryEngine]]
 
@@ -45,13 +32,13 @@ def _names_pair(text: str, *, a: str, b: str) -> bool:
     return a in text and b in text and bool(_REMEDY.search(text))
 
 
-def _m(name: str, *, cols: tuple[str, ...] = (), joins: list[DatasetRelationship] | None = None,
+def _m(name: str, *, cols: tuple[str, ...] = (), relationships: list[DatasetRelationship] | None = None,
        metrics: list[DatasetMetric] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source=DS, sql_table=name,
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                  *(DatasetField(name=c, datatype=DataType.INTEGER if c.endswith("_id") else DataType.STRING) for c in cols)],
-        relationships=joins or [], metrics=metrics or [],
+        relationships=relationships or [], metrics=metrics or [],
     )
 
 
@@ -60,15 +47,15 @@ def _to(target: str, src: str, *, tgt: str = "id", name: str | None = None,
     return DatasetRelationship(to=target, from_columns=[src], to_columns=[tgt], name=name, cardinality=cardinality)
 
 
-def _by(*models: SlayerDataset) -> dict[str, SlayerDataset]:
-    return {m.name: m for m in models}
+def _by(*datasets: SlayerDataset) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in datasets}
 
 
 def _unnamed_pair() -> list[SlayerDataset]:
-    """``orders`` declares two unnamed joins onto ``addresses``."""
+    """``orders`` declares two unnamed relationships onto ``addresses``."""
     return [
         _m("orders", cols=("status", "billing_id", "shipping_id"),
-           joins=[_to("addresses", "billing_id"), _to("addresses", "shipping_id")]),
+           relationships=[_to("addresses", "billing_id"), _to("addresses", "shipping_id")]),
         _m("addresses", cols=("city",)),
     ]
 
@@ -86,31 +73,28 @@ async def make_engine() -> AsyncIterator[EngineBuilder]:
 
 
 class TestRecommendation:
-    @pytest.mark.parametrize(("item", "path"), [
-        ("regions.rname", "customers.hr.rname"),
-        ("regions.n", "customers.hr.n"),
-    ])
-    async def test_single_named_edge_is_emitted_by_its_name(self, make_engine: EngineBuilder, item: str, path: str) -> None:
+    @pytest.mark.parametrize("item", ["regions.rname", "regions.n"])
+    async def test_single_named_edge_is_emitted_as_written(self, make_engine: EngineBuilder, item: str) -> None:
         engine = await make_engine([
-            _m("orders", cols=("customer_id",), joins=[_to("customers", "customer_id")]),
-            _m("customers", cols=("region_id",), joins=[_to("regions", "region_id", name="hr")]),
+            _m("orders", cols=("customer_id",), relationships=[_to("customers", "customer_id")]),
+            _m("customers", cols=("region_id",), relationships=[_to("regions", "region_id", name="hr")]),
             _m("regions", cols=("rname",), metrics=[DatasetMetric(name="n", expression="count(rname)")]),
         ])
         rec = await engine.recommend_population(["orders.id", item])
         assert rec.population == "orders"
         paths = {ip.input_item: ip.path for ip in rec.item_paths}
-        assert paths[item] == path
+        assert paths[item] == item
 
-    async def test_equal_length_routes_prefer_the_to_one_hop(self, make_engine: EngineBuilder) -> None:
+    async def test_equal_length_routes_prefer_the_to_one_hop_is_emitted_as_written(self, make_engine: EngineBuilder) -> None:
         engine = await make_engine([
-            _m("a", cols=("b_id", "x"), joins=[_to("b", "b_id", name="to_b")]),
-            _m("b", cols=("a_id", "y"), joins=[_to("a", "a_id", name="to_a")],
+            _m("a", cols=("b_id", "x"), relationships=[_to("b", "b_id", name="to_b")]),
+            _m("b", cols=("a_id", "y"), relationships=[_to("a", "a_id", name="to_a")],
                metrics=[DatasetMetric(name="total", expression="count(y)")]),
         ])
         rec = await engine.recommend_population(["a.x", "b.total"])
         assert rec.population == "a"
         paths = {ip.input_item: ip.path for ip in rec.item_paths}
-        assert paths["b.total"] == "to_b.total"
+        assert paths["b.total"] == "b.total"
 
     async def test_unaddressable_pair_is_named_in_the_warnings(self, make_engine: EngineBuilder) -> None:
         engine = await make_engine(_unnamed_pair())
@@ -122,7 +106,7 @@ class TestRecommendation:
 class TestShortFormRouting:
     def test_unaddressable_pair_on_the_only_route_is_named(self) -> None:
         models = _by(
-            _m("shipments", cols=("order_id",), joins=[_to("orders", "order_id")]),
+            _m("shipments", cols=("order_id",), relationships=[_to("orders", "order_id")]),
             *_unnamed_pair(),
         )
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
@@ -134,9 +118,9 @@ class TestShortFormRouting:
     def test_suggestion_through_a_single_named_edge_uses_its_name(self) -> None:
         models = _by(
             _m("orders", cols=("customer_id", "store_id"),
-               joins=[_to("customers", "customer_id"), _to("stores", "store_id")]),
-            _m("customers", cols=("region_id",), joins=[_to("regions", "region_id", name="hr")]),
-            _m("stores", cols=("region_id",), joins=[_to("regions", "region_id")]),
+               relationships=[_to("customers", "customer_id"), _to("stores", "store_id")]),
+            _m("customers", cols=("region_id",), relationships=[_to("regions", "region_id", name="hr")]),
+            _m("stores", cols=("region_id",), relationships=[_to("regions", "region_id")]),
             _m("regions", cols=("name",)),
         )
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
@@ -148,9 +132,9 @@ class TestShortFormRouting:
         # Both 2-hop routes fan out somewhere; via "aaa" twice, via "zzz" once.
         models = _by(
             _m("root", cols=("grp", "zzz_id"),
-               joins=[_to("aaa", "grp", tgt="grp", cardinality=None), _to("zzz", "zzz_id")]),
-            _m("aaa", cols=("grp", "grp2"), joins=[_to("d", "grp2", tgt="grp", cardinality=None)]),
-            _m("zzz", cols=("grp",), joins=[_to("d", "grp", tgt="grp", cardinality=None)]),
+               relationships=[_to("aaa", "grp", tgt="grp", cardinality=None), _to("zzz", "zzz_id")]),
+            _m("aaa", cols=("grp", "grp2"), relationships=[_to("d", "grp2", tgt="grp", cardinality=None)]),
+            _m("zzz", cols=("grp",), relationships=[_to("d", "grp", tgt="grp", cardinality=None)]),
             _m("d", cols=("grp", "name")),
         )
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
@@ -188,52 +172,6 @@ class TestFacadeCatalog:
         assert not any("returns" in d.name for d in table.dimensions)
 
 
-_OSI_SCHEMA = [
-    "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)",
-    "CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, region_id INTEGER)",
-]
-
-
-@pytest.fixture
-def osi_engine(tmp_path: Path) -> Iterator[sa.Engine]:
-    with disposable_engine(f"sqlite:///{tmp_path}/osi.db") as engine:
-        with engine.connect() as conn:
-            for ddl in _OSI_SCHEMA:
-                conn.execute(sa.text(ddl))
-            conn.commit()
-        yield engine
-
-
-def _expr(sql: str) -> OSIExpression:
-    return OSIExpression(dialects=[OSIDialectExpression.model_validate({"dialect": "ANSI_SQL", "expression": sql})])
-
-
-class TestOsiConversion:
-    def test_unaddressable_pair_in_the_no_join_path_report(self, osi_engine: sa.Engine) -> None:
-        def rel(name: str, src: str, dst: str) -> OSIRelationship:
-            return OSIRelationship.model_validate({"name": name, "from": src, "to": dst,
-                                                   "from_columns": ["customer_id"], "to_columns": ["customer_id"]})
-        doc = OSIDocument(
-            version="0.2.0.dev0", name="s", legacy=True,
-            datasets=[
-                OSIDataset(name="orders", source="orders",
-                           fields=[OSIField(name="amount", expression=_expr("amount"))]),
-                OSIDataset(name="customers", source="customers",
-                           fields=[OSIField(name="region_id", expression=_expr("region_id"))]),
-            ],
-            relationships=[rel("o2c", "orders", "customers"), rel("c2o", "customers", "orders")],
-            metrics=[OSIMetric(name="cross",
-                               expression=_expr("SUM(orders.amount) + SUM(customers.region_id)"))],
-        )
-        result = run_converter(
-            OsiToSlayerConverter(documents=[doc], data_source=DS),
-            datasource=DatasourceConfig(name=DS, type="sqlite", database=osi_engine.url.database),
-        )
-        report = [w for w in result.unconverted_metrics if w.category == "no_join_path"]
-        assert report, result.unconverted_metrics
-        assert any(_names_pair(f"{w.message} {w.suggestion or ''}", a="orders", b="customers") for w in report)
-
-
 class TestPopulationInference:
     async def test_unaddressable_pair_in_the_candidate_reason(self, make_engine: EngineBuilder) -> None:
         engine = await make_engine(_unnamed_pair())
@@ -246,9 +184,9 @@ class TestPopulationInference:
 def _cycle_datasets() -> list[SlayerDataset]:
     """``x → y → z → x``, every edge declared many-to-one."""
     return [
-        _m("x", cols=("y_id", "v"), joins=[_to("y", "y_id")]),
-        _m("y", cols=("z_id", "v"), joins=[_to("z", "z_id")]),
-        _m("z", cols=("x_id", "v"), joins=[_to("x", "x_id")]),
+        _m("x", cols=("y_id", "v"), relationships=[_to("y", "y_id")]),
+        _m("y", cols=("z_id", "v"), relationships=[_to("z", "z_id")]),
+        _m("z", cols=("x_id", "v"), relationships=[_to("x", "x_id")]),
     ]
 
 
@@ -268,14 +206,14 @@ async def cycle_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 class TestDirectedCycle:
-    async def test_inference_needs_an_explicit_population(self, cycle_engine) -> None:
+    async def test_inference_ties(self, cycle_engine) -> None:
         query = SlayerQuery.model_validate({"dimensions": ["x.v", "y.v", "z.v"]})
         with pytest.raises(PopulationInferenceError) as ei:
             await cycle_engine.execute(query)
-        assert ei.value.reason == PopulationErrorReason.NO_VIABLE_CANDIDATE
+        assert ei.value.reason == PopulationErrorReason.TIE
 
     async def test_the_named_population_executes(self, cycle_engine) -> None:
-        resp = await cycle_engine.execute(SlayerQuery.model_validate({"population": "x", "dimensions": ["v", "y.v", "y.z.v"]}))
+        resp = await cycle_engine.execute(SlayerQuery.model_validate({"population": "x", "dimensions": ["x.v", "y.v", "y.z.v"]}))
         assert len(resp.data) == 1
         assert sorted(resp.data[0].values()) == ["x1", "y1", "z1"]
 
@@ -284,4 +222,4 @@ class TestDirectedCycle:
         assert rec.reachable is False
         assert rec.population is None
         coverage = {c.dataset_name: set(c.reachable_items) for c in rec.coverage}
-        assert coverage == {"x": {"x.v", "y.v"}, "y": {"y.v", "z.v"}, "z": {"z.v", "x.v"}}
+        assert coverage == {name: {"x.v", "y.v", "z.v"} for name in ("x", "y", "z")}

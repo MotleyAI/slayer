@@ -6,8 +6,7 @@ Exports one datasource's SLayer models as an Ossie (OSI) semantic-model document
 ## Requirements
 
 ### Requirement: Export writes one current-spec document per datasource
-
-`slayer export-osi --datasource X` and the Python export API SHALL write the datasource's models as one flat current-spec Ossie document (`version: 0.3.0.dev0`) that validates against the pinned upstream Ossie schema. The document's `name` and `description` SHALL come from the datasource, or from the models' shared imported semantic-model metadata when every exported model carries the same one. Datasets SHALL be ordered by model name, and fields, metrics and relationships in a deterministic order, so that exporting unchanged models twice produces identical documents. Export SHALL NOT access the database directly; any metadata it needs SHALL be read through the query engine.
+`slayer export-osi --datasource X` and the Python export API SHALL write the datasource's semantic model — every stored semantic-model document and every standalone dataset of `X` — as one flat current-spec Ossie document (`version: 0.3.0.dev0`) that validates against the pinned upstream Ossie schema. When `X` holds exactly one semantic-model document and no standalone dataset, no `--datasets` subset is given and extensions are not omitted, the output SHALL be that document's stored text unchanged (converted to JSON only when the output file is JSON). With `--no-extensions`, the output SHALL be that text with only its `SLAYER` entries removed, every other line kept. Otherwise the document SHALL hold every dataset, relationship and model-scoped metric of `X`: document entities as stored, standalone datasets exported by the rules below; the document's `name` and `description` SHALL come from the datasource; and each source document's `name`, `description`, `ai_context`, non-portable extensions and the names of its datasets SHALL be carried in a document-level `SLAYER` entry, so that importing the export into an empty datasource restores each source document. Datasets SHALL be ordered by name, and fields, metrics and relationships in a deterministic order, so that exporting unchanged content twice produces identical documents. Export SHALL NOT access the database directly; any metadata it needs SHALL be read through the query engine.
 
 #### Scenario: Exported document validates
 - **WHEN** a datasource with table-backed, sql-mode and query-backed models, joins and measures is exported
@@ -22,8 +21,20 @@ Exports one datasource's SLayer models as an Ossie (OSI) semantic-model document
 - **THEN** the export succeeds
 
 #### Scenario: Imported source columns round trip
-- **WHEN** a document whose dataset-scoped metrics read `source.quantity` (through a hidden helper) and `source.amount` (through a pass-through field) is imported, exported with extensions, validated, re-imported and exported again
-- **THEN** both exports are byte-identical, the helper column is hidden after re-import, every extension fingerprint matches, and both measures return the same values as before
+- **WHEN** a document whose dataset-scoped metrics read `source.quantity` and `source.amount` is imported, exported, validated, re-imported and exported again
+- **THEN** both exports are byte-identical to the original document, and both metrics return the same values as before
+
+#### Scenario: A single-document datasource exports verbatim
+- **WHEN** a datasource holds only the document `sales`, whose text carries comments, and is exported to YAML
+- **THEN** the output equals the stored text of `sales`
+
+#### Scenario: No extensions strips only SLAYER entries
+- **WHEN** a datasource holds only the document `sales`, one of whose datasets carries a `SLAYER` entry and a `DBT` entry, and is exported with `--no-extensions`
+- **THEN** the output equals the stored text without the `SLAYER` entry, and the `DBT` entry and every other line are kept
+
+#### Scenario: Two documents and a standalone dataset merge
+- **WHEN** a datasource holds documents `sales` and `support` and a standalone dataset `stores` with a relationship into `sales`'s dataset `orders`, and is exported and imported into an empty datasource
+- **THEN** the export is one valid document holding all three sources' datasets and the relationship, and the re-import restores the documents `sales` and `support` and the standalone dataset `stores`
 
 ### Requirement: Model subset
 
@@ -51,19 +62,19 @@ A table-backed model SHALL export with its physical table as `source`. A sql-mod
 
 ### Requirement: Fields
 
-Every column whose definition reads only its own model SHALL export as a field named by the column's name. Its expression SHALL read the model source's physical columns, with references to other columns of the same model expanded to their definitions. A column with a `filter` SHALL export with the expression `CASE WHEN <filter> THEN <value> END`, so that it is masked in every position. A column's `label`, `description` and imported Ossie `ai_context` SHALL export as the field's `label`, `description` and `ai_context`; text that the importer appended to a description from `ai_context` SHALL NOT be exported a second time.
+Every field whose definition reads only its own dataset SHALL export as a field named by the field's name. Its expression SHALL read the dataset source's physical columns, with each path to another field of the same dataset replaced by that field's definition, on the syntax of the form it appears in. A field with a `filter` SHALL export with the expression `CASE WHEN <filter> THEN <value> END`, so that it is masked in every position, and every filter SHALL be applied exactly once however many definitions are replaced into one another. A field's `label`, `description` and imported Ossie `ai_context` SHALL export as the field's `label`, `description` and `ai_context`; text that the importer appended to a description from `ai_context` SHALL NOT be exported a second time.
 
 #### Scenario: Renamed column
-- **WHEN** column `total_amount` has `sql: o_totalprice`
-- **THEN** field `total_amount` has the expression `o_totalprice`
+- **WHEN** field `total_amount` has `expression: o_totalprice`
+- **THEN** exported field `total_amount` has the expression `o_totalprice`
 
 #### Scenario: Derived column over another derived column
-- **WHEN** `net` is `gross - discount` and `gross` is `price * quantity`
+- **WHEN** `net` is `orders.gross - discount` and `gross` is `price * quantity`
 - **THEN** field `net`'s expression reads only `price`, `quantity` and `discount`
 
 #### Scenario: Filtered column
-- **WHEN** column `completed_amount` has `sql: amount` and `filter: status = 'completed'`, over rows (completed, 10), (open, 5), (completed, 7)
-- **THEN** field `completed_amount` evaluates to 10, NULL and 7 on those rows
+- **WHEN** field `completed_amount` has `expression: amount` and `filter: status = 'completed'`, over rows (completed, 10), (open, 5), (completed, 7)
+- **THEN** exported field `completed_amount` evaluates to 10, NULL and 7 on those rows
 
 #### Scenario: Imported description is stable
 - **WHEN** a document with a field carrying `description` and `ai_context` instructions is imported and then exported
@@ -95,7 +106,7 @@ A model's primary-key columns SHALL export as `primary_key`, and its single-colu
 
 ### Requirement: Relationships
 
-Each join SHALL export as one relationship whose `from` is the many side and `to` is the one side, keyed by field names: a many-to-one or one-to-one join from its model to its target, and a one-to-many join from its target to its model with its key pairs swapped. A many-to-one join and its mirrored one-to-many join on the same keys SHALL export as one relationship. A join whose cardinality is undetermined SHALL export only when the declared keys prove a direction (the target side's keys are its primary key or a unique key, or else the source side's keys are), and SHALL otherwise be reported with the workaround of setting the join's cardinality. Many-to-many joins SHALL be reported. A relationship's `name` SHALL be the join's name, else a generated name; generated names SHALL be unique in the document.
+Each join SHALL export as one relationship whose `from` is the many side and `to` is the one side, keyed by field names: a many-to-one or one-to-one join from its model to its target, and a one-to-many join from its target to its model with its key pairs swapped. Each join SHALL export as its own relationship, also when another join relates the same datasets on the same keys, so that the document holds one relationship per edge native traversal sees. A join whose cardinality is undetermined SHALL export only when the declared keys prove a direction (the target side's keys are its primary key or a unique key, or else the source side's keys are), and SHALL otherwise be reported with the workaround of setting the join's cardinality. Many-to-many joins SHALL be reported. A relationship's `name` SHALL be the join's name, else a generated name; generated names SHALL be unique in the document.
 
 #### Scenario: Many-to-one join
 - **WHEN** `orders` joins `customers` many-to-one on `[customer_id, id]`
@@ -104,6 +115,10 @@ Each join SHALL export as one relationship whose `from` is the many side and `to
 #### Scenario: One-to-many join
 - **WHEN** `customers` joins `orders` one-to-many on `[id, customer_id]` and `orders` declares no join to `customers`
 - **THEN** the document has a relationship `from: orders`, `to: customers`, `from_columns: [customer_id]`, `to_columns: [id]`
+
+#### Scenario: A named mirror exports as a second relationship
+- **WHEN** `orders` joins `customers` many-to-one on `[customer_id, id]` and `customers` declares the join `placed_orders` to `orders` one-to-many on `[id, customer_id]`
+- **THEN** the document has two relationships `from: orders`, `to: customers` on those keys, one of them named `placed_orders`
 
 #### Scenario: Undetermined cardinality proven by keys
 - **WHEN** a join with no cardinality targets `customers` on `customers.id`, its primary key
@@ -115,7 +130,7 @@ Each join SHALL export as one relationship whose `from` is the many side and `to
 
 ### Requirement: Metrics
 
-A measure SHALL export as an Ossie metric when every aggregate in it reads exactly one model and, for a measure reading several models, each of them is reachable from the measure's model by exactly one join route. Each aggregate SHALL be evaluated over the rows of the one model it reads, which is Ossie's component semantics. A measure whose aggregates all read one model SHALL export as a dataset-scoped metric on that model's dataset, with unqualified field names; any other exportable measure SHALL export as a model-scoped metric with `dataset.field` references. References to other measures SHALL be expanded. Metric expressions SHALL be standard portable SQL (`OSSIE_SQL_2026` in `sql`); an approximate distinct count, which has no portable form, SHALL be written only as a datasource-dialect entry. Generated metric names SHALL be unique in their scope. An identifier that would be ambiguous under case-insensitive matching SHALL be double-quoted.
+A measure SHALL export as an Ossie metric when every aggregate in it reads exactly one model and, for a measure reading several models, each of them is reachable from the measure's model by exactly one join route. Each aggregate SHALL be evaluated over the rows of the one model it reads, which is Ossie's component semantics. A measure whose aggregates all read one model SHALL export as a dataset-scoped metric on that model's dataset, with unqualified field names, and its references to other measures SHALL be expanded; any other exportable measure SHALL export as a model-scoped metric with `dataset.field` references, and its references to measures SHALL be written as `AGG(dataset.metric)` of the referenced measure's exported dataset metric. A stored model-scoped metric SHALL export as a top-level metric unchanged; one that Ossie does not define (it refers to another model-scoped metric) SHALL travel only in the `SLAYER` extension. Metric expressions SHALL be standard portable SQL (`OSSIE_SQL_2026` in `sql`); `sum_distinct` SHALL be written `SUM(DISTINCT …)` and `percentile_disc` `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY …)`; an approximate distinct count and an approximate percentile, which have no portable value, and a DISTINCT average, which Ossie does not define, SHALL be written only as a datasource-dialect entry, and so SHALL a measure containing a bucket of a datasource granularity, under "Time buckets in metrics export as standard SQL". A datasource-dialect entry SHALL be written only when it binds as a SLayer expression and calls no function SLayer registers on its own database connections; otherwise the measure SHALL be SLayer-only and reported as such. Generated metric names SHALL be unique in their scope. An identifier that would be ambiguous under case-insensitive matching SHALL be double-quoted.
 
 #### Scenario: Dataset-scoped metric
 - **WHEN** `orders` has the measure `revenue: sum(amount)`
@@ -133,25 +148,25 @@ A measure SHALL export as an Ossie metric when every aggregate in it reads exact
 - **WHEN** `orders` has measures `revenue: sum(amount)`, `n: count(*)` and `aov: revenue / n`
 - **THEN** metric `aov` has `sql: SUM(amount) / COUNT(*)`
 
+#### Scenario: Model-scoped reference to a dataset metric uses AGG
+- **WHEN** `orders` has measures `revenue: sum(amount)` and `revenue_per_customer: revenue / count_distinct(customers.id)`
+- **THEN** the document has a model-scoped metric `AGG(orders.revenue) / COUNT(DISTINCT customers.id)`
+
 #### Scenario: Percentile on SQLite
 - **WHEN** a SQLite datasource's model has the measure `p90: percentile(amount, 0.9)`
 - **THEN** the metric's `sql` is `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)`
 
+#### Scenario: DISTINCT sum and discrete percentile are portable
+- **WHEN** a model has the measures `q: sum_distinct(qty)` and `p25: percentile_disc(amount, 0.25)`
+- **THEN** metric `q` has `sql: SUM(DISTINCT qty)` and metric `p25` has `sql: PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY amount)`, and both re-import with their original values on DuckDB and SQLite
+
+#### Scenario: DISTINCT average and approximate percentile are dialect entries
+- **WHEN** a DuckDB datasource's model has the measures `a: avg_distinct(qty)` and `m: percentile_approx(amount, 0.5)`
+- **THEN** neither metric has portable `sql`, each has a datasource-dialect entry, and both re-import
+
 #### Scenario: Boolean sum
 - **WHEN** a measure is `sum(is_paid)` over a BOOLEAN column
 - **THEN** the metric counts the true values on every supported database
-
-### Requirement: Field and source expressions use a portable form only when exact
-
-A field expression SHALL be written as portable `sql` only when reading its portable rendering back and rendering it in the datasource's dialect reproduces the datasource-dialect rendering exactly. Otherwise the expression SHALL be written with no `sql` and one `dialects` entry holding the datasource-dialect text verbatim, under the Ossie token for the datasource's type. Every supported datasource type SHALL map to exactly one Ossie dialect token, which the importer reads as that datasource's own dialect.
-
-#### Scenario: Portable expression
-- **WHEN** a DuckDB column is `price * quantity`
-- **THEN** its field has `sql: price * quantity` and no `dialects`
-
-#### Scenario: Dialect-only expression
-- **WHEN** a Postgres column uses a Postgres-only function whose portable rendering does not read back identically
-- **THEN** its field has no `sql` and one `dialects` entry `POSTGRES` holding the column's SQL verbatim
 
 ### Requirement: SLayer-only content travels in a SLAYER extension
 
@@ -202,16 +217,15 @@ The export SHALL return and print a report in which every entry names its entity
 - **THEN** the report holds exactly a `dropped` entry for the join and an `info`/`extension_only` entry for the measure, each with a workaround
 
 ### Requirement: Round trip
-
-Importing an exported document with `import-osi` into the same datasource SHALL yield models on which every exported and extension-carried column and measure returns the same results as the original, grouped and ungrouped, on DuckDB and SQLite; restored measure formulas SHALL be identical to the originals.
+Importing an exported document with `import-osi` into an empty datasource SHALL yield datasets, relationships and model-scoped metrics on which every exported and extension-carried field and metric returns the same results as the original, grouped and ungrouped, on DuckDB and SQLite; restored metric expressions SHALL be identical to the originals, and stored documents SHALL be restored with their original text.
 
 #### Scenario: Worked example round trip
 - **WHEN** `docs/examples/13_osi_import/shop.osi.yaml` is imported, exported and imported again
-- **THEN** every column and measure returns the same results after the second import as after the first
+- **THEN** every field and metric returns the same results after the second import as after the first, and the stored text is unchanged
 
 #### Scenario: Formula restored
 - **WHEN** a model with measure `aov: revenue / n` is exported and re-imported
-- **THEN** the re-imported measure's formula is `revenue / n`
+- **THEN** the re-imported metric's expression is `revenue / n`
 
 ### Requirement: YAML export quotes strings other loaders would retype
 
@@ -239,3 +253,109 @@ A comparison of a temporal value with an instant — a date-time literal or a da
 
 - **WHEN** measures are `count(*) FILTER (WHERE ts in '2024-04-10')`, `count(*) FILTER (WHERE ts = '2025-Q1')` and `count(*) FILTER (WHERE ts >= 'last month')`, exported without extensions
 - **THEN** none is exported as a metric, and each is reported as SLayer-only
+
+### Requirement: Each expression form exports as itself
+
+A field's portable `sql` SHALL export as the field's `sql`, and each `dialects` entry SHALL export as a `dialects` entry with its text; an entry tagged with the datasource's own dialect, or a field's `sql` not yet converted, SHALL export under the Ossie token for the datasource's type. Every supported datasource type SHALL map to exactly one Ossie dialect token, which the importer reads as that datasource's own dialect. Datasource-dialect text SHALL never be exported as portable `sql`. When a field's definition has another field's definition replaced into it, the result SHALL be portable `sql` only when every replaced part is portable, and otherwise the entry for the datasource's dialect.
+
+#### Scenario: Portable expression
+- **WHEN** a DuckDB field is `expression: "price * quantity"`
+- **THEN** its exported field has `sql: price * quantity` and no `dialects`
+
+#### Scenario: Dialect-only expression
+- **WHEN** a Postgres field is `{dialects: [{dialect: POSTGRES, expression: "amount / qty"}]}`
+- **THEN** its exported field has no `sql` and one `dialects` entry `POSTGRES` holding `amount / qty`
+
+#### Scenario: A portable field over a dialect field
+- **WHEN** a Postgres field `ratio` is `expression: "orders.part * 2"` and `part` is `{dialects: [{dialect: POSTGRES, expression: "amount / qty"}]}`
+- **THEN** exported `ratio` has no `sql` and one `POSTGRES` entry reading `(amount / qty) * 2`
+
+#### Scenario: Export and re-import keep values
+- **WHEN** a dataset with a derived, a filtered, a quoted and a dialect-only field is exported and imported again into the same DuckDB datasource
+- **THEN** every field returns the same values as before
+
+### Requirement: Time buckets in metrics export as standard SQL
+
+A time bucket inside a measure SHALL export in the metric's `sql` as `DATE_TRUNC('<UNIT>', CAST(<expr> AS TIMESTAMP))` for every built-in unit other than `week_sunday`, wrapped in `CAST(… AS DATE)` when the bucket is a DATE (a day-or-coarser bucket of a DATE expression), so that the exported value has the bucket's type on every engine. A `week_sunday` bucket SHALL export as the Monday week of the following day, one day back, written with `DATE_TRUNC('WEEK', …)` and `DATEADD(DAY, …)`. A `date_add` inside a measure SHALL export as `DATEADD(<PART>, <count>, <expr>)`. No exported metric `sql` SHALL contain an `INTERVAL` literal. A measure containing a bucket of a datasource granularity SHALL export only as a datasource-dialect entry holding the datasource's own rendering of the measure, under the dialect-entry rule of "Metrics". Querying the re-imported measure, with or without extensions, SHALL return the original measure's value, grouped and ungrouped.
+
+#### Scenario: Month bucket of a timestamp
+- **WHEN** `orders` has the measure `months: count_distinct(date_trunc('month', ordered_at))` over a TIMESTAMP `ordered_at`
+- **THEN** metric `months` has `sql: COUNT(DISTINCT DATE_TRUNC('MONTH', CAST(ordered_at AS TIMESTAMP)))`, and the measure re-imported without extensions returns the original value on DuckDB and SQLite
+
+#### Scenario: Day-or-coarser bucket of a date
+- **WHEN** `orders` has the measure `last_month: max(date_trunc('month', ordered_on))` over a DATE `ordered_on`
+- **THEN** metric `last_month` has `sql: MAX(CAST(DATE_TRUNC('MONTH', CAST(ordered_on AS TIMESTAMP)) AS DATE))`
+
+#### Scenario: Every built-in unit
+- **WHEN** a measure is `max(date_trunc('<unit>', x))` for each built-in unit other than `week_sunday`, with `x` a TIMESTAMP and with `x` a DATE
+- **THEN** each metric's `sql` is the `DATE_TRUNC` form of that unit, cast to DATE exactly when `x` is a DATE and the unit is `day` or coarser
+
+#### Scenario: Bucket under FILTER and inside a scalar call
+- **WHEN** `orders` has the measures `january: count(*) FILTER (WHERE date_trunc('month', ordered_at) = '2026-01-01')` and `last_day: max(coalesce(date_trunc('day', ordered_at), ordered_at))`
+- **THEN** both export as metrics whose `sql` holds the `DATE_TRUNC` form, and both measures re-imported without extensions return the original values on DuckDB and SQLite
+
+#### Scenario: Bucket in a model-scoped metric
+- **WHEN** `orders` joins `customers` many-to-one and has the measure `months_per_customer: count_distinct(date_trunc('month', ordered_at)) / count_distinct(customers.id)`
+- **THEN** the document has the model-scoped metric `COUNT(DISTINCT DATE_TRUNC('MONTH', CAST(orders.ordered_at AS TIMESTAMP))) / COUNT(DISTINCT customers.id)`, and the re-imported measure returns the original value
+
+#### Scenario: Exported buckets keep their type
+- **WHEN** the exported bucket expressions of a DATE column at `day`, `month` and `hour` are read with the importer's portable reader and evaluated on DuckDB and on Postgres, the Postgres session running with a non-UTC `TimeZone`
+- **THEN** the `day` and `month` buckets evaluate to DATE values and the `hour` bucket to a TIMESTAMP value at the date's midnight
+
+#### Scenario: Sunday week
+- **WHEN** `orders` has the measure `weeks: count_distinct(date_trunc('week_sunday', ordered_at))`
+- **THEN** metric `weeks` has portable `sql` built from `DATE_TRUNC('WEEK', …)` and `DATEADD(DAY, …)` with no `INTERVAL`, and the measure re-imported without extensions returns the original value on DuckDB and SQLite
+
+#### Scenario: Date addition
+- **WHEN** `orders` has the measure `next_day: max(date_add(ordered_at, 1, 'day'))`
+- **THEN** metric `next_day` has `sql` calling `DATEADD(DAY, 1, …)` with no `INTERVAL`, and the measure re-imported without extensions returns the original value on DuckDB and SQLite
+
+#### Scenario: Extraction keeps exporting as DATE_PART
+- **WHEN** `orders` has the measure `month_numbers: count_distinct(month(ordered_at))`
+- **THEN** metric `month_numbers` has `sql: COUNT(DISTINCT CAST(DATE_PART(MONTH, ordered_at) AS INT))`, and the measure re-imported without extensions returns the original value on DuckDB and SQLite
+
+#### Scenario: Custom granularity on DuckDB
+- **WHEN** a DuckDB datasource defines the granularity `fiscal_year` (`base: month`, `multiple: 12`, `origin: 2024-04-01`) and `orders` has the measure `fiscal_years: count_distinct(date_trunc('fiscal_year', ordered_on))`
+- **THEN** no metric `fiscal_years` is exported (DuckDB's rendering does not bind as a SLayer expression), `orders`' extension carries the measure, the report lists it as SLayer-only, and the measure re-imported with extensions returns the original value
+
+#### Scenario: Custom granularity on SQLite
+- **WHEN** a SQLite datasource defines the granularity `fiscal_year` and `orders` has the measure `fiscal_years: count_distinct(date_trunc('fiscal_year', ordered_on))`
+- **THEN** no metric `fiscal_years` is exported, `orders`' extension carries the measure, and the report lists it as SLayer-only
+
+### Requirement: Exported portable SQL is valid OSSIE_SQL_2026
+Every portable `sql` the exporter emits, for fields, dataset-scoped metrics and model-scoped metrics, SHALL pass the native validity check: `INTERVAL` arithmetic SHALL be exported as `DATEADD(<unit>, <n>, <expr>)`, a subtraction as a negative `<n>`, a chain as nested calls. The exported value SHALL equal the original's. A stored document SHALL still export with its original text.
+
+#### Scenario: An INTERVAL field exports as DATEADD
+- **WHEN** a standalone DuckDB dataset stored before this change has the field `due` with expression `order_date + INTERVAL '7 days'` and is exported
+- **THEN** the exported field has `sql: DATEADD(day, 7, order_date)`, the exported document passes upstream's validator, and re-importing it gives `due` the same values
+
+### Requirement: Ontologies and mappings export as stored
+`slayer export-osi --ontology NAME` SHALL write the stored ontology `NAME`, and `slayer export-osi --mapping NAME --datasource DS` the mapping `NAME` of `DS`, each as its stored text (converted to JSON only when the output file is JSON); the Python export API SHALL offer the same. An ontology stored from a document with embedded `ontology_mappings` SHALL export without them, its mappings exporting as standalone mapping documents. `--ontology` SHALL NOT be combined with `--datasource` or `--datasets`, and `--mapping` SHALL require `--datasource`. An unknown name SHALL be an error naming it.
+
+#### Scenario: Ontology export is byte-identical
+- **WHEN** `flights.ontology.yaml` is imported and exported with `--ontology Flights` to YAML
+- **THEN** the output is byte-identical to the file
+
+#### Scenario: Upgraded embedded mapping exports standalone
+- **WHEN** `flights.yaml` is imported into datasource `flights` and exported with `--mapping flights_mapping --datasource flights`
+- **THEN** the output is a mapping document that validates against the vendored `mapping.json`, with `ontology_ref.name: Flights` and `semantic_model_ref.name: Flights semantic model`
+
+#### Scenario: Unknown ontology
+- **WHEN** `export-osi --ontology Nope` runs
+- **THEN** it fails naming `Nope`
+
+### Requirement: Window functions export as written
+
+A field whose portable `sql` holds a window function SHALL export under "Each expression form exports as itself". A measure whose expression is a window function over aggregates (`queries/window-functions`) SHALL export as a metric under "Metrics", its window written as `OSSIE_SQL_2026`. A windowed measure holding a SLayer-only operand — a transform, a ranked `first` / `last`, an aggregate with `partition_by=` or `window=` — and a field or measure whose exported text would hold a window function directly inside another SHALL travel only in the `SLAYER` extension and be reported as SLayer-only. An exported window SHALL be valid for upstream's expression validator.
+
+#### Scenario: A windowed measure exports as a metric
+- **WHEN** `orders` has the measure `revenue_rank: RANK() OVER (ORDER BY SUM(amount) DESC)` and the portable field `rn: ROW_NUMBER() OVER (PARTITION BY region ORDER BY ordered_at)`
+- **THEN** dataset `orders` has the metric `revenue_rank` with `sql: RANK() OVER (ORDER BY SUM(amount) DESC)` and the field `rn` with that `sql`, and re-importing the document returns the same values for both
+
+#### Scenario: A SLayer-only operand keeps the measure in the extension
+- **WHEN** `orders` has the measure `r30: RANK() OVER (ORDER BY sum(amount, window='30d') DESC)`
+- **THEN** no metric `r30` is exported, `orders`' extension carries it, and the report lists it as SLayer-only
+
+#### Scenario: A window inside a window stays in the extension
+- **WHEN** `orders` has the portable fields `rn: ROW_NUMBER() OVER (ORDER BY id)` and `top: MAX(orders.rn) OVER ()`
+- **THEN** field `rn` is exported with its `sql`, field `top` is carried only in the extension, and the document validates against upstream's validator

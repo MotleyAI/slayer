@@ -1,16 +1,16 @@
-"""Shared fixtures for DEV-1901 — aggregation parameters bind once.
+"""Shared fixtures for aggregation parameters binding once.
 
-The DEV-1908 graph (``orders → customers → regions → countries``, fanning
+The ``_dev1908_fixtures`` graph (``orders → customers → regions → countries``, fanning
 ``regions → region_events``) plus:
 
-* ``orders.factor`` / ``customers.factor`` — one column name on the root AND the
+* ``orders.factor`` / ``customers.factor`` — one field name on the root AND the
   owner (a bare ``factor`` default must read the owner's);
-* ``customers."group"`` — a reserved-word column that must stay quoted;
+* ``customers."group"`` — a reserved-word field that must stay quoted;
 * ``orders.cust_spend`` — derived ``customers.spend`` (crosses a to-one hop);
-* aggregations whose defaults are a bare / dotted / derived column, a literal, a
+* aggregations whose defaults are a bare / dotted / derived field, a literal, a
   free SQL expression, or unanalysable text.
 
-Dataset extensions (DEV-1908 dataset otherwise verbatim): ``orders.factor = 100 +
+Dataset extensions (``_dev1908_fixtures`` dataset otherwise verbatim): ``orders.factor = 100 +
 id``; ``customers.factor = id``; ``customers."group" = id``.
 """
 
@@ -40,7 +40,7 @@ from tests._dev1908_fixtures import _COUNTRIES_ROWS, _REGION_COUNTRY, dev1908_da
 from tests._engine_helpers import seeded_exec_engine
 
 W = "SUM({value} * {weight})"
-CASE_O = "CASE WHEN amount > 10 THEN amount ELSE 0 END"
+CASE_O = "CASE WHEN orders.amount > 10 THEN orders.amount ELSE 0 END"
 CASE_C = "CASE WHEN spend > 50 THEN spend ELSE 0 END"
 CASE_POP = ("CASE WHEN customers.regions.pop > 150 THEN customers.regions.pop "
             "ELSE 0 END")
@@ -48,7 +48,7 @@ CASE_POP = ("CASE WHEN customers.regions.pop > 150 THEN customers.regions.pop "
 #: Unanalysable default texts, by aggregation name.
 BAD_DEFAULTS = {
     "wbad_parse": ")((( bad",
-    "wbad_agg": "SUM(amount)",
+    "wbad_agg": "SUM(orders.amount)",
     "wbad_win": "ROW_NUMBER() OVER (ORDER BY id)",
     "wbad_sub": "(SELECT MAX(amount) FROM orders)",
     "wbad_alias": "amount AS x",
@@ -61,8 +61,8 @@ BAD_DEFAULTS = {
     "wbad_star_arg": "FOO(*)",
     "wbad_values_in": "amount IN (VALUES (1))",
     "wbad_txn": "BEGIN",
-    "wbad_unnest": "UNNEST(amount)",
-    "wbad_series": "generate_series(1, amount)",
+    "wbad_unnest": "UNNEST(orders.amount)",
+    "wbad_series": "generate_series(1, orders.amount)",
 }
 
 
@@ -76,18 +76,18 @@ def _by_name(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
 
 
 def dev1901_datasets() -> List[SlayerDataset]:
-    """DEV-1908 graph + the DEV-1901 columns and aggregations. Host first (orders)."""
+    """``_dev1908_fixtures`` graph + this module's fields and aggregations. Host first (orders)."""
     models = dev1908_datasets()
     orders = _by_name(models, "orders")
     orders.fields.extend([
         DatasetField(name="factor", datatype=DataType.FLOAT),
-        DatasetField(name="cust_spend", datatype=DataType.FLOAT, sql="customers.spend"),
+        DatasetField(name="cust_spend", datatype=DataType.FLOAT, expression="customers.spend"),
     ])
     orders.aggregations.extend([
-        _w("wsum", "store_no"),
+        _w("wsum", "orders.store_no"),
         _w("wcase", CASE_O),
         _w("wcs", "customers.spend"),
-        _w("wcd", "cust_spend"),
+        _w("wcd", "orders.cust_spend"),
         _w("wcase_pop", CASE_POP),
         _w("wlit", "2", expression="SUM({value}) * {k}", param="k"),
         _w("wzero", "1 + 1"),
@@ -140,7 +140,7 @@ def revisit_datasets() -> List[SlayerDataset]:
 
 
 def window_param_datasets(*, placeholder: bool) -> List[SlayerDataset]:
-    """``orders`` with ``wwin``, whose formula reads ``{window}`` (``placeholder``)
+    """``orders`` with ``wwin``, whose expression reads ``{window}`` (``placeholder``)
     or which declares a ``window`` parameter."""
     agg = (Aggregation(name="wwin", expression="SUM({value}) * {window}",
                        params=[AggregationParam(name="window", sql="2")])

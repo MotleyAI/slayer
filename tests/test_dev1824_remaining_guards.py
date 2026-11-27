@@ -1,8 +1,8 @@
 """Guard preservation — the error surface that REMAINS after the
-stage-1 lifts (design Non-Goals): cross-model partitioned aggregates in the
-lifted shapes (stage 3), the measure-side grain rule, and the
+stage-1 lifts (design Non-Goals): cross-dataset partitioned aggregates in the
+lifted shapes (stage 3), the metric-side grain rule, and the
 grain-self-containment boundary inside dimension expressions. The G4/G5
-pins for plain ``window=`` measures moved to the lifted direction
+pins for plain ``window=`` metrics moved to the lifted direction
 (tests/test_dev1835_guard_dissolution.py).
 
 The lifted-direction tests live in tests/test_dev1824_partitioned_execution.py
@@ -23,13 +23,25 @@ from tests._dev1824_fixtures import gen, month_td, q
 
 
 class TestCrossModelPartitionedStillGuarded:
-    """Cross-model SOURCES stay off the stage-1 primitive: each lifted shape
+    """Cross-dataset SOURCES stay off the stage-1 primitive: each lifted shape
     keeps failing closed (never a placeholder leak) when the aggregate's source
-    crosses a join path."""
+    crosses a relationship path."""
 
     async def test_cross_model_window_plus_partition(self) -> None:
-        # Fails closed with a precise attributability error (the active
-        # time dimension is a host column, unreachable from customers).
+        # Outside association it fails closed with a precise attributability error
+        # (the active time dimension is a host field, fanning from customers).
+        query = q(
+            dimensions=["customers.tier"], time_dimensions=month_td(),
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='1y', partition_by=customers.tier)",
+                alias="w",
+            )],
+            to_many_handling="error",
+        )
+        with pytest.raises(ValueError, match=r"attributable from"):
+            await gen(query)
+
+    async def test_cross_model_window_plus_partition_associates(self) -> None:
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             metrics=[QueryMetric(
@@ -37,14 +49,13 @@ class TestCrossModelPartitionedStillGuarded:
                 alias="w",
             )],
         )
-        with pytest.raises(ValueError, match=r"attributable from"):
-            await gen(query)
+        assert await gen(query)
 
     async def test_cross_model_first_last_plus_partition(self) -> None:
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[QueryMetric(
-                metric="last(customers.spend, partition_by=region)", alias="l",
+                metric="last(customers.spend, partition_by=orders.region)", alias="l",
             )],
             to_many_handling="broadcast",
         )
@@ -55,12 +66,12 @@ class TestCrossModelPartitionedStillGuarded:
         assert "__regroup__" not in str(ei.value)
 
     async def test_filter_on_cross_model_partitioned_now_compiles(self) -> None:
-        # The filter-lag guard is retired — the measure-typed mask
+        # The filter-lag guard is retired — the metric-typed mask
         # routes through the combined attach (executed values: dev1865 suite).
         query = q(
             dimensions=["customers.tier"],
             filter=["sum(customers.spend, partition_by=customers.tier) > 100"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)
         assert "__regroup__" not in sql
@@ -71,23 +82,23 @@ class TestMeasureGrainRulePreserved:
         # The COMBINED-attach rule (design D4) survives the generalized
         # discovery; only ROW attaches may use finer-than-query partitions.
         query = q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=city)", alias="m")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.city)", alias="m")],
         )
         with pytest.raises(ValueError, match=r"not a query dimension"):
             await gen(query)
 
     async def test_dual_role_aggregate_is_validated_strictly(self) -> None:
         # CR — the SAME aggregate as a computed-dimension row attach AND a bare
-        # measure: the finer-grain leniency must not carry into the combined
-        # measure role, or the join-back fails with an internal RuntimeError.
+        # metric: the finer-grain leniency must not carry into the combined
+        # metric role, or the join-back fails with an internal RuntimeError.
         # It must raise the clean "not a query dimension" error instead.
-        band = "CASE WHEN sum(amount, partition_by=city) > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "band"}],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="s"),
-                QueryMetric(metric="sum(amount, partition_by=city)", alias="ct"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.city)", alias="ct"),
             ],
         )
         with pytest.raises(ValueError, match=r"not a query dimension"):
@@ -97,11 +108,11 @@ class TestMeasureGrainRulePreserved:
         # CR — a filter on the computed dimension's OWN aggregate references the
         # row attach, not a combined consumer, so a finer-than-query grain is
         # legal and must render cleanly (no combined join-back, no internal error).
-        band = "CASE WHEN sum(amount, partition_by=city) > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "band"}],
-            filter=["sum(amount, partition_by=city) > 100"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", {"field": band, "alias": "band"}],
+            filter=["sum(orders.amount, partition_by=orders.city) > 100"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # must not raise
         assert "__regroup__" not in sql
@@ -110,35 +121,35 @@ class TestMeasureGrainRulePreserved:
 class TestDimensionGrainSelfContainment:
     """Inside a dimension expression the lift is CONDITIONAL on an explicit
     grain: bare-grain forms keep erroring, now with the partition_by directive
-    (measure⇔dimension symmetry admits only grain-self-contained expressions)."""
+    (metric⇔dimension symmetry admits only grain-self-contained expressions)."""
 
     async def test_transform_over_bare_aggregate_in_dimension(self) -> None:
-        band = "CASE WHEN cumsum(sum(amount)) > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN cumsum(sum(orders.amount)) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "b"}],
+            dimensions=["orders.region", {"field": band, "alias": "b"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
         assert "partition_by" in str(ei.value)
 
     async def test_bare_windowed_aggregate_in_dimension(self) -> None:
-        band = "CASE WHEN sum(amount, window='1y') > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN sum(orders.amount, window='1y') > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "b"}],
+            dimensions=["orders.region", {"field": band, "alias": "b"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
         assert "partition_by" in str(ei.value)
 
     async def test_bare_first_last_in_dimension(self) -> None:
-        band = "CASE WHEN last(amount) > 50 THEN 1 ELSE 0 END"
+        band = "CASE WHEN last(orders.amount) > 50 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"field": band, "alias": "b"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", {"field": band, "alias": "b"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -148,10 +159,10 @@ class TestDimensionGrainSelfContainment:
         # Two grains in one transform union and broadcast — the
         # former fail-closed guard is gone. Executed ground truth lives in
         # tests/test_dev1839_union_dim_execution.py.
-        band = "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
+        band = "rank(sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), direction='desc')"
         query = q(
-            dimensions=["region", "city", {"field": band, "alias": "rk"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", {"field": band, "alias": "rk"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # must not raise
         assert "__regroup__" not in sql

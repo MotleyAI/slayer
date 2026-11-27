@@ -117,10 +117,10 @@ def _orders_dataset(ds: str = "ds") -> SlayerDataset:
         sql_table="orders",
         data_source=ds,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="updated_at", expression="updated_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -140,7 +140,7 @@ async def _build_engine(tmp_path, *, cache_config=None, ds_name="ds", storage_su
 
 
 def _sum_query() -> SlayerQuery:
-    return SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])
+    return SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])
 
 
 def _mutate(db_path, sql: str) -> None:
@@ -587,7 +587,7 @@ class TestRefresh:
         await engine.execute(q, cache=True)
         assert old_key in engine._cache._entries
 
-        # Edit the stored model: an always-applied filter changes the SQL.
+        # Edit the stored dataset: an always-applied filter changes the SQL.
         edited = _orders_dataset("ds").model_copy(update={"filters": ["amount > 60"]})
         await engine.storage.save_dataset(edited)
         new_sql = (await engine.execute(q, dry_run=True)).sql
@@ -704,11 +704,11 @@ class TestMultiStageAndByName:
         inner = SlayerQuery(
             population="orders",
             name="raw",
-            dimensions=[QueryDimension(field="status"), QueryDimension(field="amount")],
+            dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.amount")],
             distinct_dimension_values=False,
         )
         outer = SlayerQuery(
-            population="raw", metrics=[QueryMetric(metric="sum(amount)")]
+            population="raw", metrics=[QueryMetric(metric="sum(raw.amount)")]
         )
         r1 = await engine.execute([inner, outer], cache=True)
         assert engine.cache_size == 1
@@ -725,8 +725,8 @@ class TestMultiStageAndByName:
         await engine.create_dataset_from_query(
             query=SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="sum(amount)")],
-                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(orders.amount)")],
+                dimensions=[QueryDimension(field="orders.status")],
             ),
             name="orders_by_status",
         )
@@ -745,8 +745,8 @@ class TestMultiStageAndByName:
         await engine.create_dataset_from_query(
             query=SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="sum(amount)")],
-                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(orders.amount)")],
+                dimensions=[QueryDimension(field="orders.status")],
             ),
             name="obs",
         )
@@ -760,9 +760,9 @@ class TestMultiStageAndByName:
                 source_queries=[
                     SlayerQuery(
                         population="orders",
-                        metrics=[QueryMetric(metric="sum(amount)")],
-                        dimensions=[QueryDimension(field="status")],
-                        filter=["status != 'pending'"],
+                        metrics=[QueryMetric(metric="sum(orders.amount)")],
+                        dimensions=[QueryDimension(field="orders.status")],
+                        filter=["orders.status != 'pending'"],
                     )
                 ],
             )
@@ -778,15 +778,15 @@ class TestMultiStageAndByName:
 
 
 class TestRefinedByName:
-    REFINE = {"filter": ["status = 'completed'"]}
+    REFINE = {"filter": ["orders.status = 'completed'"]}
 
     async def _engine_with_saved(self, tmp_path) -> SlayerQueryEngine:
         engine = await _build_engine(tmp_path)
         await engine.create_dataset_from_query(
             query=SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="sum(amount)")],
-                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(orders.amount)")],
+                dimensions=[QueryDimension(field="orders.status")],
             ),
             name="obs",
         )
@@ -845,8 +845,8 @@ class TestEvictAndManagement:
         q1 = _sum_query()
         q2 = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
-            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
         await engine.execute(q1, cache=True)
         await engine.execute(q2, cache=True)

@@ -1,7 +1,7 @@
 """Broadcast/strict semantics are inherited, not re-built.
 
-A dotted saved-measure reference expands to ordinary cross-model aggregates, so
-it inherits cross-model broadcast metadata and strict-mode errors verbatim. Every
+A dotted saved-metric reference expands to ordinary cross-dataset aggregates, so
+it inherits cross-dataset broadcast metadata and strict-mode errors verbatim. Every
 assertion compares the dotted spelling against its hand-expanded twin: identical
 broadcast warnings in lenient mode, identical failure under ``to_many_handling="error"``.
 """
@@ -27,7 +27,7 @@ async def exec_backend(request):
 
 def _warn_signature(resp: SlayerResponse) -> list:
     """Order-independent signature of the broadcast warnings: each aggregate's
-    named measure plus the set of dimensions it broadcast across."""
+    named metric plus the set of dimensions it broadcast across."""
     return sorted(
         (w.metric, tuple(sorted(d.dimension for d in w.dimensions)))
         for w in broadcast_warnings(resp)
@@ -38,10 +38,10 @@ class TestBroadcastMetadataInherited:
     async def test_unattributable_dim_broadcasts_identically(self, exec_backend):
         _, engine = exec_backend
         dotted = await engine.execute(
-            q(dimensions=["status"], metrics=[{"metric": DOTTED, "alias": "x"}], to_many_handling="broadcast"),
+            q(dimensions=["orders.status"], metrics=[{"metric": DOTTED, "alias": "x"}], to_many_handling="broadcast"),
         )
         hand = await engine.execute(
-            q(dimensions=["status"], metrics=[{"metric": HAND, "alias": "x"}], to_many_handling="broadcast"),
+            q(dimensions=["orders.status"], metrics=[{"metric": HAND, "alias": "x"}], to_many_handling="broadcast"),
         )
         assert _warn_signature(dotted) == _warn_signature(hand)
         assert _warn_signature(dotted), "expected a broadcast warning over status"
@@ -60,7 +60,7 @@ class TestBroadcastMetadataInherited:
         hand-written ``partition_by=[]`` form."""
         _, engine = exec_backend
         resp = await engine.execute(
-            q(dimensions=["status"],
+            q(dimensions=["orders.status"],
               metrics=[{"metric": "customers.spend_grand", "alias": "x"}]),
         )
         assert broadcast_warnings(resp) == []
@@ -69,9 +69,9 @@ class TestBroadcastMetadataInherited:
 class TestStrictInherited:
     async def test_strict_broadcast_errors_like_hand(self, exec_backend):
         _, engine = exec_backend
-        dotted_query = q(to_many_handling="error", dimensions=["status"],
+        dotted_query = q(to_many_handling="error", dimensions=["orders.status"],
                          metrics=[{"metric": DOTTED, "alias": "x"}])
-        hand_query = q(to_many_handling="error", dimensions=["status"],
+        hand_query = q(to_many_handling="error", dimensions=["orders.status"],
                        metrics=[{"metric": HAND, "alias": "x"}])
         with pytest.raises((SlayerError, ValueError)) as dotted_err:
             await engine.execute(dotted_query)
@@ -90,4 +90,4 @@ class TestStrictInherited:
             q(to_many_handling="error", dimensions=["customers.tier"],
               metrics=[{"metric": DOTTED, "alias": "x"}]),
         )
-        assert any(r.get("orders.x") is not None for r in resp.data)
+        assert any(r.get("x") is not None for r in resp.data)

@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.11 — the total-routing invariant (design D7, F9).
+"""The total-routing invariant (design D7, F9).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Every aggregate has
 exactly one disposition"; …/specs/queries/computed-dimensions — "Grain
@@ -25,7 +25,7 @@ from tests._dev1836_fixtures import (
 from slayer.engine.compile import stages
 
 LOCAL_BAND = {
-    "field": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "field": "CASE WHEN sum(orders.amount, partition_by=orders.channel) > 30 THEN 1 ELSE 0 END",
     "alias": "band",
 }
 
@@ -54,8 +54,8 @@ class TestExplicitRejections:
     async def test_bare_aggregate_in_dimension_is_rejected(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=[{"field": "sum(amount)", "alias": "d"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            dimensions=[{"field": "sum(orders.amount)", "alias": "d"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         with pytest.raises(expected_exception=ValueError, match="partition_by") as ei:
             await engine.execute(query)
@@ -63,28 +63,28 @@ class TestExplicitRejections:
         assert "__regroup__" not in str(ei.value)
 
     async def test_aggregate_over_attached_value_executes(self, exec_backend):
-        """Legal since DEV-1847 (shape B): a measure partitioned by an
+        """Legal (shape B): a metric partitioned by an
         attach-carrying computed dimension equals its band's group total."""
         _, engine = exec_backend
         query = q(
             dimensions=[LOCAL_BAND],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=band)",
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=band)",
                                    alias="x"),
-                      QueryMetric(metric="sum(amount)", alias="s")],
+                      QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         assert resp.data
         for row in resp.data:
-            assert float(row["orders.x"]) == float(row["orders.s"])
+            assert float(row["x"]) == float(row["s"])
 
     def test_migrated_cm_still_renders_in_a_cte_body(self):
-        """A plain cross-model measure renders inside a CTE body today; the
-        migration onto the primitive must not drop it into the DEV-1838 arm."""
+        """A plain cross-dataset metric renders inside a CTE body today; the
+        migration onto the primitive must not drop it into the CTE-body arm."""
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["customers.tier"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ), bundle=bundle)
@@ -105,8 +105,8 @@ class TestTotalRoutingInvariant:
         post-discovery invariant must catch the now-undisposed aggregate."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
-            dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=channel)",
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.channel)",
                                    alias="pt")],
         )
         bundle = _bundle()
@@ -121,12 +121,12 @@ class TestTotalRoutingInvariant:
         self, monkeypatch: pytest.MonkeyPatch,
     ):
         """Task 7.1 — the D7 invariant itself, not a coincidental backstop.
-        Blind the CROSS-MODEL discovery: the un-desugared cross-model aggregate
+        Blind the CROSS-DATASET discovery: the un-desugared cross-dataset aggregate
         must be caught by ``_assert_total_routing`` with the explicit
         no-disposition error, not fall through to the legacy dispatch."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="cm")],
         )
         bundle = _bundle()
@@ -145,12 +145,12 @@ class TestTotalRoutingInvariant:
     def test_blinded_discovery_catches_filter_and_order_leaves(
         self, monkeypatch: pytest.MonkeyPatch, role_kwargs,
     ):
-        """The invariant walks filters and orders too — a hidden cross-model
+        """The invariant walks filters and orders too — a hidden cross-dataset
         leaf in either role must not survive blinded discovery."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
-            dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             **role_kwargs,
         )
         bundle = _bundle()
@@ -165,12 +165,12 @@ class TestNoSilentDrops:
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
-                QueryMetric(metric="sum(customers.spend) / sum(amount)",
+                QueryMetric(metric="sum(customers.spend) / sum(orders.amount)",
                              alias="ratio"),
             ],
         ))
         for row in resp.data:
-            for col in ("orders.m", "orders.cm", "orders.ratio"):
+            for col in ("m", "cm", "ratio"):
                 assert col in row, col

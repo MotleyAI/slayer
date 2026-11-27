@@ -6,7 +6,7 @@ Defines the error contract for query type errors: every well-formedness violatio
 ## Requirements
 
 ### Requirement: Query type errors are typed and stably formatted
-Every query type error the checker raises SHALL be an instance of a concrete rule-family class under the `QueryTypeError` base (itself a `SlayerError`, and so a `ValueError`); the base itself SHALL never be raised, and constructing it directly SHALL fail. The families are `TimeAxisError` (with `TimeDimensionFieldError` beneath it), `WindowDurationError`, `PartitionKeyError`, `UnsafeRelationshipInputError`, `UnanalyzableDependencyError`, `TransformInputError`, `ComputedDimensionError`, `AssociationError`, `ParameterGrainError`, `ReaggregationError`, `NameCollisionError` (with `MetricNameCollidesWithFieldError`, `CanonicalAliasShadowsFieldError`, `DuplicateMetricNameError` beneath it), `DimensionTypeError`, `DatasetFilterError`, `PositionTypingError` and `DistinctDimensionValuesError`. The error's text SHALL be: a first line `<ClassName>: <summary>` naming the defect; then, when the error has a subject (a measure, filter, dimension, order item, transform, time dimension or model filter), a line `  at <subject>`; then, when a remedy exists, a line `  suggestion: <remedy>`. The summary, subject and remedy SHALL also be exposed as the error's `summary`, `location` and `suggestion` attributes (`None` when absent).
+Every query type error the checker raises SHALL be an instance of a concrete rule-family class under the `QueryTypeError` base (itself a `SlayerError`, and so a `ValueError`); the base itself SHALL never be raised, and constructing it directly SHALL fail. The families are `TimeAxisError` (with `TimeDimensionFieldError` beneath it), `WindowDurationError`, `PartitionKeyError`, `UnsafeRelationshipInputError`, `UnanalyzableDependencyError`, `TransformInputError`, `ComputedDimensionError`, `AssociationError`, `ParameterGrainError`, `ReaggregationError`, `NameCollisionError` (with `CanonicalAliasShadowsFieldError` and `DuplicateMetricNameError` beneath it), `DimensionTypeError`, `DatasetFilterError`, `PositionTypingError` and `DistinctDimensionValuesError`. The error's text SHALL be: a first line `<ClassName>: <summary>` naming the defect; then, when the error has a subject (a measure, filter, dimension, order item, transform, time dimension or model filter), a line `  at <subject>`; then, when a remedy exists, a line `  suggestion: <remedy>`. The summary, subject and remedy SHALL also be exposed as the error's `summary`, `location` and `suggestion` attributes (`None` when absent).
 
 #### Scenario: A partition key that is not a query dimension
 - **WHEN** a query's rank-family transform declares a `partition_by=` column that is neither a query dimension nor a time dimension
@@ -25,11 +25,31 @@ Every query type error the checker raises SHALL be an instance of a concrete rul
 - **THEN** construction fails
 
 ### Requirement: The time-axis violation is a type error, not an unimplemented feature
-A time-ordered transform that evaluates at a grain not containing its time axis SHALL fail with a `TimeAxisError`, never a `NotImplementedError`. The REST query endpoint SHALL answer it with HTTP 400 carrying the error text, and the Flight SQL server SHALL report it as an invalid-argument error, not as unimplemented.
+A time-ordered transform (`cumsum`, `lag`, `lead`, `time_shift`, `change`, `change_pct`, `consecutive_periods`) whose operand grain does not contain its time axis — the query's active time bucket — SHALL fail with a `TimeAxisError`, never a `NotImplementedError`, in every position: dimension, measure, filter, order key, aggregation-source constituent and aggregation parameter, nested inside arithmetic, a scalar call or another transform included. The operand grain SHALL be the union of the operand's inner grains: an aggregate's explicit `partition_by=` (a raw time column naming the active bucket's column counts as that bucket), else the query grain; a windowed aggregate adding the active time bucket; a nested `first` / `last` over an aggregate contributing its own grain, its ranking key dropped (`queries/semantics` › A ranked aggregation's grain drops its ranking key); a nested transform contributing its own operand grain. A `first` / `last` over an aggregate whose defaulted ranking key, the active time bucket, is not in its operand grain SHALL fail with the same `TimeAxisError` in every position (`aggregations/functional-form` › Default ranking key). The error's suggestion SHALL name including the time key in the inner aggregate's `partition_by=`. The REST query endpoint SHALL answer it with HTTP 400 carrying the error text, and the Flight SQL server SHALL report it as an invalid-argument error, not as unimplemented.
 
 #### Scenario: Time axis missing from an aggregated transform's grain
 - **WHEN** a measure aggregates a time-ordered transform (such as `cumsum`) over an inner aggregate whose `partition_by=` omits the query's time dimension
 - **THEN** the query fails with a `TimeAxisError` that is not a `NotImplementedError`, whose suggestion is to include the time key in the aggregate's `partition_by=`
+
+#### Scenario: Calendar-step transforms over a time-less operand fail in every position
+- **WHEN** a query on `orders` by `region` over a month time dimension on `ordered_at` uses `time_shift(sum(amount, partition_by=region), -1)`, `change(sum(amount, partition_by=[]))` or `change_pct(sum(amount, partition_by=region))` as a measure, in a filter, as an order key, inside arithmetic beside `sum(amount)`, inside `rank(…, direction='desc')`, as the source of `max(…)`, as the `weight=` parameter of `weighted_avg(sum(amount, partition_by=[region, ordered_at]), weight=…)`, or inside a dimension expression `CASE WHEN … > 0 THEN 1 ELSE 0 END`
+- **THEN** every query fails with a `TimeAxisError` whose suggestion is to include the time key in the aggregate's `partition_by=`, exactly as `cumsum` over the same operand does
+
+#### Scenario: A calendar-step operand that keeps the axis executes
+- **WHEN** the same query selects `time_shift(sum(amount, partition_by=[region, ordered_at]), -1)`
+- **THEN** it executes, each row reading the same value as `time_shift(sum(amount), -1)` by executed values on SQLite and DuckDB
+
+#### Scenario: A nested first/last drops the axis in every position
+- **WHEN** a query by `region` over a month time dimension uses `time_shift(last(sum(amount, partition_by=[region, ordered_at])), -1)` or `cumsum(last(sum(amount, partition_by=[region, ordered_at])))` as a measure, as the source of `max(…)`, or inside a dimension expression
+- **THEN** every query fails with a `TimeAxisError` that is not a `NotImplementedError` — the `last` drops its ranking key, the month bucket, from its grain
+
+#### Scenario: A windowed inner carries the axis in every position
+- **WHEN** a query by `region` over a month time dimension uses `cumsum(sum(amount, window='90d', partition_by=region))` as a measure, as the source of `max(…)`, and inside a dimension expression `CASE WHEN … > 0 THEN 1 ELSE 0 END`
+- **THEN** every query executes; `max(…)` reads the measure form's value in each `(region, month)` cell and the dimension reads 1 exactly in the cells where the measure form is positive, by executed values on SQLite and DuckDB
+
+#### Scenario: The axis is the query's active time bucket
+- **WHEN** a time-ordered transform's inner aggregate is partitioned by a raw time column whose bucket is the active one (at a built-in or a custom granularity), by a downstream stage's own time dimension in that stage, or by the time-spine bucket in a spine query
+- **THEN** the query executes; and with two time dimensions where `main_time_dimension` selects one, an inner partitioned only by the other time column fails with a `TimeAxisError`
 
 #### Scenario: REST answers the time-axis violation with 400
 - **WHEN** the same query is posted to the REST query endpoint
@@ -38,6 +58,13 @@ A time-ordered transform that evaluates at a grain not containing its time axis 
 #### Scenario: Flight SQL reports the violation as invalid argument
 - **WHEN** a type error is raised while planning a Flight SQL query
 - **THEN** the client receives an invalid-argument error carrying the error text, not an unimplemented error
+
+#### Scenario: A ranked aggregation over an operand without the axis fails in every position
+- **WHEN** a query on `orders` by `region` over a month time dimension uses
+  `last(sum(amount, partition_by=region))` as a measure, in a filter, as an order key or as
+  the source of `max(…)`, and a query with no time dimension selects `last(sum(amount))`
+- **THEN** every query fails with a `TimeAxisError`, never a `NotImplementedError` or a
+  value
 
 ### Requirement: Malformed window durations raise one typed error
 Every malformed `window=` duration — a non-string value, an empty string, a malformed or gapped string, or a non-positive part — SHALL fail with a `WindowDurationError`, whether it reaches the query or the duration parser directly.
@@ -63,14 +90,3 @@ MCP tool errors that prefix an error with its class name SHALL not repeat the pr
 #### Scenario: A stably formatted error through an MCP tool
 - **WHEN** an MCP tool renders a stably formatted error
 - **THEN** the class name appears once, at the start of the error text
-
-### Requirement: A measure-name collision suggests a free name
-When a query measure's declared name equals a source column of the query's source model, the `MetricNameCollidesWithFieldError` SHALL carry a `suggestion:` naming a free alternative: the formula's derived (canonical) name when that name is neither a source column nor already used in the query, otherwise the first `<name>_<n>` (n = 2, 3, …) that is neither.
-
-#### Scenario: The derived name is free
-- **WHEN** a query rooted at a model with a column `credit` measures `{"metric": "sum(credit)", "alias": "credit"}`
-- **THEN** the query fails with `MetricNameCollidesWithFieldError` whose `suggestion` names `credit_sum`
-
-#### Scenario: The derived name is taken
-- **WHEN** the same query also declares another measure named `credit_sum`
-- **THEN** the suggestion names `credit_2`, which is neither a source column nor used in the query

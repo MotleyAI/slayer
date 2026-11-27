@@ -27,10 +27,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from collections.abc import Sequence
+
 from pydantic import BaseModel, Field
 
 from slayer.core.models import SlayerDataset
 from slayer.memories.models import Memory
+from slayer.ontology.use import Annotations
 from slayer.search.index import Corpus
 
 
@@ -89,6 +92,13 @@ class Retriever(ABC):
     async def refresh_dataset_subtree(self, dataset: SlayerDataset) -> list[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         return []
 
+    async def refresh_concepts(self, datasets: list[SlayerDataset], *, concepts: Annotations | None) -> list[str]:
+        """Refresh ``datasets``' subtrees after their ontology ``concepts`` changed; by default each subtree."""
+        out: list[str] = []
+        for dataset in datasets:
+            out += await self.refresh_dataset_subtree(dataset)
+        return out
+
     async def refresh_datasource(  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         self,
         *,
@@ -96,6 +106,12 @@ class Retriever(ABC):
         datasets: list[SlayerDataset],
         description: str | None = None,
     ) -> list[str]:
+        return []
+
+    async def refresh_documents(  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
+        self, documents: Sequence[tuple[str, str, str]],
+    ) -> list[str]:
+        """Refresh semantic models and model-scoped metrics, as ``(canonical, kind, text)``."""
         return []
 
     # ------------------------------------------------------------------

@@ -1,34 +1,27 @@
-"""Recursive expansion of derived ``DatasetField.sql`` references.
+"""Expansion of row definitions (a field's native SQL, its ``filter``, a dataset's ``filters``).
 
-A ``DatasetField.sql`` may reference any other field on the same
-dataset or on a joined dataset — including fields that are themselves derived
-(have their own ``sql`` expression rather than being a bare base-table
-field). The query planner had been emitting such references verbatim, which
-fails at execution because the joined table's underlying SQL knows nothing
-about derived SLayer fields. This module walks the parsed AST of every
-``DatasetField.sql`` we are about to embed in a query, recursively replaces each
-``<table>.<col>`` reference whose target is a derived field with the
-target's own SQL (qualified to the right path alias), and lets the bare
-base-field references qualify to the canonical ``__``-delimited path
-alias.
-
-The expansion runs during binding/planning, so the SQL generator never sees
-unresolved derived references.
+Inside a row definition a bare name (or ``source.x``) reads the dataset's source column and a path from the dataset
+(``orders.status``, ``customers.name``) reads a field. Source columns are qualified to their path alias; a field a path
+reads is qualified when it is a bare base field and inlined, recursively, when it is derived or filtered. The expansion
+runs during binding/planning, so the SQL generator never sees unresolved field references.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Dict, FrozenSet, List, Optional, Protocol, Set, Tuple
+from collections.abc import Callable, Sequence
+from typing import Dict, List, Optional, Protocol, Set, Tuple, cast
 
 import sqlglot
+from pydantic import BaseModel, ConfigDict, SkipValidation
 from sqlglot import exp
-from sqlglot.optimizer.scope import ScopeType, traverse_scope
+from sqlglot.errors import ParseError
+from sqlglot.expressions.core import Expression
 
 from slayer.core.errors import (
     AmbiguousRelationshipPathError,
     CircularRelationshipPathError,
     DatasetFieldCycleError,
     LegacyDunderAliasError,
+    ModeASqlParseError,
     UnreachableDefinitionError,
     UnresolvableDimensionRelationshipError,
 )
@@ -40,14 +33,22 @@ from slayer.core.relationship_walker import (
     walk_miss,
     walk_terminal,
 )
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.models import DatasetField, SlayerDataset, is_source_qualifier
 from slayer.core.scope import resolve_generated_field
 from slayer.core.syntax import drop_root_hop
+from slayer.core.vocabulary import old_keywords
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.sql.naming import windowed_column
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
+from slayer.sql.root_scope import root_scope_field_ids
+from slayer.sql.zoned_reads import STORED, VALUE, Context, ReadSite, field_for_column
 
 __all__ = [
+    "reads_source_column",
     "collect_root_scope_joined_paths",
+    "ExpansionSinks",
+    "expand_derived_refs_ast",
+    "expand_field_definition_ast",
     "expand_field_definition_parts_sync",
     "expand_field_definition_sync",
     "expand_derived_refs_sync",
@@ -64,12 +65,12 @@ Path = Tuple[str, ...]
 
 
 def is_trivial_base(*, field: DatasetField) -> bool:
-    """A field is "trivial base" iff its sql is missing or is just its own
+    """A field is "trivial base" iff its definition is missing or is just its own
     bare name. These need no expansion — only re-qualification.
     """
-    if field.sql is None:
+    if field.definition_sql is None:
         return True
-    sql = field.sql.strip()
+    sql = field.definition_sql.strip()
     # A double-quoted self-identity (``"legalEntityType"`` for a field named
     # ``legalEntityType``) is still a bare base reference — required to point
     # at a mixed-case physical column on case-folding dialects. Strip the
@@ -80,82 +81,50 @@ def is_trivial_base(*, field: DatasetField) -> bool:
     return sql == field.name
 
 
-def root_scope_field_ids(*, parsed: exp.Expression) -> set[int]:
-    """Return the ``id()`` set of ``exp.Column`` nodes that lexically belong
-    to the root scope of ``parsed``.
-
-    DatasetField.sql is contractually a scalar expression, not a SELECT. To re-use
-    sqlglot's scope analysis we wrap ``parsed`` in a synthetic
-    ``SELECT <parsed> AS _`` so it has a real root scope. The wrapper is
-    used only for scope traversal; the original ``parsed`` AST is unchanged.
-
-    A Column is "root-scope" iff its innermost scope-defining ancestor is
-    the wrapper itself. Anything nested under a ``Subquery``, CTE, set
-    operation (``Union`` / ``Except`` / ``Intersect``), ``Values``, or
-    other scope-producing construct returns a non-root ScopeType and is
-    skipped from derived-field inlining.
-
-    ``Window`` / ``OVER`` is NOT a new scope: columns inside
-    ``PARTITION BY`` / ``ORDER BY`` remain root-scope.
-    """
-    if not isinstance(parsed, exp.Expression):
-        return set()
-    wrapper = exp.Select(expressions=[exp.Alias(this=parsed.copy(), alias="_")])
-    scope_node_ids: dict[int, ScopeType] = {}
-    for scope in traverse_scope(wrapper):
-        scope_node_ids[id(scope.expression)] = scope.scope_type
-    bound = _comprehension_bound_ids(parsed)
-    if not scope_node_ids:
-        # No SELECTs in the fragment at all — every column is root-scope.
-        return {id(c) for c in parsed.find_all(exp.Column)} - bound
-    # Re-walk the WRAPPER (which holds copies) — but we need ids from the
-    # ORIGINAL parsed tree. Pair them up positionally: find_all yields
-    # nodes in document order on both wrapper.this[0] and parsed.
-    wrapper_cols = list(wrapper.find_all(exp.Column))
-    parsed_cols = list(parsed.find_all(exp.Column))
-    if len(wrapper_cols) != len(parsed_cols):
-        # Fail closed: if the positional pairing between the wrapper copy
-        # and the original tree ever drifts, treat NO column as root-scope.
-        # Since the root-scope gate now runs BEFORE qualification, an empty
-        # set leaves every bare column unqualified (not just un-inlined) —
-        # conservative: the compile-time guard still catches cycles, and no
-        # column is spliced across scopes. This branch is unreachable today;
-        # the wrapper just wraps a deep copy and ``find_all`` walks in
-        # document order.
-        return set()
-    root_ids: set[int] = set()
-    for w_col, p_col in zip(wrapper_cols, parsed_cols):
-        node: exp.Expression | None = w_col.parent
-        scope_type: ScopeType | None = None
-        while node is not None:
-            if id(node) in scope_node_ids:
-                scope_type = scope_node_ids[id(node)]
-                break
-            node = node.parent
-        if scope_type == ScopeType.ROOT:
-            root_ids.add(id(p_col))
-    return root_ids - bound
-
-
-def _comprehension_bound_ids(parsed: exp.Expr) -> set[int]:
-    """Ids of the names a list comprehension (``[e FOR e IN xs IF p]``) binds, wherever they appear in it."""
-    bound: set[int] = set()
-    for node in parsed.find_all(exp.Comprehension):
-        var = node.expression
-        if not isinstance(var, exp.Column):
-            continue
-        for part in (node.this, var, node.args.get("condition")):
-            if isinstance(part, exp.Expr):
-                bound |= {id(c) for c in part.find_all(exp.Column) if not c.table and c.name == var.name}
-    return bound
-
-
 class _PathSink(Protocol):
     """A duck-typed ordered collector of relationship-path tuples (``.add(path)``), so
-    a caller can pass its own insertion-ordered set (``ScopeFrame.join_paths``)
+    a caller can pass its own insertion-ordered set (``ScopeFrame.relationship_paths``)
     and receive the crossed paths in emission order."""
 
     def add(self, path: Tuple[str, ...], /) -> None: ...
+
+
+#: The read path: a qualified column read at its site, as SLayer reads it there.
+ReadHook = Callable[[exp.Column, ReadSite], Expression]
+
+
+class ExpansionSinks(BaseModel):
+    """The collectors one expansion feeds — each crossed relationship-path prefix, each dataset path read — and the
+    read path its column reads go through, in their context."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    crossed: SkipValidation[Optional[_PathSink]] = None
+    reads: SkipValidation[Optional[_PathSink]] = None
+    read: SkipValidation[Optional[ReadHook]] = None
+    context: Context = VALUE
+
+
+_NO_SINKS = ExpansionSinks()
+
+
+def _record(sink: Optional[_PathSink], path: Tuple[str, ...]) -> None:
+    if sink is not None:
+        sink.add(path)
+
+
+def _read(
+    node: Expression, *, sinks: ExpansionSinks, dataset: SlayerDataset, field: Optional[DatasetField], path: Path,
+) -> Expression:
+    """``node`` (a qualified column read) through the read path, replaced in its tree."""
+    if sinks.read is None or not isinstance(node, exp.Column):
+        return node
+    stub = exp.Placeholder()
+    node.replace(stub)
+    site = ReadSite(dataset=dataset, field=field, column=node.name, path=path, context=sinks.context, reads_naive=False)
+    out = sinks.read(node, site)
+    stub.replace(out)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +141,7 @@ class _PathSink(Protocol):
 DatasetsByName = Dict[str, SlayerDataset]
 
 
-def _identifier_chain(node: exp.Expression) -> Optional[List[str]]:
+def _identifier_chain(node: Expression) -> Optional[List[str]]:
     """The full identifier chain of a pure-identifier reference.
 
     A ``Column`` (2–4 name parts) yields its ``parts``; a nested ``Dot`` (5+
@@ -192,12 +161,12 @@ def _identifier_chain(node: exp.Expression) -> Optional[List[str]]:
 
 
 def _dot_reference_sites(
-    parsed: exp.Expression, root_scope_ids: Set[int],
-) -> Tuple[List[Tuple[exp.Expression, Tuple[str, ...], str]], Set[int]]:
+    parsed: Expression, root_scope_ids: Set[int],
+) -> Tuple[List[Tuple[Expression, Tuple[str, ...], str]], Set[int]]:
     """Root-scope references that parse as an outermost ``exp.Dot`` (5+-part
     refs), plus the ids of the ``Column`` nodes they consume so the plain-Column
     pass in :func:`reference_sites` does not double-count them."""
-    sites: List[Tuple[exp.Expression, Tuple[str, ...], str]] = []
+    sites: List[Tuple[Expression, Tuple[str, ...], str]] = []
     consumed: Set[int] = set()
     for dot in parsed.find_all(exp.Dot):
         chain = _identifier_chain(dot)
@@ -216,8 +185,8 @@ def _dot_reference_sites(
 
 
 def reference_sites(
-    parsed: exp.Expression, root_scope_ids: Set[int],
-) -> List[Tuple[exp.Expression, Tuple[str, ...], str]]:
+    parsed: Expression, root_scope_ids: Set[int],
+) -> List[Tuple[Expression, Tuple[str, ...], str]]:
     """Yield ``(node, qualifiers, leaf)`` for every root-scope reference.
 
     A 5+-part reference parses as an outer ``exp.Dot`` wrapping a ``Column``;
@@ -234,13 +203,15 @@ def reference_sites(
     return sites
 
 
+@old_keywords({"source_model": "source_dataset", "models_by_name": "datasets_by_name"})
 def resolve_ref_target(
     *,
     qualifiers: Tuple[str, ...],
     source_dataset: SlayerDataset,
     datasets_by_name: DatasetsByName,
+    quoted: Sequence[bool] = (),
 ) -> Optional[SlayerDataset]:
-    """Resolve a Mode-A qualifier chain to its target dataset for best-effort
+    """Resolve a Mode-A qualifier chain (``quoted`` flags each quoted hop) to its target dataset for best-effort
     save-time inspectors (schema-drift cascade, field-dependency cycle walk).
 
     Exact-name-first: an empty chain or the host's own name → the host; a single
@@ -253,8 +224,9 @@ def resolve_ref_target(
     quals = drop_root_hop(qualifiers, source_dataset.spelling, head_quoted=True)
     if not quals:
         return source_dataset
+    flags = tuple(quoted)[len(qualifiers) - len(quals):]
     try:
-        walked = walk_terminal(root=source_dataset, path=quals, datasets_by_name=datasets_by_name)
+        walked = walk_terminal(root=source_dataset, path=quals, datasets_by_name=datasets_by_name, quoted=flags)
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
         return None
     return walked[0] if walked is not None else None
@@ -309,7 +281,7 @@ def _resolve_qualifiers(
                 source_dataset=source_dataset, datasets_by_name=datasets_by_name,
             )
             return None  # opaque single qualifier
-        _raise_if_broken_join_walk(
+        _raise_if_broken_relationship_walk(
             path=path, leaf=leaf,
             source_dataset=source_dataset, datasets_by_name=datasets_by_name,
         )
@@ -317,7 +289,7 @@ def _resolve_qualifiers(
     except CircularRelationshipPathError as exc:
         raise CircularRelationshipPathError(
             reference=".".join((*qualifiers, leaf)),
-            root_dataset=source_dataset.name,
+            root_dataset=source_dataset.spelling,
             revisited=exc.revisited, hop=exc.hop, via=exc.via,
             field=field,
         ) from exc
@@ -348,7 +320,7 @@ def raise_if_legacy_split_alias(
         )
 
 
-def _raise_if_broken_join_walk(
+def _raise_if_broken_relationship_walk(
     *,
     path: Tuple[str, ...],
     leaf: str,
@@ -368,7 +340,7 @@ def _raise_if_broken_join_walk(
         return
     raise UnresolvableDimensionRelationshipError(
         reference=".".join((*path, leaf)),
-        root_dataset=source_dataset.name,
+        root_dataset=source_dataset.spelling,
         reason={
             "no_edge": f"'{miss.token}' is not a joined dataset on the preceding hop.",
             "unloaded": f"joined dataset '{miss.token}' is not in the resolved bundle.",
@@ -415,7 +387,7 @@ def _lenient_path(
 
 def collect_root_scope_joined_paths(
     *,
-    parsed: exp.Expression,
+    parsed: Expression,
     source_dataset: SlayerDataset,
     source_relation: str,
     bundle: ResolvedSourceBundle,
@@ -440,6 +412,8 @@ def collect_root_scope_joined_paths(
     seen: Set[Tuple[str, ...]] = set()
     ordered: List[Tuple[str, ...]] = []
     for _node, quals, _leaf in reference_sites(parsed, root_ids):
+        if quals and reads_source_column(quals, dataset=source_dataset):
+            continue
         path = _lenient_path(
             qualifiers=quals, source_dataset=source_dataset,
             owner_alias=source_relation,
@@ -484,7 +458,7 @@ def _alias_for_path(
     return alias_resolver(full_path) if alias_resolver else "__".join(full_path)
 
 
-def _requalify(node: exp.Expression, *, alias: str, leaf: str) -> exp.Expression:
+def _requalify(node: Expression, *, alias: str, leaf: str) -> Expression:
     """Re-qualify a reference ``node`` to ``alias.leaf``.
 
     For a plain ``Column`` the leaf identifier is preserved IN PLACE (only the
@@ -532,9 +506,27 @@ def _locate_site_target(
     return walked[0], _alias_for_path(full_path, alias_resolver=alias_resolver)
 
 
+def reads_siblings_first(field: DatasetField) -> bool:
+    """A deprecated field ``sql`` not yet converted keeps its pre-2.0 meaning: a bare name reads a sibling field."""
+    return field.sql is not None and not field.resolved
+
+
+def _expanding_sibling(dataset: SlayerDataset, *, leaf: str) -> bool:
+    col = resolve_generated_field(dataset=dataset, name=leaf, quoted=True)
+    return col is not None and col.needs_expansion
+
+
+def reads_source_column(qualifiers: Tuple[str, ...], *, dataset: SlayerDataset) -> bool:
+    """Whether a row-definition reference with ``qualifiers`` reads the dataset's source column: bare, or ``source.``
+    when no field is named ``source``."""
+    if not qualifiers:
+        return True
+    return len(qualifiers) == 1 and is_source_qualifier(qualifiers[0], dataset=dataset)
+
+
 def _process_reference_site(
     *,
-    node: exp.Expression,
+    node: Expression,
     qualifiers: Tuple[str, ...],
     leaf: str,
     dataset: SlayerDataset,
@@ -544,19 +536,26 @@ def _process_reference_site(
     dialect: str,
     visited: Tuple[Tuple[str, str], ...],
     alias_resolver: Optional[AliasResolver],
-    crossed_paths: Optional[_PathSink],
-    physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
+    sinks: ExpansionSinks,
     site: Optional[Tuple[str, str]] = None,
-) -> Optional[exp.Expression]:
-    """Resolve one reference site: qualify a base field in place, inline a
-    derived one, or leave an opaque reference untouched.
+    sibling_first: bool = False,
+) -> Optional[Expression]:
+    """Resolve one row-definition reference: a source column is qualified in place, a path's base field qualified, a
+    path's derived field inlined, an opaque reference left untouched. ``sibling_first`` reads a bare name as the
+    sibling field it names when that field needs expansion (a deprecated, unconverted field ``sql``).
 
     ``owner_path`` is the ROOT-relative path of ``dataset`` (empty at the scope
     root). A resolved ref's full root-relative path is ``owner_path + path``;
-    its prefixes are added to ``crossed_paths`` so the caller learns every relationship
+    its prefixes are added to ``sinks.crossed`` so the caller learns every relationship
     the fragment crosses WITHOUT re-scanning the (ambiguous) internal-alias
-    output. Returns the replacement node when rewritten, else ``None``.
+    output. Returns the replacement node when rewritten, else ``None``. ``sinks.reads`` receives the root-relative
+    path of each dataset a field is read on.
     """
+    sibling = sibling_first and not qualifiers and _expanding_sibling(dataset, leaf=leaf)
+    if not sibling and reads_source_column(qualifiers, dataset=dataset):
+        _record(sinks.reads, owner_path)
+        return _read(_requalify(node=node, alias=alias_path, leaf=leaf), sinks=sinks, dataset=dataset,
+                     field=field_for_column(dataset, leaf), path=owner_path)
     path = _resolve_qualifiers(
         qualifiers=qualifiers, leaf=leaf, source_dataset=dataset,
         owner_alias=alias_path, datasets_by_name=datasets_by_name,
@@ -568,7 +567,7 @@ def _process_reference_site(
     located = _locate_site_target(
         path=path, full_path=full_path, dataset=dataset, alias_path=alias_path,
         datasets_by_name=datasets_by_name, alias_resolver=alias_resolver,
-        crossed_paths=crossed_paths,
+        crossed_paths=sinks.crossed,
     )
     if located is None:
         return None
@@ -580,30 +579,23 @@ def _process_reference_site(
     )
     if target_col is not None:
         leaf = target_col.name
-    # An exempt field reads physically (its filter's self-reference reads the
-    # bare field, never the masked value — matching the save-time cycle rule).
-    if (
-        target_col is None or not target_col.needs_expansion
-        or (target_dataset.name, leaf) in physical_read_exempt
-    ):
-        return _requalify(node=node, alias=canonical_alias, leaf=leaf)
+    if target_col is None or not target_col.needs_expansion:
+        _record(sinks.reads, full_path)
+        return _read(_requalify(node=node, alias=canonical_alias, leaf=leaf), sinks=sinks, dataset=target_dataset,
+                     field=target_col or field_for_column(target_dataset, leaf), path=full_path)
     key = (target_dataset.name, leaf)
     if key in visited:
         cycle_start = visited.index(key)
         cycle = (*visited[cycle_start:], key)
         raise DatasetFieldCycleError(cycle=list(cycle))
-    # A field's own-filter exemption is LOCAL to that filter's fragment — it is
-    # NOT inherited into a referenced field's definition, or a real cross-field
-    # cycle (x.filter→y, y.sql→x) would be silently read as physical (Codex).
-    value_sql = _expand_target_field(
+    expanded_ast = _expand_target_field(
         target_col=target_col, target_dataset=target_dataset,
         canonical_alias=canonical_alias, full_path=full_path,
         datasets_by_name=datasets_by_name, dialect=dialect, visited=(*visited, key),
-        alias_resolver=alias_resolver, crossed_paths=crossed_paths,
+        alias_resolver=alias_resolver, sinks=sinks,
     )
-    if value_sql is None:
+    if expanded_ast is None:
         return None
-    expanded_ast = sqlglot.parse_one(value_sql, dialect=dialect)
     replacement = exp.Paren(this=expanded_ast)
     node.replace(replacement)
     return replacement
@@ -619,41 +611,39 @@ def _expand_target_field(
     dialect: str,
     visited: Tuple[Tuple[str, str], ...],
     alias_resolver: Optional[AliasResolver],
-    crossed_paths: Optional[_PathSink],
-) -> Optional[str]:
-    """The expanded SQL of a derived / filtered target field: its value (the
-    qualified bare field for a filtered physical one) masked by its filter."""
-    def _expand_child(
-        sql: str, *, exempt: FrozenSet[Tuple[str, str]] = frozenset(),
-    ) -> Optional[str]:
-        return expand_derived_refs_sync(
+    sinks: ExpansionSinks,
+) -> Optional[Expression]:
+    """The expanded definition of a derived / filtered target field: its value (the
+    qualified bare field for a filtered physical one) masked by its filter, which reads stored values."""
+    def _expand_child(sql: str, *, sibling_first: bool = False, context: Context) -> Optional[Expression]:
+        return expand_derived_refs_ast(
             sql=sql, dataset=target_dataset, alias_path=canonical_alias,
             owner_path=full_path, datasets_by_name=datasets_by_name, dialect=dialect,
-            visited=visited, alias_resolver=alias_resolver,
-            crossed_paths=crossed_paths, physical_read_exempt=exempt,
+            visited=visited, alias_resolver=alias_resolver, sibling_first=sibling_first,
+            site=(target_dataset.name, target_col.name), sinks=sinks.model_copy(update={"context": context}),
         )
 
-    if is_trivial_base(field=target_col):
+    definition = target_col.definition_sql
+    value: Optional[Expression]
+    if target_col.windowed:
+        _record(sinks.reads, full_path)
+        value = windowed_column_ast(field=target_col, alias_path=canonical_alias)
+    elif definition is None or is_trivial_base(field=target_col):
         # The target's own spelling, not the (possibly unquoted) reference site,
         # so a quoted self-identity keeps its quoting on case-folding dialects.
-        value_sql: Optional[str] = _qualified_base_sql(
-            field=target_col, alias_path=canonical_alias, dialect=dialect,
+        _record(sinks.reads, full_path)
+        value = _qualified_base_ast(
+            field=target_col, dataset=target_dataset, alias_path=canonical_alias, dialect=dialect, path=full_path,
+            sinks=sinks,
         )
     else:
-        assert target_col.sql is not None  # non-trivial base ⇒ real derived sql
-        value_sql = _expand_child(target_col.sql)
-    if value_sql is None or not target_col.filter:
-        return value_sql
-    # A trivial-base target's OWN filter reads the physical column, not the mask;
-    # the exemption is local to this filter fragment (never inherited).
-    filter_exempt = frozenset(
-        {(target_dataset.name, target_col.name)} if is_trivial_base(field=target_col) else set()
-    )
-    filter_sql = _expand_child(target_col.filter, exempt=filter_exempt)
-    return wrap_field_filter(
-        value_sql=value_sql,
-        filter_sql=filter_sql if filter_sql is not None else target_col.filter,
-    )
+        value = _expand_child(definition, sibling_first=reads_siblings_first(target_col), context=sinks.context)
+    if value is None or not target_col.filter:
+        return value
+    predicate = _expand_child(target_col.filter, context=STORED)
+    if predicate is None:
+        predicate = cast(Expression, sqlglot.parse_one(target_col.filter, dialect=dialect))
+    return wrap_field_filter_ast(value=value, predicate=predicate)
 
 
 def expand_derived_refs_sync(
@@ -667,11 +657,37 @@ def expand_derived_refs_sync(
     owner_path: Tuple[str, ...] = (),
     alias_resolver: Optional[AliasResolver] = None,
     crossed_paths: Optional[_PathSink] = None,
-    physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
     site: Optional[Tuple[str, str]] = None,
+    sibling_first: bool = False,
+    read_paths: Optional[_PathSink] = None,
 ) -> Optional[str]:
-    """Inline every derived-field reference in ``sql`` to its definition and
-    qualify every base reference to its internal alias.
+    """``expand_derived_refs_ast`` rendered, its reads as stored."""
+    if not sql:
+        return sql
+    expanded = expand_derived_refs_ast(
+        sql=sql, dataset=dataset, alias_path=alias_path, datasets_by_name=datasets_by_name, dialect=dialect,
+        visited=visited, owner_path=owner_path, alias_resolver=alias_resolver, site=site,
+        sibling_first=sibling_first, sinks=ExpansionSinks(crossed=crossed_paths, reads=read_paths),
+    )
+    return prequote_reserved_identifiers(sql, dialect=dialect) if expanded is None else expanded.sql(dialect=dialect)
+
+
+def expand_derived_refs_ast(
+    *,
+    sql: Optional[str],
+    dataset: SlayerDataset,
+    alias_path: str,
+    datasets_by_name: DatasetsByName,
+    dialect: str,
+    visited: Optional[Tuple[Tuple[str, str], ...]] = None,
+    owner_path: Tuple[str, ...] = (),
+    alias_resolver: Optional[AliasResolver] = None,
+    site: Optional[Tuple[str, str]] = None,
+    sibling_first: bool = False,
+    sinks: ExpansionSinks = _NO_SINKS,
+) -> Optional[Expression]:
+    """Expand a row definition: qualify every source-column read (a bare name, ``source.x``) and every base field a
+    path reads to its internal alias, and inline every derived field a path reads.
 
     Recurses through chains (``A.ratio`` -> ``A.bar / B.foo_normalized`` -> …)
     with cycle detection via ``visited``, raising ``DatasetFieldCycleError`` on a
@@ -684,20 +700,33 @@ def expand_derived_refs_sync(
     ROOT-relative path of ``dataset`` (empty at the scope root). ``alias_resolver``
     threads the WP3 join-alias registry so qualifier strings match
     the emitted JOIN aliases; ``None`` falls back to the legacy ``"__".join``
-    spelling. When ``crossed_paths`` is supplied, every relationship-path prefix the
-    fragment (recursively) crosses is added to it — the structural alternative
-    to re-scanning the internal-alias output. ``site`` ``(dataset, field)`` names
-    the definition being expanded, for stale-spelling warnings.
+    spelling. ``sinks`` collects each crossed relationship-path prefix and each dataset path read, and routes every
+    qualified column read through its read path in its context (a field filter inside reads in the stored context).
+    ``site`` ``(dataset, field)`` names the definition being expanded, for stale-spelling warnings.
     """
     if not sql:
-        return sql
+        return None
     visited = visited or ()
     # Reserved-word qualifiers (``grant.amount``) parse as an unsupported
     # ``Command`` unless quoted, so the reference would be invisible to the
-    # resolver (no join registered). Prequote first — idempotent, so callers
+    # resolver (no relationship path registered). Prequote first — idempotent, so callers
     # that already prequoted (the Mode-A door) are unaffected.
     sql = prequote_reserved_identifiers(sql, dialect=dialect)
-    parsed = sqlglot.parse_one(sql, dialect=dialect)
+    try:
+        parsed = cast(Expression, sqlglot.parse_one(sql, dialect=dialect))
+    except ParseError as exc:
+        raise ModeASqlParseError(
+            fragment=sql,
+            location=f"definition of field {'.'.join(site)!r}" if site else f"a definition on dataset {dataset.name!r}",
+            reason=str(exc).splitlines()[0] if str(exc) else None,
+        ) from exc
+    if isinstance(parsed, exp.Command):
+        # A call spelled like a statement (``replace(...)`` on SQLite / MySQL) is read as an expression.
+        where = sqlglot.parse_one(f"SELECT 1 WHERE {sql}", dialect=dialect).args.get("where")
+        if where is None or where.this is None:
+            return None
+        parsed = cast(Expression, where.this)
+        parsed.pop()
     root_scope_ids = root_scope_field_ids(parsed=parsed)
     for node, quals, leaf in reference_sites(parsed, root_scope_ids):
         replacement = _process_reference_site(
@@ -711,19 +740,19 @@ def expand_derived_refs_sync(
             dialect=dialect,
             visited=visited,
             alias_resolver=alias_resolver,
-            crossed_paths=crossed_paths,
-            physical_read_exempt=physical_read_exempt,
+            sinks=sinks,
             site=site,
+            sibling_first=sibling_first,
         )
         # ``node.replace`` mutates the node's PARENT. When the whole fragment is
-        # a single reference — ``DatasetField.sql = "other_derived_col"``, an alias of
+        # a single reference — ``expression: orders.other_derived_col``, an alias of
         # another derived field — that reference IS ``parsed`` and has no
         # parent, so the replace is a silent no-op. Rebind the root here, or the
         # correctly-expanded SQL is computed and thrown away and the emitted
         # query references a derived field as though it were physical.
         if replacement is not None and node is parsed:
             parsed = replacement
-    return parsed.sql(dialect=dialect)
+    return parsed
 
 
 def wrap_field_filter(*, value_sql: str, filter_sql: Optional[str]) -> str:
@@ -734,6 +763,35 @@ def wrap_field_filter(*, value_sql: str, filter_sql: Optional[str]) -> str:
     if not filter_sql:
         return value_sql
     return f"CASE WHEN {filter_sql} THEN {value_sql} END"
+
+
+def wrap_field_filter_ast(*, value: Expression, predicate: Optional[Expression]) -> Expression:
+    """``wrap_field_filter`` as AST."""
+    if predicate is None:
+        return value
+    return exp.Case(ifs=[exp.If(this=predicate, true=value)])
+
+
+def expand_field_definition_ast(
+    *,
+    field: DatasetField,
+    dataset: SlayerDataset,
+    alias_path: str,
+    datasets_by_name: DatasetsByName,
+    dialect: str,
+    owner_path: Tuple[str, ...] = (),
+    alias_resolver: Optional[AliasResolver] = None,
+    crossed_paths: Optional[_PathSink] = None,
+    read: Optional[ReadHook] = None,
+    context: Context = VALUE,
+) -> Expression:
+    """A field's value masked by its filter as AST, its reads through ``read``: the value in ``context``, the filter
+    in the stored context."""
+    value, predicate = expand_field_definition_parts_ast(
+        field=field, dataset=dataset, alias_path=alias_path, datasets_by_name=datasets_by_name, dialect=dialect,
+        owner_path=owner_path, alias_resolver=alias_resolver, crossed_paths=crossed_paths, read=read, context=context,
+    )
+    return wrap_field_filter_ast(value=value, predicate=predicate)
 
 
 def expand_field_definition_sync(
@@ -770,36 +828,68 @@ def expand_field_definition_parts_sync(
     alias_resolver: Optional[AliasResolver] = None,
     crossed_paths: Optional[_PathSink] = None,
 ) -> Tuple[str, Optional[str]]:
-    """``(value SQL, expanded filter SQL or None)`` of a field definition — the one
+    """``expand_field_definition_parts_ast`` rendered, its reads as stored."""
+    value, predicate = expand_field_definition_parts_ast(
+        field=field, dataset=dataset, alias_path=alias_path, datasets_by_name=datasets_by_name, dialect=dialect,
+        owner_path=owner_path, visited=visited, alias_resolver=alias_resolver, crossed_paths=crossed_paths,
+    )
+    return value.sql(dialect=dialect), (predicate.sql(dialect=dialect) if predicate is not None else None)
+
+
+def expand_field_definition_parts_ast(
+    *,
+    field: DatasetField,
+    dataset: SlayerDataset,
+    alias_path: str,
+    datasets_by_name: DatasetsByName,
+    dialect: str,
+    owner_path: Tuple[str, ...] = (),
+    visited: Optional[Tuple[Tuple[str, str], ...]] = None,
+    alias_resolver: Optional[AliasResolver] = None,
+    crossed_paths: Optional[_PathSink] = None,
+    read: Optional[ReadHook] = None,
+    context: Context = VALUE,
+) -> Tuple[Expression, Optional[Expression]]:
+    """``(value, expanded filter or None)`` of a field definition — the one
     door for both the scope resolver and the generator's cast-wrapping renderer.
     Value and filter expand through the same derived-refs door at the same owner
-    path; a filtered physical column's value is its qualified bare name (re-entering
-    the reference site would mask it twice)."""
-    def _expand(
-        sql: str, *, exempt: FrozenSet[Tuple[str, str]] = frozenset(),
-    ) -> str:
-        out = expand_derived_refs_sync(
+    path, the value in ``context`` and the filter in the stored one; a filtered physical column's value is its
+    qualified bare name (re-entering the reference site would mask it twice). The field is on ``visited``, so a
+    definition reading its own field by path is a cycle."""
+    key = (dataset.name, field.name)
+    visited = (*(visited or ()), *(() if key in (visited or ()) else (key,)))
+
+    def _expand(sql: str, *, sibling_first: bool = False, ctx: Context) -> Expression:
+        out = expand_derived_refs_ast(
             sql=sql, dataset=dataset, alias_path=alias_path,
             datasets_by_name=datasets_by_name, dialect=dialect, owner_path=owner_path,
-            visited=visited, alias_resolver=alias_resolver, crossed_paths=crossed_paths,
-            physical_read_exempt=exempt, site=(dataset.name, field.name),
+            visited=visited, alias_resolver=alias_resolver, site=key, sibling_first=sibling_first,
+            sinks=ExpansionSinks(crossed=crossed_paths, read=read, context=ctx),
         )
-        return out if out is not None else sql
+        return out if out is not None else cast(Expression, sqlglot.parse_one(sql, dialect=dialect))
 
-    if is_trivial_base(field=field):
-        value = _qualified_base_sql(field=field, alias_path=alias_path, dialect=dialect)
-        # This field's own filter reads the physical column, never its mask.
-        filter_exempt = frozenset({(dataset.name, field.name)})
+    definition = field.definition_sql
+    if field.windowed:
+        value = windowed_column_ast(field=field, alias_path=alias_path)
+    elif definition is None or is_trivial_base(field=field):
+        value = _qualified_base_ast(field=field, dataset=dataset, alias_path=alias_path, dialect=dialect,
+                                    path=owner_path, sinks=ExpansionSinks(read=read, context=context))
     else:
-        assert field.sql is not None  # non-trivial base ⇒ real derived sql
-        value = _expand(field.sql)
-        filter_exempt = frozenset()
-    return value, (_expand(field.filter, exempt=filter_exempt) if field.filter else None)
+        value = _expand(definition, sibling_first=reads_siblings_first(field), ctx=context)
+    return value, (_expand(field.filter, ctx=STORED) if field.filter else None)
 
 
-def _qualified_base_sql(*, field: DatasetField, alias_path: str, dialect: str) -> str:
-    """A trivial-base field as ``alias.leaf``, parsed from its own spelling so a
-    quoted self-identity or reserved name keeps its quoting."""
-    raw = prequote_reserved_identifiers(field.sql or field.name, dialect=dialect)
+def _qualified_base_ast(
+    *, field: DatasetField, dataset: SlayerDataset, alias_path: str, dialect: str, path: Path, sinks: ExpansionSinks,
+) -> Expression:
+    """A trivial-base field as ``alias.leaf`` through the read path, parsed from its own spelling so a quoted
+    self-identity or reserved name keeps its quoting."""
+    raw = prequote_reserved_identifiers(field.definition_sql or field.name, dialect=dialect)
     node = exp.maybe_parse(raw, dialect=dialect)
-    return _requalify(node=node, alias=alias_path, leaf=field.name).sql(dialect=dialect)
+    return _read(_requalify(node=node, alias=alias_path, leaf=field.name), sinks=sinks, dataset=dataset, field=field,
+                 path=path)
+
+
+def windowed_column_ast(*, field: DatasetField, alias_path: str) -> Expression:
+    """A windowed field as the column its dataset's relation materialises it in: ``alias.<column>``."""
+    return exp.column(windowed_column(field.name), table=exp.to_identifier(alias_path))

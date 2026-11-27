@@ -1,6 +1,6 @@
-"""DEV-1853 — which side declares an edge is storage trivia.
+"""Which side declares an edge is storage trivia.
 
-The same semantic edge declared on either model answers every traversal,
+The same semantic edge declared on either dataset answers every traversal,
 reachability, SQL, and value question identically (byte-identical SQL on
 unnamed paths). This is the parity that lets stored mirror pairs collapse to
 one edge.
@@ -21,16 +21,16 @@ from tests._dev1853_fixtures import chain_engine, chain_datasets
 
 QUERIES = {
     "reverse_dims": SlayerQuery(
-        population="customers", dimensions=["name", "orders.status"]),
+        population="customers", dimensions=["customers.name", "orders.status"]),
     "forward_dims": SlayerQuery(
-        population="orders", dimensions=["status", "customers.name"]),
+        population="orders", dimensions=["orders.status", "customers.name"]),
     "reverse_aggregate": SlayerQuery.model_validate({
         "population": "customers",
-        "dimensions": ["name"],
+        "dimensions": ["customers.name"],
         "metrics": [{"metric": "sum(orders.amount)", "alias": "t"}],
     }),
     "multi_hop": SlayerQuery(
-        population="regions", dimensions=["name", "customers.orders.status"]),
+        population="regions", dimensions=["regions.name", "customers.orders.status"]),
 }
 
 

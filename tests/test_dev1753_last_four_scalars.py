@@ -73,13 +73,13 @@ class TestScalarSetsClosed:
         # Rewrite targets and dialect-rendered date functions are not SQL pass-throughs.
         assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
             "like", "ilike", "iif", "date_part", "date_diff", "date_add", "interval",
-            "current_date", "now",
+            "current_date", "now", "current_time",
         }
 
     def test_arity_entries_exist_for_the_four(self) -> None:
         assert SCALAR_FUNCTION_ARITY["greatest"] == (2, None)
         assert SCALAR_FUNCTION_ARITY["least"] == (2, None)
-        assert SCALAR_FUNCTION_ARITY["trunc"] == (1, 1)
+        assert SCALAR_FUNCTION_ARITY["trunc"] == (1, 2)
         assert SCALAR_FUNCTION_ARITY["mod"] == (2, 2)
 
 
@@ -89,9 +89,10 @@ class TestArityBoundaries:
         assert check_scalar_arity(name="mod", argc=2) is None
         assert check_scalar_arity(name="mod", argc=3) is not None
 
-    def test_trunc_is_one_arg_only(self) -> None:
+    def test_trunc_takes_one_or_two(self) -> None:
         assert check_scalar_arity(name="trunc", argc=1) is None
-        msg = check_scalar_arity(name="trunc", argc=2)
+        assert check_scalar_arity(name="trunc", argc=2) is None
+        msg = check_scalar_arity(name="trunc", argc=3)
         assert msg is not None
         assert "trunc" in msg
 
@@ -285,17 +286,17 @@ async def engine(tmp_path) -> SlayerQueryEngine:
 class TestEndToEndBinding:
     async def test_each_scalar_binds_and_appears_in_sql(self, engine) -> None:
         cases = [
-            ("greatest(amount, disc) > 15", "MAX("),
-            ("least(amount, disc) < 15", "MIN("),
-            ("trunc(amount) >= 20", "TRUNC("),
-            ("mod(id, 2) == 0", "%"),
+            ("greatest(orders.amount, orders.disc) > 15", "MAX("),
+            ("least(orders.amount, orders.disc) < 15", "MIN("),
+            ("trunc(orders.amount) >= 20", "TRUNC("),
+            ("mod(orders.id, 2) == 0", "%"),
         ]
         for predicate, needle in cases:
             resp = await engine.execute(
                 SlayerQuery(
                     population="orders",
-                    dimensions=[QueryDimension(field="status")],
-                    metrics=[QueryMetric(metric="count(*)", alias="n")],
+                    dimensions=[QueryDimension(field="orders.status")],
+                    metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
                     filter=[predicate],
                 ),
                 dry_run=True,
@@ -308,18 +309,18 @@ class TestEndToEndBinding:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)", alias="n")],
-                filter=["mod(amount + qty, 3) == 0"],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["mod(orders.amount + orders.qty, 3) == 0"],
             )
         )
-        assert resp.data[0]["orders.n"] == 2
+        assert resp.data[0]["n"] == 2
 
     @pytest.mark.parametrize(
         "predicate,func",
         [
-            ("trunc(amount, 2) > 1", "trunc"),
-            ("mod(amount) > 1", "mod"),
-            ("greatest(amount) > 1", "greatest"),
+            ("trunc(orders.amount, 2, 3) > 1", "trunc"),
+            ("mod(orders.amount) > 1", "mod"),
+            ("greatest(orders.amount) > 1", "greatest"),
         ],
     )
     async def test_arity_errors_surface_at_bind_time(
@@ -327,7 +328,7 @@ class TestEndToEndBinding:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
             filter=[predicate],
         )
         with pytest.raises(ValueError, match=func):
@@ -343,16 +344,16 @@ class TestGreatestLeastNullSemanticsSqlite:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="id")],
+                dimensions=[QueryDimension(field="orders.id")],
                 metrics=[QueryMetric(metric=expression, alias="g")],
             )
         )
-        return {int(r["orders.id"]): r["orders.g"] for r in resp.data}
+        return {int(r["orders.id"]): r["g"] for r in resp.data}
 
     async def test_greatest_ignores_null(self, engine) -> None:
-        got = await self._values(engine, "greatest(max(amount), max(disc))")
+        got = await self._values(engine, "greatest(max(orders.amount), max(orders.disc))")
         assert got == {1: 10.0, 2: 20.0, 3: 30.0, 4: None}
 
     async def test_least_ignores_null(self, engine) -> None:
-        got = await self._values(engine, "least(max(amount), max(disc))")
+        got = await self._values(engine, "least(max(orders.amount), max(orders.disc))")
         assert got == {1: 10.0, 2: 5.0, 3: 30.0, 4: None}

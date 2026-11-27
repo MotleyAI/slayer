@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "2.0.0.dev0"
+version = "2.0.0"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -29,22 +29,25 @@ Discord = "https://discord.gg/egWxMctHCA"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-sqlglot = {version = ">=30.17", extras = ["c"]}
+# 30.18+ changes emitted SQL and drops Scope.union_scopes; DEV-2468 lifts the cap.
+sqlglot = {version = ">=30.17,<30.18", extras = ["c"]}
 sqlalchemy = ">=2.0.43,<2.1"
 greenlet = ">=1"
-pydantic = ">=2.0"
+pydantic = ">=2.12"
 pyparsing = ">=3.1"
 python-dateutil = ">=2.8"
 typing-extensions = ">=4.5"
 pyyaml = ">=6.0"
+# Offline validation against the vendored Ossie ontology and mapping schemas.
+jsonschema = ">=4.20"
+# Round-trip YAML: a semantic-model document keeps its comments and layout through edits.
+ruamel-yaml = ">=0.19.1"
 fastapi = ">=0.100"
-uvicorn = ">=0.20"
+uvicorn = ">=0.31.1"
 httpx = {version = ">=0.24", optional = true}
 pandas = {version = ">=2.0", optional = true}
-# mcp 2.x dropped the `mcp.server.fastmcp` module layout that `slayer/mcp/server.py`
-# imports (renamed to `mcp.server.mcpserver.MCPServer`); cap until the 2.x migration
-# lands. Floor 1.19: the first `FastMCP.tool` accepting `meta` (always-load option).
-mcp = ">=1.19,<2"
+mcp = ">=2.3,<3"
+packaging = ">=22"
 psycopg = {version = ">=3.1", extras = ["binary"], optional = true}
 pymysql = {version = ">=1.0", optional = true}
 clickhouse-sqlalchemy = {version = ">=0.3", optional = true}
@@ -52,9 +55,11 @@ pyodbc = {version = ">=5.0", optional = true}
 sqlalchemy-bigquery = {version = ">=1.11", optional = true, python = "<3.15"}
 # DuckDB + jafgen are core deps so the bundled `slayer datasources create demo`
 # works after a single `pip install motley-slayer`. 1.1 is the first catalog with every key column ingestion reads.
-duckdb = ">=1.1"
+# 2.0 drops relation fetch methods and changes an emulated percentile; DEV-2482 lifts the cap.
+duckdb = ">=1.1,<2.0"
 duckdb-engine = ">=0.13"
-jafgen = "^0.4.14"
+# The demo data (and the count the docs show) depends on this exact jafgen version.
+jafgen = "0.4.14"
 # esprima is a pure-Python ESTree parser (zero transitive deps) used by the
 # Cube JavaScript-config importer (`slayer import-cube` on `.js`
 # files). Core dep so `import-cube` works after a single
@@ -79,9 +84,10 @@ numpy = {version = ">=1.24", optional = true}
 # ``ladybug``.
 ladybug = {version = ">=0.1", optional = true}
 # Snowflake support. snowflake-sqlalchemy >= 1.7 is the first
-# release with SQLAlchemy 2.x support (a hard repo dep).
+# release with SQLAlchemy 2.x support (a hard repo dep). 2.0 registers an async
+# dialect SLayer refuses; DEV-2468 lifts the cap.
 snowflake-connector-python = {version = ">=3.13", optional = true}
-snowflake-sqlalchemy = {version = ">=1.7", optional = true}
+snowflake-sqlalchemy = {version = ">=1.7,<2.0", optional = true}
 # 0.340: credentials pass through undecoded, and HTTP auth needs allow_insecure_auth.
 trino = {version = ">=0.340", optional = true}
 # OpenTelemetry for slayer.otel (opt-in traces, metrics and logs over OTLP).
@@ -120,7 +126,7 @@ psycopg2-binary = "^2.9.11"
 asyncpg = ">=0.27"
 aiomysql = ">=0.2"
 pytest-benchmark = "^5.2.3"
-duckdb = ">=1.1"
+duckdb = ">=1.1,<2.0"
 duckdb-engine = ">=0.13"
 nbclient = ">=0.10"
 nbformat = ">=5.10"
@@ -141,15 +147,13 @@ jpype1 = "^1.5.0"
 testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = "^4.0"}
 basedpyright = "^1.40.2"
 pytest-xdist = ">=3.6"
-living-architecture = "0.12.0"
-jsonschema = "^4.23"
+living-architecture = "0.14.0"
 filelock = ">=3.12,<4"
 pg8000 = "^1.31.6"
-ruamel-yaml = "^0.19.1"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--ignore=tests/perf"
+addopts = "--ignore=tests/perf --ignore=tests/fixtures/ossie_corpus"
 markers = [
     "integration: marks tests as integration tests (require a real database)",
     "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
@@ -176,7 +180,7 @@ typeCheckingMode = "basic"
 pythonVersion = "3.11"
 reportDeprecated = "error"
 include = ["slayer", "tests"]
-exclude = ["slayer/flight/_flight_sql_pb2.py", "tests/fixtures/upgrade/*/generate.py"]
+exclude = ["slayer/flight/_flight_sql_pb2.py", "tests/fixtures/upgrade/*/generate.py", "tests/fixtures/ossie_corpus"]
 
 [tool.ruff]
 target-version = "py311"

@@ -9,11 +9,11 @@ query's final stage, which then runs as one query, plus how agents discover a mo
 ### Requirement: A refined run equals the hand-written merged final stage
 Run-by-name SHALL accept a refinement carrying any of `dimensions`, `time_dimensions`, `metrics`,
 `filter`, `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`,
-`distinct_dimension_values` and `to_many_handling`, with the same input forms and validation as the
+`distinct_dimension_values`, `to_many_handling` and `time_zone`, with the same input forms and validation as the
 same fields of a query. The refinement SHALL merge into the saved query's final stage only — earlier
 stages are never changed — and the result SHALL be exactly the values, result keys, warnings and
 errors of that merged stage written by hand in place of the saved final stage. A refinement carrying
-`population`, `name`, `version`, `variables` or any unknown field SHALL be rejected. An empty
+`population`, `population_inferred`, `name`, `version`, `variables` or any unknown field SHALL be rejected. An empty
 refinement SHALL behave exactly like no refinement.
 
 Scenario data for this capability (executed on SQLite and DuckDB): table `orders(id, customer_id, region,
@@ -58,18 +58,18 @@ status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c
 - **THEN** the result equals the plain run by name, with the same SQL
 
 #### Scenario: Forbidden refinement fields
-- **WHEN** a refinement carries `population`, `name`, `version`, `variables`, or an unknown key
+- **WHEN** a refinement carries `population`, `population_inferred`, `name`, `version`, `variables`, or an unknown key
 - **THEN** it is rejected as invalid input before anything executes
 
 ### Requirement: Merge rules per field
 Dimensions and measures SHALL be the saved entries followed by the refinement entries not already
-present. A dimension column reference SHALL be identified by its reference with a leading root
-qualifier dropped (`region` ≡ `orders.region`), a computed dimension by its name, a measure by its name
-(an unnamed measure by its formula), a formula being compared by its parsed meaning with
-any leading root qualifier dropped (`sum(amount)` ≡ `sum(orders.amount)`), never by its text, so text
+present. A dimension column reference SHALL be identified by its reference in its converted,
+qualified form (`region` ≡ `orders.region` in a stage naming population `orders`, `queries/references`), a computed dimension by its name, a measure by its name
+(an unnamed measure by its formula), a formula being compared by its parsed meaning in
+its converted, qualified form (`sum(amount)` ≡ `sum(orders.amount)`), never by its text, so text
 inside a string literal or quoted identifier is compared exactly. Two entries with the same identity
 SHALL collapse into one when they are equal in every field. A refinement measure whose formula is a
-bare name, or that name qualified by the root, equal to a saved measure entry's name — named with that
+bare name, or that name qualified by the population, equal to a saved measure entry's name — named with that
 same name, unnamed, or the string shorthand — SHALL restate that saved entry: it collapses into the
 saved entry when every field it explicitly sets (`label`, `datatype`, `description`, `meta`; an explicit
 `null` included) equals the saved entry's value, and conflicts otherwise. Time dimensions SHALL be
@@ -78,9 +78,10 @@ an existing key each of `date_range` and `label` takes the side that sets it, ke
 conflicts when both sides set different values, `date_range` being compared after input
 normalization. Filters SHALL be the saved filters followed by the refinement's, exact duplicate
 strings dropped. `order`, `limit`, `offset`, `main_time_dimension`, `whole_periods_only`,
-`distinct_dimension_values` and `to_many_handling` SHALL replace the saved value when the refinement
+`distinct_dimension_values`, `to_many_handling` and `time_zone` SHALL replace the saved value when the refinement
 supplies them, an explicit empty `order` or `null` clearing the saved value, and SHALL leave it
-unchanged otherwise.
+unchanged otherwise; `whole_periods_only` and `distinct_dimension_values` SHALL refuse `null`, and a `null`
+`to_many_handling` SHALL keep the saved value.
 
 #### Scenario: Identical duplicates collapse
 - **WHEN** `monthly_revenue` runs with refinement `{"dimensions": ["orders.region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}]}`
@@ -128,6 +129,10 @@ unchanged otherwise.
 - **WHEN** a refinement repeats a saved filter string exactly
 - **THEN** the merged stage carries that filter once
 
+#### Scenario: Refining the zone
+- **WHEN** `monthly_revenue` runs with refinement `{"time_zone": "America/New_York"}`, and a saved query whose final stage sets `time_zone: Asia/Tokyo` runs with refinement `{"time_zone": null}` and with no refinement
+- **THEN** the first buckets its months in New York wall clock, and the second runs without a zone and in Tokyo respectively
+
 ### Requirement: Conflicting refinements fail closed
 A refinement entry with the same identity as a saved entry but differing in any other field, and a
 time-dimension `date_range` or `label` set differently on both sides, SHALL raise a refinement
@@ -159,7 +164,7 @@ with the ordinary resolution error.
 
 #### Scenario: Refining the final stage
 - **WHEN** the saved query `[{"name": "per_customer", "population": "orders", "dimensions": ["customer_id", "region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter": ["status = 'paid'"]}, {"population": "per_customer", "metrics": [{"metric": "avg(revenue)", "alias": "avg_revenue"}]}]` runs by name
-- **THEN** `per_customer.avg_revenue` is 63.75
+- **THEN** `avg_revenue` is 63.75
 - **WHEN** it runs with refinement `{"dimensions": ["region"]}`
 - **THEN** the rows are (US, 75.0), (EU, 52.5)
 - **WHEN** it runs with refinement `{"filter": ["region = 'EU'"]}`

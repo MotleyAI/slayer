@@ -13,12 +13,13 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
-from datetime import timedelta
 from email.parser import HeaderParser
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult
@@ -30,6 +31,7 @@ REQUIRED_JOINS = ("customers", "stores")
 CHILD_PATH = "/usr/local/bin:/usr/bin:/bin"
 PASSTHROUGH_ENV = ("LANG", "LC_ALL", "TMPDIR")
 COMMAND_TIMEOUT = 900.0
+MCP_HANDSHAKE_LIMIT = 10.0
 TRAMPOLINE = "'''exec' "
 PROBE = (
     "import json, os, sys, slayer; "
@@ -55,6 +57,7 @@ class Options(BaseModel):
     checkout: Path
     mcp_start_timeout: float
     mcp_call_timeout: float
+    mcp_handshake_limit: float = MCP_HANDSHAKE_LIMIT
 
 
 def _parse_args(argv: list[str] | None) -> Options:
@@ -64,6 +67,10 @@ def _parse_args(argv: list[str] | None) -> Options:
     parser.add_argument("--checkout", default=str(REPO_ROOT), help="Source checkout the install must not use.")
     parser.add_argument("--mcp-start-timeout", type=float, default=300.0, help="Seconds for MCP start-up.")
     parser.add_argument("--mcp-call-timeout", type=float, default=300.0, help="Seconds per MCP tool call.")
+    parser.add_argument(
+        "--mcp-handshake-limit", type=float, default=MCP_HANDSHAKE_LIMIT,
+        help="Seconds allowed from launch to the initialize + tools/list answers.",
+    )
     ns = parser.parse_args(argv)
     return Options(
         slayer=Path(ns.slayer).absolute(),
@@ -71,6 +78,7 @@ def _parse_args(argv: list[str] | None) -> Options:
         checkout=Path(ns.checkout).resolve(),
         mcp_start_timeout=ns.mcp_start_timeout,
         mcp_call_timeout=ns.mcp_call_timeout,
+        mcp_handshake_limit=ns.mcp_handshake_limit,
     )
 
 
@@ -215,7 +223,7 @@ def cli_leg(opts: Options, queries: list[DocQuery], *, leg: Path) -> list[GateFa
 def _tool_text(result: CallToolResult) -> str:
     """The single text content item of a successful tool result."""
     texts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
-    if result.isError:
+    if result.is_error:
         raise ValueError(f"tool error: {texts[0] if texts else 'no detail'}")
     if len(result.content) != 1 or len(texts) != 1:
         raise ValueError(f"expected one text content item, got {len(result.content)} item(s)")
@@ -223,7 +231,7 @@ def _tool_text(result: CallToolResult) -> str:
 
 
 async def _call(session: ClientSession, opts: Options, *, tool: str, arguments: dict[str, Any]) -> str:
-    result = await session.call_tool(tool, arguments, read_timeout_seconds=timedelta(seconds=opts.mcp_call_timeout))
+    result = await session.call_tool(tool, arguments, read_timeout_seconds=opts.mcp_call_timeout)
     return _tool_text(result)
 
 
@@ -231,15 +239,28 @@ async def mcp_leg(opts: Options, queries: list[DocQuery], *, leg: Path) -> list[
     params = StdioServerParameters(command=str(opts.slayer), args=["mcp", "--demo"], env=_child_env(leg), cwd=leg)
     failures: list[GateFailure] = []
     started = False
+    handshake_timed_out = False
+    launched = time.monotonic()
     try:
         async with stdio_client(params) as (read, write), ClientSession(
-            read, write, read_timeout_seconds=timedelta(seconds=opts.mcp_start_timeout),
+            read, write, read_timeout_seconds=opts.mcp_start_timeout,
         ) as session:
-            await session.initialize()
-            started = True
-            await _mcp_checks(session, opts, queries, failures=failures)
+            try:
+                with anyio.fail_after(max(0.0, opts.mcp_handshake_limit - (time.monotonic() - launched))):
+                    await session.initialize()
+                    started = True
+                    await session.list_tools()
+            except TimeoutError:
+                handshake_timed_out = True
+            else:
+                await _mcp_checks(session, opts, queries, failures=failures)
     except Exception as exc:  # noqa: BLE001 — any server lifecycle failure stops the leg
-        failures.append(GateFailure("mcp transport" if started else "mcp start", f"{type(exc).__name__}: {exc}"))
+        if not handshake_timed_out:  # tearing down a hung server is no failure of its own
+            failures.append(GateFailure("mcp transport" if started else "mcp start", f"{type(exc).__name__}: {exc}"))
+    if handshake_timed_out:
+        failures.append(GateFailure(
+            "mcp handshake", f"initialize + tools/list took over {opts.mcp_handshake_limit:g}s",
+        ))
     return failures
 
 

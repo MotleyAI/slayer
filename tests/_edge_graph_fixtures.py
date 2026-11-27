@@ -1,4 +1,4 @@
-"""Model graphs built from bare ``(source, target, edge_name)`` edge tuples, for route-search unit tests."""
+"""Dataset graphs built from bare ``(source, target, edge_name)`` edge tuples, for route-search unit tests."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 def edge_graph(
     *, nodes: set[str], edges: list[tuple[str, str, str | None]],
 ) -> dict[str, SlayerDataset]:
-    """One model per node; each edge is an unannotated join declared on its source."""
+    """One dataset per node; each edge is an unannotated relationship declared on its source."""
     joins: dict[str, list[DatasetRelationship]] = {n: [] for n in nodes}
     for source, target, name in edges:
         joins[source].append(DatasetRelationship(to=target, from_columns=["x_id"], to_columns=["id"], name=name))

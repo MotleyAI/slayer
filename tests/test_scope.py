@@ -1,8 +1,8 @@
-"""DEV-1706 Stage 2 — ``ScopeFrame`` + single resolver (``slayer/sql/scope.py``).
+"""``ScopeFrame`` + single resolver (``slayer/sql/scope.py``).
 
 Law 1 (anchored rendering): every ref enters a scope through ``resolve``, which
 expands derived refs, anchors them at the scope root or a ``__``-path join alias,
-and REGISTERS every crossed join path into ``scope.join_paths`` as a side effect.
+and REGISTERS every crossed relationship path into ``scope.join_paths`` as a side effect.
 
 Law 2 (projection boundaries): a ``resolve(ref, consumer=<scope>)`` call
 materialises the value as a ``_val_<n>`` projection in the PRODUCING scope
@@ -31,16 +31,16 @@ from slayer.sql.scope_check import assert_scope_closed
 
 
 # --------------------------------------------------------------------------- #
-# Models — the orders → customers → regions chain (+ a reserved-word variant).
+# Datasets — the orders → customers → regions chain (+ a reserved-word variant).
 # --------------------------------------------------------------------------- #
 def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
-            DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
+            DatasetField(name="weight", expression="weight", datatype=DataType.FLOAT),
         ],
     )
 
@@ -49,9 +49,9 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -59,10 +59,10 @@ def _customers() -> SlayerDataset:
 
 def _orders(*, extra=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-        DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+        DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     return SlayerDataset(
@@ -72,14 +72,14 @@ def _orders(*, extra=None) -> SlayerDataset:
 
 
 def _reserved_host() -> SlayerDataset:
-    # Model NAME is a reserved word ("order"); joins to another reserved name
-    # ("user"). DEV-1686: aliases/qualifiers for these must be QUOTED.
+    # Dataset NAME is a reserved word ("order"); relates to another reserved name
+    # ("user"). Aliases/qualifiers for these must be QUOTED.
     return SlayerDataset(
         name="order", sql_table="orders_tbl", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="user_id", sql="user_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="user_id", expression="user_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="user", from_columns=["user_id"], to_columns=["id"])],
     )
@@ -89,8 +89,8 @@ def _reserved_target() -> SlayerDataset:
     return SlayerDataset(
         name="user", sql_table="users_tbl", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="grade", sql="grade", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="grade", expression="grade", datatype=DataType.FLOAT),
         ],
     )
 
@@ -107,36 +107,36 @@ def _scope(host: SlayerDataset, *others: SlayerDataset, dialect: str = "postgres
 
 
 # --------------------------------------------------------------------------- #
-# Law 1 — anchored rendering + join registration.
+# Law 1 — anchored rendering + relationship-path registration.
 # --------------------------------------------------------------------------- #
 class TestResolveRegistersJoins:
     def test_local_columnkey_anchors_to_root_no_join(self) -> None:
         scope = _scope(_orders(), _customers(), _regions())
         expr = scope.resolve(FieldKey(leaf="amount"))
         assert expr.sql(dialect="postgres") == "orders.amount"
-        assert scope.join_paths.as_list() == []
+        assert scope.relationship_paths.as_list() == []
 
     def test_single_hop_joined_columnkey_registers_path(self) -> None:
         scope = _scope(_orders(), _customers(), _regions())
         expr = scope.resolve(FieldKey(path=("customers",), leaf="region_id"))
         assert expr.sql(dialect="postgres") == "customers.region_id"
-        assert scope.join_paths.as_list() == [("customers",)]
+        assert scope.relationship_paths.as_list() == [("customers",)]
 
     def test_multi_hop_columnkey_registers_every_prefix(self) -> None:
         scope = _scope(_orders(), _customers(), _regions())
         expr = scope.resolve(FieldKey(path=("customers", "regions"), leaf="name"))
         assert expr.sql(dialect="postgres") == "customers__regions.name"
-        assert scope.join_paths.as_list() == [("customers",), ("customers", "regions")]
+        assert scope.relationship_paths.as_list() == [("customers",), ("customers", "regions")]
 
     def test_derived_columnsqlkey_crossing_registers_prefixes(self) -> None:
         orders = _orders(extra=[
-            DatasetField(name="region_weight", sql="customers.regions.weight",
+            DatasetField(name="region_weight", expression="customers.regions.weight",
                    datatype=DataType.FLOAT),
         ])
         scope = _scope(orders, _customers(), _regions())
         expr = scope.resolve(FieldSqlKey(dataset="orders", field_name="region_weight"))
         assert "customers__regions.weight" in expr.sql(dialect="postgres")
-        assert scope.join_paths.as_list() == [("customers",), ("customers", "regions")]
+        assert scope.relationship_paths.as_list() == [("customers",), ("customers", "regions")]
 
     def test_registration_dedupes_and_preserves_order(self) -> None:
         scope = _scope(_orders(), _customers(), _regions())
@@ -144,11 +144,11 @@ class TestResolveRegistersJoins:
         scope.resolve(FieldKey(path=("customers",), leaf="balance"))  # already seen
         # ``customers`` was registered first (as a prefix); dedup keeps one copy
         # in first-seen order.
-        assert scope.join_paths.as_list() == [("customers",), ("customers", "regions")]
+        assert scope.relationship_paths.as_list() == [("customers",), ("customers", "regions")]
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1686 — reserved-identifier quoting, compositional (Codex M5/H1).
+# Reserved-identifier quoting, compositional (Codex M5/H1).
 # --------------------------------------------------------------------------- #
 class TestResolveReservedQuoting:
     def test_reserved_root_qualifier_quoted(self) -> None:
@@ -160,10 +160,10 @@ class TestResolveReservedQuoting:
         scope = _scope(_reserved_host(), _reserved_target())
         expr = scope.resolve(FieldKey(path=("user",), leaf="grade"))
         assert '"user"' in expr.sql(dialect="postgres")
-        assert scope.join_paths.as_list() == [("user",)]
+        assert scope.relationship_paths.as_list() == [("user",)]
 
     def test_resolver_alias_matches_build_from_and_joins(self) -> None:
-        # D-K / Codex H1: the alias the resolver anchors a reserved-word join
+        # D-K / Codex H1: the alias the resolver anchors a reserved-word relationship
         # path to MUST equal the alias ``_build_from_and_joins`` emits — else the
         # cached expr references a table the FROM never binds.
         host, target = _reserved_host(), _reserved_target()
@@ -199,37 +199,37 @@ class TestResolveReservedQuoting:
         assert resolver_alias in emitted
 
     def test_derived_columnsqlkey_reserved_qualifier_quoted(self) -> None:
-        # A derived ColumnSqlKey whose sql crosses to a reserved-word join target
-        # ("user") must emit the quoted qualifier and register the join (the
-        # "reserved prequoted expansion" path, not just a bare ColumnKey).
+        # A derived FieldSqlKey whose sql crosses to a reserved-word relationship target
+        # ("user") must emit the quoted qualifier and register the relationship path (the
+        # "reserved prequoted expansion" path, not just a bare FieldKey).
         host = SlayerDataset(
             name="order", sql_table="orders_tbl", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="user_id", sql="user_id", datatype=DataType.FLOAT),
-                DatasetField(name="user_grade", sql="user.grade", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="user_id", expression="user_id", datatype=DataType.FLOAT),
+                DatasetField(name="user_grade", expression="user.grade", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="user", from_columns=["user_id"], to_columns=["id"])],
         )
         scope = _scope(host, _reserved_target())
         expr = scope.resolve(FieldSqlKey(dataset="order", field_name="user_grade"))
         assert '"user"' in expr.sql(dialect="postgres")
-        assert scope.join_paths.as_list() == [("user",)]
+        assert scope.relationship_paths.as_list() == [("user",)]
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1539 — predicate outer-parens / precedence (Codex M5).
+# Predicate outer-parens / precedence (Codex M5).
 # --------------------------------------------------------------------------- #
 class TestResolvePredicateParens:
     @staticmethod
     def _derived_orders():
         return _orders(extra=[
-            DatasetField(name="total", sql="amount + balance", datatype=DataType.FLOAT),
+            DatasetField(name="total", expression="amount + balance", datatype=DataType.FLOAT),
         ])
 
     def test_derived_expansion_parenthesised_preserves_precedence(self) -> None:
         scope = _scope(self._derived_orders(), _customers(), _regions())
-        sql = scope.resolve_predicate_sql("total * 2 > 0")
+        sql = scope.resolve_predicate_sql("orders.total * 2 > 0")
         parsed = sqlglot.parse_one(sql, dialect="postgres")
         mul = parsed.find(exp.Mul)
         assert mul is not None, f"no multiplication in {sql!r}"
@@ -240,12 +240,12 @@ class TestResolvePredicateParens:
         )
 
     @pytest.mark.parametrize("predicate", [
-        "total > 0",                       # bare comparison
-        "amount > 1 AND total > 0",        # AND connector
-        "amount > 1 OR total > 0",         # OR connector
-        "NOT (total > 0)",                 # NOT
-        "total BETWEEN 1 AND 5",           # BETWEEN
-        "total IN (1, 2, 3)",              # IN
+        "orders.total > 0",                       # bare comparison
+        "amount > 1 AND orders.total > 0",        # AND connector
+        "amount > 1 OR orders.total > 0",         # OR connector
+        "NOT (orders.total > 0)",                 # NOT
+        "orders.total BETWEEN 1 AND 5",           # BETWEEN
+        "orders.total IN (1, 2, 3)",              # IN
     ])
     def test_multiterm_derived_expansion_is_parenthesised(self, predicate: str) -> None:
         # Wherever the multi-term derived ``total`` is substituted into a
@@ -285,7 +285,7 @@ class TestMaterialization:
         assert mat.alias == "_val_0"
         assert "customers__regions.population" in mat.expr.sql(dialect="postgres")
         # Registration still happens in the producer (Law 1 before Law 2).
-        assert producer.join_paths.as_list() == [
+        assert producer.relationship_paths.as_list() == [
             ("customers",), ("customers", "regions"),
         ]
 
@@ -364,7 +364,7 @@ class TestMaterialization:
         gen = SQLGenerator(dialect="postgres")
         from_clause, joins = gen._build_from_and_joins(
             source_dataset=producer.root_dataset, source_relation="orders",
-            joined_paths=producer.join_paths.as_list(), bundle=producer.bundle,
+            joined_paths=producer.relationship_paths.as_list(), bundle=producer.bundle,
         )
         inner = exp.Select().select(exp.column("id", table="orders")).from_(from_clause)
         for j, on, jt in joins:
@@ -382,25 +382,25 @@ class TestMaterialization:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1711 Stage 7 — path'd ColumnSqlKey (derived column ON a joined model).
-# The shifted-CTE partition/time resolver hands ``resolve`` a ColumnSqlKey whose
+# Stage 7 — path'd FieldSqlKey (derived field ON a joined dataset).
+# The shifted-CTE partition/time resolver hands ``resolve`` a FieldSqlKey whose
 # ``path`` is non-empty (e.g. ``stores.tier`` where ``tier = upper(name)`` is
-# derived on the joined ``stores`` model). ``_anchor`` must expand it rooted at
-# the ``__``-path alias (``is_root=False``) and register the join chain — today
+# derived on the joined ``stores`` dataset). ``_anchor`` must expand it rooted at
+# the ``__``-path alias (``is_root=False``) and register the relationship chain — today
 # it ignores ``path`` and mis-anchors at the host relation.
 # --------------------------------------------------------------------------- #
 class TestResolvePathedColumnSqlKey:
     @staticmethod
     def _customers_with_tier():
-        # ``tier = upper(balance)`` — a LOCAL derived column on the joined
-        # customers model (its inner ref stays on customers).
+        # ``tier = upper(balance)`` — a LOCAL derived field on the joined
+        # customers dataset (its inner ref stays on customers).
         return SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-                DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
-                DatasetField(name="tier", sql="upper(balance)", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
+                DatasetField(name="tier", expression="upper(balance)", datatype=DataType.STRING),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
@@ -410,14 +410,14 @@ class TestResolvePathedColumnSqlKey:
         expr = scope.resolve(
             FieldSqlKey(path=("customers",), dataset="customers", field_name="tier"))
         rendered = expr.sql(dialect="postgres")
-        # The derived column is EXPANDED (the ``upper(...)`` wrapper is preserved,
-        # not dropped to the bare column) AND its inner ref qualifies under the
+        # The derived field is EXPANDED (the ``upper(...)`` wrapper is preserved,
+        # not dropped to the bare field) AND its inner ref qualifies under the
         # JOINED alias, not the host — ``UPPER(customers.balance)``, never
         # ``UPPER(orders.balance)``.
         assert "UPPER(customers.balance)" in rendered, rendered
         assert "orders.balance" not in rendered, rendered
-        # The join it lives behind is registered (Law 1).
-        assert scope.join_paths.as_list() == [("customers",)]
+        # The relationship it lives behind is registered (Law 1).
+        assert scope.relationship_paths.as_list() == [("customers",)]
 
     def test_single_hop_derived_registers_only_its_join(self) -> None:
         scope = _scope(_orders(), self._customers_with_tier(), _regions())
@@ -425,19 +425,19 @@ class TestResolvePathedColumnSqlKey:
             FieldSqlKey(path=("customers",), dataset="customers", field_name="tier"))
         # ``regions`` is NOT referenced by ``tier`` — only the ``customers`` hop
         # is pulled.
-        assert ("customers", "regions") not in scope.join_paths.as_list()
+        assert ("customers", "regions") not in scope.relationship_paths.as_list()
 
     def test_joined_derived_crossing_further_join_registers_prefixes(self) -> None:
-        # A derived column on the joined model whose sql crosses a FURTHER join
+        # A derived field on the joined dataset whose sql crosses a FURTHER relationship
         # (``deep = regions.population`` on customers) anchors the further ref at
-        # the full ``customers__regions`` path (DEV-1701 shape) and registers
+        # the full ``customers__regions`` path and registers
         # both prefixes.
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-                DatasetField(name="deep", sql="regions.population", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="deep", expression="regions.population", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
@@ -446,7 +446,7 @@ class TestResolvePathedColumnSqlKey:
             FieldSqlKey(path=("customers",), dataset="customers", field_name="deep"))
         rendered = expr.sql(dialect="postgres")
         assert "customers__regions.population" in rendered, rendered
-        assert scope.join_paths.as_list() == [
+        assert scope.relationship_paths.as_list() == [
             ("customers",), ("customers", "regions"),
         ]
 

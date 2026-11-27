@@ -1,4 +1,4 @@
-"""SearchService behaviour matrix (DEV-1375).
+"""SearchService behaviour matrix.
 
 Covers every input combination from the spec's behaviour matrix:
 
@@ -45,7 +45,7 @@ from tests.search_helpers import seed_warehouse_datasets
 
 @pytest_asyncio.fixture
 async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
-    """A small fixture corpus: 1 datasource, 2 models, 4 memories."""
+    """A small fixture corpus: 1 datasource, 2 datasets, 4 memories."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
         await seed_warehouse_datasets(storage)
@@ -83,7 +83,7 @@ async def service(storage_with_corpus: StorageBackend) -> SearchService:
 async def test_entities_and_question_both_set_runs_both_channels(
     service: SearchService,
 ) -> None:
-    # DEV-1549: opt out of compact-by-default — the test asserts on the
+    # Opt out of compact-by-default — the test asserts on the
     # verbose text contract.
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
@@ -105,7 +105,7 @@ async def test_entities_and_question_both_set_runs_both_channels(
 @pytest.mark.asyncio
 async def test_entities_only_runs_channel_1_only(service: SearchService) -> None:
     """Channel 1 fills BOTH memory hits (BM25 over entity tags) and
-    entity hits (DEV-1513 implicit self-reference)."""
+    entity hits (implicit self-reference)."""
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
         max_results=20,
@@ -113,7 +113,7 @@ async def test_entities_only_runs_channel_1_only(service: SearchService) -> None
     )
     entity_hits = [h for h in response.results if h.kind != "memory"]
     memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
-    # DEV-1513: the named ref itself surfaces in the entities bucket.
+    # The named ref itself surfaces in the entities bucket.
     assert any(
         h.id == "warehouse.orders.amount_paid" for h in entity_hits
     )
@@ -126,17 +126,17 @@ async def test_entities_only_runs_channel_1_only(service: SearchService) -> None
 async def test_query_only_runs_channel_1_via_extracted_entities(
     service: SearchService,
 ) -> None:
-    """Channel 1 walks the extracted entities; DEV-1513 also surfaces
+    """Channel 1 walks the extracted entities and also surfaces
     them in the entities bucket."""
     response = await service.search(
         query={
             "population": "orders",
-            "metrics": [{"metric": "sum(amount_paid)"}],
+            "metrics": [{"metric": "sum(orders.amount_paid)"}],
         },
         max_results=20,
         compact=False,
     )
-    # DEV-1513: the query's source model and referenced column surface
+    # The query's population and referenced field surface
     # in the entities bucket.
     entity_ids = {h.id for h in response.results if h.kind != "memory"}
     assert "warehouse.orders" in entity_ids
@@ -210,7 +210,7 @@ async def test_negative_caps_rejected(service: SearchService) -> None:
 
 @pytest.mark.asyncio
 async def test_unknown_entity_becomes_warning(service: SearchService) -> None:
-    """DEV-1428: search is lenient on unresolved refs; unknown entities
+    """Search is lenient on unresolved refs; unknown entities
     surface as warnings rather than raising."""
     response = await service.search(entities=["warehouse.nonexistent.col"])
     assert any(
@@ -226,7 +226,7 @@ async def test_unknown_entity_becomes_warning(service: SearchService) -> None:
 
 @pytest.mark.asyncio
 async def test_memory_hit_id_is_str(service: SearchService) -> None:
-    """DEV-1428: memory SearchHit.id is the str memory id."""
+    """Memory SearchHit.id is the str memory id."""
     response = await service.search(entities=["warehouse.orders.amount_paid"], max_results=20)
     memory_hits = [h for h in response.results if h.kind == "memory"]
     for hit in memory_hits:
@@ -345,10 +345,10 @@ async def test_resolved_input_entities_populated_for_query_input(
     response = await service.search(
         query={
             "population": "orders",
-            "metrics": [{"metric": "sum(amount_paid)"}],
+            "metrics": [{"metric": "sum(orders.amount_paid)"}],
         },
     )
-    # Both the source model and the referenced column should be resolved.
+    # Both the population and the referenced field should be resolved.
     assert "warehouse.orders" in response.resolved_input_entities
     assert "warehouse.orders.amount_paid" in response.resolved_input_entities
 
@@ -361,7 +361,7 @@ async def test_resolved_input_entities_combined_input_dedupes(
         entities=["warehouse.orders.amount_paid"],
         query={
             "population": "orders",
-            "metrics": [{"metric": "sum(amount_paid)"}],
+            "metrics": [{"metric": "sum(orders.amount_paid)"}],
         },
     )
     # `amount_paid` appears via both inputs but should not duplicate.
@@ -396,7 +396,7 @@ async def storage_with_query_memories(
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="sum(amount_paid)")],
+                metrics=[QueryMetric(metric="sum(orders.amount_paid)")],
             ),
         )
     return storage_with_corpus
@@ -429,8 +429,8 @@ async def test_query_bearing_memories_go_to_example_queries(
 async def test_search_surfaces_query_bearing_memories_within_max_results(
     service_with_query_memories: SearchService,
 ) -> None:
-    """Query-bearing memories surface in the flat ``results`` list under
-    DEV-1532. With ``max_results=20`` (>= the fixture's 3 query-bearing
+    """Query-bearing memories surface in the flat ``results`` list.
+    With ``max_results=20`` (>= the fixture's 3 query-bearing
     memories), at least one such hit is returned."""
     response = await service_with_query_memories.search(
         entities=["warehouse.orders.amount_paid"],
@@ -445,7 +445,7 @@ async def test_search_respects_max_results_cap(
     service_with_query_memories: SearchService,
 ) -> None:
     """``max_results=1`` caps the flat list at exactly one hit total —
-    no independent per-bucket cap exists under DEV-1532."""
+    no independent per-bucket cap exists."""
     response = await service_with_query_memories.search(
         entities=["warehouse.orders.amount_paid"],
         max_results=1,
@@ -490,14 +490,14 @@ async def test_recency_fallback_fills_both_buckets(
 @pytest.mark.asyncio
 async def test_memory_hit_query_field_is_on_searchhit() -> None:
     """`SearchHit` carries a ``query`` field for query-bearing memories
-    (DEV-1532 unified flat-results interface)."""
+    (unified flat-results interface)."""
     assert "query" in SearchHit.model_fields
 
 
 # ---------------------------------------------------------------------------
-# DEV-1516: stale-sample auto-refresh on column hits.
+# Stale-sample auto-refresh on field hits.
 #
-# Tests originally written against the pre-DEV-1532 split-bucket
+# Tests originally written against the old split-bucket
 # ``response.entities`` / ``EntityHit`` shape; adapted to the unified
 # ``response.results`` / ``SearchHit`` shape — partition by ``kind`` at
 # the call site instead of relying on a pre-partitioned ``entities``
@@ -508,7 +508,7 @@ async def test_memory_hit_query_field_is_on_searchhit() -> None:
 @pytest_asyncio.fixture
 async def stale_setup() -> AsyncIterator[tuple[StorageBackend, SlayerQueryEngine]]:
     """SQLite-backed storage + engine with a populated ``orders`` table
-    AND a stored ``orders`` model whose ``status`` column has stale
+    AND a stored ``orders`` dataset whose ``status`` field has stale
     sample-value data (``sampled_values=None``)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
@@ -553,7 +553,7 @@ async def stale_setup() -> AsyncIterator[tuple[StorageBackend, SlayerQueryEngine
 async def test_search_service_accepts_engine_kwarg(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine],
 ) -> None:
-    """DEV-1516: SearchService now accepts an optional ``engine=`` kwarg so
+    """SearchService accepts an optional ``engine=`` kwarg so
     the search path can run the sample-refresh helper. Codex finding #1.
     Also pins that the supplied engine actually lands on the instance —
     a bare ``is not None`` check on the constructor result was tautological."""
@@ -582,8 +582,8 @@ async def test_search_service_engine_default_none_works(
 async def test_search_refreshes_stale_categorical_column_hit(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine],
 ) -> None:
-    """DEV-1516 core contract: when search returns a stale categorical
-    column hit, the helper fires, persists, and the hit's ``text``
+    """Core contract: when search returns a stale categorical
+    field hit, the helper fires, persists, and the hit's ``text``
     surfaces the freshly-profiled sample values."""
     storage, engine = stale_setup
     svc = SearchService(storage=storage, engine=engine)
@@ -593,7 +593,7 @@ async def test_search_refreshes_stale_categorical_column_hit(
         compact=False,
     )
     column_hits = [h for h in response.results if h.kind == "field"]
-    assert column_hits, "expected the status column to surface as a column hit"
+    assert column_hits, "expected the status field to surface as a field hit"
     status_hit = next(
         h for h in column_hits if h.id == "warehouse.orders.status"
     )
@@ -601,7 +601,7 @@ async def test_search_refreshes_stale_categorical_column_hit(
     # must surface "paid" and "refunded" (the only two values in the DB).
     assert "paid" in status_hit.text
     assert "refunded" in status_hit.text
-    # And persistence happened — reloading the model shows populated cache.
+    # And persistence happened — reloading the dataset shows populated cache.
     reloaded = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded is not None
     status_col = reloaded.get_field("status")
@@ -614,14 +614,14 @@ async def test_search_refreshes_stale_categorical_column_hit(
 async def test_search_refreshes_stale_column_hit_via_question_corpus(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine],
 ) -> None:
-    """Codex round-3 finding #2: refresh must also apply to column hits that
+    """Codex round-3 finding #2: refresh must also apply to field hits that
     surface via the question/corpus path (channels 2 & 3), not only the
     named-entity (channel-1) path. A wrong implementation that only refreshes
     inside the named-lookup branch would pass the entities-only test but
     miss this one.
 
     Uses a question that the tantivy corpus matches against the stored
-    ``status`` column (description ``"Order status."``). The column has
+    ``status`` field (description ``"Order status."``). The field has
     stale ``sampled_values=None`` from the fixture."""
     storage, engine = stale_setup
     svc = SearchService(storage=storage, engine=engine)
@@ -635,15 +635,15 @@ async def test_search_refreshes_stale_column_hit_via_question_corpus(
         if h.kind == "field" and h.id == "warehouse.orders.status"
     ]
     assert column_hits, (
-        "expected the status column to surface via the question/corpus path"
+        "expected the status field to surface via the question/corpus path"
     )
     text = column_hits[0].text
     # Refreshed text must include the live values.
     assert "paid" in text, (
-        "question-path column hit must also receive the post-fusion refresh"
+        "question-path field hit must also receive the post-fusion refresh"
     )
     assert "refunded" in text, (
-        "question-path column hit must also receive the post-fusion refresh"
+        "question-path field hit must also receive the post-fusion refresh"
     )
     # And the refresh persisted to storage.
     reloaded = await storage.get_dataset("orders", data_source="warehouse")
@@ -686,7 +686,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
     the original (stale) rendered text. No crash. Storage stays untouched.
 
     Codex round-3 finding #6: assert the hit text itself survives (not just
-    that storage is untouched), and finding #7: assert ``update_column_sampled``
+    that storage is untouched), and finding #7: assert ``update_field_sampled``
     is never called when profile fails."""
     storage, engine = stale_setup
     svc = SearchService(storage=storage, engine=engine)
@@ -709,20 +709,20 @@ async def test_search_stale_text_preserved_when_profile_raises(
         max_results=10,
         compact=False,
     )
-    # Search still returned a response and the column hit still exists.
+    # Search still returned a response and the field hit still exists.
     assert response is not None
     status_hits = [
         h for h in response.results if h.id == "warehouse.orders.status"
     ]
     assert status_hits, (
-        "even on profile failure, the column hit must still surface in "
+        "even on profile failure, the field hit must still surface in "
         "the search response (with stale text)"
     )
     # Hit text retains its baseline content — at minimum the canonical id +
-    # type line + description that the renderer always emits for a column.
+    # type line + description that the renderer always emits for a field.
     text = status_hits[0].text
     assert "warehouse.orders.status" in text
-    assert "Order status" in text  # column description
+    assert "Order status" in text  # field description
     # Storage stays stale.
     reloaded = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded is not None
@@ -731,7 +731,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
     assert status_col.sampled_values is None
     # And no persist call was attempted.
     assert persist_calls == [], (
-        "profile failure must NOT trigger update_column_sampled; "
+        "profile failure must NOT trigger update_field_sampled; "
         "a wrong implementation that catches the failure and writes "
         "None/empty would silently clobber the stale cache"
     )
@@ -741,7 +741,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
 async def test_search_numeric_column_hit_is_refreshed(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A genuinely-unsampled NUMERIC column hit is back-filled by the search
+    """A genuinely-unsampled NUMERIC field hit is back-filled by the search
     refresh path (min/max range), matching ``inspect``'s behavior."""
     storage, engine = stale_setup
     svc = SearchService(storage=storage, engine=engine)
@@ -762,15 +762,15 @@ async def test_search_numeric_column_hit_is_refreshed(
         entities=["warehouse.orders.amount"],
         max_results=10,
     )
-    # A min/max query IS run for the uncached numeric ``amount`` column.
-    assert numeric_queries, "numeric column must trigger a min/max query from search refresh"
+    # A min/max query IS run for the uncached numeric ``amount`` field.
+    assert numeric_queries, "numeric field must trigger a min/max query from search refresh"
     # And the min/max range is persisted for later reads.
     reloaded = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded is not None
     amount_col = reloaded.get_field("amount")
     assert amount_col is not None
     assert amount_col.sampled is not None, (
-        "numeric column must be back-filled by the search hook"
+        "numeric field must be back-filled by the search hook"
     )
     assert ".." in amount_col.sampled, "expected a min .. max range"
     assert response is not None
@@ -780,13 +780,13 @@ async def test_search_numeric_column_hit_is_refreshed(
 async def test_search_per_model_serialization_concurrent_hits(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Codex finding #2: storage.update_column_sampled does a model-level
-    read-modify-write. Two stale-column hits on the SAME model must NOT
-    run in parallel — that would race and one column's update would lose.
-    Per-model serialization is required; cross-model parallelism is fine."""
+    """Codex finding #2: storage.update_field_sampled does a dataset-level
+    read-modify-write. Two stale-field hits on the SAME dataset must NOT
+    run in parallel — that would race and one field's update would lose.
+    Per-dataset serialization is required; cross-dataset parallelism is fine."""
     storage, engine = stale_setup
-    # Add another stale categorical column to the SAME model so two
-    # hits on the same model would trigger parallel persist if not
+    # Add another stale categorical field to the SAME dataset so two
+    # hits on the same dataset would trigger parallel persist if not
     # serialized.
     model = await storage.get_dataset("orders", data_source="warehouse")
     assert model is not None
@@ -795,7 +795,7 @@ async def test_search_per_model_serialization_concurrent_hits(
     )
     await storage.save_dataset(model)
     # Add a region column to the underlying table. (Without it, the
-    # profile query will return no rows but the column will still be
+    # profile query will return no rows but the field will still be
     # in the refresh path.)
     ds = await storage.get_datasource("warehouse")
     assert ds is not None
@@ -803,8 +803,8 @@ async def test_search_per_model_serialization_concurrent_hits(
     with open_connection(ds.database) as conn:
         conn.execute("ALTER TABLE orders ADD COLUMN region TEXT DEFAULT 'EMEA'")
         conn.commit()
-    # Track the order of update_column_sampled calls per model. Capture
-    # the column name and a start/stop marker so we can detect overlap.
+    # Track the order of update_field_sampled calls per dataset. Capture
+    # the field name and a start/stop marker so we can detect overlap.
     persist_events: list = []
     original = storage.update_field_sampled
 
@@ -828,8 +828,8 @@ async def test_search_per_model_serialization_concurrent_hits(
     )
     assert response is not None
 
-    # Codex round-3 finding #3: assert BOTH columns produced persist
-    # events. Otherwise the test could pass with only one column refreshed
+    # Codex round-3 finding #3: assert BOTH fields produced persist
+    # events. Otherwise the test could pass with only one field refreshed
     # (no overlap by accident, not by design).
     started_columns = {
         col_name for ev, _mn, col_name in persist_events if ev == "start"
@@ -841,7 +841,7 @@ async def test_search_per_model_serialization_concurrent_hits(
         "expected region to be refreshed and persisted"
     )
 
-    # And BOTH columns reload with populated sampled_values — proving both
+    # And BOTH fields reload with populated sampled_values — proving both
     # writes landed (no last-write-wins overwrite).
     reloaded2 = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded2 is not None
@@ -851,21 +851,21 @@ async def test_search_per_model_serialization_concurrent_hits(
     assert region_col is not None
     assert status_col.sampled_values is not None, (
         "status refresh lost — codex finding #2 regression "
-        "(per-model serialization broken; one column's write overwrote the other)"
+        "(per-dataset serialization broken; one field's write overwrote the other)"
     )
     assert region_col.sampled_values is not None, (
         "region refresh lost — codex finding #2 regression"
     )
 
-    # Verify no two persist calls for the SAME model overlap.
+    # Verify no two persist calls for the SAME dataset overlap.
     open_for_model: dict = {}
     for event, model_name, col_name in persist_events:
         if event == "start":
             assert open_for_model.get(model_name) is None, (
                 f"persist for {model_name}.{col_name} overlaps with another "
-                f"persist on the same model "
+                f"persist on the same dataset "
                 f"(open={open_for_model[model_name]}). "
-                "Codex finding #2: per-model writes must serialize."
+                "Codex finding #2: per-dataset writes must serialize."
             )
             open_for_model[model_name] = col_name
         else:
@@ -877,12 +877,12 @@ async def test_search_cross_model_concurrency_is_allowed(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex round-3 finding #4: per the plan, refresh serializes within a
-    ``(data_source, model_name)`` group AND parallelizes across groups via
-    ``asyncio.gather``. Pin the cross-model parallelism — two stale columns
-    on DIFFERENT models must be allowed to refresh concurrently."""
+    ``(data_source, dataset_name)`` group AND parallelizes across groups via
+    ``asyncio.gather``. Pin the cross-dataset parallelism — two stale fields
+    on DIFFERENT datasets must be allowed to refresh concurrently."""
     storage, engine = stale_setup
-    # Add a second table + stored model so we have two stale categorical
-    # columns on different models.
+    # Add a second table + stored dataset so we have two stale categorical
+    # fields on different datasets.
     ds = await storage.get_datasource("warehouse")
     assert ds is not None
     assert ds.database is not None
@@ -919,7 +919,7 @@ async def test_search_cross_model_concurrency_is_allowed(
         started.add(kwargs.get("dataset_name"))
         if len(started) >= 2:
             both_started.set()
-        # Hold the write open until the other model's write starts; a sequential refresh times out and never overlaps.
+        # Hold the write open until the other dataset's write starts; a sequential refresh times out and never overlaps.
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(both_started.wait(), timeout=5)
         result = await original(**kwargs)
@@ -939,12 +939,12 @@ async def test_search_cross_model_concurrency_is_allowed(
         max_results=10,
     )
     assert response is not None
-    # Detect overlap across DIFFERENT models.
+    # Detect overlap across DIFFERENT datasets.
     open_models: dict = {}
     cross_model_overlap_seen = False
     for event, model_name, _col_name in persist_events:
         if event == "start":
-            # Any other model already open?
+            # Any other dataset already open?
             others_open = [
                 k for k, v in open_models.items() if v and k != model_name
             ]
@@ -955,8 +955,8 @@ async def test_search_cross_model_concurrency_is_allowed(
             open_models[model_name] = False
 
     assert cross_model_overlap_seen, (
-        "Cross-model refresh must run concurrently (codex round-3 #4). "
-        "Two columns on DIFFERENT models had their persist calls fully "
-        "sequenced — the plan's asyncio.gather across (data_source, model_name) "
+        "Cross-dataset refresh must run concurrently (codex round-3 #4). "
+        "Two fields on DIFFERENT datasets had their persist calls fully "
+        "sequenced — the plan's asyncio.gather across (data_source, dataset_name) "
         "groups is not being honored."
     )

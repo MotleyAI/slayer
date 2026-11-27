@@ -1,7 +1,7 @@
 """Shared fixtures for re-aggregation outer-grain attribution against the operand dataset.
 
 Graph (datasource ``test``): ``account_snapshots`` → ``customers`` many-to-one, so a query
-rooted at ``customers`` reaches every ``account_snapshots`` column (and its month bucket)
+rooted at ``customers`` reaches every ``account_snapshots`` field (and its month bucket)
 only across the fanning ``customers → account_snapshots`` hop.
 
 * Ann (1) holds accounts 10 and 11, Bob (2) account 20, Cy (3) has no snapshots, Dee (4)
@@ -46,9 +46,9 @@ SNAPSHOT_ROWS = [
 JAN, FEB = "2024-01", "2024-02"
 
 #: Inner grain with the joined month bucket.
-P = "partition_by=[account_snapshots.account_id, id, account_snapshots.snapshot_date]"
+P = "partition_by=[account_snapshots.account_id, customers.id, account_snapshots.snapshot_date]"
 #: Inner grain without it.
-Q = "partition_by=[account_snapshots.account_id, id]"
+Q = "partition_by=[account_snapshots.account_id, customers.id]"
 MAX_Q = f"max(account_snapshots.balance, {Q})"
 
 #: ``sum(<inner>(balance, P))`` by (name, month).

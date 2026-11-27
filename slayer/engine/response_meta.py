@@ -5,7 +5,8 @@ Engine-import-free, so ``query_engine`` re-exports without a cycle.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, time, timedelta
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field as PydanticField, ModelWrapValidatorHandler, model_validator
 from sqlglot.expressions.core import Expr
@@ -13,6 +14,7 @@ from sqlglot.expressions.query import Query
 from typing_extensions import deprecated
 
 from slayer.core.enums import AggregationValueClass, DataType, classify_aggregation
+from slayer.core.errors import TimeOfDayValueError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.relationship_walker import dataset_field_type, resolved_terminal
 from slayer.core.keys import (
@@ -26,6 +28,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
+from slayer.core.time_points import parse_time_of_day
 from slayer.core.vocabulary import RESPONSE_ATTRIBUTE_KEYS, attribute_used, renamed_input
 from slayer.ir.planned import PlannedQuery, ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -104,6 +107,45 @@ def _projected_slot_keys(*, root_planned: PlannedQuery) -> List[Tuple[ValueSlot,
             slot=slot, alias_index=alias_index, source_relation=root_planned.source_relation,
         )))
     return out
+
+
+def time_of_day_columns(*, root_planned: PlannedQuery) -> List[str]:
+    """The result keys whose planned type is a time of day, or a list of them."""
+    return [rk for slot, rk in _projected_slot_keys(root_planned=root_planned)
+            if slot.type is DataType.TIME or (slot.type is DataType.ARRAY and slot.element_type is DataType.TIME)]
+
+
+def time_of_day_cells(rows: List[Dict[str, Any]], *, columns: Sequence[str]) -> List[Dict[str, Any]]:
+    """``rows`` with every cell of ``columns`` read as a time of day, whatever form the driver returned it in."""
+    if not columns:
+        return rows
+    return [{**row, **{c: _time_of_day(row[c], column=c) for c in columns if c in row}} for row in rows]
+
+
+_DAY = timedelta(days=1)
+
+
+def _duration_text(value: timedelta) -> str:
+    sign, span = ("-", -value) if value < timedelta(0) else ("", value)
+    minutes, seconds = divmod(span.seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    fraction = f".{span.microseconds:06d}" if span.microseconds else ""
+    return f"{sign}{span.days * 24 + hours:02d}:{minutes:02d}:{seconds:02d}{fraction}"
+
+
+def _time_of_day(value: Any, *, column: str) -> Any:
+    if value is None or isinstance(value, time):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_time_of_day(v, column=column) for v in value]
+    if isinstance(value, timedelta):
+        if timedelta(0) <= value < _DAY:
+            return (datetime.min + value).time()
+        raise TimeOfDayValueError(column=column, value=_duration_text(value))
+    moment = parse_time_of_day(value) if isinstance(value, str) else None
+    if moment is None:
+        raise TimeOfDayValueError(column=column, value=str(value))
+    return moment
 
 
 def projection_result_keys(*, root_planned: PlannedQuery) -> List[str]:

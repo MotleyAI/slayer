@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple
 
 import sqlglot
@@ -15,6 +15,7 @@ from slayer.core.time_spine import TIME_SPINE_DATASET
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.keys import (
+    display_token,
     AggregateKey,
     FieldKey,
     FieldSqlKey,
@@ -37,9 +38,10 @@ from slayer.core.refs import (
     key_display,
     partition_by_suffix,
 )
-from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_metric_text, legacy_result_name_seed
+from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, legacy_result_name_seed, quote_blind_metric_text
 from slayer.sql._identifier_fit import fit_identifier
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, get_dialect
+from slayer.sql.dialects.base import LIST_POSITION
 from slayer.sql.naming_bijection import (  # noqa: F401
     _ALIAS_SEP,
     decode_alias,
@@ -122,10 +124,10 @@ class AliasAllocator(BaseModel):
         if cached is not None:
             return cached
         if len(path) == 1:
-            base = path[0]
+            base = display_token(path[0])
         else:
             parent = self.alias_for(root=root, path=path[:-1], limit=limit)
-            base = f"{parent}__{path[-1]}"
+            base = f"{parent}__{display_token(path[-1])}"
         used = self._join_alias_used.setdefault(root, {self._fold(root)})
         candidate = fit_identifier(name=base, limit=limit)
         suffix = 2
@@ -154,13 +156,22 @@ def result_key(*, source_relation: str, path: Tuple[str, ...] = (), leaf: str) -
             f"result_key leaf must not contain '.': {leaf!r}. Pass hops via "
             f"`path`, or use result_key_from_alias for a canonical dotted alias."
         )
+    path = tuple(display_token(t) for t in path)
     if path and path[0] == TIME_SPINE_DATASET:
         return ".".join((*path, leaf))
     return ".".join((source_relation, *path, leaf))
 
 
 def result_key_from_alias(*, source_relation: str, alias: str) -> str:
-    return f"{source_relation}.{alias}"
+    """A projected public ``alias``'s result key: the alias itself (a query entry's public name is its key, which
+    never carries the population); ``source_relation`` is unused and kept for callers' symmetry."""
+    del source_relation
+    return alias
+
+
+def internal_result_key(*, source_relation: str, name: str) -> str:
+    """The result key of a slot projected under an internal (non-public) name."""
+    return f"{source_relation}.{name}"
 
 
 def time_trunc_result_key(
@@ -196,11 +207,13 @@ def _joined_row_path(slot: "ValueSlot") -> Optional[Tuple[Tuple[str, ...], str]]
 
 
 def slot_result_key(*, slot: "ValueSlot", alias: str, source_relation: str) -> str:
-    """Result key of one projected ``alias`` of ``slot``: a user-chosen alias keys by itself,
-    any other alias of a joined ROW slot by its canonical path."""
-    joined = None if alias in slot.explicit_aliases else _joined_row_path(slot)
+    """Result key of one projected ``alias`` of ``slot``: a public alias keys by itself; an internal name of a
+    joined ROW slot by its canonical path, of any other slot under the relation."""
+    if alias in slot.public_aliases:
+        return alias
+    joined = _joined_row_path(slot)
     if joined is None:
-        return result_key_from_alias(source_relation=source_relation, alias=alias)
+        return internal_result_key(source_relation=source_relation, name=alias)
     path, leaf = joined
     if isinstance(slot.key, TimeTruncKey):
         return time_trunc_result_key(
@@ -243,16 +256,46 @@ OUTER_WRAP_ALIAS = "_outer"
 STAGE_INNER_ALIAS = "_stage_inner"
 #: A keyless association home's per-query row number (``__slayer_`` is reserved at save time: no dataset field collides).
 ROW_IDENTITY_FIELD = "__slayer_row_id"
+#: The shortest identifier ceiling of the dialects, so a materialised column's name fits every one.
+_WINDOWED_COLUMN_BYTES = 63
+
+
+def windowed_column(field: str) -> str:
+    """The column a windowed field is materialised as in its dataset's relation (reserved ``__slayer_`` prefix)."""
+    return fit_identifier(f"__slayer_w_{field}", limit=_WINDOWED_COLUMN_BYTES)
 
 
 def with_row_identity(dataset: SlayerDataset) -> SlayerDataset:
     """``dataset`` keyed by its per-query row number, which the relation door mints."""
     row_id = DatasetField.model_construct(name=ROW_IDENTITY_FIELD, datatype=DataType.INTEGER, primary_key=True)
-    return dataset.model_copy(update={"fields": [*dataset.fields, row_id]})
+    numbered = dataset.model_copy(update={"fields": [*dataset.fields, row_id]})
+    return numbered.with_constructed_keys([*dataset.constructed_keys, [ROW_IDENTITY_FIELD]])
 
 
 def is_row_identity(key: ValueKey) -> bool:
     return isinstance(key, FieldKey) and not key.path and key.leaf == ROW_IDENTITY_FIELD
+
+
+def with_list_position(child: SlayerDataset) -> SlayerDataset:
+    """List child ``child`` with each element's position in its list, which its positioned relation emits."""
+    position = DatasetField.model_construct(name=LIST_POSITION, datatype=DataType.INTEGER, primary_key=True)
+    return child.model_copy(update={"fields": [*child.fields, position]})
+
+
+def identified_datasets(
+    *, root: SlayerDataset, entity_keys: Sequence[ValueKey], datasets_by_name: Mapping[str, SlayerDataset],
+) -> Tuple[SlayerDataset, list[SlayerDataset]]:
+    """Association root ``root`` and the parent it reads, each carrying the row identity or list position
+    ``entity_keys`` read; the parent is listed only when numbered."""
+    reads = {(tuple(k.path), k.leaf) for k in entity_keys if isinstance(k, FieldKey)}
+    if root.list_of is None:
+        return (with_row_identity(root) if ((), ROW_IDENTITY_FIELD) in reads else root), []
+    parent_name, list_field = root.list_of
+    if ((), LIST_POSITION) in reads:
+        root = with_list_position(root)
+    if ((list_field,), ROW_IDENTITY_FIELD) not in reads:
+        return root, []
+    return root, [with_row_identity(datasets_by_name[parent_name])]
 
 
 # Written out, not ``\W``: Python's ``\W`` is Unicode-aware and would let non-ASCII letters into a bare ASCII identifier.
@@ -321,7 +364,7 @@ def expression_text_alias(parsed: object) -> str:
     field or star, else the sanitised legacy naming seed."""
     if (isinstance(parsed, AggCall) and not parsed.args and not parsed.kwargs and parsed.filter is None
             and isinstance(parsed.source, (Ref, DottedRef, StarSource)) and _PLAIN_NAME_RE.fullmatch(parsed.agg)):
-        base = canonical_metric_text(parsed.source)
+        base = quote_blind_metric_text(parsed.source)
         if _PLAIN_SOURCE_RE.fullmatch(base):
             if base.endswith(".*"):
                 return f"{base[:-2]}.{canonical_agg_name(metric_name='*', aggregation_name=parsed.agg)}"
@@ -392,13 +435,13 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     if key.locus == "host":
         canonical = f"{canonical}_host"
 
-    canonical = f"{canonical}{partition_by_suffix(getattr(key, 'partition_keys', None))}"
+    canonical = f"{canonical}{partition_by_suffix(key.written_grain)}"
 
     if profile in ("cte_schema", "declared_name"):
         return canonical
 
-    # A source's anchor carries its join path, so ``count(customers.*)`` keeps the hop.
-    path: Tuple[str, ...] = source_anchor_path(key.source)
+    # A source's anchor carries its relationship path, so ``count(customers.*)`` keeps the hop.
+    path: Tuple[str, ...] = tuple(display_token(t) for t in source_anchor_path(key.source))
 
     if profile == "stage_expression":
         return (".".join(path) + "." if path else "") + canonical
@@ -430,6 +473,11 @@ def key_identifier(name: str, *, quoted: bool) -> exp.Identifier:
     ident = exp.to_identifier(name, quoted=True if quoted else None)
     maybe_quote_ident(ident)
     return ident
+
+
+def relation_column(name: str, *, relation: str) -> exp.Column:
+    """Output column ``name`` of SLayer's own relation ``relation``: the column quoted, the qualifier as declared."""
+    return exp.Column(this=exp.to_identifier(name, quoted=True), table=exp.to_identifier(relation))
 
 
 def quote_mixed_case_identifiers(node: Expression) -> Expression:

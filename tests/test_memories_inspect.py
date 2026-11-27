@@ -1,4 +1,4 @@
-"""Model ``inspect`` Learnings section + ``query`` docstring tests.
+"""Dataset ``inspect`` Learnings section + ``query`` docstring tests.
 
 The Learnings section surfaces only memories where ``query is None`` and is
 pruned when none match; the ``query`` docstring points agents at ``search``.
@@ -88,10 +88,10 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="orders",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                    name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
             metrics=[
                 DatasetMetric(expression="sum(amount) / count(*)", name="aov"),
@@ -105,9 +105,9 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="customers",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                    name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
             ],
         )
     )
@@ -121,14 +121,14 @@ async def _call(
     name: str,
     arguments: dict[str, Any] | None = None,
 ) -> str:
-    content_blocks, _ = await mcp_server.call_tool(
+    content_blocks = (await mcp_server.call_tool(
         name=name, arguments=arguments or {}
-    )
+    )).content
     return content_blocks[0].text
 
 
 # ---------------------------------------------------------------------------
-# Model inspect — Learnings section (only memories where query is None)
+# Dataset inspect — Learnings section (only memories where query is None)
 # ---------------------------------------------------------------------------
 
 
@@ -151,13 +151,13 @@ class TestInspectModelLearningsSection:
     async def test_section_pruned_when_only_query_bearing_memories_match(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        # A memory with a query attached must NOT surface in the model inspect.
+        # A memory with a query attached must NOT surface in the dataset inspect.
         await seeded.save_memory(
             learning="example query",
             entities=["mydb.orders.amount"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="sum(amount)")],
+                metrics=[QueryMetric(metric="sum(orders.amount)")],
             ),
         )
         result = await _call(

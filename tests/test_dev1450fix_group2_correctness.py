@@ -1,11 +1,11 @@
-"""DEV-1450 review fixes (group 2) — correctness bugs from CodeRabbit.
+"""Review fixes (group 2) — correctness bugs from CodeRabbit.
 
 * [0] ``OVER(`` inside a string literal isn't treated as a window clause.
 * [1] ``**kwargs`` dictionary unpacking in a Mode-B call is rejected, not
   silently dropped.
-* [8] a cyclic dotted star (``a.b.a.*``) is rejected like the dotted-column
+* [8] a cyclic dotted star (``a.b.a.*``) is rejected like the dotted-field
   form.
-* [12] ``_measure_formula_refs`` rewrites model-custom function-style aggs
+* [12] ``_metric_expression_refs`` rewrites dataset-custom function-style aggs
   when ``custom_agg_names`` is supplied (drift cascade completeness).
 * [14] an ORDER ref without a raw_formula binds its FULL dotted name, not
   just the leaf.
@@ -20,7 +20,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import AggregationNotAllowedError, IllegalWindowInFilterError
+from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.keys import AggregateKey, StarKey, TransformKey
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import OrderItem, SlayerQuery
@@ -30,7 +30,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import _metric_expression_refs
 from slayer.storage.sqlite_conn import transaction
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.core.syntax import parse_expr, parse_expr as _parse
+from slayer.core.syntax import WindowCall, parse_expr, parse_expr as _parse
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -81,9 +81,9 @@ def test_is_null_filter_parses_and_renders():
 def test_partition_by_multi_column_parses_and_binds():
     """Codex review: ``partition_by=[region, channel]`` is parsed into
     a tuple by ``_convert_kwarg_value``, but the binder's
-    ``partition_by`` branch only handled a single column ref. Pin that
-    a multi-column form binds to a multi-element ``partition_keys``."""
-    # Build a model scope and bundle that has the needed columns.
+    ``partition_by`` branch only handled a single field ref. Pin that
+    a multi-field form binds to a multi-element ``partition_keys``."""
+    # Build a dataset scope and bundle that has the needed fields.
     orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
         fields=[
@@ -110,7 +110,7 @@ def test_partition_by_multi_column_parses_and_binds():
 
 
 def test_aggregation_eligibility_primary_key_rejected():
-    """A sole primary-key column is restricted to the count family and
+    """A sole primary-key field is restricted to the count family and
     ``min`` / ``max``; ``sum(id)`` raises ``AggregationNotAllowedError``."""
     orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
@@ -130,7 +130,7 @@ def test_aggregation_eligibility_primary_key_rejected():
 
 
 def test_aggregation_eligibility_type_default_rejected():
-    """A TEXT column rejects numeric aggregations (``avg`` / ``sum``)
+    """A TEXT field rejects numeric aggregations (``avg`` / ``sum``)
     per the type-default whitelist."""
     orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
@@ -157,13 +157,13 @@ async def test_is_null_filter_renders_end_to_end(engine):
     filters like ``deleted_at IS NULL`` parsed/bound but failed at SQL
     generation with ``NotImplementedError``. Pin the end-to-end path."""
     # ``region`` is TEXT on the customers seed, so ``region IS NULL``
-    # makes sense as a predicate. Use ``orders`` as the host model with
-    # an Mode-B filter through the join.
+    # makes sense as a predicate. Use ``orders`` as the host dataset with
+    # a Mode-B filter through the relationship.
     resp = await engine.execute(
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "filter": ["customers.region IS NOT NULL"],
         })
     )
@@ -199,16 +199,15 @@ def test_aggregation_eligibility_allowed_aggregations_whitelist():
     )
     bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
     scope = DatasetScope(population=orders)
-    bind_expr(parsed=parse_expr("sum(amount)"), scope=scope, bundle=bundle)
+    bind_expr(parsed=parse_expr("sum(orders.amount)"), scope=scope, bundle=bundle)
     bind_expr(parsed=parse_expr("max(amount)"), scope=scope, bundle=bundle)
     parsed = parse_expr("avg(amount)")
     with pytest.raises(AggregationNotAllowedError, match="allowed_aggregations"):
         bind_expr(parsed=parsed, scope=scope, bundle=bundle)
 
 
-def test_real_over_clause_still_rejected():
-    with pytest.raises(IllegalWindowInFilterError):
-        parse_expr("rank() OVER (ORDER BY x)")
+def test_real_over_clause_parses_as_a_window():
+    assert isinstance(parse_expr("rank() OVER (ORDER BY x)"), WindowCall)
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +235,8 @@ def _cyclic_bundle():
         name="b", data_source="prod", sql_table="b",
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
-    # ``a`` is also referenced so the walk back to it (over the inverted edge,
-    # DEV-1853) resolves and the cycle guard — not a missing-target error — fires.
+    # ``a`` is also referenced so the walk back to it (over the inverted edge)
+    # resolves and the cycle guard — not a missing-target error — fires.
     return ResolvedSourceBundle(dialect="postgres", population=a, referenced_datasets=[b, a])
 
 
@@ -253,19 +252,19 @@ def test_noncyclic_dotted_star_ok():
     bundle = _cyclic_bundle()
     scope = DatasetScope(population=bundle.population)
     bound = bind_expr(parse_expr("count(b.*)"), scope=scope, bundle=bundle)
-    # *:count over the joined model -> AggregateKey on a StarKey(path=("b",)).
+    # *:count over the joined dataset -> AggregateKey on a StarKey(path=("b",)).
     assert isinstance(bound.value_key, AggregateKey)
     assert isinstance(bound.value_key.source, StarKey)
     assert bound.value_key.source.path == ("b",)
 
 
 # ---------------------------------------------------------------------------
-# [12] _measure_formula_refs rewrites custom function-style aggs
+# [12] _metric_expression_refs rewrites custom function-style aggs
 # ---------------------------------------------------------------------------
 
 
 def test_measure_formula_refs_custom_agg():
-    # DEV-1826: an unknown functional name defers as an AggCall candidate, so
+    # An unknown functional name defers as an AggCall candidate, so
     # a custom aggregation's source ref surfaces with NO registry threading.
     refs = _metric_expression_refs("my_custom_agg(amount)")
     assert "amount" in refs
@@ -323,16 +322,16 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 async def test_order_by_joined_column_not_in_dimensions(engine):
-    """Ordering by a joined column (customers.region) that is NOT a declared
+    """Ordering by a joined field (customers.region) that is NOT a declared
     dimension binds the full dotted ref — leaf-only binding would fail to
     resolve ``region`` on ``orders``."""
     resp = await engine.execute(
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
             "order": [OrderItem(field="customers.region", direction="asc")],
         })
     )
-    regions = [r["orders.customers.region"] for r in resp.data]
+    regions = [r["customers.region"] for r in resp.data]
     assert regions == ["EU", "NA"]

@@ -39,7 +39,7 @@ setup_cube = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(setup_cube)
 
 DS = setup_cube.DATASOURCE_NAME
-EXPECTED_MODELS = {"orders", "customers", "order_facts", "orders_overview"}
+EXPECTED_DATASETS = {"orders", "customers", "order_facts", "orders_overview"}
 _BOTH = ["Beverages", "Bakery"]
 
 
@@ -59,7 +59,7 @@ async def _prepare(tmp_path):
     setup_cube.build_shop_duckdb(db_path)
     gold = setup_cube.compute_gold(db_path)  # read-only, before SLayer opens RW
 
-    result = setup_cube.import_cube_lib(models_dir=store)
+    result = setup_cube.import_cube_lib(datasets_dir=store)
     assert not result.report.has_errors, [
         i.message for i in result.report.issues if i.severity == "error"
     ]
@@ -97,7 +97,7 @@ async def _count(engine, **variables):
     """Count order_facts rows with the given FILTER_PARAMS variables."""
     q = SlayerQuery.model_validate({
         "population": "order_facts",
-        "metrics": [{"metric": "count"}],
+        "metrics": [{"metric": "order_facts.count"}],
         "variables": variables,
     })
     return _sole(await engine.execute(q))
@@ -128,9 +128,9 @@ def test_gold_values_are_exact(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_library_import_persists_all_models(tmp_path):
     store = tmp_path / "slayer_models"
-    result: CubeConversionResult = setup_cube.import_cube_lib(models_dir=store)
+    result: CubeConversionResult = setup_cube.import_cube_lib(datasets_dir=store)
     assert not result.report.has_errors
-    assert {m.name for m in result.datasets} == EXPECTED_MODELS
+    assert {m.name for m in result.datasets} == EXPECTED_DATASETS
     fp_members = {
         i.member
         for i in result.report.issues
@@ -142,7 +142,7 @@ def test_library_import_persists_all_models(tmp_path):
 def test_cli_import_writes_report_and_models(tmp_path):
     store = tmp_path / "slayer_models"
     report = tmp_path / "cube_import_report.json"
-    proc = setup_cube.import_cube_cli(models_dir=store, report_path=report)
+    proc = setup_cube.import_cube_cli(datasets_dir=store, report_path=report)
     assert proc.returncode == 0, proc.stderr
 
     data = json.loads(report.read_text())
@@ -150,7 +150,7 @@ def test_cli_import_writes_report_and_models(tmp_path):
     assert not errors, errors
 
     storage = YAMLStorage(base_dir=str(store))
-    for name in EXPECTED_MODELS:
+    for name in EXPECTED_DATASETS:
         model = run_sync(storage.get_dataset(name, data_source=DS))
         assert model is not None
         assert model.name == name
@@ -256,7 +256,7 @@ async def test_required_omitted_raises_naming_category(tmp_path):
     engine, _, _, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "order_facts",
-        "metrics": [{"metric": "count"}],
+        "metrics": [{"metric": "order_facts.count"}],
         "variables": {"region": ["North"]},  # category (required) omitted
     })
     with pytest.raises(ValueError, match=r"Undefined variable 'category'"):
@@ -267,7 +267,7 @@ async def test_empty_list_raises_not_treated_as_omission(tmp_path):
     engine, _, _, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "order_facts",
-        "metrics": [{"metric": "count"}],
+        "metrics": [{"metric": "order_facts.count"}],
         "variables": {"category": _BOTH, "region": []},
     })
     with pytest.raises(ValueError, match=r"cannot be an empty list"):
@@ -281,8 +281,8 @@ async def test_view_total_by_region(tmp_path):
     engine, _, gold, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "orders_overview",
-        "metrics": ["total_amount"],
-        "dimensions": ["region"],
+        "metrics": ["orders_overview.total_amount"],
+        "dimensions": ["orders_overview.region"],
     })
     got = _by_group(await engine.execute(q))
     assert got == {g["region"]: g["amount"] for g in gold["by_region"]}
@@ -292,7 +292,7 @@ async def test_join_total_by_customer_region(tmp_path):
     engine, _, gold, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": ["total_amount"],
+        "metrics": ["orders.total_amount"],
         "dimensions": ["customers.region"],
     })
     got = _by_group(await engine.execute(q))

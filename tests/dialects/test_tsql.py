@@ -6,8 +6,10 @@ import re
 import tempfile
 from unittest.mock import patch
 
+import duckdb
 import sqlglot
 from sqlglot import exp
+from sqlglot.expressions.core import Expression
 
 import pytest
 
@@ -16,8 +18,10 @@ from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.engine_factory import client_cache_key
-from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name
+from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name, cast_target
+from slayer.sql.dialects.postgres import PostgresDialect
 from slayer.sql.dialects.tsql import TsqlDialect
+from slayer.sql.render.parse import parse_expression
 from slayer.database.client import DelegatingSqlClient, ExecutionResult, SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -58,8 +62,8 @@ def test_tsql_ds_type_aliases() -> None:
 
 def test_tsql_build_date_trunc_month() -> None:
     d = TsqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="tsql")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH)
+    col = exp.column("created_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME)
     sql = out.sql(dialect="tsql").lower()
     assert "datetrunc" in sql
     assert "month" in sql
@@ -68,8 +72,8 @@ def test_tsql_build_date_trunc_month() -> None:
 def test_tsql_build_date_trunc_week_uses_iso_week() -> None:
     """Week must use ISO_WEEK (Monday-start) to be @@DATEFIRST-independent."""
     d = TsqlDialect()
-    col = sqlglot.parse_one("created_at", dialect="tsql")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK)
+    col = exp.column("created_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK, operand=DataType.DATETIME)
     sql = out.sql(dialect="tsql").lower()
     assert "datetrunc" in sql
     assert "iso_week" in sql
@@ -78,8 +82,8 @@ def test_tsql_build_date_trunc_week_uses_iso_week() -> None:
 def test_tsql_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY composes DATEADD day offsets around the iso_week DATETRUNC."""
     d = TsqlDialect()
-    col = sqlglot.parse_one("ordered_at", dialect="tsql")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    col = exp.column("ordered_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.DATETIME)
     sql = out.sql(dialect="tsql").lower()
     assert "datetrunc" in sql
     assert "iso_week" in sql          # inner Monday-week truncation
@@ -90,8 +94,8 @@ def test_tsql_build_date_trunc_week_sunday_shift() -> None:
 def test_tsql_build_date_trunc_casts_non_column_to_timestamp() -> None:
     """``DATETRUNC`` needs a temporal type, so non-column operands are CAST."""
     d = TsqlDialect()
-    lit = sqlglot.parse_one("'2025-01-01'", dialect="tsql")
-    out = d.build_date_trunc(lit, TimeGranularity.MONTH)
+    lit = exp.Literal.string("2025-01-01")
+    out = d.build_date_trunc(col_expr=lit, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME)
     assert "CAST" in out.sql(dialect="tsql").upper()
 
 
@@ -120,22 +124,21 @@ def test_tsql_build_date_add_quarter_and_week_sunday_are_native_units() -> None:
     assert _date_add(-1, "week_sunday") == "DATEADD(WEEK, -1, CREATED_AT)"
 
 
-# Median / percentile — not supported on T-SQL
+# Median / percentile: the ordered-set aggregate, split into a window subquery at render
 
 
-def test_tsql_build_median_raises_not_implemented() -> None:
+def test_tsql_build_median_is_percentile_cont_at_half() -> None:
+    median = TsqlDialect().build_median(exp.column("amount"))
+    assert isinstance(median, exp.WithinGroup)
+    assert median.this.this.name == "0.5"
+
+
+def test_tsql_render_reads_percentile_cont_only_as_a_window() -> None:
     d = TsqlDialect()
-    inner = sqlglot.parse_one("amount", dialect="tsql")
-    with pytest.raises(NotImplementedError, match="median.*T-SQL"):
-        d.build_median(inner)
-
-
-def test_tsql_build_percentile_raises_not_implemented() -> None:
-    d = TsqlDialect()
-    p = exp.Literal.number("0.5")
-    col_expr = exp.column("amount")
-    with pytest.raises(NotImplementedError, match="percentile.*T-SQL"):
-        d.build_percentile(p=p, col_expr=col_expr)
+    select = exp.select(d.build_percentile(p=exp.Literal.number("0.9"), col_expr=exp.column("amount"))).from_("t")
+    within = list(d.rewrite_statement(select).find_all(exp.WithinGroup))
+    assert within
+    assert all(isinstance(w.parent, exp.Window) for w in within)
 
 
 # Stat aggs — T-SQL canonical names via exp.Anonymous
@@ -185,7 +188,7 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs
 # sit on the statement and pagination is TOP / OFFSET … FETCH.
 
-_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "orders.created_at", "direction": "desc"}]
 _FETCH = r"FETCH\s+(?:FIRST|NEXT)"
 
 
@@ -200,8 +203,8 @@ async def _tsql(query) -> str:
 
 def _plain_hidden_order(**kw) -> SlayerQuery:
     """A no-transform query whose hidden ORDER BY slot forces the outer trim wrap."""
-    return q(dimensions=["status"], metrics=["sum(amount)"],
-             order=[{"field": "max(amount)", "direction": "desc"}], **kw)
+    return q(dimensions=["orders.status"], metrics=["sum(orders.amount)"],
+             order=[{"field": "max(orders.amount)", "direction": "desc"}], **kw)
 
 
 async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
@@ -211,7 +214,7 @@ async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
     assert cte_names(top)[:2] == ["base", "step1"], sql
     assert from_name(outer_derived(top)) == cte_names(top)[-1], sql
     assert [e.sql(dialect="tsql") for e in top.expressions] == [
-        "[orders___created_at]", "[orders___running]",
+        "[orders___created_at]", "[running]",
     ]
 
 
@@ -224,7 +227,7 @@ async def test_tsql_outer_wrap_without_ctes_has_no_top_level_with() -> None:
 
 async def test_tsql_outer_wrap_uses_brackets_for_aliases() -> None:
     sql = await _tsql(cumsum_chain(order=_DESC_CREATED))
-    assert "[orders___running]" in sql
+    assert "[running]" in sql
     assert '"orders.' not in sql
     assert "`orders" not in sql
 
@@ -254,7 +257,7 @@ async def test_tsql_chain_with_order_and_offset() -> None:
 
 async def test_tsql_hidden_alias_in_order_by() -> None:
     """ORDER BY may name a carried alias that is not in the public projection."""
-    sql = await _tsql(cumsum_chain(order=[{"field": "max(amount)", "direction": "desc"}]))
+    sql = await _tsql(cumsum_chain(order=[{"field": "max(orders.amount)", "direction": "desc"}]))
     top = parse(sql, "tsql")
     assert [c.name for c in top.args["order"].find_all(exp.Column)] == ["orders___amount_max"]
     assert "orders___amount_max" in outer_derived(top).named_selects
@@ -263,8 +266,8 @@ async def test_tsql_hidden_alias_in_order_by() -> None:
 
 async def test_tsql_hoisted_ctes_keep_dependency_order() -> None:
     sql = await _tsql(cumsum_chain(metrics=[
-        {"metric": "cumsum(sum(amount))", "alias": "running"},
-        {"metric": "change(cumsum(sum(amount)))", "alias": "d"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "running"},
+        {"metric": "change(cumsum(sum(orders.amount)))", "alias": "d"},
     ]))
     names = cte_names(assert_single_top_level_with(sql, "tsql"))
     assert names[0] == "base", names
@@ -409,8 +412,8 @@ async def _build_tsql_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, tempf
         sql_table="orders_t",
         data_source="mssql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(model)
@@ -424,15 +427,15 @@ class TestEngineTsqlDecodeIntegration:
 
     async def test_non_empty_rows_decoded_in_response(self) -> None:
         # ``orders.status`` encodes to ``orders___status``.
-        # ``count(*)`` measure alias ``orders._count`` encodes to
+        # ``count(*)`` metric alias ``orders._count`` encodes to
         # ``orders____count`` (3 underscores from the dot + 1 leading).
         rows = [{"orders____count": 42, "orders___status": "paid"}]
         engine, tmp, _ = await _build_tsql_engine(rows)
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": [QueryDimension(field="status")],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": [QueryDimension(field="orders.status")],
             })
             resp = await engine.execute(query)
             assert resp.data == [{"orders._count": 42, "orders.status": "paid"}]
@@ -444,8 +447,8 @@ class TestEngineTsqlDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": [QueryDimension(field="status")],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": [QueryDimension(field="orders.status")],
             })
             resp = await engine.execute(query)
             assert resp.data == []
@@ -472,8 +475,8 @@ async def _build_labeled_tsql_engine(
         sql_table="orders_t",
         data_source="mssql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING, label="Order Status"),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING, label="Order Status"),
         ],
     )
     await storage.save_dataset(model)
@@ -486,7 +489,7 @@ async def test_tsql_attributes_survive_alias_mangling() -> None:
     """Mangled expected_columns are decoded so dimension labels survive."""
     engine, tmp, _ = await _build_labeled_tsql_engine([{"orders___status": "paid"}])
     try:
-        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])
+        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.status")])
         resp = await engine.execute(query)
         assert "orders.status" in resp.attributes.dimensions, (
             f"T-SQL attributes lost the dimension after mangling: "
@@ -502,7 +505,7 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
     explain_rows = [{"plan": "..."}]
     engine, tmp, _ = await _build_labeled_tsql_engine(explain_rows)
     try:
-        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])
+        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.status")])
         with patch.object(
             TsqlDialect, "decode_result_keys", autospec=True,
             side_effect=lambda self, rows, **kw: rows,
@@ -536,10 +539,10 @@ def _orders_dataset_tsql() -> SlayerDataset:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -549,15 +552,15 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     q = SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-03-01", "2024-03-31"],
         )],
         metrics=[
-            QueryMetric(metric="sum(total)"),
-            QueryMetric(metric="change_pct(sum(total))", alias="pct"),
+            QueryMetric(metric="sum(orders.total)"),
+            QueryMetric(metric="change_pct(sum(orders.total))", alias="pct"),
         ],
-        order=[OrderItem(field="created_at", direction="asc")],
+        order=[OrderItem(field="orders.created_at", direction="asc")],
     )
     sql = await _tsql_generate(q, _orders_dataset_tsql())
     # No ANSI-quoted identifiers — they'd bypass Bug 2 mangling and the
@@ -575,14 +578,14 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     # pipeline names the shifted CTE ``shifted__time_shift_inner``; the
     # legacy stack spelled it ``shifted__ts_pct``. Same CTE, same assertion.)
     lookup = "DATEADD(MONTH, -1, base.[orders___created_at])"
-    assert f"{lookup} = shifted__time_shift_inner.[orders___created_at]" in sql, (
+    assert f"{lookup} = shifted__time_shift_inner.[created_at]" in sql, (
         f"Self-join ON clause must use mangled bracketed identifiers:\n{sql}"
     )
     assert f"{lookup} IS NULL" in sql, sql
     # Outer ORDER BY references the mangled alias.
     assert "[orders___created_at]" in sql
     # Computed expression's column references in step2 use mangled brackets.
-    assert "[orders____time_shift_inner]" in sql, (
+    assert "[_time_shift_inner]" in sql, (
         f"Inner computed expression's column refs must be mangled-bracket "
         f"form:\n{sql}"
     )
@@ -592,8 +595,8 @@ async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() 
     """ORDER BY references the SELECT alias at top level, not inside a CASE."""
     q = SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="id"), QueryDimension(field="created_at")],
-        order=[OrderItem(field="id", direction="asc")],
+        dimensions=[QueryDimension(field="orders.id"), QueryDimension(field="orders.created_at")],
+        order=[OrderItem(field="orders.id", direction="asc")],
     )
     sql = await _tsql_generate(q, _orders_dataset_tsql())
     assert "CASE WHEN" not in sql.upper() or "ORDER BY\n  CASE WHEN" not in sql, (
@@ -605,3 +608,75 @@ async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() 
         f"T-SQL ORDER BY must reference the SELECT alias as a top-level "
         f"expression:\n{sql}"
     )
+
+
+# A GROUP BY key reading no column (SQL Server error 164)
+
+_ORDERS = "(VALUES (1, 'a'), (2, 'b'), (3, 'a')) AS orders(id, status)"
+
+
+def _parsed(sql: str) -> Expression:
+    tree = sqlglot.parse_one(sql, dialect="duckdb")
+    assert isinstance(tree, Expression)
+    return tree
+
+
+def _rewritten(sql: str) -> Expression:
+    return TsqlDialect().rewrite_statement(_parsed(sql))
+
+
+@pytest.mark.parametrize("where", ["orders.id = 3", "orders.id = 99"], ids=["rows", "no rows"])
+@pytest.mark.parametrize("select", ["LOWER('AbC') AS v", "LOWER('AbC') AS v, COUNT(*) AS n"],
+                         ids=["dimension only", "with a metric"])
+def test_tsql_constant_group_keys_become_a_nonempty_having(where: str, select: str) -> None:
+    """One row where a row passes the filter, none where none does: what ``GROUP BY <constant>`` returns."""
+    query = f"SELECT {select} FROM {_ORDERS} WHERE {where} GROUP BY LOWER('AbC')"
+    rewritten = _rewritten(query)
+    assert rewritten.args.get("group") is None
+    assert rewritten.args["having"].this.sql() == "COUNT(*) > 0"
+    assert duckdb.sql(rewritten.sql(dialect="duckdb")).fetchall() == duckdb.sql(query).fetchall()
+
+
+def test_tsql_drops_a_constant_key_beside_a_column_key() -> None:
+    rewritten = _rewritten(f"SELECT orders.status, 'x' AS v FROM {_ORDERS} GROUP BY orders.status, 'x'")
+    assert [k.sql() for k in rewritten.args["group"].expressions] == ["orders.status"]
+    assert rewritten.args.get("having") is None
+
+
+def test_tsql_nonempty_condition_joins_an_existing_having() -> None:
+    rewritten = _rewritten(f"SELECT 'x' AS v FROM {_ORDERS} GROUP BY 'x' HAVING SUM(orders.id) > 1")
+    assert rewritten.args["having"].this.sql() == "SUM(orders.id) > 1 AND COUNT(*) > 0"
+
+
+@pytest.mark.parametrize(("literal", "bit"), [("TRUE", "1"), ("FALSE", "0")])
+def test_tsql_boolean_literal_in_a_value_position_is_a_bit(literal: str, bit: str) -> None:
+    rewritten = TsqlDialect().rewrite_statement(_parsed(f"SELECT CAST({literal} AS BIT) AS v"))
+    assert rewritten.sql(dialect="tsql") == f"SELECT CAST({bit} AS BIT) AS v"
+
+
+@pytest.mark.parametrize(("author", "tsql"), [
+    ("TIMESTAMP", "DATETIME2"), ("TIMESTAMP(3)", "DATETIME2(3)"), ("TIMESTAMP WITH TIME ZONE", "DATETIMEOFFSET"),
+])
+def test_tsql_timestamp_cast_is_a_time_never_a_rowversion(author: str, tsql: str) -> None:
+    assert cast_target(author, dialect=TsqlDialect()).sql(dialect="tsql") == tsql
+
+
+@pytest.mark.parametrize("key", ["NEWID()", "RAND()"])
+def test_tsql_keeps_a_volatile_group_key(key: str) -> None:
+    """Column-free but per-row: it still splits groups."""
+    rewritten = _rewritten(f"SELECT COUNT(*) AS n FROM {_ORDERS} GROUP BY {key}")
+    assert rewritten.args["group"] is not None
+
+
+def test_a_nested_substring_inside_length_keeps_its_length() -> None:
+    tree = parse_expression(sql="LENGTH(SUBSTRING(x, 2))", target_dialect=TsqlDialect(), parse_dialect=PostgresDialect())
+    (inner,) = tree.find_all(exp.Substring)
+    assert inner.args.get("length") is not None
+
+
+def test_a_nested_round_inside_power_gets_its_digits() -> None:
+    parsed = sqlglot.parse_one("POWER(ROUND(x), 2)")
+    assert isinstance(parsed, Expression)
+    tree = TsqlDialect().rewrite_library_ast(parsed)
+    (inner,) = tree.find_all(exp.Round)
+    assert inner.args.get("decimals") is not None

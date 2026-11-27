@@ -14,8 +14,12 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
+import pytest
+from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
 
+from slayer.api.server import create_app
+from slayer.client.slayer_client import SlayerClient
 from slayer.core.deprecation import DeprecatedInputFutureWarning
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
@@ -26,8 +30,8 @@ from tests._engine_helpers import build_exec_engine
 
 SAVED = "by_status"
 CM = {"metric": "sum(customers.spend)", "alias": "cm"}
-CLEAN = {"population": "orders", "metrics": ["count(*)"]}
-CROSS = {"population": "orders", "dimensions": ["status"], "metrics": [CM]}
+CLEAN = {"population": "orders", "metrics": ["count(orders.*)"]}
+CROSS = {"population": "orders", "dimensions": ["orders.status"], "metrics": [CM]}
 
 
 @contextmanager
@@ -80,13 +84,13 @@ def mcp_payload(text: str) -> dict[str, Any]:
 
 def saved_stage() -> SlayerQuery:
     return SlayerQuery.model_validate(
-        {"population": "orders", "dimensions": ["status"], "metrics": [{"metric": "count(*)", "alias": "n"}]},
+        {"population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "count(orders.*)", "alias": "n"}]},
     )
 
 
 @asynccontextmanager
 async def orders_engine() -> AsyncGenerator[SlayerQueryEngine]:
-    """The dev1840 engine plus a saved query-backed model ``by_status``."""
+    """The dev1840 engine plus a saved query-backed dataset ``by_status``."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "data.sqlite")
         _seed_sqlite(db_path)
@@ -105,3 +109,21 @@ def rows(data: list[dict[str, Any]]) -> list[tuple]:
 
 def dumped(payload: BaseModel) -> dict[str, Any]:
     return payload.model_dump(mode="json")
+
+
+def http_client(engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> SlayerClient:
+    """A remote ``SlayerClient`` whose sync and async transports post to an in-process app."""
+    server = TestClient(create_app(storage=engine.storage))
+
+    def via_app(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:
+        resp = server.request(method, path, json=json, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def via_app_async(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:  # NOSONAR(S7503) — matches the awaited transport
+        return via_app(method=method, path=path, json=json, params=params)
+
+    client = SlayerClient(url="http://testserver")
+    monkeypatch.setattr(client, "_request_sync", via_app)
+    monkeypatch.setattr(client, "_request", via_app_async)
+    return client

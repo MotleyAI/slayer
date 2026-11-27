@@ -12,10 +12,9 @@ from typing import Any
 import pytest
 import yaml
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from slayer.api.server import create_app
-from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import SlayerError
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -30,17 +29,19 @@ from tests._deprecated_input_helpers import (
     deprecated_in,
     deprecations,
     dumped,
+    http_client,
     mcp_payload,
     orders_engine,
     payload_of,
     recorded,
     strict,
 )
+from tests._mcp_results import text_blocks
 
-STAGE_A = {"name": "a", "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "count(*)", "alias": "n"}]}
-STAGE_B = {"name": "b", "population": "a", "metrics": [{"metric": "sum(n)", "alias": "total"}]}
-ROOT_ON_A = {"population": "a", "metrics": [{"metric": "sum(n)", "alias": "grand"}]}
-ROOT_ON_B = {"population": "b", "metrics": [{"metric": "sum(total)", "alias": "grand"}]}
+STAGE_A = {"name": "a", "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
+STAGE_B = {"name": "b", "population": "a", "metrics": [{"metric": "sum(a.n)", "alias": "total"}]}
+ROOT_ON_A = {"population": "a", "metrics": [{"metric": "sum(a.n)", "alias": "grand"}]}
+ROOT_ON_B = {"population": "b", "metrics": [{"metric": "sum(b.total)", "alias": "grand"}]}
 
 #: (stages, deprecated_input warnings the run reports)
 STAGED = {
@@ -100,7 +101,7 @@ class TestEngine:
         assert deprecated_in(response.warnings) == [payload]
 
     async def test_runtime_variables_keep_the_report(self, engine: SlayerQueryEngine) -> None:
-        query, payload = _built(strict({**CLEAN, "filter": ["status = '{s}'"]}))
+        query, payload = _built(strict({**CLEAN, "filter": ["orders.status = '{s}'"]}))
         response = await engine.execute(query, variables={"s": "ok"})
         assert deprecated_in(response.warnings) == [payload]
 
@@ -152,7 +153,7 @@ class TestRefinement:
             return await server.call_tool(name="query", arguments={"query": SAVED, "refine": refine, "format": "json"})
 
         with recorded():
-            blocks, _ = await call({"strict": True})
+            blocks = (await call({"strict": True})).content
             assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == 1
             with pytest.raises(ToolError) as failed:
                 await call({"strict": True, "measures": [CM]})
@@ -173,14 +174,14 @@ def _store_strict_stage(engine: SlayerQueryEngine) -> None:
 
 
 class TestStoredStages:
-    """A stored stage converted on load reports on every run that reads its model."""
+    """A stored stage converted on load reports on every run that reads its dataset."""
 
     @pytest.fixture
     def stored(self, engine: SlayerQueryEngine) -> SlayerQueryEngine:
         _store_strict_stage(engine)
         return engine
 
-    @pytest.mark.parametrize("query", [SAVED, {"population": SAVED, "metrics": ["sum(n)"]}], ids=["by_name", "as_source"])
+    @pytest.mark.parametrize("query", [SAVED, {"population": SAVED, "metrics": ["sum(by_status.n)"]}], ids=["by_name", "as_source"])
     async def test_every_run_reports(self, stored: SlayerQueryEngine, query: Any) -> None:
         for _ in range(2):
             with recorded():
@@ -200,7 +201,7 @@ class TestStoredStages:
         assert len(deprecated_in(resp.json()["warnings"])) == 1
 
     def test_http_client_run_by_name(self, stored: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> None:
-        client = _http_client(stored, monkeypatch)
+        client = http_client(stored, monkeypatch)
         with recorded():
             response = client.query_sync(SAVED)
         assert len(deprecated_in(response.warnings)) == 1
@@ -221,26 +222,8 @@ class TestSurfaces:
         stages, expected = STAGED[case]
         server = create_mcp_server(storage=engine.storage)
         with recorded():
-            blocks, _ = await server.call_tool(name="query", arguments={"query": stages, "format": "json"})
+            blocks = text_blocks(await server.call_tool(name="query", arguments={"query": stages, "format": "json"}))
         assert len(deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))) == expected
-
-
-def _http_client(engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> SlayerClient:
-    """A remote ``SlayerClient`` whose sync and async transports post to an in-process app."""
-    server = TestClient(create_app(storage=engine.storage))
-
-    def via_app(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:
-        resp = server.request(method, path, json=json, params=params)
-        resp.raise_for_status()
-        return resp.json()
-
-    async def via_app_async(*, method: str, path: str, json: dict | None = None, params: dict | None = None) -> Any:  # NOSONAR(S7503) — matches the awaited transport
-        return via_app(method=method, path=path, json=json, params=params)
-
-    client = SlayerClient(url="http://testserver")
-    monkeypatch.setattr(client, "_request_sync", via_app)
-    monkeypatch.setattr(client, "_request", via_app_async)
-    return client
 
 
 class TestHttpClient:
@@ -248,7 +231,7 @@ class TestHttpClient:
 
     @pytest.fixture(params=["sync", "async"])
     def run(self, request, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch):
-        client = _http_client(engine, monkeypatch)
+        client = http_client(engine, monkeypatch)
 
         async def _run(query: Any, **kwargs: Any) -> Any:
             if request.param == "sync":

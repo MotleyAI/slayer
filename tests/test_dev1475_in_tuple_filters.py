@@ -1,19 +1,19 @@
-"""DEV-1475 — Mode-B ``IN`` / ``NOT IN`` filters with literal-tuple RHS.
+"""Mode-B ``IN`` / ``NOT IN`` filters with literal-tuple RHS.
 
-The DEV-1450 typed-pipeline redesign initially deferred SQL-style
+The typed-pipeline redesign initially deferred SQL-style
 ``col in ('a', 'b')`` filters (the legacy enrichment path accepted them
 via sqlglot parsing). The 02_sql_vs_dsl notebook example, which filters
 on ``stores.name in ('Brooklyn', 'Philadelphia')``, was failing with
 ``ValueError: Invalid Mode-B expression … unsupported comparison operator
 In.``
 
-DEV-1475 lands the support: ``ast.In`` / ``ast.NotIn`` reach
+Now ``ast.In`` / ``ast.NotIn`` reach
 ``_CMP_OP_MAP``, the parser produces a new ``Tuple`` ParsedExpr node for
 the RHS, the binder folds a ``Cmp(op="in"/"not in", left=ref, right=Tuple)``
 into a new ``InKey``, and the SQL generator
 emits ``IN (lit, lit, …)`` / ``NOT IN (...)`` through the single
 ``render_value_key`` path (P-G) across all filter render contexts — local
-WHERE/HAVING, POST-phase filters, and cross-model CTE routed filters.
+WHERE/HAVING, POST-phase filters, and cross-dataset CTE routed filters.
 
 Coverage:
 
@@ -21,10 +21,10 @@ Coverage:
 - Parser: guards on empty / scalar / non-literal RHS.
 - Binder: a bound ``Cmp(op="in", …)`` interns as an ``InKey``.
 - Generator: end-to-end SQL emission for ``IN`` and ``NOT IN`` on a
-  local column.
+  local field.
 - Generator: n-ary boolean fold preserves all operands when an IN
   filter is one of them (regression on the 7a1110f territory).
-- Generator: cross-model filter on a joined column emits qualified
+- Generator: cross-dataset filter on a joined field emits qualified
   ``IN (...)``.
 """
 
@@ -151,20 +151,20 @@ class TestParserGuards:
 
     def test_scalar_rhs_is_a_time_point_membership(self):
         # ``col in 'a'`` is a single-string time-point membership: it parses, and the
-        # checker rejects it against a non-temporal column with the typed error.
+        # checker rejects it against a non-temporal field with the typed error.
         assert parse_expr("status in 'a'") == Cmp(
             op="in", left=Ref(name="status"), right=Literal(value="a"),
         )
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"metric": "count(*)"}], "filter": ["status in 'a'"],
+            "population": "orders", "metrics": [{"metric": "count(orders.*)"}], "filter": ["orders.status in 'a'"],
         })
         with pytest.raises(DateOperandTypeError, match="status"):
             engine.execute_sync(query=query, dry_run=True)
 
     def test_non_literal_in_rhs_rejected(self):
         # ``status in (other_col, 'b')`` — the RHS may not reference a
-        # column (no schema-aware binding for dynamic RHS; literals only).
+        # field (no schema-aware binding for dynamic RHS; literals only).
         with pytest.raises(ValueError, match="literal"):
             parse_expr("status in (other_col, 'b')")
 
@@ -189,9 +189,9 @@ def _make_orders_with_status() -> SlayerDataset:
         sql_table="orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -202,8 +202,8 @@ def _make_orders_joined_to_stores() -> tuple[SlayerDataset, SlayerDataset]:
         sql_table="stores",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
         ],
     )
     orders = SlayerDataset(
@@ -211,9 +211,9 @@ def _make_orders_joined_to_stores() -> tuple[SlayerDataset, SlayerDataset]:
         sql_table="orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="store_id", sql="store_id", datatype=DataType.INTEGER),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", expression="store_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[
             DatasetRelationship(
@@ -229,7 +229,7 @@ class TestBinder:
     def test_in_filter_binds_to_in_key(self):
 
         model = _make_orders_with_status()
-        parsed = parse_expr("status in ('completed', 'pending')")
+        parsed = parse_expr("orders.status in ('completed', 'pending')")
         bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
         scope = DatasetScope(population=model)
         bound = bind_filter(parsed, scope=scope, bundle=bundle)
@@ -261,9 +261,9 @@ class TestBinder:
 
 
 def _make_engine_with_orders() -> tuple:
-    """In-memory engine + storage seeded with a single ``orders`` model.
+    """In-memory engine + storage seeded with a single ``orders`` dataset.
 
-    Returns (engine, model) tuple so tests can call ``engine.execute_sync``
+    Returns (engine, dataset) tuple so tests can call ``engine.execute_sync``
     with dry_run=True (build SQL without hitting a database).
     """
 
@@ -296,23 +296,23 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["status in ('completed', 'pending')"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.status in ('completed', 'pending')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
         assert "IN" in sql
         assert "'completed'" in sql
         assert "'pending'" in sql
-        # The column reference must appear on the LHS, not on the RHS.
+        # The field reference must appear on the LHS, not on the RHS.
         assert sql.upper().count("IN") >= 1
 
     def test_not_in_emits_sql_not_in(self):
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["status not in ('cancelled', 'expired')"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.status not in ('cancelled', 'expired')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
@@ -333,9 +333,9 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "filter": [
-                "status in ('completed', 'pending') and amount > 100",
+                "orders.status in ('completed', 'pending') and orders.amount > 100",
             ],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
@@ -352,7 +352,7 @@ class TestSQLEmission:
         engine, orders, stores = _make_engine_with_orders_and_stores()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["stores.name"],
             "filter": ["stores.name in ('Brooklyn', 'Philadelphia')"],
         })

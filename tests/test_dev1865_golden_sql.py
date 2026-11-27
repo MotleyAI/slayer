@@ -13,7 +13,7 @@ from pathlib import Path
 
 from slayer.core.query import QueryMetric
 
-from tests._dev1865_fixtures import BAND35, SlayerQuery, dev1865_models
+from tests._dev1865_fixtures import BAND35, SlayerQuery, dev1865_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -39,14 +39,14 @@ def _cases() -> dict:
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
         ),
         "filter/computed_dim_mix_field": _q(
-            dimensions=["region", "city", band],
-            filter=["band == 1 or channel == 'app'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", band],
+            filter=["band == 1 or orders.channel == 'app'"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "filter/computed_dim_mix_measure": _q(
-            dimensions=["region", "city", band],
-            filter=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", band],
+            filter=["sum(orders.amount, partition_by=orders.city) > 45 or sum(orders.amount) > 55"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "order/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],
@@ -57,7 +57,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(query: SlayerQuery, dialect: str):
-    models = dev1865_models()
+    models = dev1865_datasets()
     try:
         return await _engine_generate(
             query=query, dataset=models[0], extra_datasets=models[1:],

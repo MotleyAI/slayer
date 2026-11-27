@@ -43,8 +43,8 @@ async def storage() -> AsyncIterator[StorageBackend]:
         await s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         ))
         yield s
@@ -63,8 +63,8 @@ def yaml_storage() -> Generator[YAMLStorage, None, None]:
         asyncio.run(s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )))
         yield s
@@ -73,7 +73,7 @@ def yaml_storage() -> Generator[YAMLStorage, None, None]:
 
 
 async def _call_mcp(mcp_server, *, name: str, arguments: dict) -> str:
-    content_blocks, _ = await mcp_server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await mcp_server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 
@@ -127,7 +127,7 @@ async def test_mcp_save_memory_tool_descriptor_includes_description(
     mcp = create_mcp_server(storage=storage)
     tools = await mcp.list_tools()
     tool: Any = next(t for t in tools if t.name == "save_memory")
-    schema = tool.inputSchema
+    schema = tool.input_schema
     assert "description" in schema["properties"]
 
 

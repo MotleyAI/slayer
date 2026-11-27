@@ -6,6 +6,7 @@ import pytest
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.keys import AggregateKey, FieldKey
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
@@ -107,7 +108,7 @@ class TestSqliteKeepsInferredCast:
         assert amount.db_type is not None
         assert "DECIMAL" in amount.db_type
 
-        query = {"population": "orders", "metrics": ["sum(amount)"]}
+        query = {"population": "orders", "metrics": ["sum(orders.amount)"]}
         storage = YAMLStorage(base_dir=str(tmp_path / "models"))
         async with owned_query_engine(storage=storage, datasources=[datasource]) as engine:
             await storage.save_dataset(model)
@@ -154,11 +155,11 @@ def _wide_dataset(data_source: str = "ds") -> SlayerDataset:
     return SlayerDataset(name="t", sql_table="t", data_source=data_source, fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="amount", datatype=DataType.INTEGER, db_type="NUMERIC(38,0)"),
-        DatasetField(name="wide", sql="amount * 10", datatype=DataType.INTEGER, db_type="NUMERIC(38,0)"),
+        DatasetField(name="wide", expression="amount * 10", datatype=DataType.INTEGER, db_type="NUMERIC(38,0)"),
     ])
 
 
-_WIDE_QUERY = SlayerQuery.model_validate({"population": "t", "dimensions": ["wide"]})
+_WIDE_QUERY = SlayerQuery.model_validate({"population": "t", "dimensions": ["t.wide"]})
 
 
 class TestDerivedColumnPreservesNativeType:
@@ -180,7 +181,7 @@ class TestDerivedColumnPreservesNativeType:
         assert "CAST(t.amount * 10 AS INTEGER)" in sql, sql
 
     async def test_filter_on_a_wide_exact_integer_keeps_its_value(self, tmp_path, postgresql_proc):
-        query = SlayerQuery.model_validate({"population": "t", "dimensions": ["wide"], "filter": ["wide > 0"]})
+        query = SlayerQuery.model_validate({"population": "t", "dimensions": ["t.wide"], "filter": ["t.wide > 0"]})
         with pg_database(postgresql_proc, statements=[
             "CREATE TABLE t (id INTEGER PRIMARY KEY, amount NUMERIC(38,0))",
             "INSERT INTO t VALUES (1, 10000000000000000000)",
@@ -194,8 +195,8 @@ class TestDerivedColumnPreservesNativeType:
         model = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="amount", datatype=DataType.FLOAT, db_type="NUMERIC(18,2)"),
-            DatasetField(name="whole", sql="amount / 3", datatype=DataType.INTEGER, db_type="NUMERIC(18,2)"),
+            DatasetField(name="whole", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="amount / 3")]), datatype=DataType.INTEGER, db_type="NUMERIC(18,2)"),
         ])
-        query = SlayerQuery.model_validate({"population": "t", "dimensions": ["whole"]})
+        query = SlayerQuery.model_validate({"population": "t", "dimensions": ["t.whole"]})
         sql = await _engine_generate(query=query, dataset=model, dialect="postgres")
         assert "CAST(t.amount / 3 AS BIGINT)" in sql, sql

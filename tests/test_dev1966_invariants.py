@@ -1,4 +1,4 @@
-"""Internal invariants: one per-stage model universe, collision fail-closed, no deferral arm.
+"""Internal invariants: one per-stage dataset universe, collision fail-closed, no deferral arm.
 
 Spec: openspec …/changes/dev-1966-… design decisions 4, 5 and 13.
 """
@@ -29,7 +29,7 @@ _INDEX_YAML = pathlib.Path(__file__).parent.parent / "architecture" / "index.yam
 class TestGeneratorInvariant:
     def test_unspliced_query_backed_model_raises_a_non_deferral_value_error(self) -> None:
         qb = SlayerDataset(name="qb_unspliced", data_source="test",
-                         source_queries=[query(population="orders", metrics=[m("sum(amount)", "a")])])
+                         source_queries=[query(population="orders", metrics=[m("sum(orders.amount)", "a")])])
         generator = SQLGenerator(dialect="postgres")
         bundle = ResolvedSourceBundle(dialect="postgres", population=qb)
         with pytest.raises(ValueError) as exc:
@@ -70,7 +70,7 @@ class TestStageBundleCollision:
 
     def test_an_extended_host_replaces_its_base(self) -> None:
         extended = orders_dataset().model_copy(update={"fields": [
-            *orders_dataset().fields, DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.FLOAT)]})
+            *orders_dataset().fields, DatasetField(name="double_amount", expression="amount * 2", datatype=DataType.FLOAT)]})
         out = stage_bundle_with_siblings(
             bundle=_bundle(), source_dataset=extended, sibling_schemas={}, data_source="test")
         (host,) = [x for x in out.referenced_datasets if x.name == "orders"]
@@ -123,7 +123,7 @@ class TestStampedBundle:
 
     async def test_spliced_consumer(self, planned) -> None:
         async with dev1966_engine("sqlite") as e:
-            await e.execute(query(population="clients", dimensions=["tier"],
+            await e.execute(query(population="clients", dimensions=["clients.tier"],
                                   metrics=[m("sum(cust_rev.rev)", "r")]), dry_run=True)
         assert len(planned) == 3
         _assert_no_later_stage(planned)
@@ -135,18 +135,18 @@ class TestEmissionLaw:
         seen: List[tuple] = []
         real = SQLGenerator._emit_relation
 
-        def spy(self, *, dataset, alias, bundle):
+        def spy(self, *, dataset, alias, bundle, windows=None):
             seen.append((dataset.sql_table, frozenset(self._gen_stage_reads)))
-            return real(self, dataset=dataset, alias=alias, bundle=bundle)
+            return real(self, dataset=dataset, alias=alias, bundle=bundle, windows=windows)
 
         monkeypatch.setattr(SQLGenerator, "_emit_relation", spy)
         queries = {
-            "source": query(population="cust_rev", metrics=[m("sum(rev)", "t")]),
-            "join_target": query(population="clients", dimensions=["tier"],
+            "source": query(population="cust_rev", metrics=[m("sum(cust_rev.rev)", "t")]),
+            "join_target": query(population="clients", dimensions=["clients.tier"],
                                  metrics=[m("sum(cust_rev.rev)", "r")]),
-            "stage_chain": [query(name="s", population="clients", dimensions=["tier"],
+            "stage_chain": [query(name="s", population="clients", dimensions=["clients.tier"],
                                   metrics=[m("sum(cust_rev.rev)", "r")]),
-                            query(population="s", metrics=[m("sum(r)", "t")])],
+                            query(population="s", metrics=[m("sum(s.r)", "t")])],
         }
         async with dev1966_engine("sqlite") as e:
             await e.execute(queries[consumer], dry_run=True)

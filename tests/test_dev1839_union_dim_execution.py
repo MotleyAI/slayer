@@ -1,4 +1,4 @@
-"""DEV-1839 executed ground truth (SQLite + DuckDB) for mixed-grain transforms
+"""Executed ground truth (SQLite + DuckDB) for mixed-grain transforms
 used as computed dimensions — the ``queries/computed-dimensions`` delta
 scenarios. Expectations hand-computed in ``tests/_dev1839_fixtures.py``.
 
@@ -9,7 +9,7 @@ Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   Nested transform evaluates at its own grain ............ TestNestedTransform
   Explicit transform partition over union rows ........... TestExplicitUnionPartition
   Union attach is cardinality-neutral (D8 structure) ..... TestUnionAttachStructure
-  Same mixed-grain transform as dimension and measure .... TestDualRole
+  Same mixed-grain transform as dimension and metric ..... TestDualRole
   Duplicate producers across roles (accepted trade-off) .. TestDuplicateProducerRoles
 (Guard scenarios → tests/test_dev1839_guards.py.)
 """
@@ -28,7 +28,6 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1839_fixtures import (
     CITY_TOTAL,
-    DUAL_MEASURE_RANK_OF,
     EXPLICIT_PART_RANK,
     EXPLICIT_PART_RANK_OF,
     KEYLESS_RANK,
@@ -85,7 +84,7 @@ def _cte_group_by_sets(sql: str, dialect: str) -> list:
     return out
 
 
-def _row_attach_joins(sql: str, dialect: str) -> list:
+def _row_attach_relationships(sql: str, dialect: str) -> list:
     """``(alias, on-column-name set)`` of every top-level ``_cm_*`` join."""
     tree = sqlglot.parse_one(sql, read=dialect)
     out = []
@@ -104,16 +103,16 @@ class TestMixedGrainRank:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(MIXED_RANK_OF)
         assert len(resp.data) == len(MIXED_RANK_OF)
         for key, r in by.items():
-            assert int(r["orders.rr"]) == MIXED_RANK_OF[key], f"{key}"
-            assert float(r["orders.s"]) == pytest.approx(CITY_TOTAL[key]), f"{key}"
+            assert int(r["rr"]) == MIXED_RANK_OF[key], f"{key}"
+            assert float(r["s"]) == pytest.approx(CITY_TOTAL[key]), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_banding_by_mixed_rank_is_legal(self, exec_backend) -> None:
@@ -121,9 +120,9 @@ class TestMixedGrainRank:
         tier = f"CASE WHEN {MIXED_RANK} <= 1 THEN 'top' ELSE 'rest' END"
         resp = await engine.execute(q(
             dimensions=[{"field": tier, "alias": "tier"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
-        got = {r["orders.tier"]: float(r["orders.s"]) for r in resp.data}
+        got = {r["tier"]: float(r["s"]) for r in resp.data}
         # rank<=1 groups: (N,CityA)=30 + (N,NULL)=30; the rest total 150.
         assert got == {"top": pytest.approx(60.0), "rest": pytest.approx(150.0)}
 
@@ -132,17 +131,17 @@ class TestKeylessMixed:
     async def test_share_of_total_ranks_regions(self, exec_backend) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", {"field": KEYLESS_RANK, "alias": "kr"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", {"field": KEYLESS_RANK, "alias": "kr"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region")
         assert len(resp.data) == len(KEYLESS_RANK_OF)
-        got = {key[0]: int(r["orders.kr"]) for key, r in by.items()}
+        got = {key[0]: int(r["kr"]) for key, r in by.items()}
         # A keyless divisor misgrained to region grain would tie every rank at 1.
         assert got == KEYLESS_RANK_OF
         for key, r in by.items():
-            assert float(r["orders.s"]) == pytest.approx(REGION_TOTAL[key[0]])
+            assert float(r["s"]) == pytest.approx(REGION_TOTAL[key[0]])
         await _dry_scope_closed(engine, query, dialect)
 
 
@@ -152,16 +151,16 @@ class TestSubsetGrain:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": SUBSET_RANK, "alias": "sr"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", {"field": SUBSET_RANK, "alias": "sr"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(SUBSET_RANK_OF)
         assert len(resp.data) == len(SUBSET_RANK_OF)
         for key, r in by.items():
-            assert int(r["orders.sr"]) == SUBSET_RANK_OF[key], f"{key}"
-            assert float(r["orders.s"]) == pytest.approx(CITY_TOTAL[key]), f"{key}"
+            assert int(r["sr"]) == SUBSET_RANK_OF[key], f"{key}"
+            assert float(r["s"]) == pytest.approx(CITY_TOTAL[key]), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
 
 
@@ -174,14 +173,14 @@ class TestNestedTransform:
         # shift (S,CityC,Mar) and (N,·,Feb) values and reorder the ranks.
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": NESTED_RANK, "alias": "nr"}],
+            dimensions=["orders.region", "orders.city", {"field": NESTED_RANK, "alias": "nr"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         got = {
             (r["orders.region"], r["orders.city"], month_key(r["orders.ordered_at"])):
-                (int(r["orders.nr"]), float(r["orders.s"]))
+                (int(r["nr"]), float(r["s"]))
             for r in resp.data
         }
         assert set(got) == set(NESTED_RANK_OF)
@@ -199,16 +198,16 @@ class TestExplicitUnionPartition:
         dialect, engine = exec_backend
         query = q(
             dimensions=[
-                "region", "city", {"field": EXPLICIT_PART_RANK, "alias": "er"},
+                "orders.region", "orders.city", {"field": EXPLICIT_PART_RANK, "alias": "er"},
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(EXPLICIT_PART_RANK_OF)
         assert len(resp.data) == len(EXPLICIT_PART_RANK_OF)
         for key, r in by.items():
-            assert int(r["orders.er"]) == EXPLICIT_PART_RANK_OF[key], f"{key}"
+            assert int(r["er"]) == EXPLICIT_PART_RANK_OF[key], f"{key}"
         await _dry_scope_closed(engine, query, dialect)
 
 
@@ -220,20 +219,20 @@ class TestUnionAttachStructure:
     async def test_mixed_dim_is_cardinality_neutral(self, exec_backend) -> None:
         _, engine = exec_backend
         base = await engine.execute(q(
-            dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         plus = await engine.execute(q(
-            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         base_by = rows_by(base, "orders.region", "orders.city")
         plus_by = rows_by(plus, "orders.region", "orders.city")
         assert set(base_by) == set(plus_by)
         assert len(plus.data) == len(base.data)
         for key, r in plus_by.items():
-            assert float(r["orders.s"]) == pytest.approx(
-                float(base_by[key]["orders.s"])
+            assert float(r["s"]) == pytest.approx(
+                float(base_by[key]["s"])
             ), f"{key}"
 
     async def test_one_union_attach_with_own_grain_producers(
@@ -241,12 +240,12 @@ class TestUnionAttachStructure:
     ) -> None:
         dialect, engine = exec_backend
         sql = await _dry_scope_closed(engine, q(
-            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ), dialect)
         # ``_cm_`` is the pinned attach-CTE naming contract (``cm_cte_bodies``
-        # in the DEV-1739+ suites relies on it), not renderer-private detail.
-        attaches = _row_attach_joins(sql, dialect)
+        # in the partitioned-metric suites relies on it), not renderer-private detail.
+        attaches = _row_attach_relationships(sql, dialect)
         assert len(attaches) == 1, sql
         _, on_cols = attaches[0]
         assert {"region", "city"} <= on_cols, sql  # complete union grain
@@ -262,14 +261,14 @@ class TestDuplicateProducerRoles:
         self, exec_backend,
     ) -> None:
         # The region aggregate feeds BOTH the mixed dim's nested attach and a
-        # combined measure attach. Duplicate producers are accepted (DEV-1824
-        # design D10; stage-2 dedup) — values and cardinality must hold.
+        # combined metric attach. Duplicate producers are accepted (design
+        # D10; stage-2 dedup) — values and cardinality must hold.
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],
+            dimensions=["orders.region", "orders.city", {"field": MIXED_RANK, "alias": "rr"}],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="s"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
         )
         resp = await engine.execute(query)
@@ -277,9 +276,9 @@ class TestDuplicateProducerRoles:
         assert set(by) == set(MIXED_RANK_OF)
         assert len(resp.data) == len(MIXED_RANK_OF)
         for key, r in by.items():
-            assert int(r["orders.rr"]) == MIXED_RANK_OF[key], f"{key}"
-            assert float(r["orders.s"]) == pytest.approx(CITY_TOTAL[key]), f"{key}"
-            assert float(r["orders.rt"]) == pytest.approx(
+            assert int(r["rr"]) == MIXED_RANK_OF[key], f"{key}"
+            assert float(r["s"]) == pytest.approx(CITY_TOTAL[key]), f"{key}"
+            assert float(r["rt"]) == pytest.approx(
                 REGION_TOTAL[key[0]]
             ), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
@@ -289,17 +288,16 @@ class TestDualRole:
     async def test_same_expression_as_dimension_and_measure(
         self, exec_backend,
     ) -> None:
-        # The channel dimension makes the query grain strictly finer than the
-        # union, so the two roles produce visibly different rank vectors.
+        # Both roles rank the (region, city) union cells, though channel makes the query grain finer.
         dialect, engine = exec_backend
         query = q(
             dimensions=[
-                "region", "city", "channel",
+                "orders.region", "orders.city", "orders.channel",
                 {"field": MIXED_RANK, "alias": "rr"},
             ],
             metrics=[
                 QueryMetric(metric=MIXED_RANK, alias="rm"),
-                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
             ],
         )
         resp = await engine.execute(query)
@@ -308,7 +306,7 @@ class TestDualRole:
         assert len(resp.data) == len(RCC_TOTAL)
         for key, r in by.items():
             region, city, _channel = key
-            assert int(r["orders.rr"]) == MIXED_RANK_OF[(region, city)], f"{key}"
-            assert int(r["orders.rm"]) == DUAL_MEASURE_RANK_OF[key], f"{key}"
-            assert float(r["orders.s"]) == pytest.approx(RCC_TOTAL[key]), f"{key}"
+            assert int(r["rr"]) == MIXED_RANK_OF[(region, city)], f"{key}"
+            assert int(r["rm"]) == MIXED_RANK_OF[(region, city)], f"{key}"
+            assert float(r["s"]) == pytest.approx(RCC_TOTAL[key]), f"{key}"
         await _dry_scope_closed(engine, query, dialect)

@@ -1,13 +1,13 @@
-"""Aggregates are virtual models: fixtures on the DEV-1840 / DEV-1910 seeds.
+"""Aggregates are virtual datasets: fixtures on the ``_dev1840`` / ``_dev1910`` fixtures' seeds.
 
-Rows appended to the DEV-1840 seed (``make_vm_engine``):
+Rows appended to the ``_dev1840_fixtures`` seed (``make_vm_engine``):
 
 * region 3 has a NULL name and owns customer 8 (orders 13, 14);
 * order 12 names customer 99, which does not exist (dangling);
 * order 15 (customer 2) has a partially-NULL store key ``('A', NULL)``;
 * store ``('C', 1)`` (BOS) has no orders.
 
-``make_app_null_engine``: the DEV-1910 null-status seed plus c5's NULL-status app order.
+``make_app_null_engine``: the ``_dev1910_fixtures`` null-status seed plus c5's NULL-status app order.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def _seed_vm_duckdb(db_path: str) -> None:
 
 
 async def make_vm_engine(request) -> AsyncIterator[SlayerQueryEngine]:
-    """``params=["sqlite", "duckdb"]`` engine over the DEV-1840 seed plus the rows above."""
+    """``params=["sqlite", "duckdb"]`` engine over the ``_dev1840_fixtures`` seed plus the rows above."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
@@ -77,7 +77,7 @@ async def make_vm_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 async def make_app_null_engine(request) -> AsyncIterator[SlayerQueryEngine]:
-    """The DEV-1910 null-status seed plus c5's NULL-status app order."""
+    """The ``_dev1910_fixtures`` null-status seed plus c5's NULL-status app order."""
     async for engine in make_null_status_engine(request):
         ds = await engine.storage.get_datasource("test")
         assert ds is not None
@@ -92,18 +92,18 @@ def q(payload: Dict[str, Any]) -> SlayerQuery:
 
 
 def cells(resp, dim: str, metric: str) -> Dict[Any, Any]:
-    """``{dimension value: measure value}``; ``None`` keys the NULL cell."""
+    """``{dimension value: metric value}``; ``None`` keys the NULL cell."""
     return {k[0]: v[metric] for k, v in rows_by(resp, dim).items()}
 
 
 async def materialise(engine: SlayerQueryEngine, *, name: str,
                       payload: Dict[str, Any]) -> Dict[str, Dict[Any, Any]]:
-    """Save ``payload`` as a query-backed model; return ``{measure: {grain value: value}}``."""
+    """Save ``payload`` as a query-backed dataset; return ``{metric: {grain value: value}}``."""
     model = await engine.create_dataset_from_query(q(payload), name)
     grain = model.fields[0].name
     measures = [m["alias"] for m in payload["metrics"]]
     resp = await engine.execute(q({
-        "population": name, "dimensions": [grain, *measures]}))
+        "population": name, "dimensions": [f"{name}.{c}" for c in (grain, *measures)]}))
     return {m: cells(resp, f"{name}.{grain}", f"{name}.{m}") for m in measures}
 
 
@@ -118,11 +118,11 @@ def assert_parity(attached: Dict[Any, Any], oracle: Dict[Any, Any], *,
             assert float(value) == pytest.approx(expected), key
 
 
-# Base DEV-1840 seed.
+# Base ``_dev1840_fixtures`` seed.
 ORPHAN_NULL_REGION_SUM = 47.0
 ORPHAN_NULL_REGION_COUNT = 2
 
-# Virtual-model seed.
+# Virtual-dataset seed.
 SUM_BY_REGION = {"North": 104.0, "South": 20.0, None: 73.0}
 COUNT_BY_REGION = {"North": 7, "South": 2, None: 5}
 SUM_BY_PLAN = {"p1": 55.0, "p2": 99.0, "p3": 15.0, None: 28.0}
@@ -132,7 +132,7 @@ COUNT_BY_CITY = {"NYC": 4, "LA": 4, "SF": 4, "DAL": 1, None: 1}
 STORE_SUM_BY_CITY = {"NYC": 51.0, "LA": 83.0, "SF": 56.0, "DAL": 3.0, "BOS": None}
 STORE_COUNT_BY_CITY = {"NYC": 4, "LA": 4, "SF": 4, "DAL": 1, "BOS": 0}
 
-# DEV-1910 null-status seed.
+# ``_dev1910_fixtures`` null-status seed.
 SPEND_BY_STATUS = {"ok": 420.0, "new": 290.0, None: 155.0}
 ORDER_KEY_STATUS_ORDER = [None, "new", "ok"]
 

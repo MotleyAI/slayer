@@ -32,6 +32,7 @@ from slayer.core.enums import (
     TimeGranularity,
     canonical_datatype,
 )
+from slayer.core.granularity import bucket_type
 from slayer.core.models import DatasetRelationship, SlayerDataset
 from slayer.core.refs import functional_agg_text
 from slayer.core.query import (
@@ -44,6 +45,7 @@ from slayer.core.query import (
 )
 from slayer.core.syntax import metric_text_at_path
 from slayer.engine.cardinality.inference import declares_solo_unique
+from slayer.engine.legacy_references import population_relative
 from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,
@@ -51,6 +53,7 @@ from slayer.facade.catalog import (
     FacadeRelationship,
     FacadeMetric,
     FacadeTable,
+    advertised_dimensions,
     build_local_view,
 )
 from slayer.facade.info_schema import match_info_schema
@@ -218,9 +221,8 @@ def _expand_select_star(
 ) -> list[Expression]:
     """Replace each top-level ``exp.Star`` with one column ref per non-hidden
     column on ``table``, preserving the order of any non-Star projections.
-    Only row-preserving dims expand — a fan-out relationship path would multiply the
-    browse-mode row grain; those dims stay individually addressable."""
-    column_names = [d.name for d in table.dimensions if d.row_preserving]
+    Only advertised dims expand; a fanning one stays resolvable in grouped queries."""
+    column_names = [d.name for d in advertised_dimensions(table)]
     out: list[Expression] = []
     for expr in proj_exprs:
         if isinstance(expr, exp.Star):
@@ -714,8 +716,8 @@ def _metric_for_aggregate(
     # multi-stage rewrite.
     if not call.is_count_star and not call.inner_is_field:
         raise TranslationError(AGG_OVER_METRIC_MESSAGE)
-    formula = _agg_expression(call)
-    metric = metrics_by_expression.get(formula)
+    expression = _agg_expression(call)
+    metric = metrics_by_expression.get(expression)
     if metric is not None:
         _assert_local_metric(metric)
         return metric
@@ -723,7 +725,7 @@ def _metric_for_aggregate(
     if call.inner_ref is not None and call.inner_ref in _saved_metric_names(table):
         raise TranslationError(AGG_OVER_METRIC_MESSAGE)
     raise TranslationError(
-        f"Aggregate {formula!r} is not available on table {table.name!r} — "
+        f"Aggregate {expression!r} is not available on table {table.name!r} — "
         f"the column may not exist or the aggregation may not be allowed for it."
     )
 
@@ -1088,15 +1090,15 @@ def _build_projection_lookups(
     """Assemble the (metrics_by_name, metrics_by_formula, dims_by_name) lookups
     from the table metadata, overlaid with dynamic-join extras when supplied."""
     metrics_by_name = {m.name: m for m in table.metrics}
-    metrics_by_formula = {m.metric_expression: m for m in table.metrics}
+    metrics_by_expression = {m.metric_expression: m for m in table.metrics}
     dims_by_name = {d.name: d for d in table.dimensions}
     if extra_dims_by_name:
         dims_by_name.update(extra_dims_by_name)
     if extra_metrics_by_name:
         metrics_by_name.update(extra_metrics_by_name)
     if extra_metrics_by_expression:
-        metrics_by_formula.update(extra_metrics_by_expression)
-    return metrics_by_name, metrics_by_formula, dims_by_name
+        metrics_by_expression.update(extra_metrics_by_expression)
+    return metrics_by_name, metrics_by_expression, dims_by_name
 
 
 def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-expression shapes; one branch per shape by design
@@ -1116,7 +1118,7 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
     the CAST branch: pg-facade passes ``True`` (its wire encoders coerce), Flight
     passes ``False`` (its Arrow schema-binding has no value-coercion pass).
     """
-    metrics_by_name, metrics_by_formula, dims_by_name = _build_projection_lookups(
+    metrics_by_name, metrics_by_expression, dims_by_name = _build_projection_lookups(
         table,
         extra_dims_by_name=extra_dims_by_name,
         extra_metrics_by_name=extra_metrics_by_name,
@@ -1160,7 +1162,7 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
         if agg_call is not None:
             out.append(_resolve_aggregate_projection(
                 call=agg_call, alias_name=alias_name, table=table,
-                metrics_by_expression=metrics_by_formula,
+                metrics_by_expression=metrics_by_expression,
             ))
             continue
 
@@ -1566,9 +1568,9 @@ def _apply_having(
     """
     if having is None:
         return
-    metrics_by_formula = {m.metric_expression: m for m in table.metrics}
+    metrics_by_expression = {m.metric_expression: m for m in table.metrics}
     if extra_metrics_by_expression:
-        metrics_by_formula.update(extra_metrics_by_expression)
+        metrics_by_expression.update(extra_metrics_by_expression)
     for conj in _split_and_chain(having.this):
         # Metric-name form (``HAVING "rev" > 1000``) wins before the agg-call form.
         metric_form = _metric_filter(
@@ -1590,10 +1592,10 @@ def _apply_having(
         agg_lhs = _detect_aggregate(lhs, strip_prefix=strip_prefix, alias_map=alias_map)
         agg_rhs = _detect_aggregate(rhs, strip_prefix=strip_prefix, alias_map=alias_map)
         if agg_lhs is not None and agg_rhs is None and _is_literal_operand(rhs):
-            _metric_for_aggregate(call=agg_lhs, table=table, metrics_by_expression=metrics_by_formula)
+            _metric_for_aggregate(call=agg_lhs, table=table, metrics_by_expression=metrics_by_expression)
             filters_out.append(f"{_agg_expression(agg_lhs)} {op_sql} {rhs.sql()}")
         elif agg_rhs is not None and agg_lhs is None and _is_literal_operand(lhs):
-            _metric_for_aggregate(call=agg_rhs, table=table, metrics_by_expression=metrics_by_formula)
+            _metric_for_aggregate(call=agg_rhs, table=table, metrics_by_expression=metrics_by_expression)
             flipped = _flip_comparator(op_sql)
             filters_out.append(f"{_agg_expression(agg_rhs)} {flipped} {lhs.sql()}")
         else:
@@ -2302,16 +2304,13 @@ class _ProjectionPlan(BaseModel):
     projection_types: list[DataType | None]
 
 
-def _record_metric(
-    *, plan: _ProjectionPlan, item: _ProjectionItem, table: FacadeTable,
-) -> None:
+def _record_metric(*, plan: _ProjectionPlan, item: _ProjectionItem) -> None:
     assert item.metric is not None
     plan.metrics.append({
         "metric": item.metric.metric_expression,
         "alias": item.projected_name,
     })
-    engine_alias = f"{table.name}.{item.projected_name}"
-    plan.field_name_mapping.append((engine_alias, item.projected_name))
+    plan.field_name_mapping.append((item.projected_name, item.projected_name))
     # CAST(<metric_ref> AS T) overrides the declared metric type.
     plan.projection_types.append(item.cast_target or item.metric.data_type)
 
@@ -2336,7 +2335,9 @@ def _record_time_grain(
         plan.derived_dims.append(canonical)
     engine_alias = f"{table.name}.{dotted}"
     plan.field_name_mapping.append((engine_alias, item.projected_name))
-    plan.projection_types.append(item.time_grain_underlying.data_type)
+    underlying = item.time_grain_underlying.data_type
+    temporal = underlying in TEMPORAL_DATATYPES
+    plan.projection_types.append(bucket_type(underlying, item.time_grain) if temporal else underlying)
 
 
 def _record_extraction(
@@ -2385,7 +2386,7 @@ def _build_projection_plan(
     )
     for item in items:
         if item.metric is not None:
-            _record_metric(plan=plan, item=item, table=table)
+            _record_metric(plan=plan, item=item)
         elif item.time_grain is not None:
             _record_time_grain(plan=plan, item=item, table=table)
         elif item.extraction is not None:
@@ -2720,17 +2721,17 @@ def _canonical_field_or_raise(
     ``ON ORDERS.STORE_ID = STORES.ID`` would otherwise fail to match
     against a dataset whose ``DatasetField.name`` is ``store_id``. The canonical
     return propagates the dataset-side casing to every downstream
-    comparison (the configured-join existence check, the dynamic-join
+    comparison (the configured-relationship existence check, the dynamic-join
     ``DatasetExtension`` build).
     """
     if table.dataset_ref is None:
         return col_name
-    columns = table.dataset_ref.fields
-    for c in columns:
+    fields = table.dataset_ref.fields
+    for c in fields:
         if c.name == col_name:
             return c.name
     needle = col_name.lower()
-    matches = [c.name for c in columns if c.name.lower() == needle]
+    matches = [c.name for c in fields if c.name.lower() == needle]
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
@@ -2799,16 +2800,16 @@ def _materialise_dynamic_join_lookups(
             dimension_ref=ref,
         )
     for m in local_metrics:
-        formula = metric_text_at_path(m.metric_expression, path=[prefix])
+        expression = metric_text_at_path(m.metric_expression, path=[prefix])
         new_metric = FacadeMetric(
             name=f"{prefix}.{m.name}",
             description=m.description,
             label=m.label,
             data_type=m.data_type,
-            metric_expression=formula,
+            metric_expression=expression,
         )
         extra_metrics_by_name[f"{prefix}.{m.name}"] = new_metric
-        extra_metrics_by_expression[formula] = new_metric
+        extra_metrics_by_expression[expression] = new_metric
 
 
 def _extensions_from_join(
@@ -2831,14 +2832,14 @@ def _extensions_from_join(
 
 def _dynamic_join_cardinality(plan: "_JoinPlan") -> RelationshipCardinality | None:
     """``many_to_one`` when the target column alone is unique, else undetermined."""
-    model_ref = plan.target_table.dataset_ref
-    if model_ref is None:
+    dataset_ref = plan.target_table.dataset_ref
+    if dataset_ref is None:
         return None
-    for col in model_ref.fields:
+    for col in dataset_ref.fields:
         if col.name.lower() == plan.target_col.lower():
             # The join constrains one column, so a composite-PK member does
             # not qualify — same subset rule as is_key_set_unique.
-            if declares_solo_unique(fields=model_ref.fields, field=col):
+            if declares_solo_unique(fields=dataset_ref.fields, field=col):
                 return RelationshipCardinality.MANY_TO_ONE
             return None
     return None
@@ -3010,11 +3011,11 @@ def _translate_slayer_select(
 
     filters: list[str] = []
     metrics_by_name = _metrics_by_name(table, overlays)
-    temporal_columns = _temporal_field_names(table, overlays)
+    temporal_fields = _temporal_field_names(table, overlays)
     where_reads_aggregate = _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name,
         item_by_projected_name, filters,
-        temporal_fields=temporal_columns,
+        temporal_fields=temporal_fields,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
         metrics_by_name=metrics_by_name,
     )
@@ -3023,7 +3024,7 @@ def _translate_slayer_select(
         item_by_projected_name, filters,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
         extra_metrics_by_expression=overlays.extra_metrics_by_expression or None,
-        metrics_by_name=metrics_by_name, temporal_fields=temporal_columns,
+        metrics_by_name=metrics_by_name, temporal_fields=temporal_fields,
     )
 
     order_items = _translate_order_by(
@@ -3033,7 +3034,7 @@ def _translate_slayer_select(
 
     extensions = _extensions_from_join(parent_name=table.name, plan=join_plan) if join_plan is not None else []
 
-    query = SlayerQuery.model_validate({
+    query = population_relative(SlayerQuery.model_validate({
         "population": table.name,
         "extensions": extensions or None,
         "metrics": plan.metrics or None,
@@ -3048,7 +3049,7 @@ def _translate_slayer_select(
             plan.metrics or group or parsed.args.get("having") or parsed.args.get("distinct")
             or where_reads_aggregate
         ),
-    })
+    }))
 
     return QueryResult(
         query=query,

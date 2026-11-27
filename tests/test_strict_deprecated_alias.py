@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from slayer.api.server import create_app
 from slayer.core.errors import SlayerError, UnrecognizedStrictValueError
@@ -34,6 +34,7 @@ from tests._deprecated_input_helpers import (
     rows,
     strict,
 )
+from tests._mcp_results import text_blocks
 
 TRUE_TOKENS = [True, "true", "True", " TRUE ", "1", "yes", "y", "t", "on", 1]
 FALSE_TOKENS = [False, "false", "0", "no", "n", "f", "off", "", 0]
@@ -80,7 +81,7 @@ class TestPythonConversion:
         with recorded() as caught:
             query = _q(strict=value, to_many_handling=explicit)
         assert query.to_many_handling == explicit
-        assert len(deprecations(caught)) == 1
+        assert len([w for w in deprecations(caught) if payload_of(w).old == "strict"]) == 1
 
     @pytest.mark.parametrize("version", FRESH_VERSIONS)
     def test_current_or_malformed_version_is_fresh(self, version: Any) -> None:
@@ -238,7 +239,7 @@ class TestRestSurface:
 class TestMcpSurface:
     async def _call(self, engine: SlayerQueryEngine, query: Any) -> dict[str, Any]:
         server = create_mcp_server(storage=engine.storage)
-        blocks, _ = await server.call_tool(name="query", arguments={"query": query, "format": "json"})
+        blocks = text_blocks(await server.call_tool(name="query", arguments={"query": query, "format": "json"}))
         return mcp_payload(getattr(next(iter(blocks)), "text"))
 
     async def _error(self, engine: SlayerQueryEngine, query: Any) -> str:

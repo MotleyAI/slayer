@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import date, datetime
+from functools import partial
 from typing import Callable, Dict, FrozenSet, List, Optional, Tuple, cast
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity, normalize_aggregation_name, TIME_TRANSFORMS
@@ -21,11 +22,14 @@ from slayer.core.errors import (
 )
 from slayer.core.format import NumberFormat
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, is_spine, is_spine_query
-from slayer.core.relationship_walker import follow, resolve_hop, resolved_terminal, walk_terminal
+from slayer.core.relationship_walker import follow, reaches_spine, resolve_hop, resolved_terminal, walk_terminal
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     FieldKey,
+    FieldSqlKey,
+    StarKey,
+    field_leaf,
     Grain,
     LiteralKey,
     Phase,
@@ -33,13 +37,21 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
-    lower_collapsing_constituents,
+    default_nested_grains,
     lower_sugar_transforms,
-    normalize_transform_constituents,
     attached_operand_keys,
+    explicit_ranking_key,
+    is_ranked_over_cells,
     is_reaggregation_key,
     rewrite_rank_partition_keys,
+    operand_constituents,
+    settle_ranked_grains,
+    unmark_written_grains,
+    written_grained_aggregates,
     source_anchor_path,
+    substitute_value_keys,
+    transform_operand_grain,
+    value_grain,
     walk_value_keys,
     window_kwarg_of,
 )
@@ -61,19 +73,20 @@ from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_points import floor_to
 from slayer.core.scope import (
     DatasetScope,
-    StageSchema,
     host_dataset_name,
+    is_anchored,
     root_spelling,
     stale_spelling_position,
 )
 from slayer.engine.population import dimension_routing
-from slayer.engine.extensions import declaring_dataset_path
+from slayer.engine.population.anchors import AnchoredSpelling, anchor_route, anchored_spelling, find_anchor
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension, spelled_aggregate_key
 from slayer.engine.elaborate_env import (
     check_computed_dim_name_collision,
     check_computed_dimension,
     check_conditional_branches,
     check_date_operands,
+    check_time_of_day_operands,
     canonical_list_dimension,
     canonical_list_reads,
     check_list_dimension,
@@ -89,36 +102,40 @@ from slayer.engine.elaborate_env import (
     check_spine_clash,
     check_spine_plain_use,
     check_stage_flatten_collision,
-    check_dimension_temporal_axis,
+    check_temporal_axis,
     check_opaque_grouping_dim,
     check_partition_key_resolves,
     check_raw_rows_filter_metric_ref,
     check_raw_rows_order_metric_ref,
     check_time_dimension_field,
-    check_time_dimension_home,
     check_time_dimension_row_level,
     check_spine_time_dimension,
     time_dimension_type,
     check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
+    check_window_keys_in_operand_grain,
     check_time_transforms_resolved,
+    check_ranking_key_determined,
+    grain_display,
     coerce_text_numbers,
     coerce_zoned_comparisons,
     resolve_time_points,
     date_only_notices,
 )
-from slayer.engine.population.home import row_expression_crossing
-from slayer.engine.cardinality.relationship_safety import assert_partition_key_attributable
+from slayer.engine.cardinality.relationship_safety import (
+    assert_partition_key_analysable, grain_determines, grain_member_attributable,
+)
+from slayer.engine.population.home import as_home_field
+from slayer.engine.ranked_planner import temporal_row_dimension_key
 from slayer.engine.key_metadata import (
+    SlotTyping,
     bundle_dialect,
     key_element_type,
     metric_key_format_description,
     scope_field_element,
     metric_key_preserves_native_type,
-    metric_key_type,
     scope_field_type,
     scope_zoned_timestamp,
-    stage_metric_type,
 )
 from slayer.core.syntax import (
     AggCall,
@@ -127,15 +144,20 @@ from slayer.core.syntax import (
     Literal,
     ParsedExpr,
     Ref,
+    StarSource,
     TransformCall,
     call_keywords,
     dotted_quoting,
     drop_root_qualifier,
+    map_refs,
     parse_bound_expr,
     parse_expr,
+    parse_template,
     root_relative,
     text_paths,
+    legacy_result_name_seed,
     walk_parsed,
+    walk_references,
 )
 from slayer.ir.bound import (
     GranularityConflict,
@@ -145,7 +167,7 @@ from slayer.ir.bound import (
     DeclaredMetric,
     OrderSpec,
 )
-from slayer.ir.prebound import ModePolicy, PreboundQuery, partition_declared_metrics
+from slayer.ir.prebound import ModePolicy, PreboundQuery, partition_declared_metrics, walk_key_path
 from slayer.ir.source_bundle import InnerRestriction, ResolvedSourceBundle, resolve_scope
 from slayer.sql.naming import canonical_aggregate_alias, flat_name as _flatten_dotted, expression_text_alias
 
@@ -161,7 +183,8 @@ _TIME_NEEDING_TRANSFORM_OPS = TIME_TRANSFORMS
 
 
 def _attach_time_keys(key: ValueKey, *, td_key: TimeTruncKey) -> ValueKey:
-    """Set ``time_key=td_key`` on every time-needing TransformKey with a null one (identity-preserving)."""
+    """Set ``time_key=td_key`` on every time-needing TransformKey with a null one, and rank an unkeyed ``first`` /
+    ``last`` over an aggregate by it (identity-preserving)."""
     rebuilt = cast(ValueKey, key.map_children(lambda c: _attach_time_keys(c, td_key=td_key)))
     if (
         isinstance(rebuilt, TransformKey)
@@ -169,6 +192,8 @@ def _attach_time_keys(key: ValueKey, *, td_key: TimeTruncKey) -> ValueKey:
         and rebuilt.time_key is None
     ):
         return rebuilt.model_copy(update={"time_key": td_key})
+    if is_ranked_over_cells(rebuilt) and not rebuilt.args and window_kwarg_of(rebuilt) is None:
+        return rebuilt.model_copy(update={"args": (td_key,)})
     return rebuilt
 
 
@@ -205,13 +230,27 @@ def _expr_has_metric_ref(
     )
 
 
+def _names_member(*, scope: DatasetScope, bundle: ResolvedSourceBundle, ref: Optional[FieldRef]) -> bool:
+    """Whether the binder resolves a qualified ``ref``, no alias consulted, to a field or saved metric."""
+    if ref is None or ref.dataset is None or scope.population is None:
+        return False
+    try:
+        bind_expr(parsed=parse_expr(ref.spelling), scope=scope, bundle=bundle, allow_metrics=True)
+    except SlayerError:
+        return False
+    return True
+
+
 def _reject_metric_refs_for_raw_rows(
-    *, query: SlayerQuery, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    *, query: SlayerQuery, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> None:
     """Raw-rows mode (``distinct_dimension_values=False``): reject any metric reference in filters/order."""
-    src = scope.population if isinstance(scope, DatasetScope) else None
+    src = scope.population
+    # A name a dimension of the query declares (computed or aliased) is that dimension, not a saved metric.
+    declared = {d.name for d in (query.dimensions or []) if d.is_computed and d.name}
+    declared |= {d.alias for d in (query.dimensions or []) if d.alias}
     metric_names: FrozenSet[str] = frozenset(
-        m.name for m in (src.metrics if src is not None else []) if m.name
+        m.name for m in (src.metrics if src is not None else []) if m.name and m.name not in declared
     )
     _reject_metric_refs_in_filters(
         query=query, metric_names=metric_names, scope=scope, bundle=bundle,
@@ -333,17 +372,16 @@ def _map_bound_keys(
 
 
 def _bind_inner_restriction(
-    restriction: InnerRestriction, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    restriction: InnerRestriction, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> BoundFilter:
     """``restriction`` bound exactly as its filter written in the query; a product read never reaches it."""
-    host = scope.population if isinstance(scope, DatasetScope) else None
+    host = scope.population
     if host is not None and host.unrelated_datasets:
         host = host.with_unrelated(frozenset())
         scope, bundle = DatasetScope(population=host), bundle.model_copy(update={"population": host})
     try:
-        path = declaring_dataset_path(restriction, host=host, datasets_by_name=bundle.datasets_by_name)
         node = Cmp(
-            op="is not", left=DottedRef(parts=(*path, restriction.token, restriction.key), quoted=False),
+            op="is not", left=DottedRef(parts=restriction.parts, quoted=False),
             right=Literal(value=None), single_eq=False,
         )
         return bind_filter(parsed=node, scope=scope, bundle=bundle)
@@ -352,7 +390,12 @@ def _bind_inner_restriction(
             source_dataset=exc.source_dataset, target_dataset=exc.target_dataset, candidates=exc.candidates,
             token=exc.token, context=f"The {restriction.label}",
         ) from exc
-    except (UnknownReferenceError, UnresolvableDimensionRelationshipError) as exc:
+    except UnresolvableDimensionRelationshipError as exc:
+        raise UnresolvableDimensionRelationshipError(
+            reference=exc.reference, root_dataset=exc.root_dataset, reason=f"the {restriction.label}: {exc.reason}",
+            suggested_path=exc.suggested_path,
+        ) from exc
+    except UnknownReferenceError as exc:
         raise QueryExtensionError(
             f"The {restriction.label} restricts the population, but no relationship path reaches "
             f"{restriction.dataset!r} from it."
@@ -363,18 +406,16 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
-    scope: Optional[DatasetScope | StageSchema] = None,
-    stage_schemas: Optional[Dict[str, StageSchema]] = None,
+    scope: Optional[DatasetScope] = None,
 ) -> PreboundQuery:
     """Parse and bind every text surface of a ``SlayerQuery`` (the only door into the parser); returns fully-normalized keys. Dataset filters excluded (scope-owned)."""
     if scope is None:
-        scope = resolve_scope(
-            query=query, bundle=bundle, stage_schemas=stage_schemas,
-        )
+        scope = resolve_scope(bundle=bundle)
     check_spine_clash(clash=bundle.spine_clash and is_spine_query(query))
     _check_field_granularities(bundle=bundle)
     _check_dimension_calls(query, bundle=bundle)
     query = _dedupe_equivalent_time_dimensions(query, scope=scope, bundle=bundle)
+    query = _dedupe_spelling_twin_dimensions(query, scope=scope, bundle=bundle)
 
     # Runs BEFORE binding so the targeted error wins over the binder's generic one.
     if query.distinct_dimension_values is False:
@@ -386,8 +427,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 
     # Alias lookup for ORDER BY, checked before bind_expr so aggregate aliases resolve via the registry.
     declared_alias_to_bound: Dict[str, BoundExpr] = {}
+    # Public names (aliases) first: a bare name an alias holds is that column, though another entry's leaf matches it.
+    public_names = {dm.public_name for dm in declared_metrics if dm.public_name is not None}
     for dm in declared_metrics:
-        for alias in (dm.public_name, dm.declared_name, dm.canonical_alias):
+        if dm.public_name is not None:
+            declared_alias_to_bound.setdefault(dm.public_name, dm.bound)
+    for dm in declared_metrics:
+        for alias in (dm.declared_name, dm.canonical_alias):
             if alias is not None:
                 declared_alias_to_bound.setdefault(alias, dm.bound)
 
@@ -405,15 +451,14 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # A computed dimension's name is a query-local alias resolvable in filters/order.
     for dm in declared_metrics:
         if dm.is_dimension and dm.public_name is not None:
-            filter_alias_map.setdefault(dm.public_name, dm.bound.value_key)
+            filter_alias_map.setdefault(dm.public_name, _home_reading(dm.bound.value_key, scope=scope, bundle=bundle))
     # ...and resolvable inside a filter/order ``partition_by=``.
     _computed_names = frozenset(d.name for d in (query.dimensions or []) if d.is_computed)
     dim_alias_map: Dict[str, ValueKey] = {
-        dm.public_name: dm.bound.value_key
+        dm.declared_name: dm.bound.value_key
         for dm in declared_metrics
         if dm.is_dimension
-        and dm.public_name is not None
-        and dm.public_name in _computed_names
+        and dm.declared_name in _computed_names
     }
     _, _td_alias_dms, _ = partition_declared_metrics(
         declared_metrics=declared_metrics, n_dims=n_dims, n_time_dimensions=n_tds,
@@ -543,15 +588,24 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             _order_host_local = (
                 _order_qualifier is None or _order_qualifier == _order_host_name
             )
-            # Prefer alias resolution over dataset-scope binding; try dotted then flattened forms, falling back to raw.
-            if _order_host_local and col_name in declared_alias_to_bound:
+            # Prefer alias resolution over dataset-scope binding: a bare name is an alias first, a qualified one its full
+            # identity first; try dotted then flattened forms, falling back to raw. A qualified key naming a field or
+            # metric is that member, never a user alias spelled like its flattened form or leaf.
+            _flat = _flatten_dotted(full_name)
+            _member = partial(_names_member, scope=scope, bundle=bundle, ref=order_ref)
+            if _order_qualifier is None and col_name in declared_alias_to_bound:
                 bo = declared_alias_to_bound[col_name]
             elif full_name in declared_alias_to_bound:
                 bo = declared_alias_to_bound[full_name]
-            elif _flatten_dotted(full_name) in declared_alias_to_bound:
+            elif _flat in declared_alias_to_bound and not (_flat in public_names and _member()):
                 # A joined dim/td is declared flattened; a dotted ORDER BY entry interns onto that slot.
-                bo = declared_alias_to_bound[_flatten_dotted(full_name)]
-            elif _order_host_local and f"_{col_name}" in declared_alias_to_bound:
+                bo = declared_alias_to_bound[_flat]
+            elif (
+                _order_host_local and col_name in declared_alias_to_bound
+                and not (col_name in public_names and _member())
+            ):
+                bo = declared_alias_to_bound[col_name]
+            elif _order_host_local and f"_{col_name}" in declared_alias_to_bound and not _member():
                 # ``count(*)`` surfaces as ``_count``; users order by the bare ``count``.
                 bo = declared_alias_to_bound[f"_{col_name}"]
             elif o.raw_expression:
@@ -621,14 +675,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
-    check_conditional_branches(
-        roots=[
-            *(dm.bound.value_key for dm in declared_metrics),
-            *(bf.value_key for bf in bound_filters),
-            *(spec.bound.value_key for spec in order_specs),
-        ],
-        field_type=field_type,
-    )
+    typed_roots = [
+        *(dm.bound.value_key for dm in declared_metrics),
+        *(bf.value_key for bf in bound_filters),
+        *(spec.bound.value_key for spec in order_specs),
+    ]
+    check_conditional_branches(roots=typed_roots, field_type=field_type)
+    check_time_of_day_operands(roots=typed_roots, field_type=field_type)
     declared_metrics, bound_filters, order_specs = _map_bound_keys(
         lambda vk: canonical_list_reads(vk, typing=lists),
         declared_metrics=declared_metrics,
@@ -669,11 +722,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             field_type=field_type,
         )
 
-    # Attach the active TD as time_key on every time-needing TransformKey the binder
-    # left at None — the stage's own bucket is the axis on a StageSchema.
+    # Attach the active TD as time_key on every time-needing TransformKey the binder left at None.
     active_td_key: Optional[TimeTruncKey] = None
-    _active_dataset = scope.population if isinstance(scope, DatasetScope) else None
-    active_td = _resolve_main_time_dimension(query=query, dataset=_active_dataset, root=root_spelling(scope))
+    active_td = _resolve_main_time_dimension(query=query, dataset=scope.population, root=root_spelling(scope))
     if active_td is not None:
         atd_key = bind_time_dimension(
             td=active_td, scope=scope, bundle=bundle,
@@ -748,20 +799,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         _td_key_set.add(vk)
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
-    # Normalise transform constituents (D4b, Axiom 11.1): an ungrained, non-windowed,
-    # local inner aggregate inside a transform constituent (metric/filter/order, not
-    # dimensions) is explicitly grained at the query grain — BEFORE partition-key
-    # validation, so the synthesized keys face the same attributability / resolution
-    # checks as a user-written partition_by=. Every dependent set below (dim-agg,
-    # combined-consumer, reagg-operand) is computed AFTER, over the normalised keys.
     _query_grain = Grain.of([*_dim_key_set, *_td_key_set])
-    declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lambda vk: normalize_transform_constituents(vk, query_grain=_query_grain),
-        declared_metrics=declared_metrics,
-        bound_filters=bound_filters,
-        order_specs=order_specs,
-        skip_dimensions=True,
-    )
 
     # An aggregate's "must be a query dimension" rule is positional — judged by the
     # checker after typing. A transform nested in an attached operand declares an
@@ -780,12 +818,10 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         lenient = isinstance(key, AggregateKey) or key in _reagg_operand_keys
         new_pks = []
         for pk in key.partition_keys or ():
-            # A partition key over a relationship must be attributable from the root; a
-            # re-aggregation's outer keys are judged against its operand grain instead.
-            if not is_reaggregation_key(key):
-                assert_partition_key_attributable(
-                    key=key, pk=pk, label=label, scope=scope, bundle=bundle,
-                )
+            # An unattributable aggregate key resolves at the mode gate; a transform's keys
+            # name operand-grain members, a re-aggregation outer's are judged against its operand.
+            if isinstance(key, AggregateKey) and not is_reaggregation_key(key):
+                assert_partition_key_analysable(pk=pk, label=label, scope=scope, bundle=bundle)
             is_query_dim = pk in _dim_key_set or pk in _td_key_set
             bucket = _td_by_source.get(pk)
             check_partition_key_resolves(
@@ -807,6 +843,49 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
+    # A ranked aggregation's grain drops its ranking key (semantics Axiom 5), before any grain is read: the
+    # dimensions settle first, and every other position reads them, and the grain, as settled.
+    def _settle(vk: ValueKey) -> ValueKey:
+        return settle_ranked_grains(vk, query_grain=_query_grain, active_bucket=active_td_key, row_default_key=_default_key)
+
+    _default_key = _row_default_key_resolver(
+        row_keys=[dm.bound.value_key for dm in declared_metrics[:n_dims + n_tds]], scope=scope, bundle=bundle,
+    )
+    n_grain = n_dims + n_tds
+    settled_dims = [_settle(dm.bound.value_key) for dm in declared_metrics[:n_grain]]
+    renamed = {dm.bound.value_key: s for dm, s in zip(declared_metrics, settled_dims) if s != dm.bound.value_key}
+    _query_grain = Grain.of(settled_dims)
+    if renamed:
+        declared_metrics, bound_filters, order_specs = _map_bound_keys(
+            lambda vk: substitute_value_keys(key=vk, mapping=renamed),
+            declared_metrics=declared_metrics,
+            bound_filters=bound_filters,
+            order_specs=order_specs,
+            skip_dimensions=True,
+        )
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: default_nested_grains(vk, query_grain=_query_grain, active_bucket=active_td_key),
+        declared_metrics=declared_metrics,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+        skip_dimensions=True,
+    )
+    # collected after the defaulting, so a written aggregate compares with its nested grains defaulted too
+    _written = written_grained_aggregates([
+        *settled_dims, *(dm.bound.value_key for dm in declared_metrics[n_grain:]),
+        *(bf.value_key for bf in bound_filters), *(sp.bound.value_key for sp in order_specs),
+    ])
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: _settle(unmark_written_grains(vk, written=_written)),
+        declared_metrics=declared_metrics,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+        skip_dimensions=True,
+    )
+    declared_metrics = [
+        dm.model_copy(update={"bound": dm.bound.model_copy(update={"value_key": s})})
+        for dm, s in zip(declared_metrics, settled_dims)
+    ] + declared_metrics[n_grain:]
     check_transform_partition_keys_in_operand_grain(
         roots=[
             *(dm.bound.value_key for dm in declared_metrics),
@@ -815,20 +894,29 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         ],
         query_grain=_query_grain, active_bucket=active_td_key,
     )
-
-    check_dimension_temporal_axis(
-        declared_metrics, bound_filters=bound_filters, order_specs=order_specs,
+    check_window_keys_in_operand_grain(
+        roots=[
+            *(dm.bound.value_key for dm in declared_metrics),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        query_grain=_query_grain, active_bucket=active_td_key,
+        root=scope.population.name if scope.population is not None else None,
     )
 
-    # Lower a collapsing transform constituent (first/last, D4c) to an exact
-    # per-partition pick AFTER the axis check (which sees the raw transform); the
-    # synthesized max's partition_by is a carrier grain key, validated inside the
-    # carrier sub-plan, so it runs after _rw. All positions.
-    declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lower_collapsing_constituents,
-        declared_metrics=declared_metrics,
-        bound_filters=bound_filters,
-        order_specs=order_specs,
+    check_temporal_axis(
+        declared_metrics, bound_filters=bound_filters, order_specs=order_specs,
+        query_grain=_query_grain, active_bucket=active_td_key,
+    )
+    if scope.population is not None:
+        _check_ranking_keys_determined(
+            [*(dm.bound.value_key for dm in declared_metrics), *(bf.value_key for bf in bound_filters),
+             *(sp.bound.value_key for sp in order_specs)],
+            query_grain=_query_grain, active_bucket=active_td_key, host=scope.population, bundle=bundle,
+        )
+    declared_metrics, bound_filters, order_specs, main_time_key = _home_value_positions(
+        declared_metrics, bound_filters=bound_filters, order_specs=order_specs, n_grain=n_dims + n_tds,
+        n_date_range=n_date_range, active_td_key=active_td_key, scope=scope, bundle=bundle,
     )
 
     return PreboundQuery(
@@ -837,13 +925,14 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filter_texts=bound_filter_texts,
         n_date_range=n_date_range,
         order_specs=order_specs,
-        main_time_key=active_td_key,
+        main_time_key=main_time_key,
         n_dims=n_dims,
         n_time_dimensions=n_tds,
         limit=query.limit,
         offset=query.offset,
         distinct_dimension_values=query.distinct_dimension_values,
         mode_policy=ModePolicy.resolve(query.to_many_handling),
+        ranking_candidates=tuple(dm.bound.value_key for dm in declared_metrics[:n_dims + n_tds]),
         granularity_conflicts=granularity_conflicts,
         whole_list_reads=list_reads,
         date_only_notices=notices,
@@ -853,10 +942,164 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 # Helpers
 
 
+def _check_ranking_keys_determined(
+    roots: List[ValueKey], *, query_grain: Grain, active_bucket: Optional[TimeTruncKey],
+    host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    """A ranked aggregation's key is a field of its home dataset (semantics Axiom 2.4). Over an aggregate: a grain
+    member, a field the grain pins, or an attached value at a grain the operand determines; over rows, an attached
+    value at a grain the home's rows determine (row-level keys are judged by closure at plan time)."""
+    for k in (k for root in roots for k in walk_value_keys(root)):
+        if not isinstance(k, AggregateKey):
+            continue
+        rk = explicit_ranking_key(k)
+        if rk is None or rk == active_bucket:  # the time axis is check_temporal_axis's
+            continue
+        if is_ranked_over_cells(k):
+            _check_key_over_cells(k, rk=rk, query_grain=query_grain, active_bucket=active_bucket, host=host,
+                                  bundle=bundle)
+        else:
+            _check_key_over_rows(k, rk=rk, query_grain=query_grain, active_bucket=active_bucket, host=host,
+                                 bundle=bundle)
+
+
+def _row_default_key_resolver(
+    *, row_keys: List[ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Callable[[AggregateKey], Optional[ValueKey]]:
+    """A ranked aggregation's default ranking key among the query's dimensions: the first temporal row-level one its
+    home determines, by the predicate its explicit key meets (functional-form › Default ranking key)."""
+    host = scope.population
+    if host is None:
+        return lambda _agg: None
+
+    def determined(key: ValueKey, *, path: Tuple[str, ...], home: SlayerDataset) -> bool:
+        try:
+            return grain_member_attributable(
+                key=key, target_path=path, root_dataset=home, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+                host_dataset=host, host_name=host.name,
+            )
+        except UnresolvableDimensionRelationshipError:
+            return False
+
+    def resolve(agg: AggregateKey) -> Optional[ValueKey]:
+        path = source_anchor_path(agg.source)
+        home = walk_key_path(dataset=host, path=path, bundle=bundle) if path else host
+        if home is None:
+            return None
+        candidates = row_keys if not path else [k for k in row_keys if determined(k, path=path, home=home)]
+        return temporal_row_dimension_key(row_keys=candidates, source_dataset=host, bundle=bundle)
+
+    return resolve
+
+
+def _check_key_over_cells(
+    k: AggregateKey, *, rk: ValueKey, query_grain: Grain, active_bucket: Optional[TimeTruncKey],
+    host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    operand = transform_operand_grain(k.source, query_grain=query_grain, active_bucket=active_bucket)
+    check_ranking_key_determined(term=k, key=rk, home=f"the operand grain ({grain_display(operand)})", determined=all(
+        m in operand or grain_determines(
+            key=m, grain=operand, host_dataset=host, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+        )
+        for m in value_grain(rk, query_grain=query_grain, active_bucket=active_bucket)
+    ))
+
+
+def _check_key_over_rows(
+    k: AggregateKey, *, rk: ValueKey, query_grain: Grain, active_bucket: Optional[TimeTruncKey],
+    host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> None:
+    path = source_anchor_path(k.source)
+    home = walk_key_path(dataset=host, path=path, bundle=bundle)
+    if home is None:
+        return
+    check_ranking_key_determined(term=k, key=rk, home=f"the rows of {home.name}", determined=all(
+        grain_member_attributable(
+            key=m, target_path=path, root_dataset=home, datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+            host_dataset=host, host_name=host.name,
+        )
+        for c in operand_constituents(rk) for m in value_grain(c, query_grain=query_grain, active_bucket=active_bucket)
+    ))
+
+
+def _home_reading(key: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ValueKey:
+    """``key`` read as a field of its home; a time bucket buckets its homed source."""
+    if isinstance(key, TimeTruncKey):
+        source = as_home_field(key.source, host_dataset=scope.population, bundle=bundle)
+        return key if source == key.source else key.model_copy(update={"source": source})
+    return as_home_field(key, host_dataset=scope.population, bundle=bundle)
+
+
+def _home_value_positions(
+    declared_metrics: List[DeclaredMetric], *, bound_filters: List[BoundFilter], order_specs: List[OrderSpec],
+    n_grain: int, n_date_range: int, active_td_key: Optional[TimeTruncKey], scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+) -> Tuple[List[DeclaredMetric], List[BoundFilter], List[OrderSpec], Optional[TimeTruncKey]]:
+    """Every dimension, time dimension and row-level order key read as a field of its home (semantics Axiom 13), once
+    binding has matched them; the partition and sort keys naming them, and each time dimension's date range, follow."""
+    homed: Dict[ValueKey, ValueKey] = {}
+    for dm in declared_metrics[:n_grain]:
+        if (h := _home_reading(dm.bound.value_key, scope=scope, bundle=bundle)) != dm.bound.value_key:
+            homed[dm.bound.value_key] = h
+    grain = {dm.bound.value_key for dm in declared_metrics[:n_grain]} | set(homed.values())
+
+    def order_key(k: ValueKey) -> ValueKey:
+        if k in homed:
+            return homed[k]
+        if k in grain or any(isinstance(n, (AggregateKey, TransformKey)) for n in walk_value_keys(k)):
+            return k
+        return as_home_field(k, host_dataset=scope.population, bundle=bundle)
+
+    def follow(k: ValueKey) -> ValueKey:
+        return _follow_homed(k, homed=homed)
+
+    declared_metrics = [
+        dm.model_copy(update={"bound": dm.bound.model_copy(update={"value_key": homed.get(dm.bound.value_key, dm.bound.value_key)})})
+        if i < n_grain else dm
+        for i, dm in enumerate(declared_metrics)
+    ]
+    order_specs = [
+        sp.model_copy(update={"bound": sp.bound.model_copy(update={"value_key": order_key(sp.bound.value_key)})})
+        for sp in order_specs
+    ]
+    if not homed:
+        return declared_metrics, bound_filters, order_specs, active_td_key
+    grain_dms, rest = declared_metrics[:n_grain], declared_metrics[n_grain:]
+    rest, bound_filters, order_specs = _map_bound_keys(
+        follow, declared_metrics=rest, bound_filters=bound_filters, order_specs=order_specs,
+    )
+    sources = {k.source: h.source for k, h in homed.items() if isinstance(k, TimeTruncKey) and isinstance(h, TimeTruncKey)}
+    _, ranged, _ = _map_bound_keys(
+        lambda k: _substituted(k, mapping=sources), declared_metrics=[], bound_filters=bound_filters[:n_date_range],
+        order_specs=[],
+    )
+    bound_filters = [*ranged, *bound_filters[n_date_range:]]
+    homed_td = homed.get(active_td_key) if active_td_key is not None else None
+    return [*grain_dms, *rest], bound_filters, order_specs, cast(Optional[TimeTruncKey], homed_td or active_td_key)
+
+
+def _substituted(key: ValueKey, *, mapping: Dict[ValueKey, ValueKey]) -> ValueKey:
+    if key in mapping:
+        return mapping[key]
+    return cast(ValueKey, key.map_children(lambda c: _substituted(c, mapping=mapping)))
+
+
+def _follow_homed(key: ValueKey, *, homed: Dict[ValueKey, ValueKey]) -> ValueKey:
+    """``key`` with every partition key and sort key that names a homed grain key replaced by its home reading."""
+    rebuilt = cast(ValueKey, key.map_children(lambda c: _follow_homed(c, homed=homed)))
+    if isinstance(rebuilt, (AggregateKey, TransformKey)) and rebuilt.partition_keys:
+        pks = Grain.of(homed.get(p, p) for p in rebuilt.partition_keys)
+        if pks != rebuilt.partition_keys:
+            rebuilt = rebuilt.model_copy(update={"partition_keys": pks})
+    if isinstance(rebuilt, TransformKey) and (tk := rebuilt.time_key) is not None and tk in homed:
+        rebuilt = rebuilt.model_copy(update={"time_key": homed[tk]})
+    return rebuilt
+
+
 def _format_description_for_dimension(
-    *, scope: DatasetScope | StageSchema, full_name: str,
+    *, scope: DatasetScope, full_name: str,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
-    if not isinstance(scope, DatasetScope) or scope.population is None:
+    if scope.population is None:
         return None, None
     if "." in full_name:
         return None, None
@@ -867,9 +1110,9 @@ def _format_description_for_dimension(
 
 
 def _format_description_for_metric_expression(
-    *, scope: DatasetScope | StageSchema, bound, bundle: ResolvedSourceBundle,
+    *, scope: DatasetScope, bound, bundle: ResolvedSourceBundle,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
-    if not isinstance(scope, DatasetScope) or scope.population is None:
+    if scope.population is None:
         return None, None
     return metric_key_format_description(
         dataset=scope.population, key=bound.value_key, bundle=bundle,
@@ -882,12 +1125,12 @@ def _rekeyed(dm: DeclaredMetric, key: ValueKey) -> DeclaredMetric:
     return dm.model_copy(update={"bound": dm.bound.model_copy(update={"value_key": key}), "is_dimension": True})
 
 
-def _list_typing(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> ListTyping:
+def _list_typing(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ListTyping:
     """The list rules' view of ``scope``: field and element types, element access, the database's list support."""
     def element_access(key: object) -> bool:
         path = tuple(getattr(key, "path", ()) or ())
-        if not path or not isinstance(scope, DatasetScope) or scope.population is None:
-            return bool(path) and isinstance(scope, StageSchema)
+        if not path or scope.population is None:
+            return False
         try:
             chain = follow(root=scope.population, path=path, datasets_by_name=bundle.datasets_by_name)
         except AmbiguousRelationshipPathError:
@@ -903,17 +1146,15 @@ def _list_typing(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBun
 
 
 def _type_for_metric_expression(
-    *, scope: DatasetScope | StageSchema, bound, bundle: ResolvedSourceBundle,
+    *, scope: DatasetScope, bound, bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    if isinstance(scope, StageSchema):
-        return stage_metric_type(bound.value_key, schema=scope)
     if scope.population is None:
         return None
-    return metric_key_type(dataset=scope.population, key=bound.value_key, bundle=bundle)
+    return SlotTyping(scope=scope, bundle=bundle).value_type(bound.value_key)
 
 
 def _retyped_after_coercion(
-    declared_metrics: List[DeclaredMetric], *, n_grain: int, scope: DatasetScope | StageSchema,
+    declared_metrics: List[DeclaredMetric], *, n_grain: int, scope: DatasetScope,
     bundle: ResolvedSourceBundle,
 ) -> List[DeclaredMetric]:
     """Inferred computed-dimension and metric types re-derived from their coerced keys."""
@@ -940,13 +1181,10 @@ def _joined_field_type(
 
 def _type_for_dimension(
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     full_name: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    if isinstance(scope, StageSchema):
-        col = scope.get(full_name)
-        return col.datatype if col is not None else None
     if scope.population is None:
         return None
     if "." in full_name:
@@ -957,24 +1195,13 @@ def _type_for_dimension(
     return col.datatype if col is not None else None
 
 
-def _opaque_dim_type(
-    *,
-    scope: DatasetScope | StageSchema,
-    full_name: str,
-    bundle: ResolvedSourceBundle,
-) -> Optional[DataType]:
-    if isinstance(scope, StageSchema):
-        col = scope.get(full_name)
-        return col.datatype if col is not None else None
-    return _type_for_dimension(scope=scope, full_name=full_name, bundle=bundle)
-
-
 def _walk_dotted(
-    *, source_dataset: SlayerDataset, hops: List[str], bundle: ResolvedSourceBundle,
+    *, source_dataset: SlayerDataset, hops: List[str], bundle: ResolvedSourceBundle, via: Tuple[str, ...] = (),
 ) -> Optional[Tuple[SlayerDataset, Tuple[str, ...]]]:
-    """``(terminal_dataset, canonical hops)`` of ``hops`` from ``source_dataset`` (None on a missing/circular/ambiguous hop)."""
+    """``(terminal_dataset, canonical hops)`` of ``hops`` from ``source_dataset`` after its canonical route ``via``
+    (None on a missing/circular/ambiguous hop)."""
     try:
-        return walk_terminal(root=source_dataset, path=hops, datasets_by_name=bundle.datasets_by_name)
+        return walk_terminal(root=source_dataset, path=hops, via=via, datasets_by_name=bundle.datasets_by_name)
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
         return None
 
@@ -1014,7 +1241,7 @@ def _route_short_form_saved_metric(
 
 def _resolve_saved_metric_ref(
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     expression: str,
 ) -> Optional[Tuple[SlayerDataset, "DatasetMetric", str]]:
@@ -1022,7 +1249,7 @@ def _resolve_saved_metric_ref(
     bare/dotted saved-metric reference (binder resolution order, short-form
     auto-routing included), else None. ``canonical_ref`` is the canonical dotted
     path when routed or respelled, else the expression text unchanged."""
-    if not isinstance(scope, DatasetScope) or scope.population is None:
+    if scope.population is None:
         return None
     host = scope.population
     try:
@@ -1031,6 +1258,8 @@ def _resolve_saved_metric_ref(
         return None
     if not isinstance(node, (Ref, DottedRef)):
         return None
+    if is_anchored(scope):
+        return _resolve_anchored_saved_metric_ref(node, host=host, bundle=bundle)
     parts = drop_root_qualifier(
         (node.name,) if isinstance(node, Ref) else node.parts, host.spelling, quoted=dotted_quoting(node),
     )
@@ -1047,6 +1276,40 @@ def _resolve_saved_metric_ref(
     terminal, canonical_ref = located
     mm = terminal.get_metric(leaf)
     return (terminal, mm, canonical_ref) if mm is not None else None
+
+
+def _resolve_anchored_saved_metric_ref(
+    node: Ref | DottedRef, *, host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[SlayerDataset, "DatasetMetric", str]]:
+    """A query reference's saved metric through the anchor resolver; a bare name or an unresolved path is none."""
+    if not isinstance(node, DottedRef):
+        return None
+    parts, quoted = node.parts, dotted_quoting(node)
+    datasets = bundle.datasets_by_name
+    anchor = find_anchor(parts[0], quoted=quoted[0], reader=host, datasets_by_name=datasets)
+    if anchor is None:
+        return None
+    *rest, leaf = parts[1:]
+    # A saved metric binds from its declaring dataset, reached from its anchor: the reader's route never decides it.
+    found = _walk_dotted(source_dataset=anchor, hops=rest, bundle=bundle) if rest else (anchor, ())
+    mm = found[0].get_metric(leaf) if found is not None else None
+    if found is None or mm is None:
+        return None
+    return found[0], mm, _reader_spelling(parts, anchor=anchor, host=host, bundle=bundle)
+
+
+def _reader_spelling(
+    parts: Tuple[str, ...], *, anchor: SlayerDataset, host: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> str:
+    """``parts`` spelled along the reader's route to the anchor, else as written."""
+    *rest, leaf = parts[1:]
+    try:
+        reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=bundle.datasets_by_name, rest=parts[1:])
+    except UnresolvableDimensionRelationshipError:
+        return ".".join(parts)
+    via = tuple(reached.route)
+    walked = _walk_dotted(source_dataset=host, hops=rest, bundle=bundle, via=via) if via or rest else (host, ())
+    return ".".join(parts) if walked is None else ".".join((*walked[1], leaf))
 
 
 def _locate_dotted_saved_metric(
@@ -1071,7 +1334,7 @@ def _locate_dotted_saved_metric(
 
 def _saved_dataset_metric_type(
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     expression: str,
 ) -> Optional[DataType]:
@@ -1081,7 +1344,7 @@ def _saved_dataset_metric_type(
 
 def _saved_metric_public_name(
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     expression: str,
 ) -> Optional[str]:
@@ -1095,33 +1358,20 @@ def _will_group_by(query: SlayerQuery) -> bool:
     return bool(query.metrics) or query.distinct_dimension_values
 
 
-def _reject_computed_dim_name_collision(
-    *, name: str, query: SlayerQuery, scope: DatasetScope | StageSchema,
-) -> None:
-    dataset_collision = None
-    if isinstance(scope, DatasetScope) and scope.population is not None:
-        dataset = scope.population
-        if dataset.get_field(name) is not None or dataset.get_metric(name) is not None:
-            dataset_collision = dataset.name
-    check_computed_dim_name_collision(
-        name=name,
-        dataset_name=dataset_collision,
-        query_metric_collision=any(
-            m.alias == name for m in (query.metrics or [])
-        ),
-    )
+def _reject_computed_dim_name_collision(*, name: str, query: SlayerQuery) -> None:
+    check_computed_dim_name_collision(name=name, query_metric_collision=any(m.alias == name for m in query.metrics or []))
 
 
 def _declared_computed_dimension(
     d: QueryDimension,
     *,
     query: SlayerQuery,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, ValueKey]] = None,
 ) -> DeclaredMetric:
     name = d.name
-    _reject_computed_dim_name_collision(name=name, query=query, scope=scope)
+    _reject_computed_dim_name_collision(name=name, query=query)
     parsed = parse_bound_expr(d.field, query.bound_variables)
     bound = bind_expr(
         parsed=parsed, scope=scope, bundle=bundle, allow_metrics=True,
@@ -1135,10 +1385,14 @@ def _declared_computed_dimension(
     check_list_dimension(name=name, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle),
                          will_group_by=_will_group_by(query))
     dim_type = _type_for_metric_expression(scope=scope, bound=bound, bundle=bundle)
+    key = d.alias or _template_key(
+        d.template, scope=scope, bundle=bundle,
+        named=lambda rel: auto_name_from_expression(legacy_result_name_seed(rel)),
+    )
     return DeclaredMetric(
         bound=bound,
         declared_name=name,
-        public_name=name,
+        public_name=key or _legacy_key(scope, name),
         label=d.label,
         name_is_explicit=name != computed_dimension_name(d.template),
         datatype=dim_type,
@@ -1150,7 +1404,7 @@ def _declared_computed_dimension(
 def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential projection passes (dimensions incl. computed, time dimensions, metrics) building one ordered declared list; each pass is one contract and the order (dims → tds → metrics) is the public projection order the function pins.
     *,
     query: SlayerQuery,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
 ) -> List[DeclaredMetric]:
     declared: List[DeclaredMetric] = []
@@ -1198,7 +1452,7 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             # Opaque-grouping rule lives in the checker; invoked here to preserve the per-dimension firing point.
             check_opaque_grouping_dim(
                 full_name=canonical,
-                dim_type=_opaque_dim_type(scope=scope, full_name=canonical, bundle=bundle),
+                dim_type=_type_for_dimension(scope=scope, full_name=canonical, bundle=bundle),
                 will_group_by=_will_group_by(query),
             )
             flat_name = _flatten_dotted(canonical)
@@ -1209,10 +1463,11 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             dim_type = _type_for_dimension(
                 scope=scope, full_name=canonical, bundle=bundle,
             )
+            key = _reference_key(parse_expr(ref.spelling), value_key=bound.value_key, scope=scope, bundle=bundle)
             declared.append(DeclaredMetric(
                 bound=bound,
                 declared_name=flat_name,
-                public_name=flat_name,
+                public_name=key or _legacy_key(scope, canonical),
                 label=d.label,
                 datatype=dim_type,
                 element_type=key_element_type(bound.value_key, scope=scope, bundle=bundle),
@@ -1225,6 +1480,7 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
     # granularity-free key.
     bound_tds: List[Tuple[TimeDimension, BoundExpr, str]] = []
     td_types: List[DataType] = []
+    td_keys: List[Optional[str]] = []
     for i, td in enumerate(query.time_dimensions or []):
         with stale_spelling_position(f"time_dimensions[{i}]"):
             granularity = _td_granularity(td, bundle=bundle)
@@ -1233,21 +1489,21 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             field = td.field_ref
             canonical = td.effective_name or btd.bound.routed_dotted or (field.full_name if field else td.field)
             bound_tds.append((td, btd.bound, canonical))
+            td_keys.append(td.alias or _time_dimension_key(td, bound=btd.bound, scope=scope, bundle=bundle))
     _assert_equivalent_tds_agree(bound_tds)
     dim_alias_map.update(_time_dimension_aliases(bound_tds))
     _td_source_counts = Counter(_td_source(bound) for _, bound, _ in bound_tds)
-    for (td, bound, canonical), td_type in zip(bound_tds, td_types):
+    for (td, bound, canonical), td_type, td_key in zip(bound_tds, td_types, td_keys):
         base_flat = _flatten_dotted(canonical)
         assert isinstance(bound.value_key, TimeTruncKey)
-        public = (
-            f"{base_flat}.{bound.value_key.granularity}"
-            if td.alias is None and _td_source_counts[bound.value_key.source] > 1 else base_flat
-        )
+        suffixed = td.alias is None and _td_source_counts[bound.value_key.source] > 1
+        public = f"{base_flat}.{bound.value_key.granularity}" if suffixed else base_flat
+        key = td_key or _legacy_key(scope, canonical)
         _guard_flatten(flat_name=_flatten_dotted(public), origin=canonical)
         declared.append(DeclaredMetric(
             bound=bound,
             declared_name=public,
-            public_name=public,
+            public_name=f"{key}.{bound.value_key.granularity}" if suffixed else key,
             label=td.label,
             datatype=td_type,
         ))
@@ -1277,7 +1533,9 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 m.template, parsed=parse_expr(m.template), root=root_spelling(scope),
             )
             declared_name = alias_name or template_name or canonical
-            public_name = declared_name
+            public_name = explicit_name or _metric_key(
+                m, parsed=parsed, bound=bound, scope=scope, bundle=bundle,
+            ) or _legacy_key(scope, declared_name)
             # Two DIFFERENT values whose DERIVED keys collide would silently share
             # a field (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
             # sanitize to ``amount_cost_sum``) — fail loudly; the SAME
@@ -1310,7 +1568,7 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 public_name=public_name,
                 label=m.label,
                 # Keep the canonical alias when the surfaced name differs, so a filter / ORDER BY naming the aggregate resolves.
-                canonical_alias=canonical if alias_name or canonical != public_name else None,
+                canonical_alias=canonical if alias_name or canonical != declared_name else None,
                 name_is_explicit=explicit_name is not None,
                 datatype=m_type,
                 element_type=key_element_type(bound.value_key, scope=scope, bundle=bundle),
@@ -1318,7 +1576,6 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 # A declared Decimal is exact: it keeps the source's native decimal values.
                 preserve_native_type=(
                     explicit_type in (None, DataType.DECIMAL)
-                    and isinstance(scope, DatasetScope)
                     and scope.population is not None
                     and metric_key_preserves_native_type(
                         dataset=scope.population, key=bound.value_key,
@@ -1328,6 +1585,157 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 description=desc,
             ))
     return declared
+
+
+# Result keys (queries/references): an unaliased entry keys by its anchor, canonical route and leaf.
+
+
+def _reference_spelling(
+    node: DottedRef, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[AnchoredSpelling]:
+    parts, quoted = node.parts, dotted_quoting(node)
+    if scope.population is None:
+        return None
+    return anchored_spelling(parts, quoted=quoted, reader=scope.population, datasets_by_name=bundle.datasets_by_name)
+
+
+def _spellings(
+    parsed: ParsedExpr, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[List[Tuple[DottedRef, AnchoredSpelling]]]:
+    """Each reference of ``parsed`` with its anchored identity (aliases skipped); ``None`` outside an anchored scope or
+    when one does not resolve."""
+    if not is_anchored(scope):
+        return None
+    out: List[Tuple[DottedRef, AnchoredSpelling]] = []
+    for node, _agg in walk_references(parsed):
+        if isinstance(node, Ref):
+            continue
+        if not isinstance(node, DottedRef):
+            return None
+        spelling = _reference_spelling(node, scope=scope, bundle=bundle)
+        if spelling is None:
+            return None
+        out.append((node, spelling))
+    return out
+
+
+def _common_prefix(spellings: List[Tuple[DottedRef, AnchoredSpelling]]) -> Tuple[str, ...]:
+    prefix: Tuple[str, ...] = spellings[0][1].parts if spellings else ()
+    for _node, spelling in spellings[1:]:
+        n = 0
+        while n < min(len(prefix), len(spelling.parts)) and prefix[n] == spelling.parts[n]:
+            n += 1
+        prefix = prefix[:n]
+    return prefix
+
+
+def _relative_to(parsed: ParsedExpr, *, spellings: List[Tuple[DottedRef, AnchoredSpelling]],
+                 prefix: Tuple[str, ...]) -> ParsedExpr:
+    """``parsed`` with each reference spelled from ``prefix`` (its canonical route after it, then its leaf)."""
+    by_id = {id(node): spelling for node, spelling in spellings}
+
+    def rebased(ref: Ref | DottedRef) -> ParsedExpr:
+        spelling = by_id.get(id(ref))
+        if spelling is None or not isinstance(ref, DottedRef):
+            return ref
+        rest = (*spelling.parts[len(prefix):], ref.parts[-1])
+        if rest == ("*",):
+            return StarSource()
+        return Ref(name=rest[0], evaluated=ref.evaluated) if len(rest) == 1 else DottedRef(
+            parts=rest, evaluated=ref.evaluated)
+
+    return map_refs(parsed, rebased)
+
+
+def _rebased_key(key: ValueKey, reach: Tuple[str, ...]) -> ValueKey:
+    """``key``'s row-level paths read from ``reach`` on (attached constituents untouched)."""
+    if isinstance(key, (FieldKey, FieldSqlKey, StarKey)):
+        return key.model_copy(update={"path": key.path[len(reach):]}) if key.path[:len(reach)] == reach else key
+    if isinstance(key, (AggregateKey, TransformKey)):
+        return key
+    return cast(ValueKey, key.map_children(lambda child: _rebased_key(child, reach)))
+
+
+def _reference_key(parsed: ParsedExpr, *, value_key: ValueKey, scope: DatasetScope,
+                   bundle: ResolvedSourceBundle) -> Optional[str]:
+    """A plain reference's key: its anchor, canonical route and leaf."""
+    if not isinstance(parsed, DottedRef):
+        return None
+    found = _spellings(parsed, scope=scope, bundle=bundle)
+    if not found:
+        return None
+    key = value_key.source if isinstance(value_key, TimeTruncKey) else value_key
+    leaf = field_leaf(key) if isinstance(key, (FieldKey, FieldSqlKey)) else parsed.parts[-1]
+    return ".".join((*found[0][1].parts, leaf))
+
+
+def _expression_key(
+    parsed: ParsedExpr, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+    named: Callable[[ParsedExpr], str], value_key: Optional[ValueKey] = None,
+) -> Optional[str]:
+    """An unaliased expression's key: its references' common anchored prefix, then its name read from that prefix;
+    with no common anchor, its name alone."""
+    found = _spellings(parsed, scope=scope, bundle=bundle)
+    if found is None:
+        return None
+    prefix = _common_prefix(found)
+    filtered = any(isinstance(n, AggCall) and n.filter is not None for n in walk_parsed(parsed))
+    if prefix and isinstance(value_key, AggregateKey) and not filtered:
+        part = found[0][1]
+        reach = part.reach[:len(part.reach) - (len(part.parts) - len(prefix))]
+        spelled = spelled_aggregate_key(parsed=parsed, key=value_key, bundle=bundle)
+        alias = canonical_aggregate_alias(
+            spelled.model_copy(update={"source": _rebased_key(spelled.source, reach)}), profile="stage_expression",
+        )
+        if alias is not None:
+            return ".".join((*prefix, alias))
+    name = named(_relative_to(parsed, spellings=found, prefix=prefix))
+    return ".".join((*prefix, name)) if prefix else name
+
+
+def _template_key(
+    template: str, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+    named: Callable[[ParsedExpr], str],
+) -> Optional[str]:
+    """``_expression_key`` of a ``{variable}`` template; one unparseable before binding is named from its text."""
+    try:
+        return _expression_key(parse_expr(template), scope=scope, bundle=bundle, named=named)
+    except ValueError:
+        pass
+    found = _spellings(parse_template(template), scope=scope, bundle=bundle)
+    if found is None:
+        return None
+    prefix = _common_prefix(found)
+    head = ".".join(prefix) + "." if prefix else ""
+    name = auto_name_from_expression(template.replace(head, "") if head else template)
+    return head + name
+
+
+def _time_dimension_key(
+    td: TimeDimension, *, bound: BoundExpr, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[str]:
+    if td.field_ref is not None:
+        return _reference_key(parse_expr(td.field), value_key=bound.value_key, scope=scope, bundle=bundle)
+    return _template_key(td.template, scope=scope, bundle=bundle,
+                         named=lambda rel: auto_name_from_expression(legacy_result_name_seed(rel)))
+
+
+def _metric_key(
+    m: QueryMetric, *, parsed: ParsedExpr, bound: BoundExpr, scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+) -> Optional[str]:
+    """An unaliased metric's key: a saved metric's reference as written canonically, else its expression's."""
+    if isinstance(parsed, DottedRef):
+        return _reference_key(parsed, value_key=bound.value_key, scope=scope, bundle=bundle)
+    if m.template != m.metric:
+        return _template_key(m.template, scope=scope, bundle=bundle, named=expression_text_alias)
+    return _expression_key(parsed, scope=scope, bundle=bundle, named=expression_text_alias, value_key=bound.value_key)
+
+
+def _legacy_key(scope: DatasetScope, name: str) -> str:
+    """The key of an entry outside an anchored scope: its name under the scope's root."""
+    root = root_spelling(scope)
+    return f"{root}.{name}" if root else name
 
 
 def _canonical_alias_for_expression(
@@ -1401,7 +1809,7 @@ def _check_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) 
 
 
 def _dedupe_equivalent_time_dimensions(
-    query: SlayerQuery, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    query: SlayerQuery, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> SlayerQuery:
     """Spellings of one time dimension (one bucket, name, date range and label) project once."""
     tds = query.time_dimensions or []
@@ -1420,6 +1828,30 @@ def _dedupe_equivalent_time_dimensions(
     return query if len(kept) == len(tds) else query.model_copy(update={"time_dimensions": kept})
 
 
+def _dedupe_spelling_twin_dimensions(
+    query: SlayerQuery, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> SlayerQuery:
+    """Spellings of one reference from one anchor (one value, key and label) project once."""
+    dims = query.dimensions or []
+    if len(dims) < 2 or not is_anchored(scope):
+        return query
+    seen: set = set()
+    kept: List[QueryDimension] = []
+    for i, d in enumerate(dims):
+        ref = d.ref
+        identity = None
+        if not d.is_computed and ref is not None:
+            with stale_spelling_position(f"dimensions[{i}]"):
+                parsed = parse_expr(ref.spelling)
+                bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+            identity = (bound.value_key, _reference_key(parsed, value_key=bound.value_key, scope=scope, bundle=bundle),
+                        d.label)
+        if identity is None or identity not in seen:
+            seen.add(identity)
+            kept.append(d)
+    return query if len(kept) == len(dims) else query.model_copy(update={"dimensions": kept})
+
+
 def _check_dimension_call(entry: str, *, bundle: ResolvedSourceBundle) -> None:
     node, callee = call_callee(entry)
     if callee is None or functional_call_field(node) is None:
@@ -1434,7 +1866,7 @@ def _check_dimension_call(entry: str, *, bundle: ResolvedSourceBundle) -> None:
 def _build_date_range_filter(
     *,
     td: TimeDimension,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
 ) -> BoundFilter:
     """A TimeDimension's ``date_range`` as one row-phase filter on its untruncated value: a single
@@ -1475,33 +1907,67 @@ def _snapped_value(
     return floor_to(snapped, TimeGranularity.DAY).date() if is_date else snapped
 
 
+def _anchor_free(key: ValueKey) -> ValueKey:
+    """``key`` as the population reads it: two spellings of one column are one column."""
+    return key.model_copy(update={"anchor": None}) if isinstance(key, (FieldKey, FieldSqlKey)) else key
+
+
 def _snap_frame_bound(
-    cj: ValueKey, *, grans_by_field: Dict[ValueKey, List[Granularity]],
+    cj: ValueKey, *, grans_by_read: Dict[ValueKey, List[Granularity]],
     field_type, now: datetime, upper_seen: set,
 ) -> ValueKey:
-    """A frame-bound conjunct on a time-dimension field snapped to a bucket boundary; others untouched."""
+    """A frame-bound conjunct on a time-dimension column snapped to a bucket boundary of every granularity reading
+    that column; others untouched. The bound keeps its own spelling."""
     if isinstance(cj, ArithmeticKey) and cj.op == "and":
         return cj.map_children(lambda c: _snap_frame_bound(
-            c, grans_by_field=grans_by_field, field_type=field_type, now=now, upper_seen=upper_seen,
+            c, grans_by_read=grans_by_read, field_type=field_type, now=now, upper_seen=upper_seen,
         ))
-    if not is_frame_bound(key=cj, time_fields=grans_by_field.keys()):
+    if not isinstance(cj, ArithmeticKey) or not is_frame_bound(
+            key=cj.model_copy(update={"operands": tuple(_anchor_free(o) for o in cj.operands)}),
+            time_fields=grans_by_read.keys()):
         return cj
-    assert isinstance(cj, ArithmeticKey)
     field, literal = cj.operands
     op = cj.op
-    if field not in grans_by_field:
+    if _anchor_free(field) not in grans_by_read:
         field, literal, op = literal, field, _MIRROR[op]
     assert isinstance(literal, LiteralKey) and isinstance(literal.value, date)
     value = _as_datetime(literal.value)
     if op in _UPPER_OPS:
-        upper_seen.add(field)
+        upper_seen.add(_anchor_free(field))
         value = min(value, now)
     snapped = _snapped_value(
-        value, grans=grans_by_field[field], is_date=field_type(field) is DataType.DATE,
+        value, grans=grans_by_read[_anchor_free(field)], is_date=field_type(field) is DataType.DATE,
     )
     return ArithmeticKey(
         op=">=" if op in _LOWER_OPS else "<", operands=(field, LiteralKey(value=snapped)),
     )
+
+
+def _granularities_by_read(
+    td_keys: List[ValueKey],
+) -> Tuple[Dict[ValueKey, List[Granularity]], Dict[ValueKey, ValueKey]]:
+    """Each time-dimension column's requested granularities over all its spellings, in first-seen order, and the
+    column's first spelling."""
+    grans_by_read: Dict[ValueKey, List[Granularity]] = {}
+    spelling: Dict[ValueKey, ValueKey] = {}
+    for td_key in td_keys:
+        if isinstance(td_key, TimeTruncKey):
+            read = _anchor_free(td_key.source)
+            spelling.setdefault(read, td_key.source)
+            grans = grans_by_read.setdefault(read, [])
+            if td_key.granularity not in grans:
+                grans.append(td_key.granularity)
+    return grans_by_read, spelling
+
+
+def _granularity_conflicts(grans_by_read: Dict[ValueKey, List[Granularity]]) -> List[GranularityConflict]:
+    """Granularity pairs on one column that do not nest."""
+    return [
+        GranularityConflict(field=dotted_key_display(field), granularities=(a, b))
+        for field, grans in grans_by_read.items()
+        for i, a in enumerate(grans) for b in grans[i + 1:]
+        if not (nests_into(a, b) or nests_into(b, a))
+    ]
 
 
 def _snap_whole_periods(
@@ -1516,18 +1982,8 @@ def _snap_whole_periods(
     """``whole_periods_only``: snap every frame bound on a time-dimension field down to the
     earliest bucket boundary, the upper bound clamped to now (added when absent); report
     granularity pairs on one field that do not nest."""
-    grans_by_field: Dict[ValueKey, List[Granularity]] = {}
-    for td_key in td_keys:
-        if isinstance(td_key, TimeTruncKey):
-            grans = grans_by_field.setdefault(td_key.source, [])
-            if td_key.granularity not in grans:
-                grans.append(td_key.granularity)
-    conflicts = [
-        GranularityConflict(field=dotted_key_display(field), granularities=(a, b))
-        for field, grans in grans_by_field.items()
-        for i, a in enumerate(grans) for b in grans[i + 1:]
-        if not (nests_into(a, b) or nests_into(b, a))
-    ]
+    grans_by_read, spelling = _granularities_by_read(td_keys)
+    conflicts = _granularity_conflicts(grans_by_read)
     upper_seen: set = set()
     snapped = []
     for bf in bound_filters:
@@ -1535,16 +1991,17 @@ def _snap_whole_periods(
             snapped.append(bf)
             continue
         vk = _snap_frame_bound(
-            bf.value_key, grans_by_field=grans_by_field, field_type=field_type,
+            bf.value_key, grans_by_read=grans_by_read, field_type=field_type,
             now=now, upper_seen=upper_seen,
         )
         snapped.append(bf if vk is bf.value_key else bf.model_copy(update={
             "value_key": vk, "referenced_keys": tuple(walk_value_keys(vk)),
         }))
     added = []
-    for field, grans in grans_by_field.items():
-        if field in upper_seen:
+    for read, grans in grans_by_read.items():
+        if read in upper_seen:
             continue
+        field = spelling[read]
         upper = _snapped_value(now, grans=grans, is_date=field_type(field) is DataType.DATE)
         vk = ArithmeticKey(op="<", operands=(field, LiteralKey(value=upper)))
         added.append(BoundFilter(value_key=vk, phase=Phase.ROW, referenced_keys=tuple(walk_value_keys(vk))))
@@ -1577,7 +2034,7 @@ def _assert_equivalent_tds_agree(
 
 def _projected_bucket_td(
     *, expr: str, granularity: Granularity, buckets: List[Tuple[TimeDimension, ValueKey]],
-    scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> Optional[TimeDimension]:
     """The projected time dimension bucketing ``expr`` at ``granularity``: its text, else its bound identity."""
     by_text = next((td for td, key in buckets if td.field == expr and _bucket_granularity(key) == granularity), None)
@@ -1608,30 +2065,33 @@ def _time_dimension_aliases(bound_tds: List[Tuple[TimeDimension, BoundExpr, str]
     return {name: key for name, key in named if counts[name] == 1}
 
 
-def _host_is_spine(scope: DatasetScope | StageSchema) -> bool:
-    return isinstance(scope, DatasetScope) and scope.population is not None and is_spine(scope.population)
+def _host_is_spine(scope: DatasetScope) -> bool:
+    return scope.population is not None and is_spine(scope.population)
 
 
-def _text_reads_spine(text: str, *, scope: DatasetScope | StageSchema) -> bool:
+def _text_reads_spine(text: str, *, scope: DatasetScope) -> bool:
     """Whether Mode-B ``text`` reads the spine: by a dotted path, or bare from a spine root."""
     return any(
         path[0] == TIME_SPINE_DATASET if len(path) > 1 else _host_is_spine(scope)
-        for path in text_paths(text, root=root_spelling(scope))
+        for path in text_paths(text, root=None if is_anchored(scope) else root_spelling(scope))
     )
 
 
-def _reads_spine(source: ValueKey, *, scope: DatasetScope | StageSchema) -> bool:
+def _reads_spine(source: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> bool:
     """Whether ``source`` reads ``time_spine.timestamp``."""
-    host_is_spine = _host_is_spine(scope)
-    return any(
-        isinstance(k, FieldKey) and k.leaf == TIME_SPINE_FIELD
-        and (k.path[-1:] == (TIME_SPINE_DATASET,) or (not k.path and host_is_spine))
-        for k in walk_value_keys(source)
-    )
+    host = scope.population
+
+    def spine_path(path: Tuple[str, ...]) -> bool:
+        if host is None:
+            return path[-1:] == (TIME_SPINE_DATASET,)
+        return reaches_spine(root=host, path=path, datasets_by_name=bundle.datasets_by_name) if path else is_spine(host)
+
+    return any(isinstance(k, FieldKey) and k.leaf == TIME_SPINE_FIELD and spine_path(k.path)
+               for k in walk_value_keys(source))
 
 
 def _check_time_dimension(
-    *, td: TimeDimension, btd: BoundTimeDimension, scope: DatasetScope | StageSchema,
+    *, td: TimeDimension, btd: BoundTimeDimension, scope: DatasetScope,
     bundle: ResolvedSourceBundle, granularity: Granularity,
 ) -> DataType:
     """The checker's time-dimension rules (P9): row-level and homed (an expression), temporal, re-bucketing; its checked type."""
@@ -1639,15 +2099,9 @@ def _check_time_dimension(
     if btd.is_expression:
         source = _td_source(btd.bound)
         check_spine_time_dimension(
-            offender=td.field if _reads_spine(source, scope=scope) else None, remedy=bucket_remedy(source),
+            offender=td.field if _reads_spine(source, scope=scope, bundle=bundle) else None, remedy=bucket_remedy(source),
         )
         check_time_dimension_row_level(name=td.field, source=source)
-        if isinstance(scope, DatasetScope) and scope.population is not None:
-            check_time_dimension_home(
-                name=td.field,
-                crossing=row_expression_crossing(source=source, host_dataset=scope.population, bundle=bundle),
-                anchor=".".join((scope.population.name, *source_anchor_path(source))),
-            )
         field_type = time_dimension_type(source, field_type=scope_field_type(scope=scope, bundle=bundle))
     check_time_dimension_field(
         name=td.field,
@@ -1655,6 +2109,8 @@ def _check_time_dimension(
         requested_granularity=granularity,
         bucketed_leaves=btd.bucketed_leaves,
         is_expression=btd.is_expression,
+        zone=bundle.time_zone,
+        bucketed_zones=btd.bucketed_zones,
     )
     assert field_type is not None  # the checker refuses a non-temporal one
     return field_type
@@ -1720,7 +2176,7 @@ def _resolve_main_time_dimension(
     dataset: Optional[SlayerDataset],
     root: Optional[str] = None,
 ) -> Optional[TimeDimension]:
-    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else the dataset's default_time_dimension else None. A stage has no dataset, so its default step is skipped."""
+    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else the dataset's default_time_dimension else None."""
     tds = list(query.time_dimensions or [])
     if not tds:
         return None

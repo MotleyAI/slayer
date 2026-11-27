@@ -1,11 +1,11 @@
-"""DEV-1824 regression — a ``first`` / ``last`` VALUE of a TEMPORAL column must
+"""Regression — a ``first`` / ``last`` VALUE of a TEMPORAL field must
 not be CAST to its declared type in the ranked CTE.
 
 The value IS the raw picked column (``MAX(CASE WHEN rn = 1 THEN col)``), so the
 declared-type cast is redundant on every dialect and, on SQLite, actively wrong:
 ``CAST(<text date> AS TIMESTAMP)`` takes NUMERIC affinity and truncates the date
-to its leading year (every value collapses to e.g. ``2024``). Pre-existing bug
-surfaced by DEV-1824; fixed at the shared ranked renderer via
+to its leading year (every value collapses to e.g. ``2024``). Pre-existing bug;
+fixed at the shared ranked renderer via
 ``_ranked_value_cast_type``. The regression under test here is a PLAIN
 (non-partition) first/last — the partitioned form is covered by
 ``test_dev1824_computed_dim_execution.TestFirstLastInDimension``. Fails without
@@ -39,18 +39,18 @@ class TestRankedTemporalValueNotTruncated:
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="last(ordered_at)", alias="lt")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="last(orders.ordered_at)", alias="lt")],
         ))
-        got = {r["orders.region"]: str(r["orders.lt"])[:10] for r in resp.data}
+        got = {r["orders.region"]: str(r["lt"])[:10] for r in resp.data}
         assert got == REGION_LAST_AT
 
     async def test_plain_first_of_timestamp_returns_the_full_date(
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="first(ordered_at)", alias="ft")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="first(orders.ordered_at)", alias="ft")],
         ))
-        got = {r["orders.region"]: str(r["orders.ft"])[:10] for r in resp.data}
+        got = {r["orders.region"]: str(r["ft"])[:10] for r in resp.data}
         assert got == REGION_FIRST_AT

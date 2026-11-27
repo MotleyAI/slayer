@@ -1,4 +1,4 @@
-"""Every dialect renders a model's filtered dataset: a derived table, inlined to-one joins, an ``EXISTS`` association."""
+"""Every dialect renders a dataset's filtered dataset: a derived table, inlined to-one joins, an ``EXISTS`` association."""
 
 from __future__ import annotations
 
@@ -9,23 +9,36 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
-from tests._dev2210_fixtures import render
+from slayer.core.query import SlayerQuery
+from slayer.engine.plan import plan_query
+from slayer.sql.generator import SQLGenerator
+from tests._dev2210_fixtures import bundle, table_datasets
+from tests._trusted import trusting_all
 
 DIALECTS = ["postgres", "duckdb", "sqlite", "clickhouse", "bigquery", "tsql", "trino", "mysql", "snowflake"]
 
 SHAPES: dict[str, dict[str, Any]] = {
-    "filtered-root": {"population": "done_orders", "dimensions": ["id"]},
-    "inlined-to-one-filter": {"population": "returns_of_done", "dimensions": ["id"]},
-    "association-filter": {"population": "ups_orders", "dimensions": ["id"]},
-    "join-target": {"population": "returns", "dimensions": ["id", "done_orders.status"]},
-    "association-join-target": {"population": "returns", "dimensions": ["id", "ups_orders.id"]},
-    "pushed-down": {"population": "orders", "dimensions": ["id"], "filter": ["late_returns.id is null"]},
-    "forced-association": {"population": "returns_of_done", "dimensions": ["id"]},
+    "filtered-root": {"population": "done_orders", "dimensions": ["done_orders.id"]},
+    "inlined-to-one-filter": {"population": "returns_of_done", "dimensions": ["returns_of_done.id"]},
+    "association-filter": {"population": "ups_orders", "dimensions": ["ups_orders.id"]},
+    "join-target": {"population": "returns", "dimensions": ["returns.id", "done_orders.status"]},
+    "association-join-target": {"population": "returns", "dimensions": ["returns.id", "ups_orders.id"]},
+    "pushed-down": {"population": "orders", "dimensions": ["orders.id"], "filter": ["late_returns.id is null"]},
+    "forced-association": {"population": "returns_of_done", "dimensions": ["returns_of_done.id"]},
 }
 
 
+def _render(query: dict[str, Any], *, dialect: str, force_association: bool = False) -> str:
+    """``render`` over trusted fixture datasets: these pins describe the inline-join lowering of trusted hops."""
+    q = SlayerQuery.model_validate(query)
+    assert isinstance(q.population, str)
+    b = bundle(q.population, dialect=dialect, datasets=trusting_all(table_datasets()))
+    gen = SQLGenerator(dialect=dialect, force_association_filters=force_association)
+    return gen.generate_from_planned(plan_query(query=q, bundle=b), bundle=b)
+
+
 def _tree(shape: str, dialect: str) -> Expr:
-    sql = render(SHAPES[shape], dialect=dialect, force_association=shape == "forced-association")
+    sql = _render(SHAPES[shape], dialect=dialect, force_association=shape == "forced-association")
     statements = sqlglot.parse(sql, read=dialect)
     assert len(statements) == 1, sql
     assert statements[0] is not None, sql

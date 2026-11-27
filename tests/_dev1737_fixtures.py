@@ -1,4 +1,4 @@
-"""Shared fixtures for the Mode-B date functions: seeded tables, models, a Python oracle, and the executed case matrix."""
+"""Shared fixtures for the Mode-B date functions: seeded tables, datasets, a Python oracle, and the executed case matrix."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ BACKENDS = ("sqlite", "duckdb")
 
 PARTS = (
     "year", "iso_year", "quarter", "month", "week", "day",
-    "day_of_week", "day_of_year", "hour", "minute", "second",
+    "day_of_week", "day_of_year", "hour", "minute", "second", "millisecond",
 )
 UNITS = ("second", "minute", "hour", "day", "week", "week_sunday", "month", "quarter", "year")
 
@@ -202,6 +202,8 @@ def oracle_part(part: str, v: date | datetime | None) -> Optional[int]:
     sub_day = {"hour": "hour", "minute": "minute", "second": "second"}
     if part in sub_day:
         return getattr(v, sub_day[part]) if isinstance(v, datetime) else 0
+    if part == "millisecond":
+        return v.microsecond // 1000 if isinstance(v, datetime) else 0
     return {
         "year": d.year, "iso_year": iso.year, "quarter": (d.month - 1) // 3 + 1,
         "month": d.month, "week": iso.week, "day": d.day,
@@ -287,29 +289,29 @@ def matrix_cases() -> list[DateCase]:
     for part in PARTS:
         for col in ("d1", "t1"):
             cases.append(_case(
-                f"part|{part}|{col}", f"date_part('{part}', {col})",
+                f"part|{part}|{col}", f"date_part('{part}', dt.{col})",
                 lambda r, p=part, c=col: oracle_part(p, r[c]),
             ))
     for unit in UNITS:
         for s, e in (("d1", "d2"), ("t1", "t2"), ("d1", "t2"), ("t1", "d2")):
             cases.append(_case(
-                f"diff|{unit}|{s}-{e}", f"date_diff('{unit}', {s}, {e})",
+                f"diff|{unit}|{s}-{e}", f"date_diff('{unit}', dt.{s}, dt.{e})",
                 lambda r, u=unit, a=s, b=e: oracle_diff(u, r[a], r[b]),
             ))
     for unit in UNITS:
         for col in ("d1", "t1"):
-            for label, count in (("plus1", "1"), ("minus13", "-13"), ("computed", "n")):
+            for label, count in (("plus1", "1"), ("minus13", "-13"), ("computed", "dt.n")):
                 cases.append(_case(
-                    f"add|{unit}|{col}|{label}", f"date_add({col}, {count}, '{unit}')",
+                    f"add|{unit}|{col}|{label}", f"date_add(dt.{col}, {count}, '{unit}')",
                     lambda r, u=unit, c=col, k=count: oracle_add(
-                        r[c], r["n"] if k == "n" else int(k), u),
+                        r[c], r["n"] if k == "dt.n" else int(k), u),
                 ))
     cases += [
-        _case("interval|plus|d1", "d1 + interval(1, 'month')", lambda r: oracle_add(r["d1"], 1, "month")),
-        _case("interval|commuted|d1", "interval(2, 'week') + d1", lambda r: oracle_add(r["d1"], 2, "week")),
-        _case("interval|minus_computed|t1", "t1 - interval(n, 'hour')",
+        _case("interval|plus|d1", "dt.d1 + interval(1, 'month')", lambda r: oracle_add(r["d1"], 1, "month")),
+        _case("interval|commuted|d1", "interval(2, 'week') + dt.d1", lambda r: oracle_add(r["d1"], 2, "week")),
+        _case("interval|minus_computed|t1", "dt.t1 - interval(dt.n, 'hour')",
               lambda r: oracle_add(r["t1"], None if r["n"] is None else -r["n"], "hour")),
-        _case("interval|chain|t1", "t1 + interval(1, 'month') + interval(2, 'hour')",
+        _case("interval|chain|t1", "dt.t1 + interval(1, 'month') + interval(2, 'hour')",
               lambda r: oracle_add(oracle_add(r["t1"], 1, "month"), 2, "hour")),
     ]
     return cases
@@ -318,7 +320,7 @@ def matrix_cases() -> list[DateCase]:
 def matrix_query(case: DateCase) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "dt",
-        "dimensions": ["id", {"field": case.expr, "alias": "v"}],
+        "dimensions": ["dt.id", {"field": case.expr, "alias": "v"}],
     })
 
 
@@ -345,7 +347,7 @@ def assert_value(actual: Any, expected: Any, *, where: str) -> None:
 
 
 def assert_case(data: list[dict[str, Any]], case: DateCase, *, dataset: str = "dt") -> None:
-    got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in data}
+    got = {int(r[f"{dataset}.id"]): r["v"] for r in data}
     assert set(got) == set(case.expected), f"{case.case_id}: row ids {sorted(got)}"
     for rid, expected in case.expected.items():
         assert_value(got[rid], expected, where=f"{case.case_id} id={rid}")
@@ -464,16 +466,16 @@ def all_datasets(*, data_source: str) -> list[SlayerDataset]:
 
 
 async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
-    """Spec scenarios whose values need a real backend (clock, joins, literals)."""
+    """Spec scenarios whose values need a real backend (clock, relationships, literals)."""
     async def by_id(expr: str, model: str = "orders") -> dict[int, Any]:
         resp = await engine.execute(SlayerQuery.model_validate(
-            {"population": model, "dimensions": ["id", {"field": expr, "alias": "v"}]}))
-        return {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+            {"population": model, "dimensions": [f"{model}.id", {"field": expr, "alias": "v"}]}))
+        return {int(r[f"{model}.id"]): r["v"] for r in resp.data}
 
     async def count(filt: str, model: str = "orders") -> int:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": model, "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": [filt]}))
-        return int(resp.data[0][f"{model}.n"])
+            "population": model, "metrics": [{"metric": f"count({model}.*)", "alias": "n"}], "filter": [filt]}))
+        return int(resp.data[0]["n"])
 
     assert await count("created_at >= date_add(current_date(), -30, 'day')", model="recent") == 1
     assert await count("created_at <= now()") == 5
@@ -481,7 +483,7 @@ async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
     assert await count("date_diff('day', '2024-05-01', created_at) >= 0") == 3
     assert await by_id("date_diff('day', customers.signup_date, order_date)") == {1: 61, 2: 61, 3: 95, 4: 305, 5: None}
     for expr, expected in (
-        # Column-anchored: a literal-only dimension hits DEV-2011 (constant GROUP BY on T-SQL).
+        # Field-anchored: a literal-only dimension hits constant GROUP BY on T-SQL until DEV-2011.
         ("date_add(date_add(order_date, 30, 'day'), -1, 'month')", date(2024, 2, 29)),
         ("date_add(date_add(created_at, -30, 'day'), 1, 'month')", datetime(2024, 2, 29, 5, 30)),
         ("date_add(order_date, 2, 'hour')", datetime(2024, 3, 1, 2, 0)),

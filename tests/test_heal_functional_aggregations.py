@@ -10,6 +10,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError, UnknownFunctionError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -37,8 +38,8 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
         yield eng
 
 
-def by_region(*measures: str) -> dict[str, Any]:
-    return {"population": "orders", "dimensions": ["region"], "metrics": list(measures)}
+def by_region(*metrics: str) -> dict[str, Any]:
+    return {"population": "orders", "dimensions": ["orders.region"], "metrics": list(metrics)}
 
 
 class TestUnknownFunction:
@@ -95,8 +96,7 @@ class TestCountDistinctParse:
             op="==", left=Ref(name="status"), right=Literal(value="count(distinct x)"))
 
     @pytest.mark.parametrize("expr", [
-        "sum(distinct amount)", "count(distinct *)", "count(distinct a, b)", "AVG(DISTINCT amount)",
-        "coalesce(distinct amount, 0)", "count(distinct)", "sum(amount, distinct tax)",
+        "count(distinct *)", "count(distinct a, b)", "coalesce(distinct amount, 0)", "count(distinct)", "sum(amount, distinct tax)",
         "coalesce(a, distinct b)", "count(a, distinct b)", "count(distinct a, distinct b)",
         "count(a, partition_by=distinct b)",
     ])
@@ -124,7 +124,7 @@ class TestCountDistinctExecuted:
 
     async def test_mode_a_distinct_unchanged(self) -> None:
         orders = orders_dataset()
-        orders.fields.append(DatasetField(name="n_customers", sql="COUNT(DISTINCT customer_id)", datatype=DataType.INTEGER))
+        orders.fields.append(DatasetField(name="n_customers", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="COUNT(DISTINCT customer_id)")]), datatype=DataType.INTEGER))
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(n_customers)"]}),
             dataset=orders, extra_datasets=[customers_dataset(), order_items_dataset(), products_dataset()],

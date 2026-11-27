@@ -9,8 +9,11 @@ import sys
 
 import numpy as np
 import pytest
+from sqlglot import exp
 
+from slayer.core.enums import DataType
 from slayer.sql.dialects.sqlite import (
+    SqliteDialect,
     _CorrAgg,
     _CovarPopAgg,
     _CovarSampAgg,
@@ -18,6 +21,8 @@ from slayer.sql.dialects.sqlite import (
     _PercentileContAgg,
     _PercentileDiscAgg,
     _pow,
+    _round,
+    _slayer_cast_decimal,
     _StddevPopAgg,
     _StddevSampAgg,
     _VarPopAgg,
@@ -142,6 +147,19 @@ def test_percentile_disc_empty():
     assert _run_agg(_PercentileDiscAgg, [], p=0.5) is None
 
 
+@pytest.mark.parametrize("p", ["0.30000000000000000001", "0.30000000000000000000000000001"],
+                         ids=["past-a-double", "past-a-decimal-context"])
+def test_percentile_disc_keeps_every_digit_of_p(p: str) -> None:
+    """``0.3 + ε`` of 10 values is rank ⌈3.0…01⌉ = 4; a double, or 28-digit decimal arithmetic, rounds it to rank 3."""
+    with transaction(":memory:") as conn:
+        register_sqlite_udfs(conn)
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.executemany("INSERT INTO t VALUES (?)", [(v,) for v in range(1, 11)])
+        node = SqliteDialect().build_percentile_disc(
+            p=exp.Literal.number(p), col_expr=exp.column("x"), input_type=DataType.INTEGER)
+        assert conn.execute(f"SELECT {node.sql(dialect='sqlite')} FROM t").fetchone()[0] == 4
+
+
 # ---------------------------------------------------------------------------
 # register_sqlite_udfs against a real sqlite3 connection
 # ---------------------------------------------------------------------------
@@ -236,7 +254,7 @@ def test_log10_zero_is_null(sqlite_conn):
 
 
 # --- log2 ------------------------------------------------------------------
-# Registered alongside log10 so a `log2(x)` formula renders verbatim on SQLite.
+# Registered alongside log10 so a `log2(x)` expression renders verbatim on SQLite.
 
 
 def test_log2_known_value(sqlite_conn):
@@ -373,6 +391,23 @@ def test_pow_huge_exponent_overflows_cleanly():
     assert isinstance(_pow(2, 1000), float)
 
 
+@pytest.mark.parametrize(("x", "digits", "expected"), [
+    (1.5e27, 2, 1.5e27), (1.2345678901234567e30, 5, 1.2345678901234567e30), (2 ** 62 + 50, -2, 4611686018427388000),
+    (1.25, 1, 1.3), (-1250, -2, -1300), (2 ** 63 - 1, -1, 9.223372036854776e18),
+])
+def test_round_beyond_default_decimal_precision(x, digits, expected):
+    assert _round(x, digits) == expected
+
+
+@pytest.mark.parametrize(("value", "precision", "scale", "expected"), [
+    ("1" * 30, 38, 0, 1.111111111111111e29), ("123456789012345678901234567.891", 38, 2, 1.2345678901234568e26),
+    ("1" * 19, 19, 0, 1111111111111111111), ("1" * 30, 29, 0, None), ("1" + "0" * 19, 20, 0, 1e19),
+    ("0", 2, 2, 0), (0, 3, 3, 0), ("0.004", 2, 2, 0), ("0.5", 2, 2, 0.5), ("1", 2, 2, None),
+])
+def test_cast_decimal_beyond_default_decimal_precision(value, precision, scale, expected):
+    assert _slayer_cast_decimal(value, precision, scale) == expected
+
+
 # ---------------------------------------------------------------------------
 # `log` collision: register UDF only when SQLite < 3.35
 # ---------------------------------------------------------------------------
@@ -391,6 +426,9 @@ def test_log_udf_registered_unconditionally():
             registered.append((name, narg))
 
         def create_aggregate(self, name, narg, cls):  # noqa: ARG002
+            pass
+
+        def create_window_function(self, name, narg, cls):  # noqa: ARG002
             pass
 
     register_sqlite_udfs(_SpyConn())

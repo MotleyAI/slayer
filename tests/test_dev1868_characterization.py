@@ -19,13 +19,14 @@ from slayer.core.query import QueryMetric
 from tests._dev1836_fixtures import make_exec_engine, month_td, q
 from tests._dev1868_fixtures import (
     CM_PART_TIER,
-    CUMSUM_PART_BY_TIER_MONTH,
+    RANK_PART_BY_TIER,
+    TIER_MONTHS,
     LAST_SPEND_BY_TIER,
     LAST_TIER,
     keyed_by_month,
 )
 
-TIER = "orders.customers.tier"
+TIER = "customers.tier"
 
 
 @pytest.fixture(params=["sqlite"])
@@ -42,7 +43,7 @@ class TestW1SubstrateIsComplete:
             dimensions=["customers.tier"],
             metrics=[QueryMetric(metric=LAST_TIER, alias="l")],
         ))
-        got = {r[TIER]: r["orders.l"] for r in resp.data}
+        got = {r[TIER]: r["l"] for r in resp.data}
         for tier, expected in LAST_SPEND_BY_TIER.items():
             if expected is None:
                 assert got[tier] is None
@@ -53,13 +54,13 @@ class TestW1SubstrateIsComplete:
         filtered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
             filter=[f"{LAST_TIER} > 100"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert [r[TIER] for r in filtered.data] == ["silver"]
         ordered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
             filter=["customers.tier is not null"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{"field": LAST_TIER, "direction": "desc"}],
         ))
         assert [r[TIER] for r in ordered.data] == ["silver", "gold", "bronze"]
@@ -71,13 +72,9 @@ class TestW2SubstrateIsComplete:
     ) -> None:
         resp = await bypassed_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")],
+            metrics=[QueryMetric(metric=f"rank({CM_PART_TIER}, direction='desc')", alias="r")],
         ))
         by = keyed_by_month(resp, TIER)
-        assert set(by) == set(CUMSUM_PART_BY_TIER_MONTH)
-        for key, expected in CUMSUM_PART_BY_TIER_MONTH.items():
-            cell = by[key]["orders.c"]
-            if expected is None:
-                assert cell is None
-            else:
-                assert float(cell) == pytest.approx(expected)
+        assert set(by) == TIER_MONTHS
+        for (tier, _month), row in by.items():
+            assert row["r"] == RANK_PART_BY_TIER[tier]

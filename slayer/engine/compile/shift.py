@@ -14,11 +14,11 @@ from slayer.core.keys import (
     ListSetKey,
     ScalarCallKey,
     TimeTruncKey,
-    TransformKey,
     ValueKey,
     constituent_grain,
     is_boolean_shaped,
     is_kernel_requiring,
+    is_transform,
     source_anchor_path,
 )
 
@@ -34,7 +34,7 @@ def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> T
     resolves to its original aggregate."""
     has_transform = False
     has_cross_dataset = False
-    if isinstance(node, TransformKey):
+    if is_transform(node):
         has_transform = True
     elif isinstance(node, AggregateKey):
         if source_anchor_path(node.source):
@@ -57,7 +57,9 @@ def _series_mode(inner: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> b
     """Whether a transform shifts its materialised series (True) or re-aggregates
     (False) — a nested transform, a predicate root, or a composite carrying a
     transform or cross-dataset aggregate leaf."""
-    if isinstance(inner, TransformKey) or is_boolean_shaped(inner):
+    if is_transform(inner) or is_boolean_shaped(inner):
+        return True
+    if is_placeholder(inner) and is_transform(to_original.get(inner)):
         return True
     if isinstance(inner, (ArithmeticKey, ScalarCallKey, CastKey, ListSetKey)):
         has_transform, has_cross_dataset = _series_flags(inner, to_original=to_original)
@@ -97,7 +99,7 @@ def carried_placeholders(
             ):
                 carried.append(node)
             return
-        if isinstance(node, (AggregateKey, TransformKey)):
+        if isinstance(node, AggregateKey) or is_transform(node):
             return
         for child in node.children():
             visit(child)

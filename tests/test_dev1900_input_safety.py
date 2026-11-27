@@ -1,10 +1,10 @@
-"""DEV-1900 — aggregate inputs fail closed on a fanning derived dependency.
+"""Aggregate inputs fail closed on a fanning derived dependency.
 
 Every input role — positional/keyword argument, the aggregate's source, a
-definition default (bare, dotted, or expression), a measure-level column filter,
-a re-aggregation parameter — that names a derived column whose definition
+definition default (bare, dotted, or expression), a metric-level field filter,
+a re-aggregation parameter — that names a derived field whose definition
 crosses the 1:N ``regions → region_events`` hop must fail closed with the
-existing unproven-join-hop / parameter error, in every mode; a definition no
+existing unproven-relationship-hop / parameter error, in every mode; a definition no
 dialect can parse fails with the new ``check_input_dependencies_analyzable``
 typed error. To-one derived dependencies stay legal.
 
@@ -42,12 +42,12 @@ CM_POSITIONAL = QueryMetric(
 CM_KWARG_CHAIN = QueryMetric(
     metric="weighted_avg(customers.spend, weight=customers.regions.bad_pop2)", alias="w")
 LOCAL_KWARG = QueryMetric(
-    metric="weighted_avg(amount, weight=customers.regions.bad_pop)", alias="w")
+    metric="weighted_avg(orders.amount, weight=customers.regions.bad_pop)", alias="w")
 SOURCE_FANNING = QueryMetric(metric="sum(customers.regions.bad_pop)", alias="w")  # source crosses the hop
 CM_DEFAULT = QueryMetric(metric="wsumx(customers.spend)", alias="w")       # dotted default regions.bad_pop
 CM_DEFAULT_BARE = QueryMetric(metric="wbadbare(customers.regions.pop)", alias="w")  # bare owner-local default bad_pop
 CM_DEFAULT_EXPR = QueryMetric(metric="wsumy(customers.spend)", alias="w")  # expr default regions.bad_pop * 1
-CM_FILTER = QueryMetric(metric="sum(customers.bad_pop_spend)", alias="w")  # measure-local regions.bad_pop > 0
+CM_FILTER = QueryMetric(metric="sum(customers.bad_pop_spend)", alias="w")  # metric-local regions.bad_pop > 0
 CM_GOOD = QueryMetric(metric="wgood(customers.spend)", alias="w")          # default regions.derived_pop (to-one)
 CM_UNPARSE = QueryMetric(metric="wunparse(customers.spend)", alias="w")
 CM_EXPR_UNPARSE = QueryMetric(metric="wexpr_unparse(customers.spend)", alias="w")  # unparseable expr default → unnameable
@@ -102,7 +102,7 @@ class TestPathBearingDerivedArgument:
 
 class TestFanningDerivedSource:
     async def test_source_crossing_fails_closed(self, engine):
-        """A cross-model aggregate whose SOURCE is a fanning derived column fans
+        """A cross-dataset aggregate whose SOURCE is a fanning derived field fans
         the aggregate exactly as a crossing argument does."""
         await _assert_fails_closed(engine, SOURCE_FANNING)
 
@@ -129,30 +129,30 @@ class TestMeasureLocalFilter:
 class TestUnanalyzableDefinition:
     async def test_unparseable_definition_typed_error(self, unparse_engine):
         """No dialect parses regions.unparseable; the dependency is unsafe, not
-        empty — the typed analyzability error names the column and the dialect
+        empty — the typed analyzability error names the field and the dialect
         failure, never the raw parser error."""
         q = orders_q(metrics=[CM_UNPARSE])
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
         msg = str(ei.value)
-        assert "unparseable" in msg, f"error must name the column: {msg!r}"
+        assert "unparseable" in msg, f"error must name the field: {msg!r}"
         assert "dialect" in msg, f"error must name the analyzability failure: {msg!r}"
         assert_ref_free(msg)
 
     async def test_unparseable_column_filter_typed_error(self, unparse_engine):
-        """A source column's ``filter=`` referencing an unanalyzable derived
-        column is an input dependency too — fail closed, never stamped ``()``."""
+        """A source field's ``filter=`` referencing an unanalyzable derived
+        field is an input dependency too — fail closed, never stamped ``()``."""
         q = orders_q(metrics=[QueryMetric(
             metric="sum(customers.flagged_spend)", alias="fs")])
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
         msg = str(ei.value)
-        assert "flagged_spend" in msg, f"error must name the filtered column: {msg!r}"
+        assert "flagged_spend" in msg, f"error must name the filtered field: {msg!r}"
         assert "dialect" in msg, f"error must name the analyzability failure: {msg!r}"
         assert_ref_free(msg)
 
     async def test_unnameable_unanalyzable_input_fails_closed(self, unparse_engine):
-        """An unparseable EXPRESSION default has no single nameable column
+        """An unparseable EXPRESSION default has no single nameable field
         (expr_refs is (None,)): the closure is None while the diagnostic returns
         None, so the guard must still fail closed rather than leak the failure to
         the renderer (CodeRabbit; without the fix the guard is a no-op)."""
@@ -163,7 +163,7 @@ class TestUnanalyzableDefinition:
 
 class TestInputDependencyCheckerAlwaysRaises:
     """``check_input_dependencies_analyzable`` runs ONLY once the input closure
-    is None, so it always fails closed — a nameable column enriches the message,
+    is None, so it always fails closed — a nameable field enriches the message,
     a missing one still raises (CodeRabbit; the old ``column is None`` early
     return silently passed an unanalysable dependency)."""
 
@@ -187,10 +187,10 @@ class TestReaggregationParameter:
 class TestLegalDerivedDependencies:
     async def test_to_one_derived_default_executes(self, engine):
         resp = await engine.execute(orders_q(metrics=[CM_GOOD]))
-        assert float(resp.data[0]["orders.w"]) == pytest.approx(WGOOD_TOONE_DEFAULT)
+        assert float(resp.data[0]["w"]) == pytest.approx(WGOOD_TOONE_DEFAULT)
 
     async def test_local_only_derived_reagg_parameter_executes(self, engine):
         """weight = regions.derived_pop (= pop * 2, local) over a grain pinning
         regions by its key: each region cell weighted by twice its population."""
         resp = await engine.execute(orders_q(metrics=[REAGG_GOOD]))
-        assert float(resp.data[0]["orders.ra"]) == pytest.approx(REAGG_DERIVED_POP_WAVG)
+        assert float(resp.data[0]["ra"]) == pytest.approx(REAGG_DERIVED_POP_WAVG)

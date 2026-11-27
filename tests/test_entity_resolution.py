@@ -1,14 +1,14 @@
-"""Entity-resolution tests for DEV-1357.
+"""Entity-resolution tests.
 
 Resolves user-supplied entity strings (the same forms valid inside a
-``SlayerQuery``) into the canonical ``<datasource>.<model>[.<leaf>]`` form
+``SlayerQuery``) into the canonical ``<datasource>.<dataset>[.<leaf>]`` form
 described in the spec, §3-4. The resolver also extracts entities from a
 whole ``SlayerQuery`` for use by ``save_query`` and ``entity_search``.
 
 The fixture mounts a multi-datasource layout exercising the leaf rule, the
-priority list, the model-vs-column collision (Case A), the bare-column
+priority list, the dataset-vs-field collision (Case A), the bare-field
 ambiguity (Case B1), the literal-dotted form (Case C), and the
-datasource-vs-model collision (Case D). Failing-test diagnostics quote
+datasource-vs-dataset collision (Case D). Failing-test diagnostics quote
 the offending segment so the resolver's error messages are useful when
 they bubble up to MCP / CLI surfaces.
 """
@@ -44,7 +44,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 @pytest_asyncio.fixture
 async def storage() -> AsyncIterator[StorageBackend]:
-    """A two-datasource layout with joins, measures, custom aggs, and the
+    """A two-datasource layout with relationships, metrics, custom aggs, and the
     name-shape collisions called out in the spec's resolution cases.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -65,20 +65,20 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", expression="status", datatype=DataType.STRING),
                     DatasetField(
                         name="customer_id",
-                        sql="customer_id",
+                        expression="customer_id",
                         datatype=DataType.FLOAT,
                     ),
                     DatasetField(
                         name="ordered_at",
-                        sql="ordered_at",
+                        expression="ordered_at",
                         datatype=DataType.DATETIME,
                     ),
                 ],
@@ -99,7 +99,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 ],
             )
         )
-        # `customers` carries a column named "orders" — a model+column
+        # `customers` carries a field named "orders" — a dataset+field
         # collision used to exercise Case A.
         await s.save_dataset(
             SlayerDataset(
@@ -109,19 +109,19 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                    DatasetField(name="name", expression="name", datatype=DataType.STRING),
                     DatasetField(
                         name="region_id",
-                        sql="region_id",
+                        expression="region_id",
                         datatype=DataType.FLOAT,
                     ),
                     DatasetField(
                         name="orders",
-                        sql="orders_count",
+                        expression="orders_count",
                         datatype=DataType.FLOAT,
                     ),
                 ],
@@ -141,15 +141,15 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                    DatasetField(name="name", expression="name", datatype=DataType.STRING),
                 ],
             )
         )
-        # `invoices` shares the "amount" column name with `orders` — both
+        # `invoices` shares the "amount" field name with `orders` — both
         # live in mydb (the priority winner), so bare "amount" is
         # ambiguous (Case B1).
         await s.save_dataset(
@@ -160,11 +160,11 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -177,17 +177,17 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                    DatasetField(name="name", expression="name", datatype=DataType.STRING),
                 ],
             )
         )
-        # A model literally named "mydb" living in datasource "other" —
+        # A dataset literally named "mydb" living in datasource "other" —
         # exercises Case D (first-segment is both a datasource and a
-        # model).
+        # dataset).
         await s.save_dataset(
             SlayerDataset(
                 name="mydb",
@@ -196,7 +196,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 fields=[
                     DatasetField(
                         name="id",
-                        sql="id",
+                        expression="id",
                         datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
@@ -209,7 +209,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
 
 
 # ---------------------------------------------------------------------------
-# resolve_entity — single-token resolution with no source-model context
+# resolve_entity — single-token resolution with no population context
 # ---------------------------------------------------------------------------
 
 
@@ -217,7 +217,7 @@ class TestResolveEntityShape:
     async def test_returns_entity_resolution(
         self, storage: StorageBackend
     ) -> None:
-        # "other" is a plain datasource — no model collides with the
+        # "other" is a plain datasource — no dataset collides with the
         # name, so this exercises the bare ``EntityResolution`` shape
         # without firing any Case warnings.
         result = await resolve_entity("other", storage=storage)
@@ -230,20 +230,20 @@ class TestResolveEntityBare:
     async def test_bare_model_name(self, storage: StorageBackend) -> None:
         result = await resolve_entity("orders", storage=storage)
         assert result.canonical_forms == ["mydb.orders"]
-        # No collision (no model+column collision warning fires here —
-        # the bare "orders" candidate column lives on customers, but
+        # No collision (no dataset+field collision warning fires here —
+        # the bare "orders" candidate field lives on customers, but
         # the resolver should detect that, see test_case_a).
 
     async def test_case_a_model_column_collision_warns(
         self, storage: StorageBackend
     ) -> None:
-        # "orders" exists as a model AND as a column on `customers`.
-        # Model wins, but the warning helps users qualify if they meant
-        # the column.
+        # "orders" exists as a dataset AND as a field on `customers`.
+        # Dataset wins, but the warning helps users qualify if they meant
+        # the field.
         result = await resolve_entity("orders", storage=storage)
         assert result.canonical_forms == ["mydb.orders"]
         assert any("field" in w.lower() for w in result.warnings), (
-            f"expected Case A column-collision warning, got "
+            f"expected Case A field-collision warning, got "
             f"{result.warnings!r}"
         )
 
@@ -262,12 +262,12 @@ class TestResolveEntityBare:
             await resolve_entity("amount", storage=storage)
         msg = str(exc_info.value)
         assert "amount" in msg
-        # The error must name the candidate models so the caller can
+        # The error must name the candidate datasets so the caller can
         # qualify.
         assert "orders" in msg or "invoices" in msg
 
     async def test_bare_named_measure(self, storage: StorageBackend) -> None:
-        # "aov" is a named ModelMeasure on mydb.orders, unique in mydb.
+        # "aov" is a named DatasetMetric on mydb.orders, unique in mydb.
         result = await resolve_entity("aov", storage=storage)
         assert result.canonical_forms == ["mydb.orders.aov"]
 
@@ -313,7 +313,7 @@ class TestResolveEntityDotted:
     async def test_one_dot_datasource_model(
         self, storage: StorageBackend
     ) -> None:
-        # "mydb.orders" with mydb as datasource, orders as model.
+        # "mydb.orders" with mydb as datasource, orders as dataset.
         result = await resolve_entity("mydb.orders", storage=storage)
         assert result.canonical_forms == ["mydb.orders"]
 
@@ -359,7 +359,7 @@ class TestResolveEntityDotted:
 
     async def test_reverse_hop_join(self, storage: StorageBackend) -> None:
         # customers.orders.amount — orders declares the only edge; the
-        # reverse hop resolves without a declared reverse join (DEV-1853).
+        # reverse hop resolves without a declared reverse relationship.
         result = await resolve_entity(
             "customers.orders.amount", storage=storage
         )
@@ -368,7 +368,7 @@ class TestResolveEntityDotted:
     async def test_dot_terminating_at_join_target(
         self, storage: StorageBackend
     ) -> None:
-        # orders.customers (no further segment) → leaf is the model
+        # orders.customers (no further segment) → leaf is the dataset
         # itself.
         result = await resolve_entity("orders.customers", storage=storage)
         assert result.canonical_forms == ["mydb.customers"]
@@ -377,20 +377,20 @@ class TestResolveEntityDotted:
         self, storage: StorageBackend
     ) -> None:
         with pytest.raises(EntityResolutionError) as exc_info:
-            await resolve_entity("orders.no_such_column", storage=storage)
-        assert "no_such_column" in str(exc_info.value)
+            await resolve_entity("orders.no_such_field", storage=storage)
+        assert "no_such_field" in str(exc_info.value)
 
     async def test_unknown_model_in_known_datasource_raises(
         self, storage: StorageBackend
     ) -> None:
         with pytest.raises(EntityResolutionError) as exc_info:
-            await resolve_entity("mydb.no_such_model", storage=storage)
-        assert "no_such_model" in str(exc_info.value)
+            await resolve_entity("mydb.no_such_dataset", storage=storage)
+        assert "no_such_dataset" in str(exc_info.value)
 
     async def test_case_c_dotted_taken_literally(
         self, storage: StorageBackend
     ) -> None:
-        # "customers.orders" — customers has a column "orders". The user
+        # "customers.orders" — customers has a field "orders". The user
         # qualified, so the resolver takes it literally; no warning.
         result = await resolve_entity(
             "customers.orders", storage=storage
@@ -403,7 +403,7 @@ class TestResolveEntityCaseDDatasourceModelCollision:
     async def test_first_segment_ds_wins_with_warning(
         self, storage: StorageBackend
     ) -> None:
-        # "mydb" is both a datasource (mydb) and a model (other.mydb).
+        # "mydb" is both a datasource (mydb) and a dataset (other.mydb).
         # Bare "mydb" → datasource wins.
         result = await resolve_entity("mydb", storage=storage)
         assert result.canonical_forms == ["mydb"]
@@ -416,7 +416,7 @@ class TestResolveEntityCaseDDatasourceModelCollision:
         self, storage: StorageBackend
     ) -> None:
         # "mydb.orders.amount" — mydb is interpreted as datasource (not
-        # the other.mydb model). Walks to mydb.orders → amount.
+        # the other.mydb dataset). Walks to mydb.orders → amount.
         result = await resolve_entity(
             "mydb.orders.amount", storage=storage
         )
@@ -454,7 +454,7 @@ class TestResolveEntityStarCount:
     async def test_star_count_with_model_resolves_to_model(
         self, storage: StorageBackend
     ) -> None:
-        # "count(orders.*)" → the model itself (per §3.1).
+        # "count(orders.*)" → the dataset itself (per §3.1).
         result = await resolve_entity(
             "count(orders.*)", storage=storage
         )
@@ -480,7 +480,7 @@ class TestResolveEntityStarCount:
         self, storage: StorageBackend
     ) -> None:
         """``sum(*)`` and similar must not silently collapse to the
-        source model — only ``count`` is the valid wildcard form. The
+        population dataset — only ``count`` is the valid wildcard form. The
         previous code accepted any aggregation, which would corrupt the
         canonical-entity index for memories tagged via a query that
         used a malformed wildcard."""
@@ -502,7 +502,7 @@ class TestResolveEntityStarCount:
 
 
 # ---------------------------------------------------------------------------
-# resolve_entity with source-model context (used inside save_query /
+# resolve_entity with population context (used inside save_query /
 # entity_search.query)
 # ---------------------------------------------------------------------------
 
@@ -512,7 +512,7 @@ class TestResolveEntityWithSourceModel:
         self, storage: StorageBackend
     ) -> None:
         # "amount" is ambiguous globally (Case B1) but unambiguous in
-        # the context of source_model=orders.
+        # the context of population=orders.
         orders = await storage.get_dataset("orders", data_source="mydb")
         result = await resolve_entity(
             "amount", storage=storage, source_dataset=orders
@@ -534,8 +534,8 @@ class TestResolveEntityWithSourceModel:
 
 
 # ---------------------------------------------------------------------------
-# extract_entities_from_query — walks dimensions / time_dims / measures /
-# filters / source_model / joins.
+# extract_entities_from_query — walks dimensions / time_dims / metrics /
+# filters / population / relationships.
 # ---------------------------------------------------------------------------
 
 
@@ -545,7 +545,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders" in result.canonical_forms
@@ -555,8 +555,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -567,13 +567,13 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.name")],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.customers.name" in result.canonical_forms
-        # Intermediate "customers" model is not tagged as a separate
+        # Intermediate "customers" dataset is not tagged as a separate
         # entity (the leaf rule discards intermediates).
-        # The source model tag for orders is independent.
+        # The population tag for orders is independent.
         assert "mydb.customers" not in result.canonical_forms
 
     async def test_measure_formula_extracted(
@@ -581,7 +581,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
@@ -593,11 +593,11 @@ class TestExtractEntitiesFromQuery:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="ordered_at",
+                    field="orders.ordered_at",
                     granularity=TimeGranularity.DAY,
                 )
             ],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.ordered_at" in result.canonical_forms
@@ -607,8 +607,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["status = 'paid'", "amount > 100"],
-            metrics=[QueryMetric(metric="count(*)")],
+            filter=["orders.status = 'paid'", "orders.amount > 100"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -619,8 +619,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["status = '{status_val}'"],
-            metrics=[QueryMetric(metric="count(*)")],
+            filter=["orders.status = '{status_val}'"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             variables={"status_val": "paid"},
         )
         result = await extract_entities_from_query(q, storage=storage)
@@ -633,9 +633,9 @@ class TestExtractEntitiesFromQuery:
     async def test_dedup(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="amount")],
-            filter=["amount > 100"],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.amount")],
+            filter=["orders.amount > 100"],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert (
@@ -647,7 +647,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         # Pin the exact list — a regression that adds an extra entity
@@ -660,8 +660,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            filter=["nonexistent_col > 100"],
-            metrics=[QueryMetric(metric="count(*)")],
+            filter=["orders.nonexistent_col > 100"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         with pytest.raises(EntityResolutionError):
             await extract_entities_from_query(q, storage=storage)
@@ -669,10 +669,10 @@ class TestExtractEntitiesFromQuery:
     async def test_funcstyle_joined_custom_agg_extracts_joined_column(
         self,
     ) -> None:
-        # DEV-1500 → DEV-1826: a functional custom aggregation defined on a
-        # joined model (``rolling_avg(customers.score)`` where ``rolling_avg``
+        # A functional custom aggregation defined on a
+        # joined dataset (``rolling_avg(customers.score)`` where ``rolling_avg``
         # lives on ``customers``) parses natively to an AggCall candidate, so
-        # the joined column (``customers.score``) ends up tagged — no
+        # the joined field (``customers.score``) ends up tagged — no
         # custom-aggregation registry walk involved.
         with tempfile.TemporaryDirectory() as tmpdir:
             s = YAMLStorage(base_dir=tmpdir)
@@ -684,8 +684,8 @@ class TestExtractEntitiesFromQuery:
                 data_source="dev1500",
                 sql_table="customers",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                    DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="score", expression="score", datatype=DataType.FLOAT),
                 ],
                 aggregations=[
                     Aggregation(name="rolling_avg", expression="AVG({value})"),
@@ -696,8 +696,8 @@ class TestExtractEntitiesFromQuery:
                 data_source="dev1500",
                 sql_table="orders",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+                    DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
                 ],
                 relationships=[
                     DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -708,7 +708,7 @@ class TestExtractEntitiesFromQuery:
                 metrics=[QueryMetric(metric="rolling_avg(customers.score)")],
             )
             result = await extract_entities_from_query(q, storage=s)
-            # The joined column inside the transform surfaces as an entity
+            # The joined field inside the transform surfaces as an entity
             # (parsed natively — no funcstyle rewrite).
             assert "dev1500.customers.score" in result.canonical_forms, (
                 result.canonical_forms
@@ -720,7 +720,7 @@ class TestResolveEntityAmbiguousModel:
         self,
     ) -> None:
         # Build a fixture without a priority list and with the SAME
-        # model name in two datasources.
+        # dataset name in two datasources.
         with tempfile.TemporaryDirectory() as tmpdir:
             s = YAMLStorage(base_dir=tmpdir)
             await s.save_datasource(
@@ -737,7 +737,7 @@ class TestResolveEntityAmbiguousModel:
                     fields=[
                         DatasetField(
                             name="id",
-                            sql="id",
+                            expression="id",
                             datatype=DataType.FLOAT,
                             primary_key=True,
                         )
@@ -752,7 +752,7 @@ class TestResolveEntityAmbiguousModel:
                     fields=[
                         DatasetField(
                             name="id",
-                            sql="id",
+                            expression="id",
                             datatype=DataType.FLOAT,
                             primary_key=True,
                         )
@@ -768,7 +768,7 @@ class TestResolveEntityUnknownDatasource:
         self, storage: StorageBackend
     ) -> None:
         # "no_such_ds.orders.amount" — first segment isn't a known
-        # datasource, so resolve "no_such_ds" as a model in some
+        # datasource, so resolve "no_such_ds" as a dataset in some
         # datasource. None has it → error.
         with pytest.raises(EntityResolutionError) as exc_info:
             await resolve_entity(

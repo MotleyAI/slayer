@@ -39,7 +39,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"field": "created_at", "granularity": "month"}]
+_MONTH = [{"field": "orders.created_at", "granularity": "month"}]
 
 
 def _q(**kw) -> SlayerQuery:
@@ -49,10 +49,10 @@ def _q(**kw) -> SlayerQuery:
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
-    last = [{"metric": "last(amount)", "alias": "l"}]
+    last = [{"metric": "last(orders.amount)", "alias": "l"}]
     return {
         # --- the base shapes: what the host SELECT looks like at all ---
-        "shape/grouped": _q(dimensions=["status"], metrics=last),
+        "shape/grouped": _q(dimensions=["orders.status"], metrics=last),
         "shape/ungrouped_no_dims": _q(metrics=last),
         "shape/time_trunc_grain": _q(time_dimensions=_MONTH, metrics=last),
         "shape/joined_dim_grain": _q(
@@ -62,91 +62,91 @@ def _cases() -> dict:
             dimensions=["order_tags.name"], metrics=last,
         ),
         "shape/first_and_last_together": _q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
-                {"metric": "first(amount)", "alias": "f"},
-                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "first(orders.amount)", "alias": "f"},
+                {"metric": "last(orders.amount)", "alias": "l"},
             ],
         ),
         # --- siblings: what stays in the host base ---
         "sibling/local_sum": _q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount)", "alias": "l"},
-                {"metric": "sum(amount)", "alias": "s"},
+                {"metric": "last(orders.amount)", "alias": "l"},
+                {"metric": "sum(orders.amount)", "alias": "s"},
             ],
         ),
         "sibling/star_count": _q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount)", "alias": "l"},
-                {"metric": "count(*)", "alias": "n"},
+                {"metric": "last(orders.amount)", "alias": "l"},
+                {"metric": "count(orders.*)", "alias": "n"},
             ],
         ),
         "sibling/cross_model_measure": _q(
             to_many_handling="broadcast",
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "last(orders.amount)", "alias": "l"},
                 {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
         ),
         # --- filtered variants: the sentinel-alias machinery B9 removes ---
         "filtered/local_column": _q(
-            dimensions=["status"],
-            metrics=[{"metric": "last(big_amount)", "alias": "l"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.big_amount)", "alias": "l"}],
         ),
         "filtered/joined_column": _q(
-            dimensions=["status"],
-            metrics=[{"metric": "last(gold_amount)", "alias": "l"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.gold_amount)", "alias": "l"}],
         ),
         "filtered/derived_expression": _q(
-            dimensions=["status"],
-            metrics=[{"metric": "last(doubled_big)", "alias": "l"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.doubled_big)", "alias": "l"}],
         ),
         "filtered/two_filters_one_query": _q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(big_amount)", "alias": "b"},
-                {"metric": "last(gold_amount)", "alias": "g"},
+                {"metric": "last(orders.big_amount)", "alias": "b"},
+                {"metric": "last(orders.gold_amount)", "alias": "g"},
             ],
         ),
         # --- explicit time args: the rn-suffix scheme B9 removes ---
         "time_arg/explicit_column": _q(
-            dimensions=["status"],
-            metrics=[{"metric": "last(amount, shipped_at)", "alias": "l"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount, orders.shipped_at)", "alias": "l"}],
         ),
         "time_arg/two_distinct_columns": _q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount, created_at)", "alias": "a"},
-                {"metric": "last(amount, shipped_at)", "alias": "b"},
+                {"metric": "last(orders.amount, orders.created_at)", "alias": "a"},
+                {"metric": "last(orders.amount, orders.shipped_at)", "alias": "b"},
             ],
         ),
         "time_arg/local_derived_column": _q(
-            dimensions=["status"],
-            metrics=[{"metric": "last(amount, created_alias)", "alias": "l"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount, orders.created_alias)", "alias": "l"}],
         ),
         # The ranked-join remnant. Recorded a raise before B9 — the ranking ran
         # in the host base, which could not pull the residual join — and emits
         # real SQL now that the ranked CTE resolves its ranking key through its
         # own scope.
         "time_arg/joined_derived_column": _q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount, customers.signup_alias)", "alias": "l"},
+                {"metric": "last(orders.amount, customers.signup_alias)", "alias": "l"},
             ],
         ),
         # --- crossing inputs: already isolated today, so a parity anchor ---
         "crossing/derived_source": _q(
-            dimensions=["status"],
-            metrics=[{"metric": "last(cust_region)", "alias": "l"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.cust_region)", "alias": "l"}],
         ),
         "crossing/grouped_by_the_value_it_ranks": _q(
-            dimensions=["cust_region"],
-            metrics=[{"metric": "last(cust_region)", "alias": "l"}],
+            dimensions=["orders.cust_region"],
+            metrics=[{"metric": "last(orders.cust_region)", "alias": "l"}],
         ),
-        # --- cross-model: the second ranked-subquery instance ---
+        # --- cross-dataset: the second ranked-subquery instance ---
         "cross_model/target_default_time": _q(
             metrics=[{"metric": "last(customers.spend)", "alias": "l"}],
         ),
@@ -180,48 +180,48 @@ def _cases() -> dict:
         ),
         # --- composition ---
         "composite/arithmetic_of_two_ranked": _q(
-            dimensions=["status"],
-            metrics=[{"metric": "last(amount) - first(amount)", "alias": "d"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount) - first(orders.amount)", "alias": "d"}],
         ),
         "composite/ranked_plus_local": _q(
-            dimensions=["status"],
-            metrics=[{"metric": "last(amount) + sum(amount)", "alias": "m"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "last(orders.amount) + sum(orders.amount)", "alias": "m"}],
         ),
         "composite/c13_two_names_one_key": _q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
-                {"metric": "last(amount)", "alias": "l1"},
-                {"metric": "last(amount)", "alias": "l2"},
+                {"metric": "last(orders.amount)", "alias": "l1"},
+                {"metric": "last(orders.amount)", "alias": "l2"},
             ],
         ),
         "composite/transform_chain": _q(
             time_dimensions=_MONTH,
-            metrics=[{"metric": "cumsum(last(amount))", "alias": "c"}],
+            metrics=[{"metric": "cumsum(last(orders.amount))", "alias": "c"}],
         ),
-        # --- filters and ordering that TARGET the ranked measure ---
+        # --- filters and ordering that TARGET the ranked metric ---
         "route/having_on_ranked": _q(
-            dimensions=["status"], metrics=last,
-            filter=[f"last(amount) > {BIG_AMOUNT_THRESHOLD}"],
+            dimensions=["orders.status"], metrics=last,
+            filter=[f"last(orders.amount) > {BIG_AMOUNT_THRESHOLD}"],
         ),
         "route/order_by_projected_ranked": _q(
-            dimensions=["status"], metrics=last,
+            dimensions=["orders.status"], metrics=last,
             order=[{"field": "l", "direction": "desc"}],
         ),
         "route/order_by_hidden_ranked": _q(
-            dimensions=["status"],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
-            order=[{"field": "last(amount)", "direction": "desc"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
+            order=[{"field": "last(orders.amount)", "direction": "desc"}],
         ),
         "route/row_filter_and_ranked": _q(
-            dimensions=["status"], metrics=last,
-            filter=["status != 'paid'"],
+            dimensions=["orders.status"], metrics=last,
+            filter=["orders.status != 'paid'"],
         ),
         "route/joined_row_filter_and_ranked": _q(
-            dimensions=["status"], metrics=last,
+            dimensions=["orders.status"], metrics=last,
             filter=["customers.tier == 'gold'"],
         ),
         "route/pagination": _q(
-            dimensions=["status"], metrics=last,
+            dimensions=["orders.status"], metrics=last,
             order=[{"field": "l", "direction": "desc"}], limit=3, offset=1,
         ),
     }

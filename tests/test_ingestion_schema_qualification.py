@@ -122,7 +122,7 @@ def fk_db(tmp_path_factory) -> str:
 
 @pytest.fixture(scope="module")
 def sanitize_collision_db(tmp_path_factory) -> str:
-    """``s1.a__b`` sanitises to model ``a_b``; ``s2.a_b`` is the exact name."""
+    """``s1.a__b`` sanitises to dataset ``a_b``; ``s2.a_b`` is the exact name."""
     path = str(tmp_path_factory.mktemp("sanit") / "sc.duckdb")
     _duck(path=path, statements=[
         "CREATE SCHEMA s1",
@@ -137,15 +137,15 @@ def sanitize_collision_db(tmp_path_factory) -> str:
 def loser_fk_db(tmp_path_factory) -> str:
     """A non-default table with an FK to a name-collision LOSER.
 
-    ``main.x`` (default) wins model ``x``; ``s1.x`` loses. ``s1.y`` has an FK to
-    ``s1.x`` — since the loser has no model, ``y``'s join must be dropped, and
+    ``main.x`` (default) wins dataset ``x``; ``s1.x`` loses. ``s1.y`` has an FK to
+    ``s1.x`` — since the loser has no dataset, ``y``'s relationship must be dropped, and
     it must never resolve cross-schema to ``main.x``.
     """
     path = str(tmp_path_factory.mktemp("loserfk") / "lf.duckdb")
     _duck(path=path, statements=[
         "CREATE TABLE x(id INTEGER PRIMARY KEY)",         # main.x (winner)
         "CREATE SCHEMA s1",
-        "CREATE TABLE s1.x(id INTEGER PRIMARY KEY)",      # loses model name 'x'
+        "CREATE TABLE s1.x(id INTEGER PRIMARY KEY)",      # loses dataset name 'x'
         "CREATE TABLE s1.y(id INTEGER PRIMARY KEY, "
         "x_id INTEGER REFERENCES s1.x(id))",
     ])
@@ -154,7 +154,7 @@ def loser_fk_db(tmp_path_factory) -> str:
 
 @pytest.fixture(scope="module")
 def legacy_db(tmp_path_factory) -> str:
-    """``orders`` in the default schema AND a non-default one (validate-models)."""
+    """``orders`` in the default schema AND a non-default one (validate-datasets)."""
     path = str(tmp_path_factory.mktemp("legacy") / "lg.duckdb")
     _duck(path=path, statements=[
         "CREATE TABLE orders(id INTEGER)",                # main.orders
@@ -305,7 +305,7 @@ def _skip_labels(report) -> list[str]:
 async def _query_count(storage: YAMLStorage, dataset_name: str) -> int:
     engine = SlayerQueryEngine(storage=storage)
     resp = await engine.execute(
-        SlayerQuery.model_validate({"population": dataset_name, "metrics": [{"metric": "count(*)", "alias": "n"}]})
+        SlayerQuery.model_validate({"population": dataset_name, "metrics": [{"metric": f"count({dataset_name}.*)", "alias": "n"}]})
     )
     assert resp.row_count == 1, resp.data
     return next(iter(resp.data[0].values()))
@@ -318,7 +318,7 @@ async def _query_count(storage: YAMLStorage, dataset_name: str) -> int:
 
 class TestReportedRegression:
     async def test_bare_ingest_covers_the_default_schema_only(self, basic_db) -> None:
-        """D-1: bare ingest models only the connection default; the
+        """D-1: bare ingest covers only the connection default; the
         non-default ``reports`` is NOT created, and the scope names it as a
         schema the user could opt into."""
         report = await _report(_ds(basic_db))
@@ -590,7 +590,7 @@ class TestScopeResolution:
 
     async def test_resolved_tokens_are_deduplicated(self, basic_db) -> None:
         """``main`` given twice (or once bare + once as its default) collapses to
-        a single scope entry — the double-scan that marked models for deletion."""
+        a single scope entry — the double-scan that marked datasets for deletion."""
         scope = await self._scope(basic_db, requested=["main", "main"])
         assert len(scope.schemas) == 1
 
@@ -723,7 +723,7 @@ class TestCollisions:
     async def test_faithful_and_sanitized_names_are_distinct_in_one_schema(
         self, tmp_path
     ) -> None:
-        """Within one schema ``a_b`` and ``a__b`` are distinct models —
+        """Within one schema ``a_b`` and ``a__b`` are distinct datasets —
         no collision, nothing skipped."""
         path = str(tmp_path / "one.duckdb")
         _duck(path=path, statements=[
@@ -737,7 +737,7 @@ class TestCollisions:
 
 class TestCollisionTieBreaks:
     async def test_distinct_dunder_names_in_one_schema_do_not_tie(self, tmp_path) -> None:
-        """``s2.a__b`` and ``s2.a___b`` are different faithful models —
+        """``s2.a__b`` and ``s2.a___b`` are different faithful datasets —
         no sanitize-collapse tie, both modelled, nothing skipped."""
         path = str(tmp_path / "tie.duckdb")
         _duck(path=path, statements=[
@@ -754,8 +754,8 @@ class TestCollisionTieBreaks:
 
 class TestWinnersOnlyStructures:
     async def test_join_to_a_collision_loser_is_dropped(self, loser_fk_db) -> None:
-        """``s1.y``'s FK targets ``s1.x`` which lost the model name to
-        ``main.x``; the join must be dropped, never repointed cross-schema."""
+        """``s1.y``'s FK targets ``s1.x`` which lost the dataset name to
+        ``main.x``; the relationship must be dropped, never repointed cross-schema."""
         report = await _report(_ds(loser_fk_db), all_schemas=True)
         models = {m.name: m for m in report.datasets}
         y = models["y"]
@@ -783,10 +783,10 @@ class TestForeignKeysAreSchemaAware:
 
 
 class TestSelfHeal:
-    async def _persist_bare(self, storage: StorageBackend, ds, columns, *, extra=None):
+    async def _persist_bare(self, storage: StorageBackend, ds, fields, *, extra=None):
         model = SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            fields=columns,
+            fields=fields,
         )
         if extra:
             model = model.model_copy(update=extra)
@@ -797,7 +797,7 @@ class TestSelfHeal:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         # Pretend an older run stored ``reports`` unqualified with hand metadata.
-        col = DatasetField(name="id", sql="id", datatype=DataType.INTEGER, description="hand id")
+        col = DatasetField(name="id", expression="id", datatype=DataType.INTEGER, description="hand id")
         await self._persist_bare(storage, ds, [col],
                                  extra={"description": "hand table"})
         result = await _idempotent(
@@ -817,7 +817,7 @@ class TestSelfHeal:
         ds = _ds(basic_db)
         model = SlayerDataset(
             name="reports", sql_table="prod.reports", data_source="ds",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         await storage.save_datasource(ds)
         await storage.save_dataset(model)
@@ -828,7 +828,7 @@ class TestSelfHeal:
         assert kept.sql_table == "prod.reports"
 
     async def test_qualifier_repair_alone_triggers_a_save(self, basic_db, tmp_path) -> None:
-        """Isolate the short-circuit: persist a model whose columns/description
+        """Isolate the short-circuit: persist a dataset whose fields/description
         already match the fresh introspection, so the ONLY difference is the
         missing qualifier. It must still be saved and reported — an
         implementation that ignores ``sql_table_change`` in the save gate fails."""
@@ -839,9 +839,9 @@ class TestSelfHeal:
         await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER,
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER,
                        format={"type": "integer"}),
-                DatasetField(name="val", sql="val", datatype=DataType.INTEGER,
+                DatasetField(name="val", expression="val", datatype=DataType.INTEGER,
                        format={"type": "integer"}),
             ],
         ))
@@ -865,7 +865,7 @@ class TestSelfHeal:
         await storage.save_datasource(ds)
         await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            fields=[DatasetField(name="a", sql="a", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="a", expression="a", datatype=DataType.INTEGER)],
         ))
         await _idempotent(
             datasource=ds, storage=storage, schemas=["main"],   # verbatim → main.reports
@@ -877,7 +877,7 @@ class TestSelfHeal:
 
 class TestAdditionRendering:
     def test_updated_line_names_the_qualifier_repair(self) -> None:
-        """A qualifier repair adds no columns, so the ``Updated:`` line must be
+        """A qualifier repair adds no fields, so the ``Updated:`` line must be
         driven by ``sql_table_change`` alone (§3.7 rendering)."""
         addition = DatasetAddition(
             dataset_name="reports", data_source="ds", created=False,
@@ -905,7 +905,7 @@ class TestCrossSchemaMergeGuard:
         await storage.save_datasource(ds)
         await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            fields=[DatasetField(name="a", sql="a", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="a", expression="a", datatype=DataType.INTEGER)],
         ))
         result = await _idempotent(
             datasource=ds, storage=storage, schemas=["s2"]
@@ -926,7 +926,7 @@ class TestCrossSchemaMergeGuard:
         await storage.save_datasource(ds)
         await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            fields=[DatasetField(name="a", sql="a", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="a", expression="a", datatype=DataType.INTEGER)],
         ))
 
         real = mod.list_ingestable_objects
@@ -947,7 +947,7 @@ class TestCrossSchemaMergeGuard:
 
 
 # ===========================================================================
-# validate-models — the data-loss guard (D-6)
+# validate-datasets — the data-loss guard (D-6)
 # ===========================================================================
 
 
@@ -983,7 +983,7 @@ class TestValidateModels:
         await storage.save_datasource(ds)
         model = SlayerDataset(
             name="orders", sql_table="orders", data_source="ds",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
@@ -992,7 +992,7 @@ class TestValidateModels:
     async def test_missing_non_default_table_is_reported_deleted_not_masked(
         self, tmp_path
     ) -> None:
-        """Codex-review regression: a model qualified to a non-default table
+        """Codex-review regression: a dataset qualified to a non-default table
         that no longer exists must be reported for deletion even when a
         same-named table exists in the DEFAULT schema. The pre-fix
         ``_resolve_live_table`` last-one fallback silently diffed against the
@@ -1004,7 +1004,7 @@ class TestValidateModels:
         await storage.save_datasource(ds)
         model = SlayerDataset(
             name="orders", sql_table="analytics.orders", data_source="ds",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
@@ -1014,7 +1014,7 @@ class TestValidateModels:
         self, basic_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """CodeRabbit: if one in-scope schema fails to list, validate must NOT
-        report that schema's models for deletion — a transient error would hand
+        report that schema's datasets for deletion — a transient error would hand
         ``--force-clean`` the whole schema. The partial live map is refused
         (IntrospectionUnavailable), so no drift verdict is produced."""
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
@@ -1022,7 +1022,7 @@ class TestValidateModels:
         await storage.save_datasource(ds)
         model = SlayerDataset(
             name="reports", sql_table="openfda_rest.reports", data_source="ds",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         real = mod.list_ingestable_objects
@@ -1040,7 +1040,7 @@ class TestValidateModels:
     async def test_qualified_model_diffs_against_the_correct_twin(
         self, same_name_db, tmp_path
     ) -> None:
-        """A model qualified to ``s2.reports`` (cols b,c) must diff against that
+        """A dataset qualified to ``s2.reports`` (cols b,c) must diff against that
         table, not ``main.reports`` (col a) — else it reads every column as
         dropped and whole-deletes."""
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
@@ -1049,8 +1049,8 @@ class TestValidateModels:
         model = SlayerDataset(
             name="reports", sql_table="s2.reports", data_source="ds",
             fields=[
-                DatasetField(name="b", sql="b", datatype=DataType.INTEGER),
-                DatasetField(name="c", sql="c", datatype=DataType.INTEGER),
+                DatasetField(name="b", expression="b", datatype=DataType.INTEGER),
+                DatasetField(name="c", expression="c", datatype=DataType.INTEGER),
             ],
         )
         await storage.save_dataset(model)
@@ -1060,7 +1060,7 @@ class TestValidateModels:
     async def test_pinned_schema_name_still_covers_other_own_schemas(
         self, legacy_db, tmp_path
     ) -> None:
-        """A model qualified to a non-pinned own schema isn't false-deleted."""
+        """A dataset qualified to a non-pinned own schema isn't false-deleted."""
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db, schema_name="main")
         await storage.save_datasource(ds)
@@ -1068,8 +1068,8 @@ class TestValidateModels:
             name="analytics_orders", sql_table="analytics.orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER),
-                DatasetField(name="note", sql="note", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER),
+                DatasetField(name="note", expression="note", datatype=DataType.STRING),
             ],
         )
         await storage.save_dataset(model)
@@ -1079,7 +1079,7 @@ class TestValidateModels:
     async def test_validate_falls_back_when_enumeration_fails(
         self, legacy_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Enumeration fails, yet a pinned-schema model still gets a real drift
+        """Enumeration fails, yet a pinned-schema dataset still gets a real drift
         verdict via the configured-schema fallback, not a silent skip."""
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db, schema_name="main")
@@ -1087,8 +1087,8 @@ class TestValidateModels:
         model = SlayerDataset(
             name="orders", sql_table="orders", data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER),
-                DatasetField(name="ghost", sql="ghost", datatype=DataType.INTEGER),  # not live
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER),
+                DatasetField(name="ghost", expression="ghost", datatype=DataType.INTEGER),  # not live
             ],
         )
         await storage.save_dataset(model)
@@ -1108,8 +1108,8 @@ class TestValidateModels:
     async def test_fallback_covers_a_non_pinned_model_schema(
         self, legacy_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Enumeration fails, but a model qualified to a NON-pinned own schema
-        still resolves — the fallback scopes to the models' own schemas, so it is
+        """Enumeration fails, but a dataset qualified to a NON-pinned own schema
+        still resolves — the fallback scopes to the datasets' own schemas, so it is
         not false-deleted."""
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db, schema_name="main")
@@ -1118,8 +1118,8 @@ class TestValidateModels:
             name="analytics_orders", sql_table="analytics.orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER),
-                DatasetField(name="note", sql="note", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER),
+                DatasetField(name="note", expression="note", datatype=DataType.STRING),
             ],
         )
         await storage.save_dataset(model)
@@ -1138,8 +1138,8 @@ class TestValidateModels:
     async def test_fallback_default_stays_bare_keyed_past_catalog_token(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Fallback: a model token equal to the catalog-qualified default
-        (``cat.main.x``) must not un-bare-key the default, or a bare model
+        """Fallback: a dataset token equal to the catalog-qualified default
+        (``cat.main.x``) must not un-bare-key the default, or a bare dataset
         alongside another schema gets false-deleted."""
         path = str(tmp_path / "cat.duckdb")           # catalog "cat", default "main"
         _duck(path=path, statements=[
@@ -1153,12 +1153,12 @@ class TestValidateModels:
         await storage.save_datasource(ds)
         models = [
             SlayerDataset(name="orders", sql_table="orders", data_source="ds",
-                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)]),
+                        fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)]),
             SlayerDataset(name="customers", sql_table="cat.main.customers",
                         data_source="ds",
-                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)]),
+                        fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)]),
             SlayerDataset(name="foo", sql_table="analytics.foo", data_source="ds",
-                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)]),
+                        fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)]),
         ]
         for m in models:
             await storage.save_dataset(m)
@@ -1177,7 +1177,7 @@ class TestValidateModels:
 
 class TestLiveTableResolution:
     """``_resolve_live_table`` walks full → last-two → unquoted (§3.7), so a
-    model written before its catalog was known still resolves — but it never
+    dataset written before its catalog was known still resolves — but it never
     strips a qualifier down to a bare same-named object (Codex review), which
     would let a dropped non-default table masquerade as its default twin."""
 
@@ -1191,7 +1191,7 @@ class TestLiveTableResolution:
         ) is live
 
     def test_bare_model_resolves_against_the_bare_key(self) -> None:
-        """A legacy unqualified model finds its default-schema live table (which
+        """A legacy unqualified dataset finds its default-schema live table (which
         ``_collect_live_tables`` keys bare)."""
         live = self._live()
         assert _resolve_live_table(
@@ -1223,7 +1223,7 @@ class TestLiveTableResolution:
         ) is live
 
     async def test_configured_schema_live_map_carries_the_catalog(self, basic_db) -> None:
-        """Codex-review: the validate-models live-schema path for a configured
+        """Codex-review: the validate-datasets live-schema path for a configured
         schema must carry the current catalog on DuckDB, else the bare token
         re-arms the cross-catalog sweep. Pre-fix the ref's catalog was None."""
         async with _client(_ds(basic_db)) as client:
@@ -1478,7 +1478,7 @@ class TestMcpParity:
         return create_mcp_server(storage=storage)
 
     async def _text(self, server, name, arguments):
-        blocks, _ = await server.call_tool(name=name, arguments=arguments)
+        blocks = (await server.call_tool(name=name, arguments=arguments)).content
         return blocks[0].text
 
     async def test_ingest_tool_accepts_schemas(self, basic_db, tmp_path) -> None:

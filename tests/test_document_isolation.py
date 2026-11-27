@@ -1,4 +1,4 @@
-"""One stored model or memory that cannot be loaded: typed load error, skip-and-warn enumeration, fail-closed answer picking (spec: models/document-isolation)."""
+"""One stored dataset or memory that cannot be loaded: typed load error, skip-and-warn enumeration, fail-closed answer picking (spec: models/document-isolation)."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from slayer.memories.resolver import resolve_entity
 from slayer.search.retrievers.bm25 import BM25Retriever
 from slayer.search.service import SearchService
 from slayer.database import engine_factory
-from slayer.storage.base import StorageBackend
+from slayer.storage.base import LiveRefinementRequiredError, StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -35,20 +35,20 @@ from slayer.storage.yaml_storage import YAMLStorage
 DS = "ds"
 BAD = "orders"
 CAUSE = "cid_expr"
-GOOD_MODELS = ("customers", "products")
+GOOD_DATASETS = ("customers", "products")
 BAD_MEMORY = "broken-note"
 GOOD_MEMORIES = ("good-a", "good-b")
 
 
 def _bad_orders() -> dict:
-    """Join keyed on an expression column: fails construction, not repaired on load."""
+    """Relationship keyed on a field reading another dataset: fails construction, not repaired on load."""
     return {
         "version": 10, "name": BAD, "sql_table": "orders", "data_source": DS,
         "columns": [
             {"name": "id", "type": "INT", "primary_key": True},
             {"name": "customer_id", "type": "INT"},
             {"name": "amount", "type": "INT"},
-            {"name": CAUSE, "type": "INT", "sql": "customer_id + 0"},
+            {"name": CAUSE, "type": "INT", "sql": "customers.id"},
         ],
         "joins": [{"target_model": "customers", "join_pairs": [[CAUSE, "id"]]}],
     }
@@ -117,7 +117,8 @@ def _is_value_error(text: str) -> Callable[[BaseException], bool]:
 _LOAD_FAILURES: dict[str, tuple[Callable[[], dict], Any, Callable[[BaseException], bool]]] = {
     "migration": (_orders_v1_colliding, "live", _is_value_error("collision")),
     "refinement-missing-datasource": (
-        _orders_v5_double, None, _is_value_error("unavailable for type refinement")),
+        _orders_v5_double, None,
+        lambda cause: isinstance(cause, LiveRefinementRequiredError) and "unavailable for type refinement" in str(cause)),
     "refinement-driver-error": (
         _orders_v5_double, _UNREACHABLE_PG,
         lambda cause: isinstance(cause, DatabaseUnavailable)
@@ -268,7 +269,7 @@ class TestTypedLoadError:
 
 
 class TestEnumerationSkipsAndWarns:
-    @pytest.mark.parametrize("name", GOOD_MODELS)
+    @pytest.mark.parametrize("name", GOOD_DATASETS)
     async def test_every_valid_model_resaves_with_one_warning(
         self, bad_store: StorageBackend, recorded: list, name: str,
     ) -> None:
@@ -311,7 +312,7 @@ class TestEnumerationSkipsAndWarns:
 
 async def _mcp_text(storage: StorageBackend, *, tool: str, arguments: dict[str, Any]) -> str:
     result: Any = await create_mcp_server(storage=storage).call_tool(name=tool, arguments=arguments)
-    return result[0][0].text
+    return result.content[0].text
 
 
 class TestEnumerationSurfaces:
@@ -322,13 +323,13 @@ class TestEnumerationSurfaces:
 
     async def test_mcp_models_summary(self, bad_store: StorageBackend, recorded: list) -> None:
         text = await _mcp_text(bad_store, tool="datasets_summary", arguments={"datasource_name": DS})
-        assert all(name in text for name in GOOD_MODELS)
+        assert all(name in text for name in GOOD_DATASETS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_mcp_inspect_model_collection_lists_the_rest(self, bad_store: StorageBackend, recorded: list) -> None:
         text = await _mcp_text(bad_store, tool="inspect", arguments={"entity_type": "dataset", "format": "json"})
         listed = {f"{e['data_source']}.{m['name']}" for e in json.loads(text)["datasources"] for m in e["datasets"]}
-        assert all(f"{DS}.{name}" in listed for name in GOOD_MODELS)
+        assert all(f"{DS}.{name}" in listed for name in GOOD_DATASETS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_search_carries_the_warning(self, bad_store: StorageBackend, recorded: list) -> None:
@@ -341,7 +342,7 @@ class TestEnumerationSurfaces:
         resp = TestClient(create_app(storage=bad_store)).get("/datasets", params={"data_source": DS})
         assert resp.status_code == 200
         names = {m["name"] for m in resp.json()}
-        assert set(GOOD_MODELS) <= names
+        assert set(GOOD_DATASETS) <= names
         assert BAD not in names
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
@@ -351,7 +352,7 @@ class TestEnumerationSurfaces:
         engine = SlayerQueryEngine(storage=bad_store)
         try:
             resp = await engine.execute(
-                SlayerQuery.model_validate({"population": "customers", "dimensions": ["name"]}))
+                SlayerQuery.model_validate({"population": "customers", "dimensions": ["customers.name"]}))
         finally:
             engine.close()
         assert {r["customers.name"] for r in resp.data} == {"Ann", "Bob"}

@@ -1,20 +1,20 @@
-"""DEV-1745 (W2) — custom-aggregation template fragments must register the
-joins they cross, in EVERY scope that renders them.
+"""W2 — custom-aggregation template fragments must register the
+relationships they cross, in EVERY scope that renders them.
 
 The Mode-A custom-aggregation template mechanism (``{value}`` / ``{param}``
-substitution) stays as a feature; only its join discovery moves onto the single
-Mode-A door, so registration becomes a side effect of resolution (P-A).
+substitution) stays as a feature; only its relationship-path discovery moves onto
+the single Mode-A door, so registration becomes a side effect of resolution (P-A).
 
 Today the fragment scan exists ONLY on the host render path
 (``_resolve_agg_inputs_via_scope`` -> ``_resolve_fragment_kwargs``). The
-cross-model ``_cm_`` CTE builds its FROM purely from ``cte_scope.join_paths``
-and registers only source / positional args / typed column kwargs — never
-string fragments nor the model-default
+cross-dataset ``_cm_`` CTE builds its FROM purely from ``cte_scope.join_paths``
+and registers only source / positional args / typed field kwargs — never
+string fragments nor the dataset-default
 ``AggregationParam.sql`` values. A crossing fragment therefore renders a
 reference to a table that is not in the CTE's FROM.
 
 The shifted (``time_shift``) CTE has the same gap but is unreachable today —
-``time_shift`` combined with a cross-model aggregate raises first. That half is
+``time_shift`` combined with a cross-dataset aggregate raises first. That half is
 tracked separately.
 """
 
@@ -40,10 +40,11 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1746_fixtures import cte_names_in_order, find_cte
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting, trusting_all
 
 
 # ---------------------------------------------------------------------------
-# Fixtures — the aggregation is declared on the JOINED model so the planner
+# Fixtures — the aggregation is declared on the JOINED dataset so the planner
 # roots a _cm_ CTE at `customers`, and its default param crosses one hop
 # further to `regions`.
 # ---------------------------------------------------------------------------
@@ -93,7 +94,7 @@ def _orders() -> SlayerDataset:
 
 
 def _orders_local_agg() -> SlayerDataset:
-    """Host-rooted variant: the aggregation is declared on the ROOT model with
+    """Host-rooted variant: the aggregation is declared on the ROOT dataset with
     a crossing default param. This path already scans fragments today and must
     not regress."""
     return SlayerDataset(
@@ -122,8 +123,8 @@ async def _sql(
     query: SlayerQuery, *, dataset: SlayerDataset, dialect: str = "postgres",
 ) -> str:
     return await _engine_generate(
-        query=query, dataset=dataset, dialect=dialect, validate=False,
-        extra_datasets=[_customers(), _regions()],
+        query=query, dataset=trusting(dataset), dialect=dialect, validate=False,
+        extra_datasets=trusting_all([_customers(), _regions()]),
     )
 
 
@@ -186,7 +187,7 @@ class TestCrossModelFragmentJoins:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status", alias="status")],
+                dimensions=[QueryDimension(field="orders.status", alias="status")],
                 metrics=[{
                     "metric": "wscaled_sum(customers.spend)", "alias": "m0",
                 }],
@@ -208,10 +209,10 @@ class TestCrossModelFragmentJoins:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status", alias="status")],
+                dimensions=[QueryDimension(field="orders.status", alias="status")],
                 metrics=[
                     {"metric": "wscaled_sum(customers.spend)", "alias": "m0"},
-                    {"metric": "sum(amount)", "alias": "m1"},
+                    {"metric": "sum(orders.amount)", "alias": "m1"},
                 ],
             ),
             dataset=_orders(),
@@ -234,8 +235,8 @@ class TestHostPathFragmentJoinsStillWork:
         sql = await _sql(
             SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "status", "alias": "status"}],
-                "metrics": [{"metric": "wscaled_sum(amount)", "alias": "m0"}],
+                "dimensions": [{"field": "orders.status", "alias": "status"}],
+                "metrics": [{"metric": "wscaled_sum(orders.amount)", "alias": "m0"}],
             }),
             dataset=_orders_local_agg(),
         )
@@ -246,9 +247,9 @@ class TestHostPathFragmentJoinsStillWork:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status", alias="status")],
+                dimensions=[QueryDimension(field="orders.status", alias="status")],
                 metrics=[{
-                    "metric": "wscaled_sum(amount, w='customers.regions.weight')",
+                    "metric": "wscaled_sum(orders.amount, w='customers.regions.weight')",
                     "alias": "m0",
                 }],
             ),
@@ -264,7 +265,7 @@ async def test_cross_model_fragment_executes_on_duckdb() -> None:
     sql = await _sql(
         SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "wscaled_sum(customers.spend)", "alias": "m0"}],
         }),
         dataset=_orders(), dialect="duckdb",

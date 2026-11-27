@@ -64,8 +64,8 @@ def _sqlite_engine(workspace: Path, *, rows: str) -> SlayerQueryEngine:
     asyncio.run(storage.save_dataset(SlayerDataset(
         name="t", data_source="lite", sql_table="t",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="val", sql="val", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="val", expression="val", datatype=DataType.FLOAT),
         ],
     )))
     return SlayerQueryEngine(storage=storage)
@@ -142,7 +142,7 @@ class TestAsyncEngineDisposal:
         result = engine.run_sync(_planted_then(
             monkeypatch, client, fake, engine.execute(SlayerQuery.model_validate({
                 "population": "t",
-                "metrics": ["sum(val)"],
+                "metrics": ["sum(t.val)"],
             })),
         ))
         assert math.isclose(result.data[0]["t.val_sum"], 6.0)
@@ -154,7 +154,7 @@ class TestAsyncEngineDisposal:
         engine, client = _engine_with_pg_client(workspace)
         fake = _fake_async_engine()
         q = SlayerQuery(
-            population="missing", metrics=["count(*)"],  # type: ignore[arg-type]
+            population="missing", metrics=["count(missing.*)"],  # type: ignore[arg-type]
         )
         workflow = _planted_then(monkeypatch, client, fake, engine.execute(q))
         with pytest.raises(Exception):
@@ -172,7 +172,7 @@ class TestAsyncEngineDisposal:
         ))
         engine._sql_clients[("fake", "postgres")] = client_i
         fake = _fake_async_engine()
-        count = SlayerQuery.model_validate({"population": "t", "metrics": ["count(*)"]})
+        count = SlayerQuery.model_validate({"population": "t", "metrics": ["count(t.*)"]})
 
         engine.run_sync(_planted_then(monkeypatch, client_i, fake, engine.execute(count)))
         monkeypatch.setattr(sql_client, "create_async_engine", _no_second_build)
@@ -202,20 +202,20 @@ class TestAsyncEngineDisposal:
         asyncio.run(storage.save_dataset(SlayerDataset(
             name="t", data_source="lite", sql_table="t",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="v", sql="v", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="v", expression="v", datatype=DataType.INTEGER),
             ],
         )))
         engine = SlayerQueryEngine(storage=storage)
 
-        r1 = engine.execute_sync(SlayerQuery.model_validate({"population": "t", "metrics": ["count(*)", "sum(v)"]}))
+        r1 = engine.execute_sync(SlayerQuery.model_validate({"population": "t", "metrics": ["count(t.*)", "sum(t.v)"]}))
         assert r1.data[0]["t._count"] == 3
         assert r1.data[0]["t.v_sum"] == 60
         assert len(engine._sql_clients) == 1
         client = cast(SlayerSQLClient, next(iter(engine._sql_clients.values())))
         sync_engine_first = client._sync_engine
 
-        r2 = engine.execute_sync(SlayerQuery.model_validate({"population": "t", "metrics": ["count(*)", "sum(v)"]}))
+        r2 = engine.execute_sync(SlayerQuery.model_validate({"population": "t", "metrics": ["count(t.*)", "sum(t.v)"]}))
         assert r2.data[0]["t._count"] == 3
         assert client in engine._sql_clients.values()
         assert client._sync_engine is sync_engine_first, (

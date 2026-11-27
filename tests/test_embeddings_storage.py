@@ -1,4 +1,4 @@
-"""Storage-layer tests for the Embedding sidecar table (DEV-1386).
+"""Storage-layer tests for the Embedding sidecar table.
 
 Parameterised across the two real storage backends (YAML + SQLite) so
 every contract — upsert, fetch, list, prefix cascade — is verified
@@ -124,7 +124,7 @@ async def test_delete_for_canonical_prefix_cascades(
 ) -> None:
     """delete_embeddings_for_canonical wipes every row whose
     canonical_id starts with the supplied prefix — used by the
-    delete_model / delete_datasource cascade."""
+    delete_dataset / delete_datasource cascade."""
     rows_to_seed = [
         _embed(canonical_id="ds_a.orders", kind="dataset"),
         _embed(canonical_id="ds_a.orders.id", kind="field"),
@@ -183,10 +183,10 @@ async def test_delete_memory_cascades_embedding(
 async def test_delete_model_cascades_subtree_embeddings(
     storage: StorageBackend,
 ) -> None:
-    """``delete_model`` on the ABC wrapper must drop the model doc
-    embedding plus every column / measure / aggregation embedding
-    keyed by the model's canonical prefix."""
-    # Seed a model so the ABC delete wrapper can resolve it.
+    """``delete_dataset`` on the ABC wrapper must drop the dataset doc
+    embedding plus every field / metric / aggregation embedding
+    keyed by the dataset's canonical prefix."""
+    # Seed a dataset so the ABC delete wrapper can resolve it.
     ds = DatasourceConfig(
         name="dsx", type="postgres", host="h", database="d",
     )
@@ -226,8 +226,8 @@ async def test_delete_datasource_cascades_descendants(
     storage: StorageBackend,
 ) -> None:
     """``delete_datasource`` cascades every embedding under the
-    datasource prefix — datasource doc + every model / column /
-    measure / aggregation under it."""
+    datasource prefix — datasource doc + every dataset / field /
+    metric / aggregation under it."""
     ds = DatasourceConfig(
         name="dsx", type="postgres", host="h", database="d",
     )
@@ -253,14 +253,14 @@ async def test_delete_datasource_cascades_descendants(
 
 
 # ---------------------------------------------------------------------------
-# Prefix-greedy delete regressions (DEV-1405)
+# Prefix-greedy delete regressions
 # ---------------------------------------------------------------------------
 
 
 async def test_delete_for_canonical_does_not_match_numeric_siblings(
     storage: StorageBackend,
 ) -> None:
-    """REGRESSION (DEV-1405): the previous LIKE 'memory:4%' pattern
+    """REGRESSION: the previous LIKE 'memory:4%' pattern
     nuked memory:42, memory:43, memory:400 along with memory:4. The
     fix matches exact id OR strict ``.``-descendant — memory ids never
     have descendants, so only memory:4 must go."""
@@ -281,7 +281,7 @@ async def test_delete_for_canonical_does_not_match_numeric_siblings(
 async def test_delete_for_canonical_does_not_match_char_sibling_ds(
     storage: StorageBackend,
 ) -> None:
-    """REGRESSION (DEV-1405): deleting ds ``orders`` must not nuke
+    """REGRESSION: deleting ds ``orders`` must not nuke
     ``orders_archive`` or ``orders123``."""
     for cid in (
         "orders",
@@ -309,7 +309,7 @@ async def test_delete_for_canonical_does_not_match_char_sibling_ds(
 async def test_delete_for_canonical_does_not_match_char_sibling_model(
     storage: StorageBackend,
 ) -> None:
-    """REGRESSION (DEV-1405): deleting model ``orders.customers`` must
+    """REGRESSION: deleting dataset ``orders.customers`` must
     not nuke ``orders.customers_v2``."""
     for cid in (
         "orders.customers",
@@ -331,7 +331,7 @@ async def test_delete_for_canonical_does_not_match_char_sibling_model(
 
 
 # ---------------------------------------------------------------------------
-# Batched APIs (DEV-1405)
+# Batched APIs
 # ---------------------------------------------------------------------------
 
 
@@ -408,7 +408,7 @@ async def test_get_embeddings_for_canonical_ids_filters_by_model(
 
 async def test_yaml_init_creates_embeddings_db() -> None:
     """YAMLStorage must persist embeddings to ``<base_dir>/embeddings.db``
-    (the SQLite sidecar), not ``embeddings.yaml`` (DEV-1405)."""
+    (the SQLite sidecar), not ``embeddings.yaml``."""
     with tempfile.TemporaryDirectory() as tmp:
         store = YAMLStorage(base_dir=tmp)
         await store.save_embedding(_embed(canonical_id="memory:1"))

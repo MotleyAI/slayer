@@ -16,7 +16,9 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.relationship_walker import OrientedRelationship, addresses_alone, canonical_token, neighbors, provably_to_one
+from slayer.core.relationship_walker import (
+    OrientedRelationship, addresses_alone, canonical_token, neighbors, ossie_step, provably_to_one,
+)
 from slayer.core.models import SlayerDataset
 from slayer.core.time_spine import is_spine
 
@@ -39,10 +41,11 @@ __all__ = [
 
 
 class HopFilter(str, Enum):
-    """Which hops a search may take: every edge, or only provably to-one ones."""
+    """Which hops a search may take: every edge, only provably to-one ones, or only Ossie steps."""
 
     ALL = "all"
     TO_ONE = "to_one"
+    OSSIE = "ossie"
 
 
 class Route(BaseModel):
@@ -68,7 +71,8 @@ class UnaddressablePair(BaseModel):
     edges: tuple[OrientedRelationship, ...]
 
     def describe(self) -> str:
-        return (f"{self.source_dataset}↔{self.to} is joined by edges no path token addresses; "
+        pairs = "; ".join(", ".join(f"{a}={b}" for a, b in e.column_pairs) for e in self.edges)
+        return (f"{self.source_dataset}↔{self.to} is joined by edges no path token addresses ({pairs}); "
                 f"name the edges to make them addressable")
 
 
@@ -79,6 +83,7 @@ class _Hop(BaseModel):
     token: str
     to_one: bool
     addressable: bool
+    ossie: bool
 
 
 class _Graph:
@@ -99,14 +104,14 @@ class _Graph:
                 if target is None:
                     continue
                 hops.append(_Hop(edge=e, token=canonical_token(e), to_one=provably_to_one(edge=e, target_dataset=target),
-                                 addressable=addresses_alone(edge=e, incident=edges)))
+                                 addressable=addresses_alone(edge=e, incident=edges),
+                                 ossie=ossie_step(edge=e, datasets_by_name=self.datasets)))
             hops.sort(key=lambda h: (h.token, h.edge.to))
             self._memo[name] = hops
         return hops
 
     def hops(self, name: str, hop_filter: HopFilter) -> list[_Hop]:
-        return [h for h in self.incident(name)
-                if h.addressable and (hop_filter is HopFilter.ALL or h.to_one)]
+        return [h for h in self.incident(name) if h.addressable and _admits(hop_filter, h)]
 
     def passes(self, name: str, *, root: str) -> bool:
         """A route may continue through ``name``: the root, or anything but the spine."""
@@ -126,6 +131,10 @@ class _Graph:
                     seen.add(h.edge.to)
                     frontier.append(h.edge.to)
         return seen
+
+
+def _admits(hop_filter: HopFilter, hop: _Hop) -> bool:
+    return hop_filter is HopFilter.ALL or (hop.ossie if hop_filter is HopFilter.OSSIE else hop.to_one)
 
 
 def _extend(route: Route, hop: _Hop) -> Route:
@@ -185,7 +194,7 @@ def distances(
             continue
         for hop in graph.incident(node):
             nxt = hop.edge.to
-            if nxt not in dist and (hop_filter is HopFilter.ALL or hop.to_one):
+            if nxt not in dist and _admits(hop_filter, hop):
                 dist[nxt] = dist[node] + 1
                 frontier.append(nxt)
     return dist
@@ -219,12 +228,14 @@ def shortest_routes(
 
 def _successors(
     graph: _Graph, *, node: str, route: Route, root: str, hop_filter: HopFilter, admit: Callable[[str], bool],
+    admit_edge: Callable[[OrientedRelationship], bool] | None = None,
 ) -> Iterator[tuple[str, Route]]:
-    """``route`` extended by each filtered addressable hop off ``node`` into a dataset ``admit`` accepts."""
+    """``route`` extended by each filtered addressable hop off ``node`` (that ``admit_edge`` admits) into a dataset
+    ``admit`` accepts."""
     if not graph.passes(node, root=root):
         return
     for hop in graph.hops(node, hop_filter):
-        if admit(hop.edge.to):
+        if admit(hop.edge.to) and (admit_edge is None or admit_edge(hop.edge)):
             yield hop.edge.to, _extend(route, hop)
 
 
@@ -239,8 +250,9 @@ def shortest_route(
 def routes(
     *, root: SlayerDataset, target: str, datasets_by_name: dict[str, SlayerDataset],
     hop_filter: HopFilter = HopFilter.ALL, cap: int = 2, shortest_only: bool = False,
+    admit_edge: Callable[[OrientedRelationship], bool] | None = None,
 ) -> list[Route]:
-    """Up to ``cap`` simple routes ``root → target`` in tie-break order (best-first)."""
+    """Up to ``cap`` simple routes ``root → target`` in tie-break order (best-first), over edges ``admit_edge`` admits."""
     graph = _Graph({**datasets_by_name, root.name: root})
     if target not in graph.datasets:
         return []
@@ -259,7 +271,7 @@ def routes(
             continue
         visited = {root.name, *(e.to for e in route.edges)}
         for nxt, ext in _successors(graph, node=node, route=route, root=root.name, hop_filter=hop_filter,
-                                    admit=lambda n: n not in visited and n in relevant):
+                                    admit=lambda n: n not in visited and n in relevant, admit_edge=admit_edge):
             heapq.heappush(heap, (ext.rank(), next(tie), ext, nxt))
     return out
 

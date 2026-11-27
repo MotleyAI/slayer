@@ -317,7 +317,7 @@ def test_model_v1_to_v2_dimensions_only() -> None:
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.fields] == ["status", "id"]
-    assert m.fields[0].datatype.value == "String"
+    assert str(m.fields[0].datatype) == "String"
     assert m.fields[1].primary_key is True
     assert m.metrics == []
 
@@ -337,7 +337,7 @@ def test_model_v1_to_v2_measures_only() -> None:
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.fields] == ["revenue", "high_value"]
-    assert all(c.datatype.value == "Float" for c in m.fields)
+    assert all(str(c.datatype) == "Float" for c in m.fields)
     assert all(c.primary_key is False for c in m.fields)
     assert m.fields[1].filter == "amount > 100"
     assert m.fields[1].allowed_aggregations == ["sum"]
@@ -381,7 +381,7 @@ def test_model_v1_to_v2_legacy_type_alias() -> None:
     })
     col = m.fields[0]
     assert col.name == "revenue"
-    assert col.datatype.value == "Float"  # default after stripping legacy `type: sum`
+    assert str(col.datatype) == "Float"  # default after stripping legacy `type: sum`
     assert col.allowed_aggregations == ["sum"]
 
 
@@ -509,8 +509,8 @@ def test_query_v1_to_v2_inline_slayer_model_dict_migrates() -> None:
 
 
 def test_model_v1_to_v2_source_queries_nested_rename() -> None:
-    """``source_queries`` entries are migrated in place at model-load time
-    so re-saving the model doesn't persist the v1 ``fields`` key.
+    """``source_queries`` entries are migrated in place at dataset-load time
+    so re-saving the dataset doesn't persist the v1 ``fields`` key.
     """
     m = SlayerDataset.model_validate({
         "version": 1,
@@ -801,7 +801,7 @@ def test_slayer_query_v3_direct_construct_with_dry_run_still_warns() -> None:
 
 
 async def _build_engine_with_orders(tmpdir: str):
-    """Engine over one 'orders' model on a postgres datasource (dry_run never connects)."""
+    """Engine over one 'orders' dataset on a postgres datasource (dry_run never connects)."""
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="postgres", host="localhost", port=5432,
@@ -812,8 +812,8 @@ async def _build_engine_with_orders(tmpdir: str):
         sql_table="public.orders",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     ))
     return SlayerQueryEngine(storage=storage)
@@ -822,7 +822,7 @@ async def _build_engine_with_orders(tmpdir: str):
 async def test_engine_dry_run_kwarg_slayer_query_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)"}]})
         result = await engine.execute(query=q, dry_run=True)
         assert result.data == []
         assert "COUNT(*)" in result.sql
@@ -832,7 +832,7 @@ async def test_engine_dry_run_kwarg_dict_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
-            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
             dry_run=True,
         )
         assert result.data == []
@@ -845,7 +845,7 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
             query=[
-                {"population": "orders", "metrics": [{"metric": "count(*)"}]},
+                {"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
             ],
             dry_run=True,
         )
@@ -857,7 +857,7 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
 
 
 async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
-    """A v2 query-backed model saved with a stale nested dry_run=True still executes: the
+    """A v2 query-backed dataset saved with a stale nested dry_run=True still executes: the
     v2→v3 migration on load drops the flag."""
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
 
@@ -883,7 +883,7 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
                 }],
             }, f)
 
-        # Loading the model triggers nested SlayerQuery validation, which
+        # Loading the dataset triggers nested SlayerQuery validation, which
         # fires the v2→v3 migration and drops dry_run with a warning.
         loaded = await storage.get_dataset("stale")
         assert loaded is not None
@@ -901,7 +901,7 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
             if r.levelno == logging.WARNING
         )
 
-        # The engine can now execute the model. Pass dry_run=True as a kwarg
+        # The engine can now execute the dataset. Pass dry_run=True as a kwarg
         # (which is the new way), which short-circuits to SQL without DB calls.
         result = await engine.execute(query="stale", dry_run=True)
         assert result.data == []
@@ -1008,9 +1008,9 @@ class TestV4ToV5DictMigration:
                 {"name": "ts", "sql": "ts", "type": "time"},
             ],
         })
-        assert m.fields[0].datatype.name == "STRING"
-        assert m.fields[1].datatype.name == "FLOAT"
-        assert m.fields[2].datatype.name == "DATETIME"
+        assert (m.fields[0].datatype and m.fields[0].datatype.name) == "STRING"
+        assert (m.fields[1].datatype and m.fields[1].datatype.name) == "FLOAT"
+        assert (m.fields[2].datatype and m.fields[2].datatype.name) == "DATETIME"
 
     def test_v5_dict_passes_through_v4_to_v5_step_unchanged(self) -> None:
         """The v4→v5 step is a no-op for v5 input (called directly; the orchestrator never would)."""

@@ -1,4 +1,4 @@
-"""DEV-1841 task 2.2 — ``to_many_handling: "error"`` replaces the strict gate:
+"""``to_many_handling: "error"`` replaces the strict gate:
 every silent-semantics event the strict flag rejected still errors, now for
 local aggregates too; pushed filters and attributable queries still pass.
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousRelationshipPathError, SlayerError
+from slayer.core.errors import UnresolvableDimensionRelationshipError, SlayerError
 
 from slayer.core.query import QueryMetric
 
@@ -25,10 +25,10 @@ from tests._dev1841_fixtures import (
     rows_by,
 )
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 SM = QueryMetric(metric="sum(agents.score)", alias="sm")
-SP = QueryMetric(metric="sum(spend)", alias="sp")
+SP = QueryMetric(metric="sum(customers.spend)", alias="sp")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -45,9 +45,9 @@ async def exec_backend_amb(request):
 
 class TestErrorModeRefusesBroadcast:
     async def test_cross_model_broadcast_errors(self, exec_backend):
-        """Scenario: broadcast-would-happen errors — cross-model."""
+        """Scenario: broadcast-would-happen errors — cross-dataset."""
         _, engine = exec_backend
-        query = error_q(dimensions=["status"], metrics=[M, CM])
+        query = error_q(dimensions=["orders.status"], metrics=[M, CM])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)
         msg = str(ei.value)
@@ -68,22 +68,22 @@ class TestErrorModeRefusesBroadcast:
 
 class TestErrorModeRefusesExcludedFilters:
     async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
-        """DEV-1935: a mixed disjunction no longer errors in error mode — it
+        """A mixed disjunction no longer errors in error mode — it
         restricts the producer by semi-join (gold 160, silver 230, bronze 40)."""
         _, engine = exec_backend
         resp = await engine.execute(error_q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.tier = 'bronze' OR channel = 'app'"]))
-        by = rows_by(resp, "orders.customers.tier")
+            filter=["customers.tier = 'bronze' OR orders.channel = 'app'"]))
+        by = rows_by(resp, "customers.tier")
         for tier, spend in {"gold": 160.0, "silver": 230.0, "bronze": 40.0}.items():
-            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
+            assert float(by[(tier,)]["cm"]) == pytest.approx(spend), tier
 
     async def test_ambiguous_hop_errors_in_error_mode(self, exec_backend_amb):
         """An ambiguous correlation hop fails closed in every mode — not an
         error-mode concern, but it must not be masked by it."""
         _, engine = exec_backend_amb
-        query = error_q(population="tickets", metrics=[SM], filter=["effort > 2"])
-        with pytest.raises(AmbiguousRelationshipPathError):
+        query = error_q(population="tickets", metrics=[SM], filter=["tickets.effort > 2"])
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await engine.execute(query)
 
 
@@ -94,31 +94,31 @@ class TestErrorModePasses:
         the broadcast run."""
         _, engine = exec_backend
         kw = dict(dimensions=["customers.tier"], metrics=[M, CM],
-                  filter=["channel = 'app'"])
+                  filter=["orders.channel = 'app'"])
         strict_resp = await engine.execute(error_q(**kw))
         lenient_resp = await engine.execute(bcast_q(**kw))
-        strict_by = rows_by(strict_resp, "orders.customers.tier")
-        lenient_by = rows_by(lenient_resp, "orders.customers.tier")
+        strict_by = rows_by(strict_resp, "customers.tier")
+        lenient_by = rows_by(lenient_resp, "customers.tier")
         assert set(strict_by) == set(lenient_by)
         for key, row in strict_by.items():
-            assert row["orders.cm"] == lenient_by[key]["orders.cm"]
+            assert row["cm"] == lenient_by[key]["cm"]
 
     async def test_fully_attributable_passes(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(
             error_q(dimensions=["customers.tier"], metrics=[M, CM]))
-        assert {r["orders.customers.tier"] for r in resp.data} >= {"gold", "silver"}
+        assert {r["customers.tier"] for r in resp.data} >= {"gold", "silver"}
 
     async def test_explicit_partition_broadcast_does_not_error(self, exec_backend):
         """Scenario: explicit ``partition_by=`` broadcasting must not error even
         in error mode (requested grain, by design)."""
         _, engine = exec_backend
         resp = await engine.execute(error_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="sum(customers.spend, partition_by=[])", alias="total")]))
         for row in resp.data:
-            assert float(row["orders.total"]) == pytest.approx(BCAST_SPEND_CROSS)
+            assert float(row["total"]) == pytest.approx(BCAST_SPEND_CROSS)
 
 
 class TestStrictParity:
@@ -129,7 +129,7 @@ class TestStrictParity:
         ok = await engine.execute(
             error_q(dimensions=["customers.tier"], metrics=[CM]))
         assert ok.data
-        broadcast_query = error_q(dimensions=["status"], metrics=[CM])
+        broadcast_query = error_q(dimensions=["orders.status"], metrics=[CM])
         with pytest.raises((SlayerError, ValueError)):
             await engine.execute(broadcast_query)
 
@@ -140,7 +140,7 @@ class TestStrictParity:
         _, engine = exec_backend
         migrated = SlayerQuery.model_validate({
             "version": 3, "source_model": "orders", "strict": True,
-            "dimensions": ["status"],
+            "dimensions": ["orders.status"],
             "measures": [{"formula": "sum(customers.spend)", "name": "cm"}],
         })
         assert migrated.to_many_handling == "error"

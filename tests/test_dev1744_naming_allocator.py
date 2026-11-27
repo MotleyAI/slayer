@@ -50,13 +50,13 @@ from slayer.ir.bound import BoundExpr
 from slayer.engine.compile import projection, stages
 
 
-# Fixtures — a seeded store whose model contains the colliding name shapes.
+# Fixtures — a seeded store whose dataset contains the colliding name shapes.
 
 
 async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryEngine:
-    """orders -> customers, seeded, with collision-bait columns: ``Rev``/``rev``
+    """orders -> customers, seeded, with collision-bait fields: ``Rev``/``rev``
     (case-only pair over revx/revy) and ``customers__revenue`` (a filtered-local
-    isolated aggregate colliding with the cross-model ``customers.revenue_sum``)."""
+    isolated aggregate colliding with the cross-dataset ``customers.revenue_sum``)."""
     d = base_dir
     db_path = os.path.join(d, "b4.db")
     with transaction(db_path) as con:
@@ -101,8 +101,8 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
                 DatasetField(name="region_id", datatype=DataType.INTEGER),
                 DatasetField(name="revenue", datatype=DataType.FLOAT),
                 # Case-only pair over two DIFFERENT physical columns.
-                DatasetField(name="Rev", sql="revx", datatype=DataType.FLOAT),
-                DatasetField(name="rev", sql="revy", datatype=DataType.FLOAT),
+                DatasetField(name="Rev", expression="revx", datatype=DataType.FLOAT),
+                DatasetField(name="rev", expression="revy", datatype=DataType.FLOAT),
             ],
         ),
         _validate=False,
@@ -119,11 +119,11 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
                 DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
-                # __-name carve-out + join-crossing filter => filtered-local
+                # __-name carve-out + relationship-crossing filter => filtered-local
                 # isolation (its own _cm_ CTE).
                 DatasetField(
                     name="customers__revenue",
-                    sql="amount",
+                    expression="amount",
                     datatype=DataType.FLOAT,
                     filter="customers.region_id = 1",
                 ),
@@ -163,18 +163,18 @@ async def _isolated_then_combined(
     metrics: List[QueryMetric],
     dimension: str = "status",
 ) -> None:
-    """Self-calibrating: each measure alone, then together must reproduce every isolated value."""
+    """Self-calibrating: each metric alone, then together must reproduce every isolated value."""
     isolated: dict = {}
     for m in metrics:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field=dimension)],
+                dimensions=[QueryDimension(field=f"orders.{dimension}")],
                 metrics=[m],
             )
         )
         assert len(resp.data) == 1, resp.data
-        # The single non-dimension key is this measure's value.
+        # The single non-dimension key is this metric's value.
         row = resp.data[0]
         keys = [k for k in row if not k.endswith(f".{dimension}")]
         assert len(keys) == 1, (m.metric, list(row))
@@ -183,7 +183,7 @@ async def _isolated_then_combined(
     resp = await engine.execute(
         SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field=dimension)],
+            dimensions=[QueryDimension(field=f"orders.{dimension}")],
             metrics=metrics,
         )
     )
@@ -191,17 +191,17 @@ async def _isolated_then_combined(
     combined = resp.data[0]
     for key, value in isolated.items():
         assert key in combined, (
-            f"measure {key!r} vanished when rendered alongside the others: "
+            f"metric {key!r} vanished when rendered alongside the others: "
             f"{list(combined)}"
         )
         assert combined[key] == value, (
-            f"measure {key!r} changed value when rendered alongside the "
+            f"metric {key!r} changed value when rendered alongside the "
             f"others: alone={value!r}, together={combined[key]!r} — the "
             f"hallmark of two slots collapsing onto one CTE."
         )
 
 
-# B4 — cross-model CTE names through the allocator.
+# B4 — cross-dataset CTE names through the allocator.
 
 
 class TestCrossModelCteNameAllocation:
@@ -222,7 +222,7 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     QueryMetric(metric="sum(customers.Rev)", alias="upper"),
                     QueryMetric(metric="sum(customers.rev)", alias="lower"),
@@ -236,20 +236,20 @@ class TestCrossModelCteNameAllocation:
                 f"CTE names fold together within one WITH scope on a "
                 f"case-folding dialect: {scope_names}"
             )
-        # Two cross-model aggregates => two _cm_ CTEs, not one shared.
+        # Two cross-dataset aggregates => two _cm_ CTEs, not one shared.
         names = _cte_names(resp.sql)
         assert len([n for n in names if n.startswith("_cm_")]) == 2, names
 
     async def test_sanitisation_collision_keeps_both_plans(
         self, engine,
     ) -> None:
-        """seen_cm collision-as-identity: a cross-model and a filtered-local
+        """seen_cm collision-as-identity: a cross-dataset and a filtered-local
         aggregate sanitise to one ``_cm_`` name; both must survive with own values."""
         await _isolated_then_combined(
             engine,
             metrics=[
                 QueryMetric(metric="sum(customers.revenue)", alias="xmodel"),
-                QueryMetric(metric="sum(customers__revenue)", alias="local"),
+                QueryMetric(metric="sum(orders.customers__revenue)", alias="local"),
             ],
         )
 
@@ -259,8 +259,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="unfiltered"),
-                QueryMetric(metric="sum(customers__revenue)", alias="filtered"),
+                QueryMetric(metric="sum(orders.amount)", alias="unfiltered"),
+                QueryMetric(metric="sum(orders.customers__revenue)", alias="filtered"),
             ],
         )
 
@@ -270,30 +270,30 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     QueryMetric(metric="sum(customers.revenue)"),
                     QueryMetric(metric="sum(customers.Rev)"),
                 ],
             )
         )
-        assert "orders.customers.revenue_sum" in resp.columns, resp.columns
-        assert "orders.customers.Rev_sum" in resp.columns, resp.columns
+        assert "customers.revenue_sum" in resp.columns, resp.columns
+        assert "customers.Rev_sum" in resp.columns, resp.columns
         row = resp.data[0]
         # revenue -> 600, Rev (revx) -> 24; equal values would mean a shared CTE column.
-        assert row["orders.customers.revenue_sum"] != row["orders.customers.Rev_sum"]
+        assert row["customers.revenue_sum"] != row["customers.Rev_sum"]
 
     async def test_hidden_cross_model_agg_under_a_transform_keeps_its_alias(
         self, engine,
     ) -> None:
-        """A hidden cross-model aggregate feeding a transform must project under its
+        """A hidden cross-dataset aggregate feeding a transform must project under its
         own canonical alias — a stale value emits the alias twice in one SELECT."""
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
@@ -302,7 +302,7 @@ class TestCrossModelCteNameAllocation:
                     QueryMetric(
                         metric="cumsum(sum(customers.revenue))", alias="run",
                     ),
-                    # A second cross-model aggregate, so a leaked alias differs.
+                    # A second cross-dataset aggregate, so a leaked alias differs.
                     QueryMetric(metric="sum(customers.Rev)", alias="rv"),
                 ],
                 to_many_handling="broadcast",
@@ -321,18 +321,28 @@ class TestCrossModelCteNameAllocation:
             dups = {a: n for a, n in Counter(names).items() if n > 1}
             assert not dups, (
                 f"an output alias is emitted more than once in one SELECT — a "
-                f"cross-model aggregate was projected under another measure's "
+                f"cross-dataset aggregate was projected under another metric's "
                 f"name: {dups}\n{resp.sql}"
             )
         # …and the hidden aggregate still carries its own canonical alias.
         all_aliases = Counter(re.findall(r'AS "([^"]+)"', resp.sql))
         assert "customers.revenue_sum" in all_aliases, all_aliases
 
+    async def test_an_alias_named_like_a_hidden_aggregate_column_executes(self, engine) -> None:
+        resp = await engine.execute(SlayerQuery(
+            population="orders",
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            metrics=[QueryMetric(metric="cumsum(sum(customers.revenue))", alias="run"),
+                     QueryMetric(metric="sum(customers.Rev)", alias="revenue_sum")],
+            to_many_handling="broadcast",
+        ))
+        assert resp.columns == ["orders.created_at", "run", "revenue_sum"]
+
     async def test_same_key_slots_still_share_one_cte(self, engine) -> None:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     QueryMetric(metric="sum(customers.revenue)", alias="a"),
                     QueryMetric(metric="sum(customers.revenue)", alias="b"),
@@ -349,7 +359,7 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
                     QueryMetric(metric="sum(customers.revenue)", alias="a"),
                     QueryMetric(metric="sum(customers.revenue)", alias="b"),
@@ -357,9 +367,9 @@ class TestCrossModelCteNameAllocation:
             )
         )
         row = resp.data[0]
-        assert "orders.a" in row, list(row)
-        assert "orders.b" in row, list(row)
-        assert row["orders.a"] == row["orders.b"]
+        assert "a" in row, list(row)
+        assert "b" in row, list(row)
+        assert row["a"] == row["b"]
 
 
 class TestDedupIdentityIsStructural:
@@ -414,20 +424,20 @@ class TestAllocatorRouting:
     ) -> None:
         """Windowed producers render as ``_cm_`` CTEs through the shared allocator."""
         engine = await _hostile_engine(
-            column="revx2", base_dir=str(tmp_path),
+            field="revx2", base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
                 metrics=[
-                    QueryMetric(metric="sum(amount, window='90d')", alias="Wm"),
-                    QueryMetric(metric="sum(amount, window='30d')", alias="wm2"),
+                    QueryMetric(metric="sum(orders.amount, window='90d')", alias="Wm"),
+                    QueryMetric(metric="sum(orders.amount, window='30d')", alias="wm2"),
                 ],
             ),
             dry_run=True,
@@ -463,10 +473,10 @@ class TestAllocatorRouting:
         assert alloc.allocate_cte(cm) != cm
 
 
-# C7 — the bespoke name families, exercised against hostile user columns.
+# C7 — the bespoke name families, exercised against hostile user fields.
 
 
-# Internal minted names C7 moves onto the allocator. All are legal user column
+# Internal minted names C7 moves onto the allocator. All are legal user field
 # names, so each is a reachable collision.
 _INTERNAL_NAMES = [
     "_placeholder",   # empty-base grain projection
@@ -485,8 +495,8 @@ _INTERNAL_NAMES = [
 ]
 
 
-async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
-    """A store whose ``orders`` model carries a user column named like an internal alias."""
+async def _hostile_engine(*, field: str, base_dir: str) -> SlayerQueryEngine:
+    """A store whose ``orders`` dataset carries a user field named like an internal alias."""
     d = base_dir
     db_path = os.path.join(d, "hostile.db")
     with transaction(db_path) as con:
@@ -519,7 +529,7 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
                 DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
-                DatasetField(name=column, sql="hostile", datatype=DataType.FLOAT),
+                DatasetField(name=field, expression="hostile", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -527,28 +537,28 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
 
 
 class TestInternalNamesDoNotCollideWithUserColumns:
-    """Every internal name must survive a user column of that name: the query runs
-    and the user's column returns its values. Parity guards, all pass today."""
+    """Every internal name must survive a user field of that name: the query runs
+    and the user's field returns its values. Parity guards, all pass today."""
 
     @pytest.mark.parametrize("column", _INTERNAL_NAMES)
     async def test_user_column_named_like_an_internal_alias(
         self, column, tmp_path,
     ) -> None:
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path),
+            field=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric=f"sum({column})", alias="hostile_sum"),
-                    QueryMetric(metric="sum(amount)", alias="amt"),
+                    QueryMetric(metric=f"sum(orders.{column})", alias="hostile_sum"),
+                    QueryMetric(metric="sum(orders.amount)", alias="amt"),
                 ],
             )
         )
         by_status = {
-            r["orders.status"]: (r["orders.hostile_sum"], r["orders.amt"])
+            r["orders.status"]: (r["hostile_sum"], r["amt"])
             for r in resp.data
         }
         # Column seeded 1/2/3 vs amounts 10/20/30; a shadowing bug makes the two agree.
@@ -560,13 +570,13 @@ class TestInternalNamesDoNotCollideWithUserColumns:
     ) -> None:
         """The same names as a GROUP BY dimension (projection-aliasing path)."""
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path),
+            field=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field=column)],
-                metrics=[QueryMetric(metric="sum(amount)", alias="amt")],
+                dimensions=[QueryDimension(field=f"orders.{column}")],
+                metrics=[QueryMetric(metric="sum(orders.amount)", alias="amt")],
             )
         )
         assert {r[f"orders.{column}"] for r in resp.data} == {1.0, 2.0, 3.0}
@@ -577,42 +587,42 @@ class TestInternalNamesDoNotCollideWithUserColumns:
     ) -> None:
         """first/last builds the ranked subquery; last amount: a -> 20, b -> 30."""
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path),
+            field=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="last(amount)", alias="lastamt")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="last(orders.amount)", alias="lastamt")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.lastamt"] for r in resp.data}
+        by_status = {r["orders.status"]: r["lastamt"] for r in resp.data}
         assert by_status == {"a": 20.0, "b": 30.0}
 
     @pytest.mark.parametrize(
         "column", ["_w_dim_0", "_w_td_0", "_w_time", "_w_value"],
     )
     async def test_windowed_families_survive_the_name(self, column, tmp_path) -> None:
-        """A duration-windowed measure is the only shape that builds the ``_w_*`` aliases."""
+        """A duration-windowed metric is the only shape that builds the ``_w_*`` aliases."""
         engine = await _hostile_engine(
-            column=column, base_dir=str(tmp_path),
+            field=column, base_dir=str(tmp_path),
         )
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
                 metrics=[
-                    QueryMetric(metric="sum(amount, window='90d')", alias="w"),
+                    QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
                 ],
             )
         )
         assert resp.data, "windowed query returned no rows"
-        assert all(r["orders.w"] is not None for r in resp.data), resp.data
+        assert all(r["w"] is not None for r in resp.data), resp.data
 
 
 # Naming constants — one owner for the structural aliases.

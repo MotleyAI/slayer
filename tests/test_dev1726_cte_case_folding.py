@@ -1,11 +1,11 @@
-"""DEV-1726 — dialect-aware case-folding for CTE-name collision detection.
+"""Dialect-aware case-folding for CTE-name collision detection.
 
 ``AliasAllocator`` and ``assert_unique_cte_names`` compared CTE names by exact
 string, but generated CTE names are emitted unquoted, so on case-folding
 backends two names differing only in case fold to the same identifier: two
-user measure aliases ``Foo``/``foo`` that both drive ``time_shift`` CTEs
+user metric aliases ``Foo``/``foo`` that both drive ``time_shift`` CTEs
 produced ``shifted_Foo``/``shifted_foo`` — a duplicate ``WITH`` name on
-Postgres despite the DEV-1692 de-collision machinery.
+Postgres despite the de-collision machinery.
 
 Contract pinned here (spec-resolved, including the Codex plan review):
 
@@ -15,7 +15,7 @@ Contract pinned here (spec-resolved, including the Codex plan review):
   ClickHouse compares exact. BigQuery FOLDS — the GoogleSQL lexical doc's
   case-sensitivity table marks "Aliases within a query" (which CTE names are)
   case-insensitive, and sqlglot classifies BigQuery ``CASE_INSENSITIVE`` —
-  correcting the DEV-1726 issue text. SQLite/DuckDB reject case-differing CTE
+  correcting the issue text. SQLite/DuckDB reject case-differing CTE
   names even QUOTED (verified empirically), correcting the issue's "quoted
   SQLite" parenthetical. MySQL/T-SQL fold deliberately despite
   platform/collation-dependence: folding is rename-only-safe while not
@@ -29,8 +29,8 @@ Contract pinned here (spec-resolved, including the Codex plan review):
   validates SLayer's own allocator-sanitized output, where a fold-collision
   (quoted or not) always signals an allocator-bypass bug. It is not a
   general-purpose validator of arbitrary SQL.
-* End-to-end, per dialect: two cross-model aggregates over a stored model's
-  grandfathered ``Rev``/``rev`` columns dedup the second ``_cm_`` CTE to
+* End-to-end, per dialect: two cross-dataset aggregates over a stored dataset's
+  grandfathered ``Rev``/``rev`` fields dedup the second ``_cm_`` CTE to
   ``..._rev_sum_2`` on folding dialects (references following the rename) and
   keep both original-case names on ClickHouse — while the user-facing result
   keys survive unchanged (public aliases are reserved, never allocator-minted).
@@ -279,25 +279,25 @@ def _vehicle_dataset() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
 def _customers_dataset() -> SlayerDataset:
-    """Grandfathered case-only column pair over two physical columns (saved unvalidated)."""
+    """Grandfathered case-only field pair over two physical columns (saved unvalidated)."""
     return SlayerDataset(
         name="customers",
         sql_table="public.customers",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="Rev", sql="revx", datatype=DataType.FLOAT),
-            DatasetField(name="rev", sql="revy", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="Rev", expression="revx", datatype=DataType.FLOAT),
+            DatasetField(name="rev", expression="revy", datatype=DataType.FLOAT),
         ],
     )
 
@@ -307,7 +307,7 @@ def _cm_vehicle_query() -> SlayerQuery:
     return SlayerQuery(
         population="orders",
         time_dimensions=[
-            TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
+            TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)
         ],
         metrics=[
             QueryMetric(metric="sum(customers.Rev)", alias="up"),
@@ -324,18 +324,18 @@ async def _cm_vehicle_sql(dialect: str) -> str:
 
 
 def _case_only_result_names_query() -> SlayerQuery:
-    """Two measures whose result names differ ONLY in case — refused before SQL generation."""
+    """Two metrics whose result names differ ONLY in case — refused before SQL generation."""
     return SlayerQuery(
         population="orders",
         time_dimensions=[
             TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
         metrics=[
-            QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="Foo"),
-            QueryMetric(metric="time_shift(max(revenue), -2, 'month')", alias="foo"),
+            QueryMetric(metric="time_shift(sum(orders.revenue), -1, 'month')", alias="Foo"),
+            QueryMetric(metric="time_shift(max(orders.revenue), -2, 'month')", alias="foo"),
         ],
     )
 
@@ -362,16 +362,13 @@ def _assert_cte_referenced(sql: str, *, dialect: str, name: str) -> None:
 def _assert_result_keys_survive(sql: str, *, dialect: str) -> None:
     """Codex F4: folding renames only allocator-MINTED internal names; the
     user-facing result keys (reserved, never minted) survive byte-identical —
-    modulo the pre-existing DEV-1571 ``.``→``___`` mangling on
+    modulo the pre-existing ``.``→``___`` mangling on
     BigQuery/T-SQL."""
     aliases = {
         p.alias_or_name
         for p in _outer_select(sql, dialect=dialect).expressions
     }
-    if dialect in ("bigquery", "tsql"):
-        expected = {"orders___up", "orders___down"}
-    else:
-        expected = {"orders.up", "orders.down"}
+    expected = {"up", "down"}
     assert expected <= aliases, (aliases, sql)
 
 
@@ -427,16 +424,16 @@ class TestE2eCaseFoldingAllDialects:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
             metrics=[
                 QueryMetric(
-                    metric="consecutive_periods(sum(revenue) > 0)", alias="Foo",
+                    metric="consecutive_periods(sum(orders.revenue) > 0)", alias="Foo",
                 ),
                 QueryMetric(
-                    metric="consecutive_periods(sum(revenue) > 100)", alias="foo",
+                    metric="consecutive_periods(sum(orders.revenue) > 100)", alias="foo",
                 ),
             ],
         )

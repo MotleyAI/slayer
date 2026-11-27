@@ -1,6 +1,6 @@
-"""DEV-1745 — the boundary warning contract, exercised through the
+"""The boundary warning contract, exercised through the
 ``semi_join_pushed`` entries a pushed host filter produces: one entry per
-``(location, measure, original filter text)``, the text verbatim, built at the
+``(location, metric, original filter text)``, the text verbatim, built at the
 ENGINE BOUNDARY so every entry point (Python, REST, MCP, CLI) sees it; no Python
 warning is emitted for a push. Binder/planner internal failures RAISE.
 """
@@ -38,7 +38,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 # --------------------------------------------------------------------------- #
 # Fixtures — a host filter mixing a producer-root-local ref with a cross-path
-# ref under OR: pushed into the producer by semi-join (DEV-1935).
+# ref under OR: pushed into the producer by semi-join.
 # --------------------------------------------------------------------------- #
 def _warehouses() -> SlayerDataset:
     return SlayerDataset(
@@ -96,7 +96,7 @@ PUSHED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
 def _query(*, extra_filters: list | None = None) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": [{"field": "status", "alias": "status"}],
+        "dimensions": [{"field": "orders.status", "alias": "status"}],
         "metrics": [{"metric": "sum(customers.revenue)"}],
         "filter": [PUSHED_FILTER, *(extra_filters or [])],
     })
@@ -142,11 +142,11 @@ async def _engine(tmpdir: str, *, with_tables: bool = False) -> SlayerQueryEngin
 
 
 def _two_plan_query() -> SlayerQuery:
-    """ONE user filter pushed into TWO different cross-model producers — one
-    entry per (location, measure, text), never one per consumer."""
+    """ONE user filter pushed into TWO different cross-dataset producers — one
+    entry per (location, metric, text), never one per consumer."""
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status", alias="status")],
+        dimensions=[QueryDimension(field="orders.status", alias="status")],
         metrics=[
             {"metric": "sum(customers.revenue)"},
             {"metric": "sum(shippers.cost)"},
@@ -198,7 +198,7 @@ class TestExecuteEntryPoint:
             f"{payload.filter_text!r} vs {PUSHED_FILTER!r}"
         )
         assert payload.location, "the payload must carry a location"
-        assert payload.metric, "the payload must name the producer's measure"
+        assert payload.metric, "the payload must name the producer's metric"
         assert payload.kind == "semi_join_pushed", payload.kind
 
     async def test_two_pushed_filters_produce_two_entries(self) -> None:
@@ -218,8 +218,8 @@ class TestExecuteEntryPoint:
             engine = await _engine(d)
             clean = SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "status", "alias": "status"}],
-                "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
+                "dimensions": [{"field": "orders.status", "alias": "status"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
             })
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -251,8 +251,8 @@ class TestEmissionIsBoundaryNotRender:
     async def test_one_filter_pushed_into_two_producers_names_each_measure(
         self,
     ) -> None:
-        """Identity is (location, measure, text): one filter pushed into two
-        producers is two entries, one per measure, each carrying the text."""
+        """Identity is (location, metric, text): one filter pushed into two
+        producers is two entries, one per metric, each carrying the text."""
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(_two_plan_query(), dry_run=True)
@@ -269,13 +269,13 @@ class TestEmissionIsBoundaryNotRender:
         inner = SlayerQuery.model_validate({
             "name": "s1",
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
         outer = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
@@ -294,15 +294,15 @@ class TestEmissionIsBoundaryNotRender:
         entry's location must name the stage that pushed the filter, not
         whichever stage sits at the same input index."""
         # Input order [a, b, root]; topo order [b, a, root] — a reads from b.
-        stage_a = SlayerQuery.model_validate({"name": "a", "population": "b", "metrics": [{"metric": "count(*)"}]})
+        stage_a = SlayerQuery.model_validate({"name": "a", "population": "b", "metrics": [{"metric": "count(b.*)"}]})
         stage_b = SlayerQuery.model_validate({
             "name": "b",
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
             "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
-        root = SlayerQuery.model_validate({"population": "a", "metrics": [{"metric": "count(*)"}]})
+        root = SlayerQuery.model_validate({"population": "a", "metrics": [{"metric": "count(a.*)"}]})
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(
@@ -394,9 +394,9 @@ class TestInternalFailuresRaise:
             engine = await _engine(d)
             bad = SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"field": "status", "alias": "status"}],
+                "dimensions": [{"field": "orders.status", "alias": "status"}],
                 "metrics": [{"metric": "sum(customers.revenue)"}],
-                "filter": ["no_such_column == 'X'"],
+                "filter": ["orders.no_such_field == 'X'"],
             })
             with pytest.raises(SlayerError):
                 await engine.execute(bad, dry_run=True)
@@ -450,13 +450,13 @@ class TestMcpEntryPoint:
             for m in (_orders(), _customers(), _warehouses()):
                 await storage.save_dataset(m, _validate=False)
             server = create_mcp_server(storage=storage)
-            # The MCP query tool takes one polymorphic `query` argument (model
+            # The MCP query tool takes one polymorphic `query` argument (dataset
             # name, single query object, or list of stage objects) plus the
             # execution wrappers.
             result = await server.call_tool("query", {
                 "query": {
                     "population": "orders",
-                    "dimensions": ["status"],
+                    "dimensions": ["orders.status"],
                     "metrics": [{"metric": "sum(customers.revenue)"}],
                     "filter": [PUSHED_FILTER],
                 },
@@ -495,6 +495,7 @@ class TestCliEntryPoint:
                 dry_run=True,
                 explain=False,
                 format="table",
+                conformance="slayer",
             )
             _run_query(args)
         captured = capsys.readouterr()

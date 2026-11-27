@@ -4,14 +4,14 @@ rather than by call site so one key can't render two ways. Field-like leaves anc
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TEMPORAL_DATATYPES
-from slayer.core.errors import RenderContextMissingFacilityError
+from slayer.core.errors import CastTypeError, RenderContextMissingFacilityError
 from slayer.core.keys import (
     NULL_SAFE_COMPARISON_OPS,
     AggregateKey,
@@ -30,6 +30,7 @@ from slayer.core.keys import (
     TimePointCmpKey,
     TimeTruncKey,
     TransformKey,
+    WindowKey,
     ValueKey,
     _FrozenKey,
     aggregation_source_type,
@@ -51,15 +52,20 @@ from slayer.sql.render.parse import (  # noqa: F401 — re-exported render surfa
 # The pure operator / scalar / literal composers live in the scope-free leaf
 # module ``row_expr`` so ``ScopeFrame`` can reuse them; re-imported
 # here so this module keeps its full render surface.
+from slayer.sql.render.window import render_window
 from slayer.sql.render.row_expr import (  # noqa: F401 — re-exported render surface
     DATE_FUNCTIONS,
     _literal,
     data_type_target,
     group_is_operands,
     group_unary_operand,
+    coerced_parts,
+    date_typed_comparison,
     iif_case_chain,
     list_keyed,
-    numeric_parts,
+    mixed_nullif,
+    render_bucket,
+    render_mixed_nullif,
     render_arithmetic,
     render_array_literal,
     render_cast,
@@ -91,13 +97,25 @@ def _wrap_cast_for_type(
         return expr
     if isinstance(expr, exp.Column):
         return expr
-    target = data_type_target(dt)
+    if dt in (DataType.DATETIME, DataType.DATETIME_TZ):
+        zoned = dialect.zoned_timestamp_cast(expr)
+        if zoned is not None:
+            return zoned
+    if dt is DataType.TIME:
+        try:
+            target = dialect.time_of_day_type()
+        except CastTypeError:
+            return expr  # no time-of-day type here: the value stays as its SQL gives it
+    else:
+        target = data_type_target(dt)
     if isinstance(expr, exp.Cast):
         existing = expr.args.get("to")
         if isinstance(existing, exp.DataType) and (
             existing.sql(dialect=dialect.sqlglot_name) == target.sql(dialect=dialect.sqlglot_name)
         ):
             return expr
+    if dt is DataType.TIME:
+        return dialect.build_time_cast(expr, target, source=None, try_=False)
     return exp.Cast(this=expr, to=target)
 
 
@@ -157,13 +175,20 @@ class CompositeFacilities(BaseModel):
     value_alias_by_sql: Optional[Dict[str, str]] = None
 
 
+_ALIAS_SLOTTED_KINDS: Tuple[type, ...] = (
+    FieldKey, FieldSqlKey, TimeTruncKey, AggregateKey, TransformKey,
+)
+
+
 class AliasFacilities(BaseModel):
     """The aliases an earlier scope projected; its presence makes every available slot read by
-    its slot and switches the five slotted kinds to ALIAS-EXCLUSIVE resolution (an absent slot
+    its slot and switches ``slotted_kinds`` to ALIAS-EXCLUSIVE resolution (an absent slot
     RAISES). ``table_by_slot_id`` carries the qualifier."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    #: Key kinds resolved only by slot; any other kind renders over its (slotted) parts.
+    slotted_kinds: Tuple[type, ...] = _ALIAS_SLOTTED_KINDS
     slot_id_by_key: Dict[Any, str] = Field(default_factory=dict)
     available_alias_by_slot_id: Dict[str, str] = Field(default_factory=dict)
     table_by_slot_id: Dict[str, str] = Field(default_factory=dict)
@@ -245,11 +270,6 @@ def _render_via_alias(key: ValueKey, ctx: RenderContext) -> Expression:
     return exp.Column(this=col_ident)
 
 
-_ALIAS_SLOTTED_KINDS: Tuple[type, ...] = (
-    FieldKey, FieldSqlKey, TimeTruncKey, AggregateKey, TransformKey,
-)
-
-
 def _slot_available(key: ValueKey, facilities: AliasFacilities) -> bool:
     """Whether ``key``'s slot is a column (or attached value) of the current relation."""
     slot_id = facilities.slot_id_by_key.get(key)
@@ -320,13 +340,14 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
     if isinstance(key.source, StarKey):
         star_path = source_anchor_path(key.source)
         if star_path:
-            # ``count(customers.*)`` counts the JOINED relation's rows (needs the join graph); a bare ``*`` would count host rows.
+            # ``count(customers.*)`` counts the JOINED relation's rows (needs the relationship graph); a bare ``*``
+            # would count host rows.
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
                 detail=(
                     f"cross-dataset star over path {star_path!r} needs the "
-                    f"generator's join-graph routing"
+                    f"generator's relationship-graph routing"
                 ),
             )
         if key.agg != "count":
@@ -344,14 +365,15 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
             detail="a nested-aggregate source must desugar to a producer",
         )
     else:
-        assert not isinstance(key.source, TimePointCmpKey)  # lowered by the checker before planning
+        # Lowered before planning: a comparison by the checker, a row-level window to a windowed column.
+        assert not isinstance(key.source, (TimePointCmpKey, WindowKey))
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,
         )
-    column_type = ctx.field_type or _require_scope(ctx, key).field_type
+    field_type = ctx.field_type or _require_scope(ctx, key).field_type
     return apply_aggregate(
         entry=entry, value=inner, dialect=ctx.dialect,
-        input_type=aggregation_source_type(key.source, field_type=column_type),
+        input_type=aggregation_source_type(key.source, field_type=field_type),
     )
 
 
@@ -361,7 +383,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     """Render ``key`` to sqlglot AST in ``ctx``."""
     # ALIAS mode: any available slot reads by its slot; an unavailable slotted kind RAISES.
     if ctx.aliases is not None and (
-        _slot_available(key, ctx.aliases) or isinstance(key, _ALIAS_SLOTTED_KINDS)
+        _slot_available(key, ctx.aliases) or isinstance(key, ctx.aliases.slotted_kinds)
     ):
         return _render_via_alias(key, ctx)
     # Aggregate internals render through their builder's own scope, never here.
@@ -381,14 +403,14 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return resolved
 
     if isinstance(key, StarKey):
-        # Like the aggregate branch: a pathed star needs the join graph; a bare ``*`` counts the host's rows.
+        # Like the aggregate branch: a pathed star needs the relationship graph; a bare ``*`` counts the host's rows.
         if key.path:
             raise RenderContextMissingFacilityError(
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
                 detail=(
                     f"cross-dataset star over path {key.path!r} needs the "
-                    f"generator's join-graph routing"
+                    f"generator's relationship-graph routing"
                 ),
             )
         return exp.Star()
@@ -402,27 +424,29 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, TimeTruncKey):
         source = (
             _require_scope(ctx, key).resolve(key.source, consumer=ctx.consumer)
-            if isinstance(key.source, (FieldKey, FieldSqlKey))
+            if ctx.aliases is None and isinstance(key.source, (FieldKey, FieldSqlKey))
             else render_value_key(key=key.source, ctx=ctx)
         )
         # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
-        return ctx.dialect.build_bucket(col_expr=source, granularity=key.granularity)
+        return render_bucket(key=key, source=source, dialect=ctx.dialect, field_type=_known_field_types(ctx))
 
     if isinstance(key, ArithmeticKey):
         comparison = temporal_comparison(key)
         if comparison is not None:
-            op, operand, value = comparison
+            op, operand, value, midnight = date_typed_comparison(comparison, field_type=_known_field_types(ctx))
             rendered = render_value_key(key=operand, ctx=ctx)
+            if midnight:
+                rendered = ctx.dialect.promote_to_timestamp(rendered)
             if ctx.filters is not None and ctx.filters.paren_comparison_operands:
                 rendered = _paren_if_binary(rendered)
             return render_temporal_comparison(op=op, operand=rendered, value=value, dialect=ctx.dialect)
         rendered = list_keyed(
             key.operands, [render_value_key(key=o, ctx=ctx) for o in key.operands], dialect=ctx.dialect,
         )
+        operands = coerced_parts(key=key, parts=rendered, field_type=_known_field_types(ctx), dialect=ctx.dialect)
         if key.op in NULL_SAFE_COMPARISON_OPS:
-            return render_null_safe(op=key.op, operands=rendered, dialect=ctx.dialect)
+            return render_null_safe(op=key.op, operands=operands, dialect=ctx.dialect)
         op = key.op.lower()
-        operands = numeric_parts(key=key, parts=rendered, field_type=_known_field_types(ctx))
         if (
             ctx.filters is not None
             and ctx.filters.paren_comparison_operands
@@ -431,19 +455,27 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             operands = [_paren_if_binary(o) for o in operands]
         if op == "%":
             return render_modulo(key=key, operands=operands, dialect=ctx.dialect, field_type=_known_field_types(ctx))
-        return render_arithmetic(op=op, operands=operands)
+        rendered = render_arithmetic(op=op, operands=operands)
+        return ctx.dialect.true_division(rendered) if op == "/" else rendered
+
+    if isinstance(key, WindowKey):
+        return render_window(key, part=lambda a: render_value_key(key=cast(ValueKey, a), ctx=ctx), dialect=ctx.dialect,
+                             field_type=_known_field_types(ctx))
 
     if isinstance(key, ScalarCallKey):
         if key.name == "iif":
             return _render_iif_case(key=key, ctx=ctx)
         # ANY key routes as a key (the tail raise owns unsupported kinds); only
         # true scalars render as literals.
-        args = numeric_parts(key=key, field_type=_known_field_types(ctx), parts=[
+        args = coerced_parts(key=key, field_type=_known_field_types(ctx), dialect=ctx.dialect, parts=[
             render_value_key(key=a, ctx=ctx)
             if isinstance(a, _FrozenKey)
             else _literal(a, dialect=ctx.dialect)
             for a in key.args
         ])
+        date_position = mixed_nullif(key, field_type=_known_field_types(ctx))
+        if date_position is not None:
+            return render_mixed_nullif(args=args, date_position=date_position, dialect=ctx.dialect)
         if key.name in DATE_FUNCTIONS:
             return render_date_call(
                 key=key, args=args, dialect=ctx.dialect, field_type=_field_types(ctx, key),
@@ -453,10 +485,13 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
                                  field_element=ctx.scope.field_element if ctx.scope is not None else None)
 
     if isinstance(key, InKey):
-        (column,) = numeric_parts(
+        (column,) = coerced_parts(
             key=key, parts=[render_value_key(key=key.field, ctx=ctx)], field_type=_known_field_types(ctx),
+            dialect=ctx.dialect,
         )
-        return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
+        return render_in_predicate(
+            key=key, column=column, dialect=ctx.dialect, field_type=_known_field_types(ctx),
+        )
 
     if isinstance(key, CastKey):
         return render_cast(
@@ -504,7 +539,7 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
             if isinstance(a, _FrozenKey) else _literal(a, dialect=ctx.dialect)
         )
 
-    return iif_case_chain(key=key, part=_part, field_type=_known_field_types(ctx))
+    return iif_case_chain(key=key, part=_part, field_type=_known_field_types(ctx), dialect=ctx.dialect)
 
 
 def _known_field_types(ctx: RenderContext) -> FieldTypeFn:

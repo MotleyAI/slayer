@@ -58,8 +58,8 @@ class TestLiftedBetween:
 
 class TestVerbatimComparators:
     @pytest.mark.parametrize(("where", "expected"), [
-        ("ordered_at < '2025-01-01 10:30:00'", ["ordered_at < '2025-01-01 10:30:00'"]),
-        ("ordered_at < TIMESTAMP '2025-01-01'", ["ordered_at < '2025-01-01 00:00:00'"]),
+        ("ordered_at < '2025-01-01 10:30:00'", ["orders.ordered_at < '2025-01-01 10:30:00'"]),
+        ("ordered_at < TIMESTAMP '2025-01-01'", ["orders.ordered_at < '2025-01-01 00:00:00'"]),
     ])
     def test_instants_and_typed_literals(self, dialect, where, expected) -> None:
         q = _translate(SELECT + "WHERE " + where, dialect)
@@ -70,14 +70,14 @@ class TestVerbatimComparators:
         q = _translate(SELECT + "WHERE DATE '2024-01-01' <= ordered_at", dialect)
         assert _range(q) is None
         assert q.filter in (
-            ["'2024-01-01 00:00:00' <= ordered_at"], ["ordered_at >= '2024-01-01 00:00:00'"],
+            ["'2024-01-01 00:00:00' <= orders.ordered_at"], ["orders.ordered_at >= '2024-01-01 00:00:00'"],
         )
 
     @pytest.mark.parametrize(("where", "expected"), [
         ("ordered_at <= '2024-12-31' AND ordered_at != '2024-06-01'",
-         ["ordered_at <= '2024-12-31 00:00:00'", "ordered_at != '2024-06-01 00:00:00'"]),
-        ("ordered_at = '2024-06-01'", ["ordered_at = '2024-06-01 00:00:00'"]),
-        ("delivered_at > '2024-12-31'", ["delivered_at > '2024-12-31 00:00:00'"]),
+         ["orders.ordered_at <= '2024-12-31 00:00:00'", "orders.ordered_at != '2024-06-01 00:00:00'"]),
+        ("ordered_at = '2024-06-01'", ["orders.ordered_at = '2024-06-01 00:00:00'"]),
+        ("delivered_at > '2024-12-31'", ["orders.delivered_at > '2024-12-31 00:00:00'"]),
     ])
     def test_unprojected_temporal_column(self, dialect, where, expected) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE " + where, dialect)
@@ -86,10 +86,10 @@ class TestVerbatimComparators:
 
     @pytest.mark.parametrize(("where", "expected"), [
         ("ordered_at BETWEEN DATE '2024-01-01' AND DATE '2024-12-31'",
-         ["(ordered_at >= '2024-01-01 00:00:00' AND ordered_at <= '2024-12-31 00:00:00')"]),
+         ["(orders.ordered_at >= '2024-01-01 00:00:00' AND orders.ordered_at <= '2024-12-31 00:00:00')"]),
         ("ordered_at NOT BETWEEN '2024-01-01' AND '2024-12-31'",
-         ["NOT (ordered_at >= '2024-01-01 00:00:00' AND ordered_at <= '2024-12-31 00:00:00')"]),
-        ("revenue BETWEEN 1 AND 5", ["(revenue >= 1 AND revenue <= 5)"]),
+         ["NOT (orders.ordered_at >= '2024-01-01 00:00:00' AND orders.ordered_at <= '2024-12-31 00:00:00')"]),
+        ("revenue BETWEEN 1 AND 5", ["(orders.revenue >= 1 AND orders.revenue <= 5)"]),
     ])
     def test_unlifted_between_expands(self, dialect, where, expected) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE " + where, dialect)
@@ -98,15 +98,15 @@ class TestVerbatimComparators:
 
     def test_nested_bound(self, dialect) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE ordered_at <= '2024-12-31' OR revenue > 5", dialect)
-        assert q.filter == ["ordered_at <= '2024-12-31 00:00:00' OR revenue > 5"]
+        assert q.filter == ["orders.ordered_at <= '2024-12-31 00:00:00' OR orders.revenue > 5"]
 
     def test_text_column_untouched(self, dialect) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE status = '2024-12-31'", dialect)
-        assert q.filter == ["status = '2024-12-31'"]
+        assert q.filter == ["orders.status = '2024-12-31'"]
 
     def test_non_time_filter_untouched(self, dialect) -> None:
         q = _translate("SELECT revenue_sum FROM orders WHERE revenue >= 10", dialect)
-        assert q.filter == ["revenue >= 10"]
+        assert q.filter == ["orders.revenue >= 10"]
 
 
 def _seed(db_path: str) -> None:
@@ -133,7 +133,7 @@ async def _revenue(tmp_path, where: str, *, column: str | None = "ordered_at") -
         resp = await engine.execute(_translate(f"SELECT {grain}revenue_sum FROM orders WHERE {where}", "postgres"))
     finally:
         engine.close()
-    return sum(r["orders.revenue_sum"] for r in resp.data)
+    return sum(r["revenue_sum"] for r in resp.data)
 
 
 class TestExecutedMidnightSemantics:

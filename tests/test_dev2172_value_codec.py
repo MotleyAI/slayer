@@ -36,7 +36,7 @@ from tests.flight.test_handlers import _FakeStorage as _FlightStorage
 
 DS = "vals_ds"
 COL = "vals.v"
-QUERY = {"population": "vals", "dimensions": ["v"], "limit": 5}
+QUERY = {"population": "vals", "dimensions": ["vals.v"], "limit": 5}
 UID = uuid.UUID("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
 BIG = Decimal("12345678901234567890.12")
 PLUS_TWO = dt.timezone(dt.timedelta(hours=2))
@@ -93,6 +93,8 @@ CASES: list[Case] = [
     Case(id="list-decimal", value=[BIG, Decimal("1E+3")], json_form=[BIG, Decimal("1E+3")], read_text=strict_json,
          raw=str(BIG), wire=True),
     Case(id="date", value=dt.date(2024, 2, 29), json_form="2024-02-29", text="2024-02-29"),
+    Case(id="time", value=dt.time(10, 30), json_form="10:30:00", text="10:30:00"),
+    Case(id="time-fraction", value=dt.time(10, 30, 0, 123456), json_form="10:30:00.123456", text="10:30:00.123456"),
     Case(id="timestamp", value=dt.datetime(2024, 2, 29, 10, 30), json_form="2024-02-29T10:30:00", read_text=_ts),
     Case(id="timestamp-tz", value=dt.datetime(2024, 2, 29, 10, 30, tzinfo=PLUS_TWO),
          json_form="2024-02-29T10:30:00+02:00", read_text=_offset),
@@ -160,7 +162,7 @@ def rest_client(store_dir: str) -> Iterator[TestClient]:
 # Output paths
 # --------------------------------------------------------------------------- #
 async def _mcp(server: Any, fmt: str) -> str:
-    blocks, _ = await server.call_tool(name="query", arguments={"query": QUERY, "format": fmt})
+    blocks = (await server.call_tool(name="query", arguments={"query": QUERY, "format": fmt})).content
     return blocks[0].text
 
 
@@ -219,22 +221,22 @@ def pg_binary(value: Any) -> str:
     return raw.decode("utf-8")
 
 
-def _vals_dataset(column_type: DataType = DataType.STRING) -> SlayerDataset:
+def _vals_dataset(field_type: DataType = DataType.STRING) -> SlayerDataset:
     return SlayerDataset(name="vals", sql_table="vals", data_source=DS,
                        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                                DatasetField(name="v", datatype=column_type)])
+                                DatasetField(name="v", datatype=field_type)])
 
 
-def flight_cell(value: Any, *, column_type: DataType = DataType.STRING) -> Any:
+def flight_cell(value: Any, *, field_type: DataType = DataType.STRING) -> Any:
     handlers = FlightHandlers(
         engine=_FlightEngine(  # type: ignore[arg-type]
-            response=_response(value), storage=_FlightStorage({DS: [_vals_dataset(column_type)]}),
+            response=_response(value), storage=_FlightStorage({DS: [_vals_dataset(field_type)]}),
         ),
     )
     result = handlers._translate("SELECT v FROM vals")
     assert isinstance(result, QueryResult), result
     table: ArrowTable = handlers._execute_full(result)
-    if column_type in (DataType.STRING, DataType.OPAQUE, DataType.ARRAY):
+    if field_type in (DataType.STRING, DataType.OPAQUE, DataType.ARRAY):
         assert table.schema.field("v").type == pa.utf8()
     return table.to_pylist()[0]["v"]
 
@@ -355,15 +357,15 @@ class TestScenarios:
         assert flight_cell(None) is None
 
     def test_flight_double_column_reads_a_decimal_as_a_float(self) -> None:
-        assert flight_cell(Decimal("2.5"), column_type=DataType.FLOAT) == pytest.approx(2.5)
+        assert flight_cell(Decimal("2.5"), field_type=DataType.FLOAT) == pytest.approx(2.5)
 
     def test_flight_int_column_reads_a_decimal_as_an_int(self) -> None:
-        cell = flight_cell(Decimal("3"), column_type=DataType.INTEGER)
+        cell = flight_cell(Decimal("3"), field_type=DataType.INTEGER)
         assert cell == 3
         assert isinstance(cell, int)
 
     def test_flight_double_column_keeps_a_native_nan(self) -> None:
-        assert math.isnan(flight_cell(math.nan, column_type=DataType.FLOAT))
+        assert math.isnan(flight_cell(math.nan, field_type=DataType.FLOAT))
 
     async def test_rest_body_keeps_the_declared_response_shape(self, serve: Callable[[Any], None],
                                                                rest_client: TestClient) -> None:

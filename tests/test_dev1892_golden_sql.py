@@ -22,57 +22,57 @@ from slayer.core.query import SlayerQuery
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1892_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_MODEL_SETS = {
+_DATASET_SETS = {
     "orders": dev1840_datasets,
     "orders_coldef": field_default_agg_datasets,
     "orders_wsum6": qualified_expr_default_datasets,
     "sales": dev1847_datasets,
     "sales_cwavg": qualified_reagg_default_datasets,
 }
-_WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
+_WEIGHT_COUNT = "weight=count(sales.id, partition_by=[sales.city, sales.region])"
 
 
 def _cases() -> dict:
     return {
         "assoc/wavg_by_status": {
             "models": "orders", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["status"], "metrics": [
+            "kw": {"dimensions": ["orders.status"], "metrics": [
                 {"metric": "weighted_avg(customers.spend, weight=customers.spend)",
                  "alias": "w"}]}},
         "assoc/wsum_default": {
             "models": "orders_coldef", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["status"],
+            "kw": {"dimensions": ["orders.status"],
                    "metrics": [{"metric": "wsum(customers.spend)", "alias": "w"}]}},
         "reagg/wavg_by_region": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [
+            "kw": {"dimensions": ["sales.region"], "metrics": [
                 {"metric": f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})",
                  "alias": "w"}]}},
         "reagg/degenerate_wavg": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "metrics": [
-                {"metric": ("weighted_avg(sum(amount, partition_by=region), "
-                             "weight=count(id, partition_by=region))"),
+            "kw": {"dimensions": ["sales.region"], "metrics": [
+                {"metric": ("weighted_avg(sum(sales.amount, partition_by=sales.region), "
+                             "weight=count(sales.id, partition_by=sales.region))"),
                  "alias": "w"}]}},
         "reagg/corders_toone": {
             "models": "sales", "source": "corders", "mode": None,
             "kw": {"metrics": [
-                {"metric": ("weighted_avg(sum(amount, partition_by=customer_id), "
+                {"metric": ("weighted_avg(sum(corders.amount, partition_by=corders.customer_id), "
                              "weight=customers.region_id)"), "alias": "w"}]}},
         "assoc/wsum6_expr_default": {
             "models": "orders_wsum6", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["status"],
+            "kw": {"dimensions": ["orders.status"],
                    "metrics": [{"metric": "wsum6(customers.spend)", "alias": "w"}]}},
         "reagg/corders_expr_default": {
             "models": "sales_cwavg", "source": "corders", "mode": None,
             "kw": {"metrics": [
-                {"metric": "cwavg(sum(amount, partition_by=customer_id))",
+                {"metric": "cwavg(sum(corders.amount, partition_by=corders.customer_id))",
                  "alias": "w"}]}},
     }
 
 
 async def _generate_one(case, dialect: str):
-    models = _MODEL_SETS[case["models"]]()
+    models = _DATASET_SETS[case["models"]]()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:

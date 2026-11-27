@@ -1,4 +1,4 @@
-"""A small shop for query-scoped extensions, edge merge and query-declared INNER joins.
+"""A small shop for query-scoped extensions, edge merge and query-declared INNER relationships.
 
 Physical tables::
 
@@ -78,7 +78,7 @@ _TABLES: dict[str, tuple[str, list[tuple]]] = {
     "shipments": ("id INTEGER, address_id INTEGER", [(1, 11), (2, 12)]),
 }
 
-#: Customers with a vip_list row; with the ``active = 1`` model filter, Bob drops.
+#: Customers with a vip_list row; with the ``active = 1`` dataset filter, Bob drops.
 VIP_CUSTOMERS = {"Ann", "Bob", "Eve"}
 ACTIVE_VIP_CUSTOMERS = {"Ann", "Eve"}
 ALL_CUSTOMERS = {"Ann", "Bob", "Cid", "Dee", "Eve"}
@@ -132,8 +132,8 @@ def regions() -> SlayerDataset:
         ("id", _INT), ("name", _TEXT), ("country_id", _INT), ("manager_id", _INT)))
 
 
-def customers(*joins: DatasetRelationship) -> SlayerDataset:
-    return SlayerDataset(name="customers", data_source=DS, sql_table="customers", relationships=list(joins), fields=_cols(
+def customers(*relationships: DatasetRelationship) -> SlayerDataset:
+    return SlayerDataset(name="customers", data_source=DS, sql_table="customers", relationships=list(relationships), fields=_cols(
         ("id", _INT), ("name", _TEXT), ("tier", _TEXT), ("credit", _DOUBLE), ("region_id", _INT),
         ("home_address_id", _INT)))
 
@@ -143,8 +143,8 @@ def vip_list(*, filters: list[str] | None = None) -> SlayerDataset:
                        fields=_cols(("customer_id", _INT), ("note", _TEXT), ("active", _INT), pk=None))
 
 
-def addresses(*joins: DatasetRelationship) -> SlayerDataset:
-    return SlayerDataset(name="addresses", data_source=DS, sql_table="addresses", relationships=list(joins), fields=_cols(
+def addresses(*relationships: DatasetRelationship) -> SlayerDataset:
+    return SlayerDataset(name="addresses", data_source=DS, sql_table="addresses", relationships=list(relationships), fields=_cols(
         ("id", _INT), ("city", _TEXT), ("customer_id", _INT), ("region_id", _INT)))
 
 
@@ -171,8 +171,8 @@ def orders() -> SlayerDataset:
     )
 
 
-def _plain(name: str, *spec: tuple[str, DataType], pk: str | None = None, joins: Iterable[DatasetRelationship] = ()) -> SlayerDataset:
-    return SlayerDataset(name=name, data_source=DS, sql_table=name, fields=_cols(*spec, pk=pk), relationships=list(joins))
+def _plain(name: str, *spec: tuple[str, DataType], pk: str | None = None, relationships: Iterable[DatasetRelationship] = ()) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source=DS, sql_table=name, fields=_cols(*spec, pk=pk), relationships=list(relationships))
 
 
 PART_PAIRS = [["pa", "ka"], ["pb", "kb"]]
@@ -186,9 +186,9 @@ def base_datasets() -> list[SlayerDataset]:
         _plain("users", ("id", _INT), ("name", _TEXT), pk="id"),
         _plain("parts", ("id", _INT), ("pa", _INT), ("pb", _INT), pk="id"),
         _plain("part_keys", ("ka", _INT), ("kb", _INT),
-               joins=[DatasetRelationship(to="parts", from_columns=["ka", "kb"], to_columns=["pa", "pb"])]),
+               relationships=[DatasetRelationship(to="parts", from_columns=["ka", "kb"], to_columns=["pa", "pb"])]),
         _plain("part_keys_b", ("ka", _INT), ("kb", _INT)),
-        _plain("shipments", ("id", _INT), ("address_id", _INT), pk="id", joins=[
+        _plain("shipments", ("id", _INT), ("address_id", _INT), pk="id", relationships=[
             DatasetRelationship(to="addresses", name="origin", from_columns=["address_id"], to_columns=["id"]),
             DatasetRelationship(to="addresses", name="dest", from_columns=["address_id"], to_columns=["id"]),
         ]),
@@ -196,13 +196,13 @@ def base_datasets() -> list[SlayerDataset]:
 
 
 def with_datasets(*replacements: SlayerDataset) -> list[SlayerDataset]:
-    """``base_models()`` with same-named models replaced."""
+    """``base_datasets()`` with same-named datasets replaced."""
     by_name = {m.name: m for m in replacements}
     return [by_name.pop(m.name, m) for m in base_datasets()] + list(by_name.values())
 
 
 def respelled_dataset(datasets: list[SlayerDataset], *, name: str, spelling: str) -> list[SlayerDataset]:
-    """``models`` with model ``name`` saved as ``spelling``, every stored join to it retargeted."""
+    """``datasets`` with dataset ``name`` saved as ``spelling``, every stored relationship to it retargeted."""
     def one(m: SlayerDataset) -> SlayerDataset:
         joins = [j.model_copy(update={"to": spelling}) if j.to == name else j for j in m.relationships]
         return m.model_copy(update={"name": spelling if m.name == name else m.name, "relationships": joins})
@@ -226,7 +226,7 @@ def ext(dataset: str, **fields: Any) -> dict:
     return {"dataset": dataset, **fields}
 
 
-def join(target: str, pairs: list[list[str]], **fields: Any) -> dict:
+def relationship_to(target: str, pairs: list[list[str]], **fields: Any) -> dict:
     return {"to": target, "from_columns": [p[0] for p in pairs], "to_columns": [p[1] for p in pairs], **fields}
 
 

@@ -52,23 +52,23 @@ def streak_dataset(data_source: str) -> SlayerDataset:
     return SlayerDataset(
         name="streak_events", sql_table="streak_events", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="series", sql="series", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="d", sql="d", datatype=DataType.DATE),
-            DatasetField(name="ts", sql="ts", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="series", expression="series", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="d", expression="d", datatype=DataType.DATE),
+            DatasetField(name="ts", expression="ts", datatype=DataType.DATETIME),
         ],
     )
 
 
 async def assert_calendar_streak(
-    engine: SlayerQueryEngine, *, column: str, granularity: str,
+    engine: SlayerQueryEngine, *, field: str, granularity: str,
 ) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "streak_events",
-        "time_dimensions": [{"field": column, "granularity": granularity}],
-        "filter": [f"series = '{granularity}'"],
-        "metrics": [{"metric": "consecutive_periods(sum(amount) > 0)", "alias": "v"}],
+        "time_dimensions": [{"field": f"streak_events.{field}", "granularity": granularity}],
+        "filter": [f"streak_events.series = '{granularity}'"],
+        "metrics": [{"metric": "consecutive_periods(sum(streak_events.amount) > 0)", "alias": "v"}],
     }))
-    rows = sorted(resp.data, key=lambda r: str(r[f"streak_events.{column}"]))
-    assert [int(r["streak_events.v"]) for r in rows] == [1, 2, 1, 2], rows
+    rows = sorted(resp.data, key=lambda r: str(r[f"streak_events.{field}"]))
+    assert [int(r["v"]) for r in rows] == [1, 2, 1, 2], rows

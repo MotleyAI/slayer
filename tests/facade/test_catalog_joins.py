@@ -1,6 +1,6 @@
-"""Tests for FacadeTable.relationships[] + model_ref (DEV-1565).
+"""Tests for FacadeTable.relationships[] + dataset_ref.
 
-Lives in a sibling file so the FacadeJoin / model_ref imports do not block
+Lives in a sibling file so the FacadeRelationship / dataset_ref imports do not block
 collection of the broader test_catalog.py suite during the TDD-Phase-1
 window (before slayer.facade.catalog gains these symbols)."""
 
@@ -20,16 +20,16 @@ def _dataset(
     *,
     name: str,
     data_source: str = "ds1",
-    columns: list[DatasetField] | None = None,
-    joins: list[DatasetRelationship] | None = None,
+    fields: list[DatasetField] | None = None,
+    relationships: list[DatasetRelationship] | None = None,
     hidden: bool = False,
 ) -> SlayerDataset:
     return SlayerDataset(
         name=name,
         data_source=data_source,
         sql_table=name,
-        fields=columns or [],
-        relationships=joins or [],
+        fields=fields or [],
+        relationships=relationships or [],
         hidden=hidden,
     )
 
@@ -42,15 +42,15 @@ def _find_table(catalog: FacadeCatalog, *, schema: str, table: str) -> FacadeTab
 def test_facade_table_joins_populated_from_model_joins() -> None:
     orders = _dataset(
         name="orders",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="store_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
     )
     stores = _dataset(
         name="stores",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
         ],
@@ -69,11 +69,11 @@ def test_facade_table_joins_populated_from_model_joins() -> None:
 def test_facade_table_joins_preserve_join_type() -> None:
     orders = _dataset(
         name="orders",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="store_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(
+        relationships=[DatasetRelationship(
             to="stores",
             from_columns=["store_id"], to_columns=["id"],
             join_type=JoinType.INNER,
@@ -81,7 +81,7 @@ def test_facade_table_joins_preserve_join_type() -> None:
     )
     stores = _dataset(
         name="stores",
-        columns=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders, stores]})
     table = _find_table(cat, schema="ds1", table="orders")
@@ -89,21 +89,21 @@ def test_facade_table_joins_preserve_join_type() -> None:
 
 
 def test_facade_table_joins_filter_to_hidden_target() -> None:
-    """Joins whose target is hidden (or absent) are excluded — symmetric
+    """Relationships whose target is hidden (or absent) are excluded — symmetric
     with the BFS dim/metric expansion's hidden-target filter. Otherwise the
-    translator's existence check could match a join that isn't addressable
+    translator's existence check could match a relationship that isn't addressable
     via the rest of the catalog."""
     orders = _dataset(
         name="orders",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="store_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
     )
     hidden_stores = _dataset(
         name="stores",
-        columns=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         hidden=True,
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders, hidden_stores]})
@@ -112,17 +112,17 @@ def test_facade_table_joins_filter_to_hidden_target() -> None:
 
 
 def test_facade_table_joins_filter_to_absent_target() -> None:
-    """If a ModelJoin points at a target model that isn't in the catalog at
-    all (typo / cross-datasource / deleted), the join is silently dropped
+    """If a DatasetRelationship points at a target dataset that isn't in the catalog at
+    all (typo / cross-datasource / deleted), the relationship is silently dropped
     from FacadeTable.relationships[] — symmetric with the hidden-target filter and
     with the BFS dim/metric expansion's own filter."""
     orders = _dataset(
         name="orders",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="store_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="ghost", from_columns=["store_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="ghost", from_columns=["store_id"], to_columns=["id"])],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders]})
     table = _find_table(cat, schema="ds1", table="orders")
@@ -130,20 +130,20 @@ def test_facade_table_joins_filter_to_absent_target() -> None:
 
 
 def test_facade_table_model_ref_carries_underlying_slayer_model() -> None:
-    """Hidden FK columns must remain visible on model_ref.columns so the
-    translator's ON-column existence check (against SlayerModel.fields,
+    """Hidden FK fields must remain visible on dataset_ref.fields so the
+    translator's ON-column existence check (against SlayerDataset.fields,
     not the filtered facade dimensions) keeps working."""
     orders = _dataset(
         name="orders",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="store_id", datatype=DataType.INTEGER, hidden=True),
         ],
-        joins=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
+        relationships=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
     )
     stores = _dataset(
         name="stores",
-        columns=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders, stores]})
     table = _find_table(cat, schema="ds1", table="orders")

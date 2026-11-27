@@ -17,8 +17,10 @@ import re
 import threading
 import unicodedata
 from decimal import Decimal
+from enum import Enum
 from functools import lru_cache, partial
 from itertools import count
+from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import pyparsing as pp
@@ -31,23 +33,28 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DATE_PART_ALIASES,
     GRANULARITY_NAMES,
+    PART_ONLY_WORDS,
     RESERVED_NAMES,
+    WEEKDAY_CALLS,
     TimeGranularity,
-    ambiguous_weekday_message,
     normalize_aggregation_name,
+    part_call_hint,
 )
 from slayer.core.errors import (
+    AggArgumentError,
+    AggFilterError,
     CallArgumentError,
     ColonSpellingError,
     GranularityCallError,
-    IllegalWindowInFilterError,
     ReservedFunctionNameError,
     UnknownFunctionError,
     VariableError,
 )
 from slayer.core.json_path import JsonPathError, check_key, json_path_text, parse_json_path
 from slayer.core.legacy_spellings import LegacySpan, note_legacy_spellings
-from slayer.core.keys import DATE_UNIT_ARGS, RESERVED_SCALAR_NAMES, SCALAR_FUNCTIONS, check_scalar_arity
+from slayer.core.keys import (
+    DATE_UNIT_ARGS, RESERVED_SCALAR_NAMES, SCALAR_FUNCTIONS, SCALAR_SPELLING_REGISTRY, SPELLING_REWRITE, check_scalar_arity,
+)
 from slayer.core.names import match_name
 from slayer.core.regex_pattern import RegexPattern
 from slayer.core.scalar_args import STRING_SLOTS, check_path, check_pattern, check_replacement, slot_name
@@ -66,6 +73,8 @@ class Ref(_BaseNode):
     name: str
     # Written double-quoted; not part of identity.
     quoted: bool = False
+    # Written as ``AGG(…)``: must name a dataset metric; not part of identity.
+    evaluated: bool = False
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Ref) and self.name == other.name
@@ -80,6 +89,8 @@ class DottedRef(_BaseNode):
     quoted: bool = False
     # Per segment, whether it was double-quoted (empty: none); not part of identity.
     quoted_parts: Tuple[bool, ...] = ()
+    # Written as ``AGG(…)``: must name a dataset metric; not part of identity.
+    evaluated: bool = False
 
     def quoted_at(self, i: int) -> bool:
         return 0 <= i < len(self.quoted_parts) and self.quoted_parts[i]
@@ -100,7 +111,7 @@ class Literal(_BaseNode):
 
 
 class TemporalLiteral(_BaseNode):
-    """``DATE '…'`` / ``TIMESTAMP '…'``; the text is validated at binding."""
+    """``DATE '…'`` / ``TIMESTAMP '…'`` / ``TIME '…'``; the text is validated at binding."""
 
     kind: str
     text: str
@@ -123,7 +134,7 @@ class Placeholder(_BaseNode):
 class TupleLit(_BaseNode):
     """Literal-only list RHS for ``IN`` / ``NOT IN``."""
 
-    elements: Tuple[Literal, ...]
+    elements: Tuple[Literal | TemporalLiteral, ...]
 
 
 class ArrayLit(_BaseNode):
@@ -195,6 +206,16 @@ class Cast(_BaseNode):
     source: Any
     type_text: str
     try_: bool = False
+    # A spelling's callee and arguments as written (``TO_DATE(s)``), as on ``ScalarCall``; not part of identity.
+    written: Optional[str] = None
+    written_args: Optional[Tuple[Any, ...]] = None
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Cast) and (self.source, self.type_text, self.try_) == (
+            other.source, other.type_text, other.try_)
+
+    def __hash__(self) -> int:
+        return hash(("Cast", self.source, self.type_text, self.try_))
 
 
 class Arith(_BaseNode):
@@ -227,11 +248,62 @@ class BoolOp(_BaseNode):
     operands: Tuple[Any, ...]
 
 
+class OrderItem(_BaseNode):
+    """One ``ORDER BY`` item of a window: ``value [ASC|DESC] [NULLS FIRST|LAST]``."""
+
+    value: Any
+    descending: bool = False
+    #: ``"first"`` / ``"last"``, resolved at parse when omitted (Ossie: NULL is the largest value).
+    nulls: str = "last"
+
+
+class WindowFrame(_BaseNode):
+    """A ``ROWS`` / ``RANGE`` frame; each bound is ``(kind, offset)``, ``end`` ``None`` for a single start bound."""
+
+    unit: str
+    start: Tuple[str, Optional[Decimal]]
+    end: Optional[Tuple[str, Optional[Decimal]]] = None
+
+
+class WindowCall(_BaseNode):
+    """``function OVER (PARTITION BY … ORDER BY … frame)``."""
+
+    function: Any
+    partition: Tuple[Any, ...] = ()
+    order: Tuple[OrderItem, ...] = ()
+    frame: Optional[WindowFrame] = None
+
+
 ParsedExpr = Union[
     Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, TupleLit, ArrayLit, BoundVariable,
     AggCall, TransformCall, ScalarCall, DateTrunc, NamedArg, Cast,
-    Arith, UnaryOp, Cmp, BoolOp,
+    Arith, UnaryOp, Cmp, BoolOp, WindowCall,
 ]
+
+#: Ossie's ranking and offset window functions with their argument counts; under ``OVER`` they stay undispatched.
+WINDOW_FUNCTION_ARITIES: Mapping[str, Tuple[int, int]] = MappingProxyType({
+    "row_number": (0, 0), "rank": (0, 0), "dense_rank": (0, 0), "percent_rank": (0, 0), "cume_dist": (0, 0),
+    "ntile": (1, 1), "lag": (1, 3), "lead": (1, 3), "first_value": (1, 1), "last_value": (1, 1),
+    "nth_value": (2, 2),
+})
+#: The aggregations Ossie windows, by their SQL spelling under ``OVER``.
+WINDOW_AGGREGATES = frozenset({
+    "sum", "count", "count_distinct", "avg", "min", "max", "stddev", "stddev_pop", "stddev_samp", "variance",
+    "var_pop", "var_samp", "median", "percentile",
+})
+
+
+def unwindowable_function(window: "WindowCall") -> Optional[str]:
+    """The function ``window`` applies when Ossie does not window it, else ``None``."""
+    call = window.function
+    if isinstance(call, ScalarCall) and call.name in WINDOW_FUNCTION_ARITIES:
+        return None
+    if isinstance(call, AggCall):
+        agg = call.agg.lower()
+        if agg in WINDOW_AGGREGATES and not call.kwargs and (agg == "percentile" or not call.args):
+            return None
+        return call.agg
+    return getattr(call, "name", type(call).__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +321,21 @@ _LITERAL_VALUES = "variables supply literal values"
 _OPTIONAL_BLOCKS = (
     "Optional blocks '{? ... ?}' are supported only on raw-SQL dataset surfaces, not in Mode-B expressions."
 )
-_DISTINCT_ONLY = "DISTINCT is supported only as count(distinct x), i.e. count_distinct(x)"
+_DISTINCT_ONLY = ("DISTINCT is supported only over one value other than *, as count(distinct x), sum(distinct x), "
+                  "avg(distinct x), min(distinct x), max(distinct x) and array_agg(distinct x), i.e. count_distinct(x), "
+                  "sum_distinct(x), avg_distinct(x), min(x), max(x) and collect(x)")
+#: Calls taking a leading DISTINCT, and the aggregation each spells.
+_DISTINCT_CALLS = {"count": "count_distinct", "sum": "sum_distinct", "avg": "avg_distinct", "min": "min", "max": "max",
+                   "array_agg": "collect"}
+#: The DISTINCT calls Ossie Layer 1 defines.
+_OSSIE_DISTINCT_CALLS = frozenset({"count", "sum"})
+#: Ordered-set aggregates (``F(p) WITHIN GROUP (ORDER BY x)``), and the aggregation each spells.
+_ORDERED_SET_CALLS = {"percentile_cont": "percentile", "percentile_disc": "percentile_disc"}
+_ORDERED_SET_ONLY = ("WITHIN GROUP is supported only as PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x) and "
+                     "PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x), one fraction p, ascending order")
+_NOT_IN = "not in"
+_IN_OPS = frozenset({"in", _NOT_IN})
+_IS_NOT = "is not"
 
 
 class _Problem(ValueError):
@@ -379,33 +465,62 @@ def _mask_placeholders(text: str) -> str:
 
 
 class CallSpan(BaseModel):
-    """A single-name call ``callee(…)`` at ``text[start:end]``: its callee as written and argument count."""
+    """A single-name call ``callee(…)`` at ``text[start:end]``: its callee as written, its name, whether that is
+    double-quoted, the offset of its argument list's ``(`` and its argument count."""
 
     model_config = ConfigDict(frozen=True)
 
     callee: str
+    name: str
+    quoted: bool
     start: int
+    paren: int
     end: int
     arguments: int
 
 
+def _argument_paren(text: str, i: int) -> int:
+    """The offset of the first ``(`` at or after ``i`` outside comments."""
+    while text[i] != "(":
+        span = _span_end(text, i)
+        i = span[1] if span is not None and span[0] == "comment" else i + 1
+    return i
+
+
 class _State:
-    """Per-parse scratch: the expression text, the farthest failure offset, the calls and method calls read and,
-    while rewriting, the colon spans."""
+    """Per-parse scratch: the expression text, the farthest failure offset, the calls and method calls read, the
+    non-Ossie spellings rewritten and, while rewriting, the colon spans."""
 
     def __init__(self) -> None:
         self.text = ""
         self.farthest = 0
         self.calls: Dict[Tuple[int, int], CallSpan] = {}
         self.methods: Dict[Tuple[int, int], LegacySpan] = {}
+        self.spellings: Dict[str, None] = {}
         self.spans: Optional[List["_ColonSpan"]] = None
+        #: While ``reference_spans`` reads: each reference node by id, with its offsets.
+        self.refs: Optional[Dict[int, Tuple[Any, int, int]]] = None
+        #: While ``literal_comparisons`` reads: each string literal by id with its offsets, and each written comparison.
+        self.literals: Optional[Dict[int, Tuple[Any, int, int]]] = None
+        self.compared: Optional[Dict[int, Any]] = None
 
     def reset(self, text: str) -> None:
-        self.text, self.farthest, self.calls, self.methods = text, 0, {}, {}
+        self.text, self.farthest, self.calls, self.methods, self.spellings = text, 0, {}, {}, {}
 
 
 _STATE = _State()
-_PARSE_LOCK = threading.Lock()
+# Re-entrant: rendering inside a parse action probes the grammar (``_probe_tree``).
+_PARSE_LOCK = threading.RLock()
+
+
+def _spelled(kind: str) -> None:
+    """Note a non-Ossie spelling the parser rewrites (``nonossie_spellings``)."""
+    _STATE.spellings.setdefault(kind, None)
+
+
+def _spelled_call(kind: str, node: Any) -> Any:
+    _spelled(kind)
+    return node
 
 
 def _record_failure(_s: str, loc: int, _expr: Any, _err: Any) -> None:
@@ -515,12 +630,23 @@ def _number(toks: List[Any]) -> Literal:
     return Literal(value=Decimal(text))
 
 
-def _string(toks: List[Any]) -> Literal:
-    return Literal(value=toks[0][1:-1].replace("''", "'"))
+def _string(_s: str, loc: int, toks: pp.ParseResults) -> Literal:
+    raw = _first(toks)
+    node = Literal(value=raw[1:-1].replace("''", "'"))
+    if _STATE.literals is not None:
+        _STATE.literals[id(node)] = (node, loc, loc + len(raw))
+    return node
+
+
+def _written_comparison(node: Any) -> Any:
+    """``node``, recorded for ``literal_comparisons`` as a comparison written in the text."""
+    if _STATE.compared is not None:
+        _STATE.compared[id(node)] = node
+    return node
 
 
 _NUMBER = _on(_t(pp.Regex(r"(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?").set_name("number")), _number)
-_STRING = _on(_t(pp.Regex(r"'(?:[^']|'')*'").set_name("string")), _string)
+_STRING = _t(pp.Regex(r"'(?:[^']|'')*'").set_name("string")).set_parse_action(_string)
 _CONSTANT_WORDS = {"True": True, "False": False, "None": None}
 _SQL_CONSTANT_WORDS = {"true": True, "false": False, "null": None}
 
@@ -595,15 +721,33 @@ class _Distinct:
         self.value = value
 
 
+def _spanned(build: Callable[[Any], Any]) -> Callable[[List[Any]], Any]:
+    """A ``pp.Located`` reference's action: ``build`` over its value, its offsets recorded for ``reference_spans``."""
+    def action(toks: List[Any]) -> Any:
+        node = build(toks[1])
+        if _STATE.refs is not None:
+            _STATE.refs[id(node)] = (node, toks[0], toks[2])
+        return node
+    return action
+
+
 _ARG_END = pp.FollowedBy(_sym(r"[,)]", "',' or ')'"))
-_STAR_ARG = _on((pp.Suppress(STAR) + _ARG_END), lambda _toks: StarSource())
-_PATH_STAR_ARG = _on((_PATH_STAR + _ARG_END), lambda toks: _star_path_node(toks[0][0]))
+_STAR_ARG = _on((pp.Located(pp.Suppress(STAR)) + _ARG_END), _spanned(lambda _value: StarSource()))
+_PATH_STAR_ARG = _on((pp.Located(_PATH_STAR) + _ARG_END), _spanned(lambda value: _star_path_node(value[0][0])))
 _SEQ_ITEMS = pp.Group(pp.Optional(pp.DelimitedList(expr, allow_trailing_delim=True)))
 _LIST_VALUE = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: tuple(toks[0]))
 _TUPLE_VALUE = _on((LPAR + pp.Group(expr + pp.OneOrMore(COMMA + expr) + pp.Optional(COMMA)) + RPAR), lambda toks: tuple(toks[0]))
 _DISTINCT_VALUE = _kw("distinct") + _fail(f"{_DISTINCT_ONLY}.")
 _KW_VALUE = _DISTINCT_VALUE | _LIST_VALUE | _TUPLE_VALUE | _STAR_ARG | _PATH_STAR_ARG | expr
-_KWARG = _on((_BARE + EQ + _KW_VALUE), lambda toks: NamedArg(name=toks[0].name, value=toks[1]))
+def _named_arg(toks: List[Any]) -> NamedArg:
+    """A ``name = value`` argument, the name's offsets recorded for ``reference_spans`` (a comparison reads it)."""
+    node = NamedArg(name=toks[1][0].name, value=toks[3])
+    if _STATE.refs is not None:
+        _STATE.refs[id(node)] = (node, toks[0], toks[2])
+    return node
+
+
+_KWARG = _on((pp.Located(_BARE) + EQ + _KW_VALUE), _named_arg)
 _PH_KWARG = (_PLACEHOLDER + EQ).set_parse_action(_reject_placeholder_kwarg)
 _VALUE_ARG = _STAR_ARG | _PATH_STAR_ARG | expr
 _DISTINCT_ARG = _on((pp.Suppress(_kw("distinct")) + _need(_VALUE_ARG, f"{_DISTINCT_ONLY}.")), lambda toks: _Distinct(value=toks[0]))
@@ -649,7 +793,7 @@ def _split_args(items: List[Any], *, call: str) -> Tuple[Tuple[Any, ...], Tuple[
 
 class _PendingCall:
     """A parsed call at ``text[start:end]``, dispatched once its postfix is known (a trailing ``OVER (`` rejects
-    first)."""
+    first, or picks a window function's reading)."""
 
     __slots__ = ("words", "items", "start", "end")
 
@@ -664,23 +808,32 @@ def _resolve(node: Any) -> Any:
     return _dispatch_pending(node) if isinstance(node, _PendingCall) else node
 
 
+def _record_call(call: _PendingCall) -> None:
+    """Record the single-name ``call`` as written for ``call_spans``."""
+    word = call.words[0]
+    _STATE.calls[(call.start, call.end)] = CallSpan(
+        callee=word.raw, name=word.name, quoted=word.quoted, start=call.start, end=call.end,
+        paren=_argument_paren(_STATE.text, call.start + len(word.raw)), arguments=len(call.items),
+    )
+
+
 def _dispatch_pending(call: _PendingCall) -> Any:
     words = call.words
     name = words[-1].name
     args, kwargs, distinct = _split_args(call.items, call=name)
     if distinct:
         values = [a for a in args if not isinstance(a, NamedArg)]
-        if name.lower() != "count" or len(words) > 1 or len(values) != 1 or isinstance(args[0], (StarSource, NamedArg)):
+        if (name.lower() not in _DISTINCT_CALLS or len(words) > 1 or len(values) != 1
+                or isinstance(args[0], (StarSource, NamedArg))):
             raise _Problem(f"{_DISTINCT_ONLY}.")
-        name = "count_distinct"
+        if name.lower() not in _OSSIE_DISTINCT_CALLS:
+            _spelled(f"{name.upper()}(DISTINCT …)")
+        name = _DISTINCT_CALLS[name.lower()]
     if len(words) > 1:
         return _method_call(
             path=tuple(w.name for w in words[:-1]), name=name, args=args, kwargs=kwargs, span=(call.start, call.end),
         )
-    if not words[0].quoted:
-        _STATE.calls[(call.start, call.end)] = CallSpan(
-            callee=words[0].raw, start=call.start, end=call.end, arguments=len(call.items),
-        )
+    _record_call(call)
     return _dispatch_call(name, args=args, kwargs=kwargs, original=_STATE.text)
 
 
@@ -732,7 +885,7 @@ def _colon_node(toks: List[Any]) -> AggCall:
 
 
 _on(_COLON_AGG, _colon_node)
-_REF = _on(_PATH.copy(), lambda toks: _path_node(list(toks[0])))
+_REF = _on(pp.Located(_PATH.copy()), _spanned(lambda value: _path_node(list(value[0]))))
 
 # -- CASE ----------------------------------------------------------------------
 
@@ -824,6 +977,7 @@ _JSON_VALUE_RETURNING = (pp.Suppress(_kw("json_value")) + LPAR + expr + COMMA + 
 
 
 def _json_value_returning(toks: List[Any]) -> Cast:
+    _spelled("json_value(… RETURNING …)")
     value, path, type_text = toks
     if type_text not in _RETURNING_TYPES:
         raise _Problem(f"json_value() RETURNING {type_text} is not supported; use one of {', '.join(sorted(_RETURNING_TYPES))}.")
@@ -833,17 +987,17 @@ def _json_value_returning(toks: List[Any]) -> Cast:
 _on(_JSON_VALUE_RETURNING, _json_value_returning)
 _POSITION = _on((pp.Suppress(_kw("position")) + LPAR + _concat_level + pp.Suppress(_kw("in")) + expr + RPAR), lambda toks: ScalarCall(name="instr", args=(toks[1], toks[0])))
 _SUBSTRING = _on((pp.Suppress(_kw("substring")) + LPAR + expr + pp.Suppress(_kw("from")) + expr
-              + pp.Optional(pp.Suppress(_kw("for")) + expr) + RPAR), lambda toks: ScalarCall(name="substr", args=tuple(toks)))
+              + pp.Optional(pp.Suppress(_kw("for")) + expr) + RPAR), lambda toks: _spelled_call("SUBSTRING(… FROM …)", ScalarCall(name="substr", args=tuple(toks))))
 _TRIM_FORM = (_kw("trim") + LPAR + _kw("both", "leading", "trailing")) + _fail(
     "TRIM(BOTH | LEADING | TRAILING …) is not supported; use trim(x), ltrim(x) or rtrim(x).",
 )
 
 # -- typed literals, intervals, clock keywords ----------------------------------
 
-_TEMPORAL = _on((_kw("date", "timestamp") + _STRING), lambda toks: TemporalLiteral(kind=toks[0].lower(), text=toks[1].value))
-_TIME_LITERAL = (_kw("time") + _STRING) + _fail(
-    "TIME '…' literals are not supported (there is no time-of-day type); compare with a TIMESTAMP '…' literal.",
-)
+#: Typed-literal keywords → their literal kind (Ossie's ``TIMESTAMP_NTZ`` is SLayer's naive ``TIMESTAMP``).
+_TEMPORAL_KINDS = {"date": "date", "timestamp": "timestamp", "timestamp_ntz": "timestamp", "time": "time"}
+_TEMPORAL = _on((_kw(*_TEMPORAL_KINDS) + _STRING),
+                lambda toks: TemporalLiteral(kind=_TEMPORAL_KINDS[toks[0].lower()], text=toks[1].value))
 _UNIT_WORDS = frozenset(g.value for g in TimeGranularity)
 
 
@@ -872,6 +1026,7 @@ def _interval_count(text: str) -> Literal:
 
 
 def _interval_node(toks: List[Any]) -> ScalarCall:
+    _spelled("INTERVAL literal")
     quantity = toks[0]
     unit_word = toks[1] if len(toks) > 1 else None
     if isinstance(quantity.value, str):
@@ -896,16 +1051,18 @@ def _interval_node(toks: List[Any]) -> ScalarCall:
 
 
 _on(_INTERVAL, _interval_node)
-_CLOCK = _on((_kw("current_date", "current_timestamp") + ~pp.FollowedBy(LPAR)), lambda toks: ScalarCall(name="current_date" if toks[0].lower() == "current_date" else "now"))
+_CLOCK_KEYWORDS = {"current_date": "current_date", "current_timestamp": "now", "current_time": "current_time"}
+_CLOCK = _on((_kw(*_CLOCK_KEYWORDS) + ~pp.FollowedBy(LPAR)), lambda toks: ScalarCall(name=_CLOCK_KEYWORDS[toks[0].lower()]))
 
 # -- primary, postfix ----------------------------------------------------------
 
 _PAREN = LPAR + expr + RPAR
 _PLACEHOLDER_ATOM = _PLACEHOLDER.copy().set_parse_action(_placeholder_node)
 _KEYWORD_LED = pp.FollowedBy(pp.Regex(
-    r"(?i:case|cast|try_cast|extract|position|substring|trim|date|timestamp|time|interval|current_date|current_timestamp"
+    r"(?i:case|cast|try_cast|extract|position|substring|trim|date|timestamp|timestamp_ntz|time|interval|current_date"
+    r"|current_timestamp|current_time"
     r"|json_value)(?![A-Za-z0-9_])"
-)) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _TIME_LITERAL | _INTERVAL | _CLOCK
+)) + (_CASE | _CAST | _EXTRACT | _POSITION | _SUBSTRING | _TRIM_FORM | _TEMPORAL | _INTERVAL | _CLOCK
       | _JSON_VALUE_RETURNING)
 _ARRAY = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: ArrayLit(elements=tuple(toks[0])))
 _ATOM = (_KEYWORD_LED | _CONSTANT | _PLACEHOLDER_ATOM | _NUMBER | _STRING | _PAREN | _ARRAY
@@ -917,21 +1074,197 @@ _FILTER_CLAUSE = (pp.Suppress(_kw("filter")) + LPAR
                   + _need(RPAR, "FILTER (WHERE <condition>) is missing its ')'."))
 
 
-def _reject_over(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
-    raise IllegalWindowInFilterError(
-        filter_expr=_STATE.text,
-        source="raw OVER(...) is not allowed in Mode-B DSL",
-        suggestion="use a transform instead (rank, percent_rank, dense_rank, ntile, cumsum, lag, lead, time_shift, …).",
-    )
+_OVER = pp.Suppress(_kw("over") + pp.FollowedBy(LPAR))
+_WINDOW_FORM = "a window is OVER ([PARTITION BY …] [ORDER BY …] [ROWS|RANGE frame])."
+_PARTITION = _on(
+    pp.Suppress(_kw("partition")) + _need(pp.Suppress(_kw("by")), "PARTITION needs BY.")
+    + _need(pp.Group(pp.DelimitedList(expr)), "PARTITION BY needs a value."),
+    lambda toks: ("partition", tuple(toks[0])),
+)
 
 
-_OVER = (_kw("over") + pp.FollowedBy(LPAR)).set_parse_action(_reject_over)
-_PRIMARY = _ATOM + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE) | _OVER))
+def _order_item(toks: List[Any]) -> OrderItem:
+    words = [t.lower() for t in toks[1:]]
+    descending = "desc" in words
+    # Omitted, NULL sorts as the largest value (Ossie): last ascending, first descending.
+    nulls = next((w for w in words if w in ("first", "last")), "first" if descending else "last")
+    return OrderItem(value=toks[0], descending=descending, nulls=nulls)
+
+
+_ORDER_ITEM = _on(
+    expr + pp.Optional(_kw("asc", "desc"))
+    + pp.Optional(pp.Suppress(_kw("nulls")) + _need(_kw("first", "last"), "NULLS needs FIRST or LAST.")),
+    _order_item,
+)
+_ORDER = _on(
+    pp.Suppress(_kw("order")) + _need(pp.Suppress(_kw("by")), "ORDER needs BY.")
+    + _need(pp.Group(pp.DelimitedList(_ORDER_ITEM)), "ORDER BY needs a value."),
+    lambda toks: ("order", tuple(toks[0])),
+)
+
+
+def _frame_bound(toks: List[Any]) -> Tuple[str, Optional[Decimal]]:
+    head, side = toks[0], toks[-1].lower()
+    if not isinstance(head, Literal):
+        return (f"{head.lower()} {side}", None)
+    value = head.value
+    if not isinstance(value, Decimal) or value != value.to_integral_value():
+        raise _Problem("a frame offset is a whole number, e.g. ROWS BETWEEN 6 PRECEDING AND CURRENT ROW.")
+    # Kept a Decimal: ``int()`` of ``1e1000000000`` would allocate its billion digits.
+    return (side, value)
+
+
+_SIDE = _need(_kw("preceding", "following"), "a frame bound ends in PRECEDING or FOLLOWING.")
+_BOUND = _on(
+    (_kw("unbounded") + _SIDE) | (_kw("current") + _need(_kw("row"), "CURRENT needs ROW.")) | (_NUMBER + _SIDE),
+    _frame_bound,
+)
+_NEED_BOUND = _need(_BOUND, "a frame bound is UNBOUNDED PRECEDING, n PRECEDING, CURRENT ROW, n FOLLOWING or UNBOUNDED "
+                            "FOLLOWING.")
+_FRAME = _on(
+    _kw("rows", "range") + (
+        (pp.Suppress(_kw("between")) + _NEED_BOUND + _need(pp.Suppress(_kw("and")), "BETWEEN needs AND.")
+         + _NEED_BOUND)
+        | _NEED_BOUND
+    ),
+    lambda toks: WindowFrame(unit=toks[0].lower(), start=toks[1], end=toks[2] if len(toks) > 2 else None),
+)
+
+
+class _Window:
+    """A parsed ``OVER (…)`` clause, applied to its call in ``_primary_node``."""
+
+    __slots__ = ("partition", "order", "frame")
+
+    def __init__(self, items: List[Any]) -> None:
+        parts = {i[0]: i[1] for i in items if isinstance(i, tuple)}
+        self.partition: Tuple[Any, ...] = parts.get("partition", ())
+        self.order: Tuple[OrderItem, ...] = parts.get("order", ())
+        self.frame = next((i for i in items if isinstance(i, WindowFrame)), None)
+
+
+_WINDOW = _on(
+    _OVER + LPAR + pp.Optional(_PARTITION) + pp.Optional(_ORDER) + pp.Optional(_FRAME) + _need(RPAR, _WINDOW_FORM),
+    _Window,
+)
+
+
+class _WithinGroup:
+    """A parsed ``WITHIN GROUP (ORDER BY x)``: the ordered value of an ordered-set aggregate."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
+_WITHIN_GROUP = _on(
+    pp.Suppress(_kw("within")) + pp.Suppress(_kw("group")) + LPAR + pp.Suppress(_kw("order")) + pp.Suppress(_kw("by"))
+    + _need(expr, f"{_ORDERED_SET_ONLY}.") + pp.Optional(pp.Suppress(_kw("asc")))
+    + _need(RPAR, f"{_ORDERED_SET_ONLY}."),
+    lambda toks: _WithinGroup(value=toks[0]),
+)
+_PRIMARY = _ATOM + pp.Optional(_WITHIN_GROUP) + pp.Group(pp.ZeroOrMore(pp.Group(_FILTER_CLAUSE))) + pp.Optional(_WINDOW)
+
+
+def _ordered_set(call: Any, within: _WithinGroup) -> AggCall:
+    """SQL ``PERCENTILE_CONT|DISC(p) WITHIN GROUP (ORDER BY x)`` as ``percentile|percentile_disc(x, p=p)``."""
+    name = call.words[0].name.lower() if isinstance(call, _PendingCall) and len(call.words) == 1 else None
+    if name not in _ORDERED_SET_CALLS:
+        raise _Problem(f"{_ORDERED_SET_ONLY}.")
+    try:
+        args, _, distinct = _split_args(call.items, call=name)
+    except _Problem:
+        raise _Problem(f"{_ORDERED_SET_ONLY}.") from None
+    if distinct or len(args) != 1 or isinstance(args[0], NamedArg):
+        raise _Problem(f"{_ORDERED_SET_ONLY}.")
+    return AggCall(source=within.value, agg=_ORDERED_SET_CALLS[name], args=(NamedArg(name="p", value=args[0]),))
+
+
+def _is_window_function(node: Any) -> bool:
+    return (isinstance(node, _PendingCall) and len(node.words) == 1 and not node.words[0].quoted
+            and node.words[0].name.lower() in WINDOW_FUNCTION_ARITIES)
+
+
+def _window_function(call: _PendingCall) -> ScalarCall:
+    """An Ossie ranking or offset call under ``OVER``, undispatched."""
+    word = call.words[0]
+    name = word.name.lower()
+    args, _, distinct = _split_args(call.items, call=word.name)
+    if distinct:
+        raise _Problem(f"{_DISTINCT_ONLY}.")
+    _reject_bare_star_args(args, (), func_name=word.name, original=_STATE.text)
+    low, high = WINDOW_FUNCTION_ARITIES[name]
+    if not low <= len(args) <= high or any(isinstance(a, NamedArg) for a in args):
+        counts = f"{low}" if low == high else f"{low} to {high}"
+        raise _Problem(f"{word.name.upper()} takes {counts} positional argument(s), got {len(args)}.")
+    minimum = _WINDOW_LITERAL_ARGS.get(name)
+    if minimum is not None and len(args) > minimum[0] and not _whole_at_least(args[minimum[0]], minimum[1]):
+        raise _Problem(f"{word.name.upper()}'s {minimum[2]} is a whole-number literal of at least {minimum[1]}.")
+    _record_call(call)
+    return ScalarCall(name=name, args=args, written=word.name)
+
+
+#: Window functions with a literal argument: its position, its least value and what it is.
+_WINDOW_LITERAL_ARGS: Mapping[str, Tuple[int, int, str]] = MappingProxyType({
+    "ntile": (0, 1, "bucket count"), "nth_value": (1, 1, "position"),
+    "lag": (1, 0, "offset"), "lead": (1, 0, "offset"),
+})
+_UNBOUNDED_PRECEDING = "unbounded preceding"
+_UNBOUNDED_FOLLOWING = "unbounded following"
+_BOUND_ORDER = {_UNBOUNDED_PRECEDING: 0, "preceding": 1, "current row": 2, "following": 3, _UNBOUNDED_FOLLOWING: 4}
+
+
+def _whole_at_least(node: Any, least: int) -> bool:
+    if isinstance(node, Placeholder):
+        return True  # judged again once its variable is bound
+    value = node.value if isinstance(node, Literal) else None
+    return (isinstance(value, Decimal) and not isinstance(value, bool) and value == value.to_integral_value()
+            and value >= least)
+
+
+def _check_frame(frame: WindowFrame, *, order: Tuple[OrderItem, ...]) -> None:
+    """A frame's bounds in order, a single bound not FOLLOWING, a RANGE offset over exactly one order key."""
+    start, end = frame.start, frame.end
+    if end is None and start[0] in ("following", _UNBOUNDED_FOLLOWING):
+        raise _Problem(f"a frame's single bound is its start, so it cannot be FOLLOWING; write "
+                       f"{frame.unit.upper()} BETWEEN … AND … FOLLOWING.")
+    if end is not None:
+        rank_start, rank_end = _BOUND_ORDER[start[0]], _BOUND_ORDER[end[0]]
+        first, last = start[1] or Decimal(0), end[1] or Decimal(0)
+        backwards = (rank_start > rank_end or start[0] == _UNBOUNDED_FOLLOWING or end[0] == _UNBOUNDED_PRECEDING
+                     or (rank_start == rank_end and start[0] == "preceding" and first < last)
+                     or (rank_start == rank_end and start[0] == "following" and first > last))
+        if backwards:
+            raise _Problem("a window frame's bounds are out of order: its start comes after its end.")
+    offset = any(b is not None and b[1] is not None for b in (start, end))
+    if frame.unit == "range" and offset and len(order) != 1:
+        raise _Problem(f"a RANGE frame with an offset orders by exactly one key, got {len(order)}.")
 
 
 def _primary_node(toks: List[Any]) -> Any:
-    node = _resolve(toks[0])
-    for clause in toks[1]:
+    window = toks[-1] if isinstance(toks[-1], _Window) else None
+    items = toks[:-1] if window is not None else toks
+    if window is not None and not isinstance(items[0], _PendingCall):
+        raise _Problem("OVER (…) applies only to a function call, e.g. ROW_NUMBER() OVER (ORDER BY x).")
+    if window is not None and len(items) == 2 and _is_window_function(items[0]):
+        node = _window_function(items[0])
+    else:
+        node = _ordered_set(items[0], items[1]) if len(items) == 3 else _resolve(items[0])
+    node = _with_filters(node, items[-1])
+    if window is None:
+        return node
+    if isinstance(node, AggCall) and node.agg.lower() == "percentile" and not node.args and not node.kwargs:
+        raise _Problem("a windowed percentile takes its fraction: PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x) OVER (…).")
+    if window.frame is not None:
+        _check_frame(window.frame, order=window.order)
+    return WindowCall(function=node, partition=window.partition, order=window.order, frame=window.frame)
+
+
+def _with_filters(node: Any, clauses: List[Any]) -> Any:
+    for clause in clauses:
+        if isinstance(node, (Ref, DottedRef)) and node.evaluated:
+            raise AggFilterError(expression=_STATE.text)
         if not isinstance(node, AggCall):
             raise _Problem("FILTER (WHERE …) applies only to an aggregation, e.g. sum(x) FILTER (WHERE c).")
         if node.filter is not None:
@@ -945,6 +1278,7 @@ _on(_PRIMARY, _primary_node)
 
 def _fold_casts(toks: pp.ParseResults) -> Any:
     items = list(toks[0])
+    _spelled("::")
     node = items[0]
     for type_text in items[1:]:
         node = Cast(source=node, type_text=type_text)
@@ -957,6 +1291,7 @@ def _signed(toks: pp.ParseResults) -> Any:
 
 
 def _pow(toks: pp.ParseResults) -> Any:
+    _spelled("**")
     left, right = toks[0]
     return ScalarCall(name="pow", args=(left, right))
 
@@ -1002,6 +1337,7 @@ def _fold_concat(toks: pp.ParseResults) -> Any:
                 raise _Problem(_BARE_ARROW)
             node = ScalarCall(name="concat", args=(node, right))
             continue
+        _spelled(op)
         base, steps = chain if chain is not None else (node, ())
         steps = (*steps, *_arrow_steps(right))
         if op == "->":
@@ -1046,7 +1382,7 @@ def _suffix(element: pp.ParserElement, build) -> pp.ParserElement:
 
 
 def _is_op(negate: bool) -> str:
-    return "is not" if negate else "is"
+    return _IS_NOT if negate else "is"
 
 
 def _negated(node: Any, negate: bool) -> Any:
@@ -1054,6 +1390,7 @@ def _negated(node: Any, negate: bool) -> Any:
 
 
 def _truth_test(left: Any, toks: List[Any]) -> Any:
+    _spelled("IS TRUE / IS FALSE")
     negate, word = toks[0], toks[1].lower()
     known = Cmp(op=_is_op(True), left=left, right=Literal(value=None))
     test = BoolOp(op="and", operands=(known, left if word == "true" else UnaryOp(op="not", operand=left)))
@@ -1063,6 +1400,7 @@ def _truth_test(left: Any, toks: List[Any]) -> Any:
 def _regex_operator(left: Any, toks: List[Any]) -> Any:
     """``~`` / ``~*`` / ``!~`` / ``!~*`` as ``[NOT] regexp_like(left, p[, 'i'])``."""
     op, pattern = toks
+    _spelled(op)
     flags = (Literal(value="i"),) if op.endswith("*") else ()
     return _negated(ScalarCall(name="regexp_like", args=(left, pattern, *flags)), op.startswith("!"))
 
@@ -1093,17 +1431,19 @@ def _in_rhs_elements(items: List[Any]) -> TupleLit | _ListItems:
     if any(isinstance(item, Placeholder) for item in elements):
         # Each variable's value decides once bound whether its item is a list or a scalar.
         return _ListItems(elements)
-    return TupleLit(elements=tuple(cast(Literal, item) for item in elements))
+    return TupleLit(elements=tuple(cast(Literal | TemporalLiteral, item) for item in elements))
 
 
-def _in_scalar_item(item: Any) -> Literal | Placeholder:
+def _in_scalar_item(item: Any) -> Literal | TemporalLiteral | Placeholder:
     if (isinstance(item, UnaryOp) and item.op == "-" and isinstance(item.operand, Literal)
             and isinstance(item.operand.value, Decimal)):
         item = Literal(value=-item.operand.value)
+    if isinstance(item, TemporalLiteral) and item.kind == "time":
+        return item
     if not isinstance(item, (Literal, Placeholder)):
         raise _Problem(
-            "every element on the right-hand side of in / not in must be a literal (string, number, or "
-            f"boolean); got {type(item).__name__}."
+            "every element on the right-hand side of in / not in must be a literal (string, number, boolean or "
+            f"TIME '…'); got {type(item).__name__}."
         )
     return item
 
@@ -1111,7 +1451,8 @@ def _in_scalar_item(item: Any) -> Literal | Placeholder:
 def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
     """``L IN (M1, M2)`` over lists is ``L = M1 OR L = M2``."""
     if not isinstance(right, _ListItems):
-        return Cmp(op="not in" if negate else "in", left=left, right=right)
+        node = Cmp(op=_NOT_IN if negate else "in", left=left, right=right)
+        return _written_comparison(node) if isinstance(right, TupleLit) else node
     equalities = tuple(Cmp(op="==", left=left, right=item) for item in right.items)
     return _negated(equalities[0] if len(equalities) == 1 else BoolOp(op="or", operands=equalities), negate)
 
@@ -1119,20 +1460,23 @@ def _in_comparison(left: Any, negate: bool, right: Any) -> Any:
 _IN_LIST = ((LPAR + _PLACEHOLDER_ATOM + RPAR)
             | _PLACEHOLDER_ATOM
             | _on((LPAR + _SEQ_ITEMS + RPAR), lambda toks: _in_rhs_elements(list(toks[0])))
-            | _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: _in_rhs_elements(list(toks[0])))
-            | _STRING
+            | _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: _spelled_call("IN […]", _in_rhs_elements(list(toks[0]))))
+            | _STRING.copy().add_parse_action(lambda: _spelled("IN '…'"))
             | _fail("the right-hand side of in / not in must be a literal list, e.g. status in ('a', 'b')."))
 
 _CMP_SUFFIX = (
-    _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
-            lambda left, t: Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "="))
+    # SQL ``v = ANY(list)`` is list membership.
+    _suffix(_sym(r"==|=", "comparison") + pp.Suppress(_kw("any")) + LPAR + _concat_level + RPAR,
+            lambda left, t: _spelled_call("= ANY(…)", ScalarCall(name="contains", args=(t[1], left))))
+    | _suffix(_sym(r"==|!=|<>|<=|>=|=|<|>", "comparison") + _concat_level,
+            lambda left, t: _written_comparison(Cmp(op=_CMP_OPS[t[0]], left=left, right=t[1], single_eq=t[0] == "=")))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("distinct")) + pp.Suppress(_kw("from")) + _concat_level,
               lambda left, t: Cmp(op="is not distinct from" if t[0] else "is distinct from", left=left, right=t[1]))
     | _suffix(_IS + _NOT_FLAG + pp.Suppress(_kw("null") | pp.Regex(r"None\b")),
               lambda left, t: Cmp(op=_is_op(t[0]), left=left, right=Literal(value=None)))
     | _suffix(_IS + _NOT_FLAG + (_kw("true", "false")), _truth_test)
     | _suffix(_IS + _NOT_FLAG + _concat_level,
-              lambda left, t: Cmp(op=_is_op(t[0]), left=left, right=t[1]))
+              lambda left, t: _spelled_call("IS <value>", Cmp(op=_is_op(t[0]), left=left, right=t[1])))
     | _suffix(_NOT_FLAG + pp.Suppress(_kw("in")) + _IN_LIST, lambda left, t: _in_comparison(left, t[0], t[1]))
     | _suffix(_NOT_FLAG + pp.Suppress(_kw("between")) + _concat_level + pp.Suppress(_kw("and")) + _concat_level,
               lambda left, t: _negated(BoolOp(op="and", operands=(
@@ -1199,13 +1543,13 @@ class _Reading(BaseModel):
     parsed: Any
     legacy: Tuple[LegacySpan, ...]
     calls: Tuple[CallSpan, ...]
+    spellings: Tuple[str, ...] = ()
 
 
 def parse_expr(text: str) -> ParsedExpr:
     """Parse a Mode-B expression string into a ``ParsedExpr``; a deprecated spelling read is noted for its warning.
 
-    Raises ``ValueError`` (empty / syntax / unsupported form / reserved prefix),
-    ``UnknownFunctionError``, or ``IllegalWindowInFilterError`` (raw ``OVER(...)``).
+    Raises ``ValueError`` (empty / syntax / unsupported form / reserved prefix) or ``UnknownFunctionError``.
     """
     reading = _read(text)
     if reading.legacy:
@@ -1213,11 +1557,96 @@ def parse_expr(text: str) -> ParsedExpr:
     return reading.parsed
 
 
+@lru_cache(maxsize=8192)
+def reference_spans(text: str) -> Tuple[ParsedExpr, Mapping[int, Tuple[int, int]]]:
+    """``text`` parsed, with the offsets of its reference nodes (``Ref``, ``DottedRef``, ``*``) keyed by node id.
+
+    Raises ``ValueError`` when ``text`` does not parse.
+    """
+    with _PARSE_LOCK:
+        _STATE.reset(text)
+        _STATE.refs = {}
+        try:
+            parsed = cast(ParsedExpr, _parse_tree(text))
+            found = _STATE.refs
+        finally:
+            _STATE.refs = None
+    return parsed, MappingProxyType(
+        {key: (start, start + len(text[start:end].rstrip())) for key, (_node, start, end) in found.items()})
+
+
+class LiteralComparison(BaseModel):
+    """A string literal ``value`` at ``text[start:end]`` compared directly with the reference ``parts`` (per-segment
+    ``quoted``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    value: str
+    start: int
+    end: int
+    parts: Tuple[str, ...]
+    quoted: Tuple[bool, ...]
+
+
+def _reference_reading(node: Any) -> Optional[Tuple[Tuple[str, ...], Tuple[bool, ...]]]:
+    if isinstance(node, Ref) and not node.evaluated:
+        return (node.name,), (node.quoted,)
+    if isinstance(node, DottedRef) and not node.evaluated:
+        return node.parts, tuple(node.quoted_at(i) for i in range(len(node.parts)))
+    return None
+
+
+def _compared_literals(node: Cmp) -> Iterator[Tuple[Any, Any]]:
+    """``(literal, reference)`` per string literal ``node`` compares directly with a reference."""
+    if node.op in _IN_OPS:
+        if isinstance(node.right, TupleLit):
+            yield from ((e, node.left) for e in node.right.elements)
+        return
+    yield from ((node.right, node.left), (node.left, node.right))
+
+
+@lru_cache(maxsize=8192)
+def literal_comparisons(text: str) -> Tuple[LiteralComparison, ...]:
+    """Each string literal ``text`` compares directly with a column reference — ``=``, ``==``, ``!=``, ``<>``, ``<``,
+    ``<=``, ``>``, ``>=`` either way round, or an element of an all-literal ``[NOT] IN`` list — in source order; none
+    when ``text`` does not parse."""
+    with _PARSE_LOCK:
+        _STATE.reset(text)
+        _STATE.literals, _STATE.compared = {}, {}
+        try:
+            parsed = _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)[0]
+            literals, compared = _STATE.literals, _STATE.compared
+        except (ValueError, pp.ParseBaseException):
+            return ()
+        finally:
+            _STATE.literals = _STATE.compared = None
+    out: List[LiteralComparison] = []
+    written = (n for n in walk_parsed(parsed) if isinstance(n, Cmp) and compared.get(id(n)) is n)
+    for cmp in written:
+        for literal, other in _compared_literals(cmp):
+            reading = _reference_reading(other)
+            located = literals.get(id(literal))
+            if (reading is not None and located is not None and located[0] is literal and isinstance(literal, Literal)
+                    and isinstance(literal.value, str)):
+                out.append(LiteralComparison(
+                    value=literal.value, start=located[1], end=located[2], parts=reading[0], quoted=reading[1]))
+    return tuple(sorted(out, key=lambda c: c.start))
+
+
 def legacy_spans(text: str) -> Tuple[LegacySpan, ...]:
     """The deprecated spellings in template ``text``, each with its canonical twin; none when it does not parse."""
     try:
         return _read(_bound_strings(text)).legacy
     except Exception:  # noqa: BLE001 — unparseable text has no spans
+        return ()
+
+
+def nonossie_spellings(text: str) -> Tuple[str, ...]:
+    """The spellings Ossie Layer 1 does not define that template ``text`` uses and the parser rewrites (``~``, ``->>``,
+    ``::``, …); none when it does not parse."""
+    try:
+        return _read(_bound_strings(text)).spellings
+    except Exception:  # noqa: BLE001 — unparseable text has no spellings
         return ()
 
 
@@ -1229,22 +1658,65 @@ def call_spans(text: str) -> Tuple[CallSpan, ...]:
         return ()
 
 
+def unwrap_agg_calls(text: str) -> str:
+    """``text`` with each ``AGG(x)`` call (any case) replaced by ``x``, every other byte kept."""
+    out: List[str] = []
+    last = 0
+    for call in call_spans(text):
+        if call.name.casefold() != "agg" or call.arguments != 1 or call.start < last:
+            continue
+        out += [text[last:call.start], text[call.paren + 1:call.end - 1].strip()]
+        last = call.end
+    return "".join([*out, text[last:]])
+
+
+#: Parenthesis depth past which an expression is refused: deeper ones exhaust the parser's recursion.
+MAX_NESTING = 32
+
+
+def _nesting(text: str) -> int:
+    """The deepest parenthesis nesting in ``text``'s code, literals and comments aside."""
+    depth = deepest = 0
+    for region in (r for r in _regions(text) if r.kind == "code"):
+        for ch in text[region.start:region.end]:
+            depth += (ch == "(") - (ch == ")")
+            deepest = max(deepest, depth)
+    return deepest
+
+
+def _parse_tree(text: str) -> Any:
+    """``text`` parsed by the grammar (the caller holds ``_PARSE_LOCK``); raises ``ValueError`` when it does not parse."""
+    if _nesting(text) > MAX_NESTING:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: parentheses nest more than {MAX_NESTING} deep.")
+    try:
+        masked = _mask_placeholders(text)
+        if not masked.strip():
+            raise ValueError("Empty Mode-B expression.")
+        return _EXPRESSION.parse_string(masked, parse_all=True)[0]
+    except _Problem as problem:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
+    except pp.ParseBaseException as e:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
+    except RecursionError:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: it nests too deeply to read.") from None
+
+
 @lru_cache(maxsize=8192)
 def _read(text: str) -> _Reading:
+    try:
+        return _reading(text)
+    except RecursionError:
+        raise ValueError(f"Invalid Mode-B expression {text!r}: it nests too deeply to read.") from None
+
+
+def _reading(text: str) -> _Reading:
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
     with _PARSE_LOCK:
         _STATE.reset(text)
-        try:
-            masked = _mask_placeholders(text)
-            if not masked.strip():
-                raise ValueError("Empty Mode-B expression.")
-            parsed = cast(ParsedExpr, _EXPRESSION.parse_string(masked, parse_all=True)[0])
-        except _Problem as problem:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
-        except pp.ParseBaseException as e:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
+        parsed = cast(ParsedExpr, _parse_tree(text))
         methods, calls = list(_STATE.methods.values()), sorted(_STATE.calls.values(), key=lambda c: c.start)
+        spellings = tuple(_STATE.spellings)
     legacy = tuple(sorted([*_text_legacy_spans(text), *methods], key=lambda s: (s.start, s.end)))
     if any(_is_interval(n) for n in walk_parsed(parsed)):
         parsed = _deferred_intervals(parsed, message=(
@@ -1252,7 +1724,7 @@ def _read(text: str) -> _Reading:
             f"`x + interval(n, unit)`, `interval(n, unit) + x` or `x - interval(n, unit)`; "
             f"otherwise use date_add(x, n, unit)."
         ))
-    return _Reading(parsed=parsed, legacy=legacy, calls=tuple(calls))
+    return _Reading(parsed=parsed, legacy=legacy, calls=tuple(calls), spellings=spellings)
 
 
 _IS_NONE_RE = re.compile(r"\b[Ii][Ss]\s+(?:([Nn][Oo][Tt])\s+)?None\b")
@@ -1417,9 +1889,6 @@ def _in_slot_ordinals(template: Any) -> frozenset[int]:
         for node in walk_parsed(template)
         if isinstance(node, Cmp) and node.op in _IN_OPS and isinstance(node.right, Placeholder)
     )
-
-
-_IN_OPS = frozenset({"in", "not in"})
 
 
 def parse_bound_expr(text: str, variables: Mapping[str, Any]) -> ParsedExpr:
@@ -1760,6 +2229,10 @@ def walk_parsed_refs(
     if isinstance(parsed, BoolOp):
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
+        return
+    if isinstance(parsed, WindowCall):
+        for node in (parsed.function, *parsed.partition, *(item.value for item in parsed.order)):
+            yield from walk_parsed_refs(node)
 
 
 # ---------------------------------------------------------------------------
@@ -1771,7 +2244,7 @@ def walk_parsed_refs(
 # scalar expression, predicates included (a bare TupleLit is not a value).
 _AGG_SOURCE_KINDS = (
     Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, ScalarCall, DateTrunc, NamedArg, Cast, Arith,
-    UnaryOp, Cmp, BoolOp,
+    UnaryOp, Cmp, BoolOp, WindowCall,
 )
 
 
@@ -1856,10 +2329,12 @@ def _onto_path(node: Any, *, path: Tuple[str, ...], memo: Optional[Dict[int, Any
 def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -> Any:
     unquoted = (False,) * len(path)
     if isinstance(node, Ref):
-        return DottedRef(parts=(*path, node.name), quoted=node.quoted, quoted_parts=(*unquoted, node.quoted))
+        return DottedRef(parts=(*path, node.name), quoted=node.quoted, quoted_parts=(*unquoted, node.quoted),
+                         evaluated=node.evaluated)
     if isinstance(node, DottedRef):
         own = tuple(node.quoted_at(i) for i in range(len(node.parts)))
-        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted, quoted_parts=(*unquoted, *own))
+        return DottedRef(parts=(*path, *node.parts), quoted=node.quoted, quoted_parts=(*unquoted, *own),
+                         evaluated=node.evaluated)
     if isinstance(node, StarSource):
         return DottedRef(parts=(*path, "*"))
     if isinstance(node, ScalarCall):
@@ -1867,7 +2342,8 @@ def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -
         written = None if node.written_args is None else tuple(_onto_path(a, path=path, memo=memo) for a in node.written_args)
         return node.model_copy(update={"args": args, "written_args": written})
     if isinstance(node, Cast):
-        return node.model_copy(update={"source": _onto_path(node.source, path=path, memo=memo)})
+        written = None if node.written_args is None else tuple(_onto_path(a, path=path, memo=memo) for a in node.written_args)
+        return node.model_copy(update={"source": _onto_path(node.source, path=path, memo=memo), "written_args": written})
     if isinstance(node, (DateTrunc, NamedArg)):
         return node.model_copy(update={"value": _onto_path(node.value, path=path, memo=memo)})
     if isinstance(node, (Arith, Cmp)):
@@ -1877,6 +2353,51 @@ def _onto_path_node(node: Any, *, path: Tuple[str, ...], memo: Dict[int, Any]) -
     if isinstance(node, BoolOp):
         return node.model_copy(update={"operands": tuple(_onto_path(o, path=path, memo=memo) for o in node.operands)})
     return node
+
+
+#: A transform argument that binds references; its others are scalars.
+_TRANSFORM_REFERENCE_ARGUMENTS = frozenset({"partition_by"})
+#: A keyword whose value is a word, never a reference.
+_WORD_ARGUMENTS = frozenset({"direction"})
+
+
+def _reference_children(node: Any) -> Iterator[Tuple[Any, Optional[str]]]:
+    """``(child, aggregation)`` of the reference-bearing children of ``node``; ``aggregation`` names a ``*``'s call."""
+    if isinstance(node, (tuple, list)):
+        yield from ((item, None) for item in node)
+    elif isinstance(node, TransformCall):
+        yield from _transform_children(node)
+    elif isinstance(node, NamedArg):
+        if node.name not in _WORD_ARGUMENTS:
+            yield node.value, None
+    elif isinstance(node, AggCall):
+        yield from _aggregation_children(node)
+    elif isinstance(node, _BaseNode):
+        yield from ((getattr(node, f), None) for f in type(node).model_fields if f != "written_args")
+
+
+def _transform_children(node: TransformCall) -> Iterator[Tuple[Any, Optional[str]]]:
+    yield node.input, None
+    named = [a.value for a in node.args if isinstance(a, NamedArg) and a.name in _TRANSFORM_REFERENCE_ARGUMENTS]
+    keywords = [value for name, value in node.kwargs if name in _TRANSFORM_REFERENCE_ARGUMENTS]
+    yield from ((value, None) for value in (*named, *keywords))
+
+
+def _aggregation_children(node: AggCall) -> Iterator[Tuple[Any, Optional[str]]]:
+    yield node.source, node.agg
+    yield node.args, None
+    yield from ((value, None) for name, value in node.kwargs if name not in _WORD_ARGUMENTS)
+    yield node.filter, None
+
+
+def walk_references(node: Any, aggregation: Optional[str] = None) -> Iterator[Tuple[Any, Optional[str]]]:
+    """``(reference, aggregation)`` of every reference (``Ref``, ``DottedRef``, ``*``) in a reference position of
+    ``node``; ``aggregation`` names a ``*``'s aggregation."""
+    if isinstance(node, (Ref, DottedRef, StarSource)):
+        yield node, aggregation
+        return
+    for child, agg in _reference_children(node):
+        yield from walk_references(child, agg)
 
 
 def map_refs(node: Any, fn: Callable[[Ref | DottedRef], Any]) -> Any:
@@ -1965,12 +2486,17 @@ def _keyword_args(
     return tuple(out), kwargs
 
 
-def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
+def aggregation_reading(call: ScalarCall | Cast) -> Optional[AggCall]:
     """The aggregation call ``call`` reads as when its owning dataset defines ``call.written``; ``None`` when it has no
     field-bearing value argument."""
     if call.written is None:
         return None
-    args = call.written_args if call.written_args is not None else call.args
+    if call.written_args is not None:
+        args = call.written_args
+    elif isinstance(call, ScalarCall):
+        args = call.args
+    else:
+        return None
     return _aggregation_candidate(call.written, args=args, kwargs=(), error=None)
 
 
@@ -1993,6 +2519,10 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], original: str,
 ) -> ParsedExpr:
     # ``agg`` stores the RAW token; ``first``/``last`` dispatch at bind by the operand's type.
+    if func_name.lower() in RESERVED_NAMES:
+        if kwargs or len(args) != 1 or not isinstance(args[0], (Ref, DottedRef)) or args[0].evaluated:
+            raise AggArgumentError(expression=original)
+        return args[0].model_copy(update={"evaluated": True})
     canonical_agg = normalize_aggregation_name(func_name)
     if canonical_agg in BUILTIN_AGGREGATIONS:
         if not args:
@@ -2037,16 +2567,21 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
             message = f"Invalid Mode-B expression {original!r}: {problem.detail}"
             if bucket:
                 message += f" Units: {', '.join(g.value for g in TimeGranularity)} or a datasource granularity."
-            deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=message)
-            if deferred is None:
-                raise (GranularityCallError if bucket else ValueError)(message) from None
-            return deferred
-        if isinstance(built, ScalarCall):
+            unknown = func_name.lower() in _ISO_PARSERS
+            deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=None if unknown else message)
+            if deferred is not None:
+                return deferred
+            if unknown:
+                raise UnknownFunctionError(name=func_name, location=original, suggestion=problem.detail) from None
+            raise (GranularityCallError if bucket else ValueError)(message) from None
+        if isinstance(built, (ScalarCall, Cast)):
             return built.model_copy(update={"written": func_name, "written_args": args})
         return built
 
-    # Normalised to lower case so ``COALESCE`` / ``coalesce`` intern to one key.
-    if func_name.lower() in SCALAR_FUNCTIONS:
+    # A renaming spelling is its library function, written as spelled; lower case interns ``COALESCE`` / ``coalesce``.
+    registered = SCALAR_SPELLING_REGISTRY.get(func_name.lower())
+    library = func_name.lower() if registered is None or registered.dispatch == SPELLING_REWRITE else registered.dispatch
+    if library in SCALAR_FUNCTIONS:
         if kwargs:
             message = (
                 f"Invalid Mode-B expression {original!r}: scalar function "
@@ -2058,15 +2593,14 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
                 raise ValueError(message)
             return deferred
         _reject_bare_star_args(args, kwargs, func_name=func_name, original=original)
-        name = func_name.lower()
         try:
-            date_args = _date_args(name=name, args=args, original=original)
+            date_args = _date_args(name=library, args=args, original=original)
         except ValueError as error:
             deferred = _aggregation_candidate(func_name, args=args, kwargs=kwargs, error=str(error))
             if deferred is None:
                 raise
             return deferred
-        return ScalarCall(name=name, args=date_args, written=func_name)
+        return ScalarCall(name=library, args=date_args, written=func_name)
 
     part = DATE_PART_ALIASES.get(func_name.lower())
     if part is not None:
@@ -2092,7 +2626,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     raise UnknownFunctionError(
         name=func_name,
         location=original,
-        suggestion=ambiguous_weekday_message(func_name) if func_name.lower() in AMBIGUOUS_WEEKDAY_NAMES else (
+        suggestion=unknown_call_hint(func_name) or (
             f"Mode-B accepts the closed scalar allowlist "
             f"({sorted(SCALAR_FUNCTIONS)}), transforms "
             f"({sorted(ALL_TRANSFORMS)}), and aggregations "
@@ -2114,7 +2648,7 @@ def _date_trunc(args: Tuple[Any, ...]) -> ParsedExpr:
     unit = args[0].value.lower()
     if not unit.isidentifier() or (unit not in GRANULARITY_NAMES and (
         unit in RESERVED_SCALAR_NAMES or unit in ALL_TRANSFORMS or normalize_aggregation_name(unit) in BUILTIN_AGGREGATIONS
-        or unit in DATE_PART_ALIASES or unit in AMBIGUOUS_WEEKDAY_NAMES
+        or unit in DATE_PART_ALIASES or unit in WEEKDAY_CALLS
     )):
         raise _Problem(f"unknown date_trunc() unit {args[0].value!r}; use a granularity such as 'month'.")
     return DateTrunc(unit=unit, value=args[1])
@@ -2142,9 +2676,81 @@ def _json_key_list(name: str):
     return build
 
 
-# Spellings collapsed into one library node (engine P2); each name is reserved (``SCALAR_SPELLINGS``).
+def _ossie_unit(node: Any) -> Any:
+    """Ossie's bare date unit word (``DATEDIFF(day, …)``) as SLayer's unit literal."""
+    if isinstance(node, Ref) and not node.quoted and node.name.lower() in _UNIT_WORDS:
+        return Literal(value=node.name.lower())
+    return node
+
+
+def _datediff(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``DATEDIFF(unit, start, end)`` as ``date_diff``."""
+    if len(args) != 3:
+        raise _Problem("DATEDIFF takes (unit, start, end).")
+    return _dispatch_call("date_diff", args=(_ossie_unit(args[0]), *args[1:]), kwargs=(), original=_STATE.text)
+
+
+def _dateadd(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``DATEADD(unit, n, ts)`` as ``date_add(ts, n, unit)``."""
+    if len(args) != 3:
+        raise _Problem("DATEADD takes (unit, amount, timestamp).")
+    return _dispatch_call("date_add", args=(args[2], args[1], _ossie_unit(args[0])), kwargs=(), original=_STATE.text)
+
+
+def _nvl2(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``NVL2(e, a, b)`` as ``iif(e IS NOT NULL, a, b)``."""
+    if len(args) != 3:
+        raise _Problem(f"NVL2 takes (expr, not_null_result, null_result); got {len(args)} arguments.")
+    return ScalarCall(name="iif", args=(Cmp(op=_IS_NOT, left=args[0], right=Literal(value=None)), *args[1:]))
+
+
+def _charindex(args: Tuple[Any, ...]) -> ParsedExpr:
+    """Ossie ``CHARINDEX(sub, s)`` as ``instr(s, sub)``."""
+    if len(args) != 2:
+        raise _Problem(f"CHARINDEX takes (substring, string); got {len(args)} arguments (a start position is not "
+                       f"supported).")
+    return ScalarCall(name="instr", args=(args[1], args[0]))
+
+
+#: Ossie's ISO-string parsers → the cast each one is.
+_ISO_PARSERS = {"to_date": "DATE", "to_timestamp": "TIMESTAMP_NTZ"}
+
+
+def _iso_parser_hint(name: str) -> str:
+    return (f"{name.upper()}(s) takes one ISO-8601 string and is CAST(s AS {_ISO_PARSERS[name.lower()]}); a format "
+            f"string, or any other argument count, is not supported.")
+
+
+def _iso_parser(name: str):
+    """Ossie ``TO_DATE(s)`` / ``TO_TIMESTAMP(s)`` as the ``CAST`` it is."""
+    def build(args: Tuple[Any, ...]) -> ParsedExpr:
+        if len(args) != 1:
+            raise _Problem(_iso_parser_hint(name))
+        return Cast(source=args[0], type_text=_ISO_PARSERS[name])
+    return build
+
+
+def unknown_call_hint(name: str) -> Optional[str]:
+    """Why a call of ``name`` that resolves to nothing is refused, when the name means something else."""
+    return _iso_parser_hint(name) if name.lower() in _ISO_PARSERS else part_call_hint(name)
+
+
+def _current_timestamp(args: Tuple[Any, ...]) -> ParsedExpr:
+    """SQL ``CURRENT_TIMESTAMP()`` as ``now()``."""
+    if args:
+        raise _Problem("CURRENT_TIMESTAMP takes no arguments.")
+    return _dispatch_call("now", args=(), kwargs=(), original=_STATE.text)
+
+
+# The rewriting spellings of ``SCALAR_SPELLING_REGISTRY`` (a renaming one is dispatched as its library function).
 _SPELLINGS: Dict[str, Callable[[Tuple[Any, ...]], ParsedExpr]] = {
-    "strpos": lambda args: ScalarCall(name="instr", args=args),
+    "datediff": _datediff,
+    "dateadd": _dateadd,
+    "current_timestamp": lambda args: _current_timestamp(args),
+    "nvl2": _nvl2,
+    "charindex": _charindex,
+    "to_date": _iso_parser("to_date"),
+    "to_timestamp": _iso_parser("to_timestamp"),
     "date_trunc": _date_trunc,
     "json_extract": _json_alias("json_extract"),
     "json_extract_scalar": _json_alias("json_extract_scalar"),
@@ -2228,6 +2834,8 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
     """The canonical lower-case unit (or ``date_part`` part) word of ``arg``, one of ``words``."""
     accepted = ", ".join(words)
     what = "part" if name == "date_part" else "unit"
+    if name == "date_part" and _bare_part(arg, words=words):
+        arg = Literal(value=arg.name)
     if not (isinstance(arg, Literal) and isinstance(arg.value, str)):
         spelled = keyword_spelling(arg)
         raise ValueError(
@@ -2237,14 +2845,23 @@ def _unit_word(arg: Any, *, name: str, words: Tuple[str, ...], original: str) ->
     word = arg.value.lower()
     if name == "date_part":
         if word in AMBIGUOUS_WEEKDAY_NAMES:
-            raise ValueError(f"Invalid Mode-B expression {original!r}: {ambiguous_weekday_message(arg.value)}")
-        word = DATE_PART_ALIASES[word].value if word in DATE_PART_ALIASES else word
+            raise ValueError(f"Invalid Mode-B expression {original!r}: {part_call_hint(arg.value)}")
+        alias = DATE_PART_ALIASES.get(word) or PART_ONLY_WORDS.get(word)
+        word = alias.value if alias is not None else word
     if word not in words:
         raise ValueError(
             f"Invalid Mode-B expression {original!r}: unknown {name}() {what} "
             f"{arg.value!r}; accepted: {accepted}."
         )
     return word
+
+
+def _bare_part(arg: Any, *, words: Tuple[str, ...]) -> bool:
+    """Whether ``arg`` is an unquoted word naming a date part (or its alias), as ``EXTRACT`` takes it."""
+    if not isinstance(arg, Ref) or arg.quoted or arg.evaluated:
+        return False
+    word = arg.name.lower()
+    return word in words or word in DATE_PART_ALIASES or word in AMBIGUOUS_WEEKDAY_NAMES or word in PART_ONLY_WORDS
 
 
 def _folded(node: Any) -> Any:
@@ -2340,7 +2957,7 @@ def _root_relative(node: Any, *, root: str, memo: Dict[int, Any]) -> Any:
             if parts == ("*",):
                 memo[id(node)] = StarSource()
             elif len(parts) == 1:
-                memo[id(node)] = Ref(name=parts[0], quoted=quoted_parts[0])
+                memo[id(node)] = Ref(name=parts[0], quoted=quoted_parts[0], evaluated=node.evaluated)
             else:
                 memo[id(node)] = node.model_copy(update={
                     "parts": parts, "quoted_parts": quoted_parts, "quoted": any(quoted_parts),
@@ -2386,6 +3003,38 @@ def _is_path_head(text: str, *, start: int, end: int) -> bool:
         return False
     segment = after[1:].lstrip()
     return bool(segment) and (segment[0] in '"*' or _RUN_RE.match(segment) is not None)
+
+
+_PLACEHOLDER_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _is_bare_ref(text: str, *, start: int, end: int) -> bool:
+    """The word ``text[start:end]`` stands alone: no word or ``.`` before it, no ``.`` or call after it."""
+    before = text[:start].rstrip()
+    after = text[end:].lstrip()
+    return not ((start and _RUN_CHAR_RE.match(text[start - 1])) or before.endswith(".") or after.startswith((".", "(")))
+
+
+def respell_bare_names(text: str, *, respell: Callable[[str], Optional[str]]) -> str:
+    """``text`` with each unquoted bare reference ``respell`` maps to new text replaced, every other byte kept;
+    text that does not parse is returned unchanged."""
+    try:
+        parsed = parse_template(text)
+    except Exception:  # noqa: BLE001 — unparseable text is left for binding to report
+        return text
+    names = {n.name for n in walk_parsed(parsed) if isinstance(n, Ref)}
+    out: List[str] = []
+    last = 0
+    for region in (r for r in _regions(text) if r.kind == "code") if names else ():
+        placeholders = [m.span() for m in _PLACEHOLDER_RE.finditer(text, region.start, region.end)]
+        for word in _RUN_RE.finditer(text, region.start, region.end):
+            new = respell(word.group()) if word.group() in names else None
+            inside = any(a <= word.start() < b for a, b in placeholders)
+            if new is None or inside or not _is_bare_ref(text, start=word.start(), end=word.end()):
+                continue
+            out += [text[last:word.start()], new]
+            last = word.end()
+    return "".join([*out, text[last:]])
 
 
 def respell_path_heads(text: str, *, respell: Callable[[str], Optional[str]]) -> str:
@@ -2449,47 +3098,105 @@ def call_source(text: str) -> Optional[CallSource]:
 _CANONICAL_OPS = {"==": "="}
 
 
+class _Style(Enum):
+    """How the renderer spells: canonical with written quoting kept, canonical quote-blind (identity), or the pre-2.0
+    result-name seed (quote-blind)."""
+
+    CANONICAL = "canonical"
+    IDENTITY = "identity"
+    LEGACY = "legacy"
+
+
 def _is_null(node: Any) -> bool:
     return isinstance(node, Literal) and node.value is None
 
 
-def _argument_text(node: Any, *, legacy: bool) -> str:
+def _argument_text(node: Any, *, style: _Style) -> str:
     """A non-scalar call's argument: a ``name = value`` comparison parenthesised, so it never reads as a keyword."""
-    text = _render(node, legacy=legacy)
-    if not legacy and isinstance(node, Cmp) and node.op == "==" and isinstance(node.left, Ref) and not node.left.quoted:
+    text = _render(node, style=style)
+    if (style is not _Style.LEGACY and isinstance(node, Cmp) and node.op == "==" and isinstance(node.left, Ref)
+            and not _reference_text(node.left, style=style).startswith('"')):
         return f"({text})"
     return text
 
 
 def _canonical_call_params(
-    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], *, bare_direction: bool = False, legacy: bool = False,
+    args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], *, bare_direction: bool = False, style: _Style = _Style.CANONICAL,
 ) -> str:
     parts = [
-        _canonical_kwarg(a.name, a.value, bare_direction=bare_direction, legacy=legacy) if isinstance(a, NamedArg)
-        else _argument_text(a, legacy=legacy)
+        _canonical_kwarg(a.name, a.value, bare_direction=bare_direction, style=style) if isinstance(a, NamedArg)
+        else _argument_text(a, style=style)
         for a in args
     ]
-    parts += [_canonical_kwarg(k, v, bare_direction=bare_direction, legacy=legacy) for k, v in kwargs]
+    parts += [_canonical_kwarg(k, v, bare_direction=bare_direction, style=style) for k, v in kwargs]
     return f"({', '.join(parts)})" if parts else ""
 
 
-def _canonical_kwarg(name: str, value: Any, *, bare_direction: bool, legacy: bool) -> str:
+def _canonical_kwarg(name: str, value: Any, *, bare_direction: bool, style: _Style) -> str:
     """``name=value``; a transform's recognised ``direction`` renders normalised (bare in the legacy seed)."""
     if bare_direction and name == "direction" and isinstance(value, Literal):
         direction = normalize_direction(value.value)
         if direction is not None:
-            return direction if legacy else f"direction='{direction}'"
-    return f"{name}={_canonical_kwarg_text(value, legacy=legacy)}"
+            return direction if style is _Style.LEGACY else f"direction='{direction}'"
+    return f"{name}={_canonical_kwarg_text(value, style=style)}"
 
 
-def _canonical_kwarg_text(value: Any, *, legacy: bool) -> str:
+def _canonical_kwarg_text(value: Any, *, style: _Style) -> str:
     if isinstance(value, tuple):
-        return f"[{', '.join(_render(v, legacy=legacy) for v in value)}]"
-    return _render(value, legacy=legacy)
+        return f"[{', '.join(_render(v, style=style) for v in value)}]"
+    return _render(value, style=style)
+
+
+def _quoted_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 def _identifier_text(name: str) -> str:
-    return name if name.isidentifier() else '"' + name.replace('"', '""') + '"'
+    return name if name.isidentifier() else _quoted_identifier(name)
+
+
+def _probe_tree(text: str) -> Any:
+    """``text`` parsed under its own scratch state, so a parse action may call it mid-parse."""
+    global _STATE
+    with _PARSE_LOCK:
+        outer, _STATE = _STATE, _State()
+        try:
+            _STATE.reset(text)
+            return _parse_tree(text)
+        finally:
+            _STATE = outer
+
+
+@lru_cache(maxsize=4096)
+def _reads_back_bare(name: str, *, head: bool) -> bool:
+    """Whether ``name`` written bare reads back as that unquoted segment: alone at a path's head, else after a dot."""
+    try:
+        parsed = _probe_tree(name if head else f"x.{name}")
+    except Exception:  # noqa: BLE001 — any failure to read back means it must be quoted
+        return False
+    if head:
+        return isinstance(parsed, Ref) and parsed.name == name and not parsed.quoted and not parsed.evaluated
+    return isinstance(parsed, DottedRef) and parsed.parts == ("x", name) and not parsed.quoted and not parsed.evaluated
+
+
+def _segment_text(name: str, *, quoted: bool, head: bool, style: _Style) -> str:
+    if style is not _Style.CANONICAL:
+        return _identifier_text(name)
+    return _quoted_identifier(name) if quoted or not _reads_back_bare(name, head=head) else name
+
+
+def _path_segment_text(node: DottedRef, i: int, *, style: _Style) -> str:
+    """Segment ``i`` of a dotted path; a ``*`` segment is the star unless written quoted (canonical style)."""
+    part, quoted = node.parts[i], node.quoted_at(i)
+    if part == "*" and not (quoted and style is _Style.CANONICAL):
+        return part
+    return _segment_text(part, quoted=quoted, head=i == 0, style=style)
+
+
+def _reference_text(node: Ref | DottedRef, *, style: _Style) -> str:
+    if isinstance(node, Ref):
+        return _segment_text(node.name, quoted=node.quoted, head=True, style=style)
+    return ".".join(_path_segment_text(node, i, style=style) for i in range(len(node.parts)))
 
 
 _P_OR, _P_AND, _P_NOT, _P_CMP, _P_ADD, _P_MUL, _P_UNARY, _P_ATOM = range(1, 9)
@@ -2510,28 +3217,32 @@ def _precedence(node: Any) -> int:
     return _P_ATOM
 
 
-def _operand_text(node: Any, *, minimum: int, legacy: bool) -> str:
+def _operand_text(node: Any, *, minimum: int, style: _Style) -> str:
     """``node``'s canonical text, parenthesised when it binds looser than ``minimum``."""
-    text = _render(node, legacy=legacy)
+    text = _render(node, style=style)
     return f"({text})" if _precedence(node) < minimum else text
 
 
 def canonical_metric_text(parsed: Any) -> str:
-    """Render a ``ParsedExpr`` to canonical functional text that parses back to the same tree."""
-    return _render(parsed, legacy=False)
+    """Render a ``ParsedExpr`` to canonical functional text that parses back to the same tree, quoting included."""
+    return _render(parsed, style=_Style.CANONICAL)
+
+
+def quote_blind_metric_text(parsed: Any) -> str:
+    """The canonical text with written quoting ignored: tells expressions apart before binding. Never parsed."""
+    return _render(parsed, style=_Style.IDENTITY)
 
 
 def legacy_result_name_seed(parsed: Any) -> str:
     """The text result keys are named from: the canonical text in the pre-2.0 aggregation spelling, so keys stay
     stable. Never parsed or shown."""
-    return _render(parsed, legacy=True)
+    return _render(parsed, style=_Style.LEGACY)
 
 
-def _render(parsed: Any, *, legacy: bool) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
-    if isinstance(parsed, Ref):
-        return _identifier_text(parsed.name)
-    if isinstance(parsed, DottedRef):
-        return ".".join(p if p == "*" else _identifier_text(p) for p in parsed.parts)
+def _render(parsed: Any, *, style: _Style) -> str:  # NOSONAR(S3776) — flat per-node-kind rendering table; each branch is one spelling rule.
+    if isinstance(parsed, (Ref, DottedRef)):
+        text = _reference_text(parsed, style=style)
+        return f"AGG({text})" if parsed.evaluated else text
     if isinstance(parsed, StarSource):
         return "*"
     if isinstance(parsed, Literal):
@@ -2543,51 +3254,92 @@ def _render(parsed: Any, *, legacy: bool) -> str:  # NOSONAR(S3776) — flat per
     if isinstance(parsed, (Placeholder, BoundVariable)):
         return f"{{{parsed.name}}}"
     if isinstance(parsed, TupleLit):
-        return f"({', '.join(_render(e, legacy=legacy) for e in parsed.elements)})"
+        return f"({', '.join(_render(e, style=style) for e in parsed.elements)})"
     if isinstance(parsed, ArrayLit):
-        return f"[{', '.join(_render(e, legacy=legacy) for e in parsed.elements)}]"
+        return f"[{', '.join(_render(e, style=style) for e in parsed.elements)}]"
     if isinstance(parsed, AggCall):
-        return _canonical_agg_text(parsed, legacy=legacy)
+        return _canonical_agg_text(parsed, style=style)
     if isinstance(parsed, TransformCall):
-        inner = _argument_text(parsed.input, legacy=legacy)
-        params = _canonical_call_params(parsed.args, parsed.kwargs, bare_direction=True, legacy=legacy)
+        inner = _argument_text(parsed.input, style=style)
+        params = _canonical_call_params(parsed.args, parsed.kwargs, bare_direction=True, style=style)
         return f"{parsed.op}({inner}{', ' + params[1:-1] if params else ''})"
     if isinstance(parsed, ScalarCall):
-        return f"{parsed.name}({', '.join(_render(a, legacy=legacy) for a in parsed.args)})"
+        return f"{parsed.name}({', '.join(_render(a, style=style) for a in parsed.args)})"
     if isinstance(parsed, DateTrunc):
-        return f"date_trunc('{parsed.unit}', {_render(parsed.value, legacy=legacy)})"
+        return f"date_trunc('{parsed.unit}', {_render(parsed.value, style=style)})"
     if isinstance(parsed, NamedArg):
-        return f"{parsed.name}={_canonical_kwarg_text(parsed.value, legacy=legacy)}"
+        return f"{parsed.name}={_canonical_kwarg_text(parsed.value, style=style)}"
     if isinstance(parsed, Cast):
         fn = "TRY_CAST" if parsed.try_ else "CAST"
-        return f"{fn}({_render(parsed.source, legacy=legacy)} AS {parsed.type_text})"
+        return f"{fn}({_render(parsed.source, style=style)} AS {parsed.type_text})"
     if isinstance(parsed, (Arith, Cmp)):
         prec = _precedence(parsed)
-        left = _operand_text(parsed.left, minimum=prec + 1 if isinstance(parsed, Cmp) else prec, legacy=legacy)
-        if not legacy and isinstance(parsed, Cmp) and parsed.op in ("is", "is not") and _is_null(parsed.right):
+        left = _operand_text(parsed.left, minimum=prec + 1 if isinstance(parsed, Cmp) else prec, style=style)
+        if style is not _Style.LEGACY and isinstance(parsed, Cmp) and parsed.op in ("is", _IS_NOT) and _is_null(parsed.right):
             return f"{left} {parsed.op.upper()} NULL"
-        right = _operand_text(parsed.right, minimum=prec + 1, legacy=legacy)
-        return f"{left} {parsed.op if legacy else _CANONICAL_OPS.get(parsed.op, parsed.op)} {right}"
+        right = _operand_text(parsed.right, minimum=prec + 1, style=style)
+        return f"{left} {parsed.op if style is _Style.LEGACY else _CANONICAL_OPS.get(parsed.op, parsed.op)} {right}"
     if isinstance(parsed, UnaryOp):
-        operand = _operand_text(parsed.operand, minimum=_precedence(parsed) + 1, legacy=legacy)
+        operand = _operand_text(parsed.operand, minimum=_precedence(parsed) + 1, style=style)
         return f"not {operand}" if parsed.op == "not" else f"{parsed.op}{operand}"
     if isinstance(parsed, BoolOp):
         prec = _precedence(parsed)
-        return f" {parsed.op} ".join(_operand_text(o, minimum=prec + 1, legacy=legacy) for o in parsed.operands)
+        return f" {parsed.op} ".join(_operand_text(o, minimum=prec + 1, style=style) for o in parsed.operands)
+    if isinstance(parsed, WindowCall):
+        return _window_text(parsed, style=style)
     return str(parsed)
 
 
-def _canonical_agg_text(parsed: AggCall, *, legacy: bool) -> str:
-    source = _render(parsed.source, legacy=legacy)
-    if legacy and isinstance(parsed.source, (Ref, DottedRef, StarSource)):
-        text = f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs, legacy=legacy)}"
+def _window_text(parsed: WindowCall, *, style: _Style) -> str:
+    """``function OVER (PARTITION BY … ORDER BY … frame)``, each order item's NULL placement stated."""
+    head = _window_head_text(parsed.function, style=style)
+    spec: List[str] = []
+    if parsed.partition:
+        spec.append("PARTITION BY " + ", ".join(_render(v, style=style) for v in parsed.partition))
+    if parsed.order:
+        spec.append("ORDER BY " + ", ".join(
+            f"{_render(i.value, style=style)}{' DESC' if i.descending else ''} NULLS {i.nulls.upper()}"
+            for i in parsed.order))
+    if parsed.frame is not None:
+        spec.append(_frame_text(parsed.frame))
+    return f"{head} OVER ({' '.join(spec)})"
+
+
+def _window_head_text(call: ParsedExpr, *, style: _Style) -> str:
+    """The function a window applies, as text."""
+    if not isinstance(call, AggCall):
+        return _render(call, style=style)
+    if call.agg == "percentile":
+        p = call.args[0].value if isinstance(call.args[0], NamedArg) else call.args[0]
+        head = f"PERCENTILE_CONT({_render(p, style=style)}) WITHIN GROUP (ORDER BY {_render(call.source, style=style)})"
+    elif call.agg == "count_distinct":
+        head = f"COUNT(DISTINCT {_render(call.source, style=style)})"
     else:
-        parts = [_argument_text(parsed.source, legacy=legacy)]
-        parts += [_argument_text(a, legacy=legacy) for a in parsed.args]
-        parts += [f"{k}={_canonical_kwarg_text(v, legacy=legacy)}" for k, v in parsed.kwargs]
+        return _canonical_agg_text(call, style=_Style.CANONICAL if style is _Style.LEGACY else style)
+    return head if call.filter is None else f"{head} FILTER (WHERE {_render(call.filter, style=style)})"
+
+
+def _frame_text(frame: WindowFrame) -> str:
+    def bound(b: Tuple[str, Optional[Decimal]]) -> str:
+        kind, offset = b
+        return kind.upper() if offset is None else f"{offset} {kind.upper()}"
+
+    if frame.end is None:
+        return f"{frame.unit.upper()} {bound(frame.start)}"
+    return f"{frame.unit.upper()} BETWEEN {bound(frame.start)} AND {bound(frame.end)}"
+
+
+def _canonical_agg_text(parsed: AggCall, *, style: _Style) -> str:
+    source = _render(parsed.source, style=style)
+    if style is _Style.LEGACY and isinstance(parsed.source, (Ref, DottedRef, StarSource)):
+        text = f"{source}:{parsed.agg}{_canonical_call_params(parsed.args, parsed.kwargs, style=style)}"
+    else:
+        parts = [_argument_text(parsed.source, style=style)]
+        parts += [_argument_text(a, style=style) for a in parsed.args]
+        parts += [f"{k}={_canonical_kwarg_text(v, style=style)}" for k, v in parsed.kwargs]
         text = f"{parsed.agg}({', '.join(parts)})"
     if parsed.filter is not None:
-        text += f" FILTER (WHERE {_render(parsed.filter, legacy=legacy)})"
+        text += f" FILTER (WHERE {_render(parsed.filter, style=style)})"
     return text
 
 
@@ -2670,17 +3422,161 @@ def rewrite_colon_spans(text: str, *, units: Optional[frozenset[str]] = None) ->
         _STATE.reset(text)
         _STATE.spans = []
         try:
-            _EXPRESSION.parse_string(_mask_placeholders(text), parse_all=True)
+            _parse_tree(text)
             spans = _STATE.spans
-        except _Problem as problem:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {problem.detail}") from None
-        except pp.ParseBaseException as e:
-            raise ValueError(f"Invalid Mode-B expression {text!r}: {_syntax_message(text, e)}") from None
         finally:
             _STATE.spans = None
     picked = [s for s in spans if units is None or (s.args is None and s.name.casefold() in units)]
     unique = sorted({(s.start, s.end): s for s in picked}.values(), key=lambda s: (s.start, -s.end))
     return _rewritten(text, spans=unique, start=0, end=len(text), units=units or frozenset())
+
+
+# ---------------------------------------------------------------------------
+# Ossie mapping expressions
+# ---------------------------------------------------------------------------
+
+
+class MappingExpression(BaseModel):
+    """An Ossie mapping expression: a row-level ``value``, kept only for rows where ``predicate`` holds."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    value: Any
+    predicate: Any = None
+
+
+_WHERE_RE = re.compile(r"(?<![\w.$])where(?![\w$])", re.IGNORECASE)
+_ROW_LEVEL_REFUSED = (AggCall, TransformCall, WindowCall, StarSource)
+
+
+def _top_level_where(text: str) -> Optional[re.Match[str]]:
+    """The first ``WHERE`` keyword in ``text``'s code outside every parenthesis."""
+    depth = 0
+    for region in _regions(text):
+        if region.kind != "code":
+            continue
+        cursor = region.start
+        for match in _WHERE_RE.finditer(text, region.start, region.end):
+            chunk = text[cursor:match.start()]
+            depth += chunk.count("(") - chunk.count(")")
+            cursor = match.start()
+            if depth == 0:
+                return match
+        chunk = text[cursor:region.end]
+        depth += chunk.count("(") - chunk.count(")")
+    return None
+
+
+def _closing_paren(text: str, open_at: int) -> int:
+    """The offset of the ``)`` closing the ``(`` at ``open_at``; ``-1`` when unclosed."""
+    depth = 0
+    for region in _regions(text):
+        if region.kind != "code" or region.end <= open_at:
+            continue
+        for i in range(max(region.start, open_at), region.end):
+            depth += (text[i] == "(") - (text[i] == ")")
+            if depth == 0:
+                return i
+    return -1
+
+
+def _row_level(text: str, *, part: str) -> ParsedExpr:
+    parsed = parse_expr(text)
+    for node in walk_parsed(parsed):
+        if isinstance(node, _ROW_LEVEL_REFUSED):
+            kind = "a window" if isinstance(node, WindowCall) else "an aggregate or a transform"
+            raise ValueError(f"Mapping expression {part} {text!r} uses {kind}; a mapping expression is row-level.")
+    return parsed
+
+
+def parse_mapping_expression(text: str) -> MappingExpression:
+    """Read ``<value>`` or ``<value> WHERE ( <predicate> )``, each a row-level expression; raises ``ValueError``."""
+    where = _top_level_where(text)
+    if where is None:
+        return MappingExpression(value=_row_level(text, part="value"))
+    value, rest = text[:where.start()], text[where.end():]
+    opening = len(rest) - len(rest.lstrip())
+    if not rest.strip().startswith("("):
+        raise ValueError(f"Mapping expression {text!r}: the predicate after WHERE is written in parentheses.")
+    close = _closing_paren(rest, opening)
+    if close < 0:
+        raise ValueError(f"Mapping expression {text!r}: the predicate's parenthesis is not closed.")
+    if rest[close + 1:].strip():
+        raise ValueError(f"Mapping expression {text!r}: nothing may follow the parenthesised predicate.")
+    if not value.strip():
+        raise ValueError(f"Mapping expression {text!r}: there is no value before WHERE.")
+    return MappingExpression(value=_row_level(value, part="value"),
+                             predicate=_row_level(rest[opening + 1:close], part="predicate"))
+
+
+class MappedValue(BaseModel):
+    """A mapping expression in canonical text: its ``value`` and ``predicate`` (``None`` without ``WHERE``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    value: str
+    predicate: Optional[str] = None
+
+    def conditions(self) -> List[str]:
+        """The Mode-B conditions keeping the rows where the value is mapped: a non-NULL value under the predicate."""
+        return [f"({self.value}) IS NOT NULL", *([f"({self.predicate})"] if self.predicate else [])]
+
+
+def mapped_value(text: str) -> MappedValue:
+    """Mapping expression ``text`` in canonical Mode B; raises ``ValueError`` when it does not read."""
+    parsed = parse_mapping_expression(text)
+    predicate = canonical_metric_text(parsed.predicate) if parsed.predicate is not None else None
+    return MappedValue(value=canonical_metric_text(parsed.value), predicate=predicate)
+
+
+#: The comparison operators of Ossie's plain Layer 1 constraint subset.
+_PLAIN_COMPARISONS = frozenset({"==", "!=", "<", "<=", ">", ">=", "in", _NOT_IN})
+
+
+class RequiresReading(BaseModel):
+    """One Ossie ``requires`` entry: ``plain`` (one bare variable, literals, comparisons, AND/OR/NOT, IN; ``tree``
+    and ``variable`` set), ``path`` (one dotted path, ``path`` set) or ``other``."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    kind: str
+    variable: Optional[str] = None
+    path: Tuple[str, ...] = ()
+    tree: Any = None
+
+
+def _plain_node(node: Any) -> bool:
+    if isinstance(node, (Ref, Literal, TupleLit, BoolOp)):
+        return True
+    if isinstance(node, Cmp):
+        return node.op in _PLAIN_COMPARISONS
+    if isinstance(node, UnaryOp):
+        return node.op == "not" or (node.op == "-" and isinstance(node.operand, Literal))
+    return False
+
+
+def read_requires(text: str) -> RequiresReading:
+    """Classify an Ossie ``requires`` entry by the forms SLayer checks."""
+    try:
+        tree = parse_expr(text)
+    except ValueError:
+        return RequiresReading(kind="other")
+    if isinstance(tree, DottedRef) and len(tree.parts) == 2 and not tree.evaluated:
+        return RequiresReading(kind="path", path=tree.parts)
+    nodes = list(walk_parsed(tree))
+    names = {n.name for n in nodes if isinstance(n, Ref)}
+    if len(names) == 1 and all(_plain_node(n) for n in nodes) and not any(
+            isinstance(n, Ref) and (n.quoted or n.evaluated) for n in nodes):
+        return RequiresReading(kind="plain", variable=next(iter(names)), tree=tree)
+    return RequiresReading(kind="other")
+
+
+def requires_violation(constraint: str, *, variable: str, expression: str) -> List[str]:
+    """The Mode-B filter conditions keeping the rows where mapping ``expression`` maps a value violating plain
+    ``constraint`` over ``variable``: a non-NULL value under the mapping's predicate, the constraint false."""
+    mapped = mapped_value(expression)
+    respelled = respell_bare_names(constraint, respell=lambda name: f"({mapped.value})" if name == variable else None)
+    return [*mapped.conditions(), canonical_metric_text(parse_expr(f"NOT ({respelled})"))]
 
 
 def _rewritten(text: str, *, spans: List[_ColonSpan], start: int, end: int, units: frozenset[str]) -> str:
@@ -2703,12 +3599,14 @@ def _rewritten(text: str, *, spans: List[_ColonSpan], start: int, end: int, unit
 __all__ = [
     "AggCall", "ArrayLit", "Arith", "BoolOp", "CallSource", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr",
     "BoundVariable", "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
-    "CallSpan", "DateTrunc", "NamedArg", "DATE_TRUNC_FORM", "call_spans", "legacy_spans",
+    "CallSpan", "DateTrunc", "MappingExpression", "NamedArg", "DATE_TRUNC_FORM", "call_spans", "legacy_spans",
+    "parse_mapping_expression", "MappedValue", "mapped_value", "RequiresReading", "read_requires", "requires_violation",
     "aggregation_reading", "bind_variables", "call_keywords", "call_source", "canonical_metric_text",
     "classify_arguments", "colon_twin", "comparison_hint",
     "bare_literal_text", "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",
     "legacy_result_name_seed", "map_refs", "metric_dependency_problems", "metric_text_at_path", "onto_path",
+    "quote_blind_metric_text",
     "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths",
     "rewrite_colon_spans", "root_relative", "split_entity_agg_ref", "StringLiteralSpan", "string_literal_spans",
-    "text_paths", "value_text", "variable_names", "walk_parsed", "walk_parsed_refs",
+    "text_paths", "unknown_call_hint", "value_text", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]

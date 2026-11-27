@@ -183,7 +183,7 @@ def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> DateVariab
     dated = {n: v.strip() for n, v in variables.items() if isinstance(v, str) and is_date_only(v)}
     roots = [query.population] if isinstance(query.population, str) else []
     texts = [*((t, None) for t in _texts(query)),
-             *((m.expression, e.dataset) for e in query.extensions or [] for m in e.metrics or [])]
+             *((m.text, e.dataset) for e in query.extensions or [] for m in e.metrics or [])]
     out: DateVariables = {}
     for text, owner in texts:
         for name in (n for n in variable_names(text) if n in dated):
@@ -220,11 +220,12 @@ def _variable_slots(
 
 
 def _mode_a_surfaces(dataset: SlayerDataset) -> list:
-    return [dataset.sql, *(dataset.filters or []), *(t for c in dataset.fields for t in (c.sql, c.filter))]
+    fields = [t for c in dataset.fields for t in (*c.native_texts, c.definition_sql if c.resolved else None, c.filter)]
+    return [dataset.sql, *(dataset.filters or []), *fields]
 
 
 def _metric_needs_pass(metric: DatasetMetric) -> bool:
-    return has_bindings(metric.expression)
+    return has_bindings(metric.text)
 
 
 def dataset_needs_substitution_pass(dataset: SlayerDataset) -> bool:
@@ -239,7 +240,7 @@ def dataset_needs_substitution_pass(dataset: SlayerDataset) -> bool:
 
 def dataset_placeholder_names(dataset: SlayerDataset) -> set:
     """Every ``{var}`` a dataset's Mode-A surfaces and saved metric expressions read."""
-    out: set = {name for m in dataset.metrics for name in variable_names(m.expression)}
+    out: set = {name for m in dataset.metrics for name in variable_names(m.text)}
     for text in _mode_a_surfaces(dataset):
         if text:
             bare, blocked = extract_variable_refs(text)
@@ -265,7 +266,7 @@ def substitute_dataset_sql_surfaces(
     def _sub(text: str, field: str) -> str:
         return bind_mode_a(text, variables, field=field)
 
-    update: Dict[str, Any] = {"fields": _substituted_fields(dataset.fields, _sub)}
+    update: Dict[str, Any] = {"fields": _substituted_fields(dataset.fields, _sub, variables)}
     if dataset.sql is not None:
         update["sql"] = _sub(dataset.sql, f"Dataset {dataset.name!r} sql")
     if dataset.filters:
@@ -275,21 +276,40 @@ def substitute_dataset_sql_surfaces(
     return dataset.model_copy(update=update)
 
 
-def _substituted_fields(fields: List[DatasetField], sub: Callable[[str, str], str]) -> List[DatasetField]:
+def _substituted_expression(col: DatasetField, sub: Callable[[str, str], str], variables: Dict[str, Any]) -> Any:
+    """``col``'s expression with portable text bound as Mode B and each dialect entry as native SQL."""
+    expression = col.expression
+    label = f"Field {col.name!r} expression"
+    if isinstance(expression, str):
+        return bind_variables(expression, variables) if has_bindings(expression) else expression
+    if expression is None:
+        return None
+    sql = bind_variables(expression.sql, variables) if expression.sql and has_bindings(expression.sql) else expression.sql
+    entries = [e.model_copy(update={"expression": sub(e.expression, label)}) for e in expression.dialects or []]
+    return expression.model_copy(update={"sql": sql, "dialects": entries or expression.dialects})
+
+
+def _substituted_fields(
+    fields: List[DatasetField], sub: Callable[[str, str], str], variables: Dict[str, Any],
+) -> List[DatasetField]:
     out = []
     for col in fields:
-        updates: Dict[str, Any] = {}
+        updates: Dict[str, Any] = {"expression": _substituted_expression(col, sub, variables)}
         if col.sql is not None:
             updates["sql"] = sub(col.sql, f"Field {col.name!r} sql")
         if col.filter is not None:
             updates["filter"] = sub(col.filter, f"Field {col.name!r} filter")
-        out.append(col.model_copy(update=updates) if updates else col)
+        copy = col.model_copy(update=updates)
+        native = col.definition_sql if col.resolved else None
+        out.append(copy.with_native(sub(native, f"Field {col.name!r} expression"), windowed=col.windowed,
+                                    states_nulls=col.states_nulls)
+                   if native is not None else copy)
     return out
 
 
 def _substituted_metrics(metrics: List[DatasetMetric], variables: Dict[str, Any]) -> List[DatasetMetric]:
     return [
-        m.substituted(bind_variables(m.expression, variables), variables=variables) if _metric_needs_pass(m) else m
+        m.substituted(bind_variables(m.text, variables), variables=variables) if _metric_needs_pass(m) else m
         for m in metrics
     ]
 

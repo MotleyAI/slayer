@@ -208,7 +208,7 @@ class TestSourceQueriesRealizesOracle:
     async def test_source_queries_matches_headline_oracle(self, engine: SlayerQueryEngine):
         resp = await engine.execute("avg_city_total_by_region")
         region_col = next(c for c in resp.columns if c.endswith(".region"))
-        acr_col = next(c for c in resp.columns if c.endswith(".acr"))
+        acr_col = next(c for c in resp.columns if c == "acr" or c.endswith(".acr"))
         rows = [row for row in resp.data if row[acr_col] is not None]
         # One row per region — duplicates must not hide behind the dict build.
         assert sorted(row[region_col] for row in rows) == sorted(

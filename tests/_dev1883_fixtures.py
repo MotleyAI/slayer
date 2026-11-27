@@ -1,4 +1,4 @@
-"""Shared fixtures for the DEV-1883 functional time-granularity tests."""
+"""Shared fixtures for the functional time-granularity tests."""
 from slayer.storage.sqlite_conn import transaction
 from typing import Any
 
@@ -20,7 +20,7 @@ def td(**kw: Any) -> TimeDimension:
 
 
 def dataset(**kw: Any) -> SlayerDataset:
-    """Build a ``SlayerModel`` from shorthand kwargs (dict columns/aggregations coerced by validators)."""
+    """Build a ``SlayerDataset`` from shorthand kwargs (dict fields/aggregations coerced by validators)."""
     return SlayerDataset(**kw)
 
 # Orders span three month buckets across two years so month vs year bucketing
@@ -31,26 +31,26 @@ ORDER_ROWS = [
     (3, 101, "open", "2024-02-20", 20.0),
     (4, 101, "open", "2025-03-01", 5.0),
 ]
-MONTH_SUMS = {"2024-01-01": 10.0, "2024-02-01": 60.0, "2025-03-01": 5.0}
+MONTH_SUMS = {"2024-01-01 00:00:00": 10.0, "2024-02-01 00:00:00": 60.0, "2025-03-01 00:00:00": 5.0}
 
 
 async def save_datasets(storage: YAMLStorage) -> None:
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     ))

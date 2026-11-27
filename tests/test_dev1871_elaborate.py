@@ -1,4 +1,4 @@
-"""DEV-1871 — the one elaboration pass and its typing environment (design D2).
+"""The one elaboration pass and its typing environment (design D2).
 
 ``elaborate_query`` gives every top-level expression a position verdict, home
 dataset, resolved grain, and Broadcast insertions at grain-union points, and
@@ -56,10 +56,10 @@ class TestTypingEnvironment:
     def test_every_position_gets_a_verdict(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
-            "filter": ["status = 'ok'", "sum(amount) > 5"],
-            "order": [{"field": "status", "direction": "asc"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+            "filter": ["orders.status = 'ok'", "sum(orders.amount) > 5"],
+            "order": [{"field": "orders.status", "direction": "asc"}],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
         assert isinstance(elab, ElaboratedQuery)
@@ -71,8 +71,8 @@ class TestTypingEnvironment:
     def test_measure_entry_home_and_resolved_grain(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
         entry = elab.metrics[0]
@@ -80,12 +80,12 @@ class TestTypingEnvironment:
         assert entry.grain == Grain.of({_STATUS})
 
     def test_aggregate_terms_memoized_by_key_identity(self) -> None:
-        """The same aggregate in measure and filter position is one term."""
+        """The same aggregate in metric and filter position is one term."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
-            "filter": ["sum(amount) > 5"],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+            "filter": ["sum(orders.amount) > 5"],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
         agg_keys = [k for k in elab.terms if isinstance(k, AggregateKey)]
@@ -101,11 +101,11 @@ class TestTypingEnvironment:
         query = SlayerQuery(
             population="orders",
             dimensions=[
-                "status",
+                "orders.status",
                 QueryDimension(
                     field=(
-                        "sum(amount, partition_by=status)"
-                        " + sum(amount, partition_by=tier)"
+                        "sum(orders.amount, partition_by=orders.status)"
+                        " + sum(orders.amount, partition_by=orders.tier)"
                     ),
                     alias="mix",
                 ),
@@ -131,10 +131,10 @@ class TestEntryEquivalence:
         """D9 stage 2: binding is a sub-phase, so both doors agree."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
-            "filter": ["sum(amount) > 5"],
-            "order": [{"field": "status", "direction": "asc"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+            "filter": ["sum(orders.amount) > 5"],
+            "order": [{"field": "orders.status", "direction": "asc"}],
         })
         bundle = _bundle()
         raw = elaborate_query(query=query, bundle=bundle)
@@ -149,8 +149,8 @@ class TestCompileSeam:
     def test_compile_of_elaborated_matches_plan_query(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         planned = plan_query(query=query, bundle=_bundle())
         compiled = compile_query(

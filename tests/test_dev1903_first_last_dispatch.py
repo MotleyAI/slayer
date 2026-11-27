@@ -1,6 +1,5 @@
-"""``first`` / ``last`` parse to one ``AggCall`` and dispatch at bind by the bound
-operand's type: attached operand → the series transform, row-grain operand → the
-ranked aggregation.
+"""``first`` / ``last`` parse to one ``AggCall`` and always bind as ranked aggregations:
+an attached operand ranks the operand's cells, a row-grain operand its home's rows.
 
 Spec: openspec …/specs/aggregations/functional-form — "Ambiguous first and last
 names dispatch by argument shape".
@@ -8,12 +7,10 @@ names dispatch by argument shape".
 
 from __future__ import annotations
 
-import re
-
 import pytest
-from pydantic import BaseModel
 
-from slayer.core.keys import AggregateKey, FieldKey, TransformKey
+from slayer.core.errors import TimeAxisError
+from slayer.core.keys import AggregateKey, FieldKey, walk_value_keys
 from slayer.core.models import DatasetMetric
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
@@ -68,33 +65,14 @@ def _metric_key(expression: str, **kw):
     return env.prebound.declared_metrics[-1].bound.value_key
 
 
-_OP_TOKEN = re.compile(r"(?<=Transform ')(first|last|cumsum)(?=')")
-
-
-def _aligned(a, b, *, fn: str) -> bool:
-    """``a == b`` except a ``fn`` transform may stand where ``b`` has ``cumsum``."""
-    if isinstance(a, BaseModel):
-        return type(a) is type(b) and all(
-            (isinstance(a, TransformKey) and f == "op" and (a.op, b.op) == (fn, "cumsum"))
-            or _aligned(getattr(a, f), getattr(b, f), fn=fn)
-            for f in type(a).model_fields
-        )
-    if isinstance(a, tuple):
-        return type(a) is type(b) and len(a) == len(b) and all(
-            _aligned(x, y, fn=fn) for x, y in zip(a, b))
-    return type(a) is type(b) and a == b
-
-
-def _msg_aligned(a: str, b: str, *, fn: str) -> bool:
-    """``a == b`` except ``fn`` may stand in a ``Transform '…'`` label where ``b`` names ``cumsum``."""
-    sa, sb = _OP_TOKEN.split(a), _OP_TOKEN.split(b)
-    return len(sa) == len(sb) and all(
-        x == y or (i % 2 == 1 and (x, y) == (fn, "cumsum"))
-        for i, (x, y) in enumerate(zip(sa, sb)))
+def _ranked(roots, *, fn: str) -> list[AggregateKey]:
+    """Every ranked ``fn`` aggregate under ``roots``."""
+    return [k for root in roots for k in walk_value_keys(root)
+            if isinstance(k, AggregateKey) and k.agg == fn]
 
 
 def _outcome(query: SlayerQuery):
-    """``("ok", bound measure / filter / order roots)`` or ``("err", exception)``."""
+    """``("ok", bound metric / filter / order roots)`` or ``("err", exception)``."""
     try:
         env = elaborate_query(query=query, bundle=_bundle())
         plan_query(query=query, bundle=_bundle())
@@ -111,7 +89,7 @@ def _outcome(query: SlayerQuery):
 class TestParseIsOneNode:
     @pytest.mark.parametrize("fn", ["first", "last"])
     @pytest.mark.parametrize("arg", [
-        "revenue", "1", "sum(revenue)", "sum(revenue) + 1",
+        "revenue", "1", "sum(sales.revenue)", "sum(revenue) + 1",
         "sum(revenue) > 100", "cumsum(weight)", "rev", "rev * 2",
         "qty * avg(revenue, partition_by=store)",
     ])
@@ -122,7 +100,7 @@ class TestParseIsOneNode:
 
     def test_aggregated_operand_is_not_decided_in_the_parser(self):
         """engine P2: the parser makes no grain decision."""
-        parsed = parse_expr("first(sum(revenue))")
+        parsed = parse_expr("first(sum(sales.revenue))")
         assert isinstance(parsed, AggCall)
         assert isinstance(parsed.source, AggCall)
 
@@ -133,27 +111,27 @@ class TestParseIsOneNode:
 
 class TestBindDispatch:
     @pytest.mark.parametrize("formula", [
-        "first(sum(revenue))", "last(sum(revenue))", "first(sum(revenue) + 1)",
-        "first(sum(revenue) > 100)",
+        "first(sum(sales.revenue))", "last(sum(sales.revenue))", "first(sum(sales.revenue) + 1)",
+        "first(sum(sales.revenue) > 100)",
     ])
-    def test_aggregated_operand_binds_to_transform(self, formula):
+    def test_aggregated_operand_binds_to_second_order_ranked_aggregate(self, formula):
         key = _metric_key(formula)
-        assert isinstance(key, TransformKey), key
-        assert key.op == formula.split("(")[0]
+        assert isinstance(key, AggregateKey), key
+        assert key.agg == formula.split("(")[0]
 
     @pytest.mark.parametrize("formula, ranking", [
-        ("last(revenue)", None), ("last(revenue, ordered_at)", "ordered_at"),
+        ("last(sales.revenue)", None), ("last(sales.revenue, sales.ordered_at)", "sales.ordered_at"),
     ])
     def test_row_operand_binds_to_ranked_aggregate(self, formula, ranking):
         key = _metric_key(formula)
         assert isinstance(key, AggregateKey), key
         assert key.agg == "last"
         assert key == _metric_key(
-            "last(revenue)" if ranking is None else f"last(revenue, {ranking})",
+            "last(sales.revenue)" if ranking is None else f"last(sales.revenue, {ranking})",
         )
 
     @pytest.mark.parametrize("formula, kw", [
-        ("first(qty * avg(revenue, partition_by=store))", {"dimensions": ["store"]}),
+        ("first(sales.qty * avg(sales.revenue, partition_by=sales.store))", {"dimensions": ["sales.store"]}),
         ("first(1)", {}),
     ])
     def test_row_grain_expression_binds_to_ranked_aggregate(self, formula, kw):
@@ -161,17 +139,19 @@ class TestBindDispatch:
         assert isinstance(key, AggregateKey), key
         assert key.agg == "first"
 
-    def test_transform_kwarg_error(self):
-        with pytest.raises(
-            ValueError,
-            match="Transform 'first' does not accept keyword argument 'partition_by'",
-        ):
-            _metric_key("first(sum(revenue), partition_by=store)")
+    def test_partition_by_on_an_aggregate_operand_binds(self):
+        key = _metric_key("first(sum(sales.revenue), partition_by=sales.store)",
+                          dimensions=["sales.store"])
+        assert isinstance(key, AggregateKey), key
+        assert key.agg == "first"
+        assert key.partition_keys is not None
+        assert {k.leaf for k in key.partition_keys.keys if isinstance(k, FieldKey)} == {"store"}
+        assert len(key.partition_keys.keys) == 1
 
     def test_transform_operand_reaches_the_checker(self):
         """Dispatch does not pre-empt transform-input validation."""
         with pytest.raises(ValueError) as ei:
-            _metric_key("first(cumsum(weight))")
+            _metric_key("first(cumsum(sales.weight))")
         msg = str(ei.value)
         assert "The transform cannot consume the row-level" in msg, msg
         assert "\n  at transform 'cumsum'\n" in msg, msg
@@ -180,18 +160,18 @@ class TestBindDispatch:
 
 class TestSavedMeasureOperand:
     @pytest.mark.parametrize("saved, inline", [
-        ("first(rev)", "first(sum(revenue))"),
-        ("first(rev * 2)", "first(sum(revenue) * 2)"),
-        ("last(rev)", "last(sum(revenue))"),
+        ("first(sales.rev)", "first(sum(sales.revenue))"),
+        ("first(sales.rev * 2)", "first(sum(sales.revenue) * 2)"),
+        ("last(sales.rev)", "last(sum(sales.revenue))"),
     ])
-    def test_binds_to_the_inline_transform(self, saved, inline):
+    def test_binds_to_the_inline_aggregation(self, saved, inline):
         key = _metric_key(saved)
-        assert isinstance(key, TransformKey), key
+        assert isinstance(key, AggregateKey), key
         assert key == _metric_key(inline)
 
     @pytest.mark.parametrize("saved, inline", [
-        ("first(rev)", "first(sum(revenue))"),
-        ("first(rev * 2)", "first(sum(revenue) * 2)"),
+        ("first(sales.rev)", "first(sum(sales.revenue))"),
+        ("first(sales.rev * 2)", "first(sum(sales.revenue) * 2)"),
     ])
     def test_plans_identically(self, saved, inline):
         def plan(formula):
@@ -214,8 +194,8 @@ async def exec_engine(request):
 
 class TestSavedMeasureExecution:
     @pytest.mark.parametrize("saved, inline", [
-        ("first(rev)", "first(sum(revenue))"),
-        ("first(rev * 2)", "first(sum(revenue) * 2)"),
+        ("first(sales.rev)", "first(sum(sales.revenue))"),
+        ("first(sales.rev * 2)", "first(sum(sales.revenue) * 2)"),
     ])
     async def test_values_match_inline(self, exec_engine: SlayerQueryEngine, saved, inline):
         got = await exec_engine.execute(
@@ -229,50 +209,48 @@ class TestSavedMeasureExecution:
 
 #: operand shape id -> query kwargs for ``fn(X)``.
 PARITY = {
-    "local_saved": lambda fn: {"metrics": [QueryMetric(metric=f"{fn}(rev)", alias="m")]},
+    "local_saved": lambda fn: {"metrics": [QueryMetric(metric=f"{fn}(sales.rev)", alias="m")]},
     "dotted_cross_model_saved": lambda fn: {
         "metrics": [QueryMetric(metric=f"{fn}(regions.tf)", alias="m")]},
     "saved_transform": lambda fn: {
-        "metrics": [QueryMetric(metric=f"{fn}(cum_rev)", alias="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(sales.cum_rev)", alias="m")]},
     "saved_composite": lambda fn: {
-        "metrics": [QueryMetric(metric=f"{fn}(rev2)", alias="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(sales.rev2)", alias="m")]},
     "recursive_saved": lambda fn: {
-        "metrics": [QueryMetric(metric=f"{fn}(rev_twice)", alias="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(sales.rev_twice)", alias="m")]},
     "alias_in_filter": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(revenue)", alias="r")],
+        "metrics": [QueryMetric(metric="sum(sales.revenue)", alias="r")],
         "filter": [f"{fn}(r) > 0"]},
     "alias_in_order": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(revenue)", alias="r")],
+        "metrics": [QueryMetric(metric="sum(sales.revenue)", alias="r")],
         "order": [{"field": f"{fn}(r)", "direction": "desc"}]},
     "unselected_saved_in_filter": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(qty)", alias="q")],
-        "filter": [f"{fn}(rev) > 0"]},
+        "metrics": [QueryMetric(metric="sum(sales.qty)", alias="q")],
+        "filter": [f"{fn}(sales.rev) > 0"]},
     "unselected_saved_in_order": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(qty)", alias="q")],
-        "order": [{"field": f"{fn}(rev)", "direction": "desc"}]},
+        "metrics": [QueryMetric(metric="sum(sales.qty)", alias="q")],
+        "order": [{"field": f"{fn}(sales.rev)", "direction": "desc"}]},
     "sibling_wrappers": lambda fn: {
-        "metrics": [QueryMetric(metric="sum(revenue)", alias="r"),
-                     QueryMetric(metric="sum(qty)", alias="s")],
+        "metrics": [QueryMetric(metric="sum(sales.revenue)", alias="r"),
+                     QueryMetric(metric="sum(sales.qty)", alias="s")],
         "filter": [f"{fn}(r) + {fn}(s) > 0"]},
-    "wrapper_of_wrapper": lambda fn: {
-        "metrics": [QueryMetric(metric=f"{fn}({fn}(sum(revenue)))", alias="m")]},
     "wrapper_beside_cumsum": lambda fn: {
         "metrics": [QueryMetric(
-            metric=f"{fn}(sum(revenue)) * 2 + {fn}(sum(revenue)) + cumsum(sum(qty))",
+            metric=f"{fn}(sum(sales.revenue)) * 2 + {fn}(sum(sales.revenue)) + cumsum(sum(sales.qty))",
             alias="m")]},
     "partitioned_operand": lambda fn: {
-        "dimensions": ["store"],
-        "metrics": [QueryMetric(metric=f"{fn}(sum(revenue, partition_by=store))", alias="m")]},
+        "dimensions": ["sales.store"],
+        "metrics": [QueryMetric(metric=f"{fn}(sum(sales.revenue, partition_by=sales.store))", alias="m")]},
     "cross_model_composite": lambda fn: {
-        "metrics": [QueryMetric(metric=f"{fn}(regions.tf * 2 + rev)", alias="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(regions.tf * 2 + sales.rev)", alias="m")]},
     "inner_cumsum_error": lambda fn: {
-        "metrics": [QueryMetric(metric=f"{fn}(cumsum(weight))", alias="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(cumsum(sales.weight))", alias="m")]},
 }
 
 
 class TestCumsumParity:
-    """``first(X)`` binds to the transform exactly when ``cumsum(X)`` binds, and
-    raises the same error when it raises."""
+    """``first(X)`` binds exactly when ``cumsum(X)`` binds, to a ranked aggregation, and
+    raises the same error type when it raises."""
 
     @pytest.mark.parametrize("fn", ["first", "last"])
     @pytest.mark.parametrize("shape", list(PARITY))
@@ -282,19 +260,12 @@ class TestCumsumParity:
         assert kind == want_kind, (got, want)
         if kind == "err":
             assert type(got) is type(want), (got, want)
-            assert _msg_aligned(str(got), str(want), fn=fn), (got, want)
         else:
-            assert _aligned(got, want, fn=fn), (got, want)
+            assert _ranked(got, fn=fn), got
 
-    def test_oracle_renames_only_aligned_wrappers(self):
-        x = AggregateKey(agg="sum", source=FieldKey(leaf="revenue"))
-        cum = TransformKey(op="cumsum", input=x)
-        assert _aligned(TransformKey(op="first", input=cum),
-                        TransformKey(op="cumsum", input=cum), fn="first")
-        assert not _aligned(TransformKey(op="first", input=cum),
-                            TransformKey(op="first", input=cum.model_copy(update={"op": "first"})),
-                            fn="first")
-        assert not _aligned(TransformKey(op="last", input=x), cum, fn="first")
-        assert _msg_aligned("Transform 'first' vs 'cumsum'", "Transform 'cumsum' vs 'cumsum'", fn="first")
-        assert not _msg_aligned("in 'first(r)'", "in 'cumsum(r)'", fn="first")
-        assert not _msg_aligned("Transform 'cumsum'", "Transform 'first'", fn="first")
+    @pytest.mark.parametrize("fn", ["first", "last"])
+    def test_wrapper_of_wrapper_lacks_the_time_bucket(self, fn):
+        """The inner pick drops the month bucket, so the outer one has no default key."""
+        kind, got = _outcome(_q(metrics=[QueryMetric(metric=f"{fn}({fn}(sum(sales.revenue)))", alias="m")]))
+        assert kind == "err", got
+        assert isinstance(got, TimeAxisError), got

@@ -100,7 +100,7 @@ def statements() -> list[str]:
 
 
 
-SAVED_MEASURES: dict[str, list[DatasetMetric]] = {
+SAVED_METRICS: dict[str, list[DatasetMetric]] = {
     "orders": [DatasetMetric(name="revenue_total", expression="sum(revenue)")],
     "things": [DatasetMetric(name="uids", expression="collect(uid)"), DatasetMetric(name="prices", expression="collect(price)")],
 }
@@ -120,7 +120,7 @@ class FacadeStore(BaseModel):
 
 
 async def build_store(base: Path, *, extra: Iterable[str] = ()) -> FacadeStore:
-    """Seed DuckDB (then ``extra``) and ingest every table, plus ``SAVED_MEASURES``; ``things`` reaches ``parts``
+    """Seed DuckDB (then ``extra``) and ingest every table, plus ``SAVED_METRICS``; ``things`` reaches ``parts``
     through the reversed ``parts`` edge."""
     db = str(base / "dev2172.duckdb")
     seed_contractors("duckdb", db, extra=[*statements(), *extra])
@@ -130,8 +130,8 @@ async def build_store(base: Path, *, extra: Iterable[str] = ()) -> FacadeStore:
     async with owned_query_engine(storage=storage) as ingester:
         models = await ingester.ingest(ds)
     for model in models:
-        if model.name in SAVED_MEASURES:
-            model = model.model_copy(update={"metrics": SAVED_MEASURES[model.name]})
+        if model.name in SAVED_METRICS:
+            model = model.model_copy(update={"metrics": SAVED_METRICS[model.name]})
         await storage.save_dataset(model)
     return FacadeStore(storage=storage, datasource=ds)
 
@@ -241,7 +241,7 @@ def flight_query(port: int, sql: str) -> pa.Table:
 
 async def mcp_text(server: Any, query: Any, *, fmt: str) -> str:
     """One MCP ``query`` tool call's text output."""
-    blocks, _ = await server.call_tool(name="query", arguments={"query": query, "format": fmt})
+    blocks = (await server.call_tool(name="query", arguments={"query": query, "format": fmt})).content
     return blocks[0].text
 
 

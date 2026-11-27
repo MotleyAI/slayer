@@ -1,4 +1,4 @@
-"""Cardinality/unique surfacing in inspect, search graph, edit_model — not in embeddings."""
+"""Cardinality/unique surfacing in inspect, search graph, edit_dataset — not in embeddings."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ def _orders_dataset(*, cardinality: RelationshipCardinality | None, email_unique
         sql_table="orders",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="email", sql="email", datatype=DataType.STRING, unique=email_unique),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="email", expression="email", datatype=DataType.STRING, unique=email_unique),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
@@ -41,7 +41,7 @@ def _customers_dataset() -> SlayerDataset:
         name="customers",
         sql_table="customers",
         data_source="ds",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
 
@@ -109,12 +109,12 @@ class TestModelRender:
             md = await render_dataset_inspection(
                 dataset=model, storage=storage, engine=None, format="markdown"
             )
-            # The columns table gains a `unique` column.
+            # The fields table gains a `unique` column.
             assert "unique" in md.lower()
 
 
 # ---------------------------------------------------------------------------
-# search-graph JOINS edge property
+# search-graph RELATIONSHIPS edge property
 # ---------------------------------------------------------------------------
 
 
@@ -196,8 +196,8 @@ class TestNoEmbeddingChurn:
 
     def test_unique_not_in_column_embedding_text(self) -> None:
         dataset = _orders_dataset(cardinality=None, email_unique=False)
-        plain_col = DatasetField(name="email", sql="email", datatype=DataType.STRING, unique=False)
-        uniq_col = DatasetField(name="email", sql="email", datatype=DataType.STRING, unique=True)
+        plain_col = DatasetField(name="email", expression="email", datatype=DataType.STRING, unique=False)
+        uniq_col = DatasetField(name="email", expression="email", datatype=DataType.STRING, unique=True)
         assert render_field_text(dataset=dataset, field=uniq_col) == render_field_text(
             dataset=dataset, field=plain_col
         )

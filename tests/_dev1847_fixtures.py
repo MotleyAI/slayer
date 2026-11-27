@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1847 — second-order aggregation (re-aggregation).
+"""Shared fixtures for second-order aggregation (re-aggregation).
 
 ``sales`` is denormalized (Alpha appears in North AND South; Gap has a
 NULL-city cell; Void is all-NULL amounts); ``corders``→``customers``→``regions``
@@ -42,12 +42,12 @@ def sales_dataset() -> SlayerDataset:
             DatasetField(name="quantity", datatype=DataType.FLOAT),
             DatasetField(name="unit_price", datatype=DataType.FLOAT),
             # amount restricted to product 'Q' — sparse by design.
-            DatasetField(name="q_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="q_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="product = 'Q'"),
         ],
         aggregations=[
             Aggregation(name="dsum", expression="SUM({value})"),
-            # weight defaults to a COLUMN — outer use must fail closed.
+            # weight defaults to a FIELD — outer use must fail closed.
             Aggregation(name="wavg",
                         expression="SUM({value} * {weight}) / SUM({weight})",
                         params=[AggregationParam(name="weight", sql="amount")]),
@@ -102,13 +102,13 @@ def source_queries_equiv_dataset() -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name="city_region_total", population="sales",
-                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
-                metrics=[QueryMetric(metric="sum(amount)", alias="city_total")],
+                dimensions=[QueryDimension(field="sales.region"), QueryDimension(field="sales.city")],
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="city_total")],
             ),
             SlayerQuery(
                 population="city_region_total",
-                dimensions=[QueryDimension(field="region")],
-                metrics=[QueryMetric(metric="avg(city_total)", alias="acr")],
+                dimensions=[QueryDimension(field="city_region_total.region")],
+                metrics=[QueryMetric(metric="avg(city_region_total.city_total)", alias="acr")],
             ),
         ],
     )
@@ -132,18 +132,18 @@ async def gen(query: SlayerQuery, *, dialect: str = "postgres") -> str:
         dialect=dialect, validate=False)
 
 
-INNER_CR = "sum(amount, partition_by=[city, region])"  # [city, region] grain
-INNER_CITY = "sum(amount, partition_by=city)"          # [city] grain (spans regions)
-INNER_CRP = "sum(amount, partition_by=[city, region, product])"
+INNER_CR = "sum(sales.amount, partition_by=[sales.city, sales.region])"  # [city, region] grain
+INNER_CITY = "sum(sales.amount, partition_by=sales.city)"  # [city] grain (spans regions)
+INNER_CRP = "sum(sales.amount, partition_by=[sales.city, sales.region, sales.product])"
 
 
 def reagg(outer: str, inner: str, *, name: str, **kw) -> QueryMetric:
-    """An ``<outer>(<inner>)`` re-aggregation measure, e.g. reagg('avg', INNER_CR)."""
+    """An ``<outer>(<inner>)`` re-aggregation metric, e.g. reagg('avg', INNER_CR)."""
     extra = "".join(f", {k}={v}" for k, v in kw.items())
     return QueryMetric(metric=f"{outer}({inner}{extra})", alias=name)
 
 
-#: The warning kind DEV-1847 adds for an operand grain == outer grain.
+#: The warning kind for an operand grain == outer grain.
 DEGENERATE_KIND = "degenerate_reaggregation"
 
 
@@ -202,15 +202,15 @@ SHAPE_B_ACR = {
 }
 SHAPE_B_BAND_THRESHOLD = 45.0
 SPEND_BAND_EXPR = (
-    f"CASE WHEN sum(amount, partition_by=[city, region]) > {SHAPE_B_BAND_THRESHOLD} "
+    f"CASE WHEN sum(sales.amount, partition_by=[sales.city, sales.region]) > {SHAPE_B_BAND_THRESHOLD} "
     f"THEN 'hi' ELSE 'lo' END"
 )
 
 
-# --- DEV-1859: mixed row/attached sources over the (quantity, unit_price) widening.
-INNER_UP_PRODUCT = "avg(unit_price, partition_by=product)"
-INNER_UP_CITY = "avg(unit_price, partition_by=city)"
-MIXED_SUM = f"sum(quantity * {INNER_UP_PRODUCT})"
+# --- Mixed row/attached sources over the (quantity, unit_price) widening.
+INNER_UP_PRODUCT = "avg(sales.unit_price, partition_by=sales.product)"
+INNER_UP_CITY = "avg(sales.unit_price, partition_by=sales.city)"
+MIXED_SUM = f"sum(sales.quantity * {INNER_UP_PRODUCT})"
 #: avg(unit_price) by product over all rows (NULL prices ignored): 45/9, 60/4.
 AVG_UP_BY_PRODUCT = {"P": 5.0, "Q": 15.0}
 #: the headline row-weighted oracle; Void rows carry quantity, so Void = 15.
@@ -240,7 +240,7 @@ COUNT_CITY_MIXED_BY_REGION = {"North": 4, "South": 3, "East": 3, "Gap": 3,
 DISTINCT_MIXED_BY_REGION = {"North": 3, "South": 3, "East": 3, "Gap": 3,
                             "Void": 2}
 #: customers-rooted sum(region_id * sum(corders.amount, partition_by=region_id)).
-CROSS_MODEL_MIXED_BY_REGION_ID = {1: 140.0, 2: 200.0}
+CROSS_DATASET_MIXED_BY_REGION_ID = {1: 140.0, 2: 200.0}
 #: wavg(mixed, weight=quantity) = sum(q^2 * avg_p) / sum(q).
 WAVG_MIXED_BY_REGION = {"North": 23.75, "South": 475.0 / 11.0,
                         "East": 55.0 / 3.0, "Gap": 35.0 / 3.0,
@@ -254,7 +254,7 @@ MIXED_BAND_THRESHOLD = 60.0
 #: amount:sum grouped by the mixed band (hi = {North, South}).
 AMOUNT_BY_MIXED_BAND = {"hi": 230.0, "lo": 200.0}
 MIXED_BAND_EXPR = (
-    f"CASE WHEN sum(quantity * {INNER_UP_PRODUCT}, partition_by=region) "
+    f"CASE WHEN sum(sales.quantity * {INNER_UP_PRODUCT}, partition_by=sales.region) "
     f"> {MIXED_BAND_THRESHOLD} THEN 'hi' ELSE 'lo' END"
 )
 
@@ -277,7 +277,7 @@ _SALES_ROWS = [  # (id, region, city, product, amount)
     (14, "Void", "Xi", "P", None),
     (15, "Void", "Xi", "P", None),
 ]
-#: DEV-1859 widening: id -> (quantity, unit_price); Void prices are NULL.
+#: Widening: id -> (quantity, unit_price); Void prices are NULL.
 _SALES_EXTRA = {
     1: (2.0, 4.0), 2: (2.0, 8.0), 3: (3.0, 9.0), 4: (1.0, 15.0),
     5: (4.0, 4.0), 6: (2.0, 5.0), 7: (5.0, 12.0), 8: (3.0, 8.0),
@@ -367,7 +367,7 @@ __all__ = [
     "CITY_MIXED_BY_REGION", "COALESCE_CITY_MIXED_BY_REGION",
     "FILTERED_AVG_UP_BY_PRODUCT", "FILTERED_MIXED_BY_REGION",
     "FILTERED_MIXED_NORTH_WRONG", "COUNT_CITY_MIXED_BY_REGION",
-    "DISTINCT_MIXED_BY_REGION", "CROSS_MODEL_MIXED_BY_REGION_ID",
+    "DISTINCT_MIXED_BY_REGION", "CROSS_DATASET_MIXED_BY_REGION_ID",
     "WAVG_MIXED_BY_REGION", "CORR_MIXED_BY_REGION",
     "MIXED_BAND_THRESHOLD", "AMOUNT_BY_MIXED_BAND", "MIXED_BAND_EXPR",
     "_SALES_ROWS", "_SALES_EXTRA", "_SALES_ROWS_WIDE",

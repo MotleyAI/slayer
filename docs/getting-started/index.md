@@ -1,6 +1,6 @@
 # Getting Started
 
-SLayer is a semantic layer that sits between your database and whatever consumes the data — AI agents, apps, scripts, or dashboards. You define your data model once (or let SLayer auto-generate it), and consumers query using metrics, dimensions, and filters instead of writing SQL.
+SLayer is a semantic layer that sits between your database and whatever consumes the data — AI agents, apps, scripts, or dashboards. You define your datasets once (or let SLayer auto-generate them), and consumers query using metrics, dimensions, and filters instead of writing SQL.
 
 ## Which interface is right for you?
 
@@ -36,8 +36,8 @@ require it, so `pip install motley-slayer` alone gives you a working driver.
 
 After setting up your interface, explore:
 
-- [Terminology](../concepts/terminology.md) — key terms and concepts
-- [Datasets](../concepts/models.md) — define custom dimensions and metrics
+- [Glossary](../concepts/terminology.md) — key terms and concepts
+- [Datasets](../concepts/datasets.md) — define custom dimensions and metrics
 - [Queries](../concepts/queries.md) — query structure and parameters
-- [Expressions](../concepts/formulas.md) — transforms, arithmetic, filters
+- [Expressions](../concepts/expressions.md) — transforms, arithmetic, filters
 - [Examples](../examples/01_dynamic/dynamic.md) — interactive notebooks

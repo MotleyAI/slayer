@@ -2,7 +2,7 @@
 
 ``provably_to_one`` takes the oriented edge: the declared prong uses the
 oriented cardinality (an inverted declared one_to_many proves many_to_one), the structural
-prong checks traversal-target-side columns against that model's unique sets.
+prong checks traversal-target-side fields against that dataset's unique sets.
 ``safe_reachable`` walks any declared edge in either orientation.
 """
 
@@ -14,9 +14,9 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.cardinality.relationship_safety import safe_reachable
 
 
-def _dataset(name, cols, joins=None):
+def _dataset(name, cols, relationships=None):
     return SlayerDataset(name=name, data_source="ds", sql_table=name,
-                       fields=cols, relationships=joins or [])
+                       fields=cols, relationships=relationships or [])
 
 
 def _pair(*, declare, cardinality, customers_id_pk):

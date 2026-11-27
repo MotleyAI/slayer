@@ -9,24 +9,30 @@ The `query` tool takes one of:
 - a list of query objects (stages), the last one returned;
 - the name of a saved query-backed dataset, with `refine` merging extra dimensions,
   metrics, filters, order or limit into its final stage:
-  `query(query="monthly_revenue", refine={"dimensions": ["region"]})`.
+  `query(query="monthly_revenue", refine={"dimensions": ["orders.status"]})`.
 
 ## Stages
 
 Every stage but the last carries a `name`; later stages name it as `population`
-(or join it through an inline extension). A stage name shadows a saved dataset of the
+(or reach it through an inline extension's relationship). A stage name shadows a saved dataset of the
 same name inside its list. Define before you reference: a stage sees only what its
 source defines or an earlier stage returned.
 
-An outer stage sees the inner result's columns. Dotted paths flatten to `__`
-(`customers.regions.name` becomes `customers__regions__name`); metrics keep their names
-(`orders.total` is `total`). Select the columns the outer stage needs, display names
-included, in the inner stage.
+An outer stage reads the inner result's columns through the stage's name:
+`running.<column>`. A column is the inner key without the inner population, dotted
+paths flattened to `__` (in a stage over `orders`, `customers.regions.name` is
+`running.customers__regions__name` and `orders.status` is `running.status`); an alias is
+its own name. Select the columns the outer stage needs, display names included, in the
+inner stage. A stage keeps the relationships of the keys it outputs unchanged: grouped
+by `orders.customer_id`, a later stage reads `customers.region` with no relationship
+declared.
 
 ## Rows
 
 A query with dimensions only returns distinct combinations; set
-`distinct_dimension_values: false` for raw rows (no metrics allowed). Without a
+`distinct_dimension_values: false` for raw rows (no metrics allowed; a dimension the population
+reaches over a fanning hop, or one with neither a declared cardinality nor a covering unique key,
+raises `DistinctDimensionValuesError`). Without a
 `limit`, the MCP response stops at 20 rows with a notice; for a longer list set a
 `limit` that covers it. Use `limit` for top N, never to cut a list asked for in full.
 
@@ -34,7 +40,8 @@ A query with dimensions only returns distinct combinations; set
 
 Conditions and expressions take one portable library with the same meaning on every
 database that translates it (others refuse the function at plan time): strings (`left`, `split_part`, `concat_ws`, ...), math (`div`, `atan2`, ...),
-regex (`regexp_like(x, 'p')`, `x ~ 'p'`, `regexp_extract`, `regexp_replace`), JSON
+regex (`regexp_like(x, 'p')`, `x ~ 'p'`, `regexp_extract`, `regexp_replace`, `regexp_count`), Ossie's spellings
+(`IF`, `NVL`, `NVL2`, `ZEROIFNULL`, `CHARINDEX`, `TO_DATE`, `EXTRACT(DAYOFWEEK FROM x)` = ISO day), JSON
 (`json_value(x, '$.a' RETURNING INT)`, `x ->> 'a'`), lists (`contains(tags, 'x')`,
 `contains_any(tags, ['x', 'y'])`, `contains_all(tags, ['x', 'y'])`, `length(tags)`; the
 aggregation `collect(x)` builds one per group); text compared with a number reads as
@@ -51,8 +58,8 @@ the tool's `variables` argument, a stage's own `variables`, the outer query's
 `variables` (when a saved query-backed dataset is its `population`), or the saved
 dataset's defaults, in that order of precedence. A placeholder binds a literal value only:
 its text inside quotes (`'{s}'`), a number, numeric string or boolean in a bare slot, a
-list as the whole right-hand side of `IN` (`status in ({statuses})`) or as a list-function
-argument (`contains_all(tags, {wanted})`, the only place an empty list binds). A
+list as the whole right-hand side of `IN` (`items.status in ({statuses})`) or as a list-function
+argument (`contains_all(items.tags, {wanted})`, the only place an empty list binds). A
 placeholder where a name belongs is an error. A `date_range` bound takes the value's text
 unquoted (`"date_range": ["{start}", "{end}"]`).
 

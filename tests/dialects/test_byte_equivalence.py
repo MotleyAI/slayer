@@ -1,4 +1,4 @@
-"""DEV-1542: byte-equivalence golden snapshots.
+"""Byte-equivalence golden snapshots.
 
 Per Codex finding #4, the existing ``TestMultiDialectGeneration`` suite
 in ``tests/test_sql_generator.py`` mostly checks substrings, not full SQL
@@ -18,12 +18,12 @@ caches.
 
 from __future__ import annotations
 
-import asyncio
 import re
 
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 
@@ -41,8 +41,8 @@ async def _gen(dialect: str, query: SlayerQuery, dataset: SlayerDataset) -> str:
 
 _BASIC_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(revenue)")],
-    dimensions=[QueryDimension(field="status")],
+    metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="sum(orders.revenue)")],
+    dimensions=[QueryDimension(field="orders.status")],
 )
 
 
@@ -113,7 +113,7 @@ _BASIC_QUERY = SlayerQuery(
             '  `orders.status` ASC',
         ),
         (
-            # DEV-1571 Bug 2: T-SQL bracketed dotted aliases are mangled
+            # T-SQL bracketed dotted aliases are mangled
             # via TsqlDialect.rewrite_emitted_sql so T-SQL's ORDER BY
             # resolver can match the SELECT alias. ``orders.status``
             # encodes to ``orders___status``; ``orders._count`` (with
@@ -147,8 +147,8 @@ async def test_byte_equivalence_basic_query(
 
 _TRUNC_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="sum(revenue)")],
-    time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+    metrics=[QueryMetric(metric="sum(orders.revenue)")],
+    time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
 )
 
 
@@ -158,33 +158,33 @@ _TRUNC_QUERY = SlayerQuery(
         (
             "postgres",
             'SELECT\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at) AS "orders.created_at",\n'
+            '  DATE_TRUNC(\'MONTH\', CAST(orders.created_at AS TIMESTAMP)) AS "orders.created_at",\n'
             '  CAST(SUM(orders.amount) AS DOUBLE PRECISION) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at)\n'
+            '  DATE_TRUNC(\'MONTH\', CAST(orders.created_at AS TIMESTAMP))\n'
             'ORDER BY\n'
             '  "orders.created_at" ASC',
         ),
         (
             "sqlite",
             'SELECT\n'
-            '  STRFTIME(\'%Y-%m-01\', orders.created_at) AS "orders.created_at",\n'
+            '  STRFTIME(\'%Y-%m-01 00:00:00\', orders.created_at) AS "orders.created_at",\n'
             '  CAST(SUM(orders.amount) AS REAL) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  STRFTIME(\'%Y-%m-01\', orders.created_at)\n'
+            '  STRFTIME(\'%Y-%m-01 00:00:00\', orders.created_at)\n'
             'ORDER BY\n'
             '  "orders.created_at" ASC NULLS LAST',
         ),
         (
             "duckdb",
             'SELECT\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at) AS "orders.created_at",\n'
+            '  DATE_TRUNC(\'MONTH\', CAST(orders.created_at AS TIMESTAMP)) AS "orders.created_at",\n'
             '  CAST(SUM(orders.amount) AS DOUBLE) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at)\n'
+            '  DATE_TRUNC(\'MONTH\', CAST(orders.created_at AS TIMESTAMP))\n'
             'ORDER BY\n'
             '  "orders.created_at" ASC',
         ),
@@ -193,28 +193,34 @@ _TRUNC_QUERY = SlayerQuery(
             # now emits the canonical lowercase ClickHouse form.
             "clickhouse",
             'SELECT\n'
-            '  dateTrunc(\'MONTH\', orders.created_at) AS "orders.created_at",\n'
+            '  toDateTime64(dateTrunc(\'MONTH\', toDateTime64(orders.created_at, 6)), 6) AS "orders.created_at",\n'
             '  CAST(SUM(orders.amount) AS Nullable(Float64)) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  dateTrunc(\'MONTH\', orders.created_at)\n'
+            '  toDateTime64(dateTrunc(\'MONTH\', toDateTime64(orders.created_at, 6)), 6)\n'
             'ORDER BY\n'
-            '  dateTrunc(\'MONTH\', orders.created_at) ASC',
+            '  toDateTime64(dateTrunc(\'MONTH\', toDateTime64(orders.created_at, 6)), 6) ASC',
         ),
         (
             "mysql",
             "SELECT\n"
-            "  STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e') AS `orders.created_at`,\n"
+            "  CAST(STR_TO_DATE(\n"
+            "    CONCAT(YEAR(CAST(orders.created_at AS DATETIME)), ' ', MONTH(CAST(orders.created_at AS DATETIME)), ' 1'),\n"
+            "    '%Y %c %e'\n"
+            "  ) AS DATETIME) AS `orders.created_at`,\n"
             "  CAST(SUM(orders.amount) AS DOUBLE) AS `orders.revenue_sum`\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"
-            "  STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e')\n"
+            "  CAST(STR_TO_DATE(\n"
+            "    CONCAT(YEAR(CAST(orders.created_at AS DATETIME)), ' ', MONTH(CAST(orders.created_at AS DATETIME)), ' 1'),\n"
+            "    '%Y %c %e'\n"
+            "  ) AS DATETIME)\n"
             'ORDER BY\n'
             "  CASE WHEN `orders.created_at` IS NULL THEN 1 ELSE 0 END ASC,\n"
             "  `orders.created_at` ASC",
         ),
         (
-            # DEV-1571 Bug 2: bracketed dotted aliases mangled.
+            # Bracketed dotted aliases mangled.
             "tsql",
             "SELECT\n"
             "  DATETRUNC(month, orders.created_at) AS [orders___created_at],\n"
@@ -236,14 +242,14 @@ async def test_byte_equivalence_date_trunc_month(
 
 # ---------------------------------------------------------------------------
 # Median — sqlite/duckdb/clickhouse all use sqlglot transpilation of exp.Median;
-# postgres uses PERCENTILE_CONT(0.5) WITHIN GROUP; MySQL/T-SQL raise.
+# postgres uses PERCENTILE_CONT(0.5) WITHIN GROUP; MySQL/T-SQL read a window subquery.
 # ---------------------------------------------------------------------------
 
 
 _MEDIAN_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="median(revenue)")],
-    dimensions=[QueryDimension(field="status")],
+    metrics=[QueryMetric(metric="median(orders.revenue)")],
+    dimensions=[QueryDimension(field="orders.status")],
 )
 
 
@@ -290,12 +296,87 @@ _MEDIAN_QUERY = SlayerQuery(
             "clickhouse",
             'SELECT\n'
             '  orders.status AS "orders.status",\n'
-            '  CAST(quantile(0.5)(orders.amount) AS Nullable(Float64)) AS "orders.revenue_median"\n'
+            '  CAST(CASE\n'
+            '    WHEN COUNT(orders.amount) = 0\n'
+            '    THEN NULL\n'
+            '    ELSE quantileExactInclusive(0.5)(orders.amount)\n'
+            '  END AS Nullable(Float64)) AS "orders.revenue_median"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
             '  orders.status\n'
             'ORDER BY\n'
             '  orders.status ASC',
+        ),
+        (
+            "mysql",
+            'SELECT\n'
+            '  __slayer_os.__slayer_o0 AS `orders.status`,\n'
+            '  CAST(MAX(\n'
+            '    CASE\n'
+            '      WHEN __slayer_os.__slayer_o1 = FLOOR(1 + 0.5 * (\n'
+            '        __slayer_os.__slayer_o2 - 1\n'
+            '      ))\n'
+            '      AND NOT __slayer_os.__slayer_o3 IS NULL\n'
+            '      THEN __slayer_os.__slayer_o3\n'
+            '    END\n'
+            '  ) + (\n'
+            '    1 + 0.5 * (\n'
+            '      MAX(__slayer_os.__slayer_o2) - 1\n'
+            '    ) - FLOOR(1 + 0.5 * (\n'
+            '      MAX(__slayer_os.__slayer_o2) - 1\n'
+            '    ))\n'
+            '  ) * (\n'
+            '    MAX(\n'
+            '      CASE\n'
+            '        WHEN __slayer_os.__slayer_o1 = CEIL(1 + 0.5 * (\n'
+            '          __slayer_os.__slayer_o2 - 1\n'
+            '        ))\n'
+            '        AND NOT __slayer_os.__slayer_o3 IS NULL\n'
+            '        THEN __slayer_os.__slayer_o3\n'
+            '      END\n'
+            '    ) - MAX(\n'
+            '      CASE\n'
+            '        WHEN __slayer_os.__slayer_o1 = FLOOR(1 + 0.5 * (\n'
+            '          __slayer_os.__slayer_o2 - 1\n'
+            '        ))\n'
+            '        AND NOT __slayer_os.__slayer_o3 IS NULL\n'
+            '        THEN __slayer_os.__slayer_o3\n'
+            '      END\n'
+            '    )\n'
+            '  ) AS DOUBLE) AS `orders.revenue_median`\n'
+            'FROM (\n'
+            '  SELECT\n'
+            '    orders.status AS __slayer_o0,\n'
+            '    ROW_NUMBER() OVER (\n'
+            '      PARTITION BY orders.status, CASE WHEN orders.amount IS NULL THEN 1 ELSE 0 END\n'
+            '      ORDER BY orders.amount\n'
+            '    ) AS __slayer_o1,\n'
+            '    COUNT(orders.amount) OVER (PARTITION BY orders.status) AS __slayer_o2,\n'
+            '    orders.amount AS __slayer_o3\n'
+            '  FROM public.orders AS orders\n'
+            ') AS __slayer_os\n'
+            'GROUP BY\n'
+            '  __slayer_os.__slayer_o0\n'
+            'ORDER BY\n'
+            '  CASE WHEN `orders.status` IS NULL THEN 1 ELSE 0 END ASC,\n'
+            '  `orders.status` ASC',
+        ),
+        (
+            "tsql",
+            'SELECT\n'
+            '  __slayer_os.__slayer_o0 AS [orders___status],\n'
+            '  CAST(MAX(__slayer_os.__slayer_o1) AS FLOAT) AS [orders___revenue_median]\n'
+            'FROM (\n'
+            '  SELECT\n'
+            '    orders.status AS __slayer_o0,\n'
+            '    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY\n'
+            '      orders.amount) OVER (PARTITION BY orders.status) AS __slayer_o1\n'
+            '  FROM public.orders AS orders\n'
+            ') AS __slayer_os\n'
+            'GROUP BY\n'
+            '  __slayer_os.__slayer_o0\n'
+            'ORDER BY\n'
+            '  [orders___status] ASC',
         ),
     ],
 )
@@ -306,16 +387,6 @@ async def test_byte_equivalence_median(
     assert sql == expected
 
 
-def test_byte_equivalence_median_mysql_raises(orders_dataset: SlayerDataset) -> None:
-    render = _gen("mysql", _MEDIAN_QUERY, orders_dataset)
-    with pytest.raises(NotImplementedError, match="median.*MySQL"):
-        asyncio.run(render)
-
-
-def test_byte_equivalence_median_tsql_raises(orders_dataset: SlayerDataset) -> None:
-    render = _gen("tsql", _MEDIAN_QUERY, orders_dataset)
-    with pytest.raises(NotImplementedError, match="median.*T-SQL"):
-        asyncio.run(render)
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +396,8 @@ def test_byte_equivalence_median_tsql_raises(orders_dataset: SlayerDataset) -> N
 
 _PCT_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="percentile(revenue, p=0.95)")],
-    dimensions=[QueryDimension(field="status")],
+    metrics=[QueryMetric(metric="percentile(orders.revenue, p=0.95)")],
+    dimensions=[QueryDimension(field="orders.status")],
 )
 
 
@@ -373,7 +444,11 @@ _PCT_QUERY = SlayerQuery(
             "clickhouse",
             'SELECT\n'
             '  orders.status AS "orders.status",\n'
-            '  CAST(quantile(0.95)(orders.amount) AS Nullable(Float64)) AS "orders.revenue_percentile_p_0_95"\n'
+            '  CAST(CASE\n'
+            '    WHEN COUNT(orders.amount) = 0\n'
+            '    THEN NULL\n'
+            '    ELSE quantileExactInclusive(0.95)(orders.amount)\n'
+            '  END AS Nullable(Float64)) AS "orders.revenue_percentile_p_0_95"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
             '  orders.status\n'
@@ -397,8 +472,8 @@ async def test_byte_equivalence_percentile(
 
 _CORR_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="corr(revenue, other=quantity)")],
-    dimensions=[QueryDimension(field="status")],
+    metrics=[QueryMetric(metric="corr(orders.revenue, other=orders.quantity)")],
+    dimensions=[QueryDimension(field="orders.status")],
 )
 
 
@@ -455,10 +530,10 @@ async def test_byte_equivalence_corr_tsql_decomposition(
 _TIME_SHIFT_QUERY = SlayerQuery(
     population="orders",
     metrics=[
-        QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="rev_prev"),
+        QueryMetric(metric="time_shift(sum(orders.revenue), -1, 'month')", alias="rev_prev"),
     ],
     time_dimensions=[
-        TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
+        TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH),
     ],
 )
 
@@ -468,7 +543,7 @@ async def test_byte_equivalence_time_shift_postgres(orders_dataset: SlayerDatase
     # Postgres uses INTERVAL '1 MONTH' arithmetic
     assert "INTERVAL '1 MONTH'" in sql
     assert "DATE_TRUNC('MONTH'" in sql
-    # The shifted CTE is named after the measure
+    # The shifted CTE is named after the metric
     assert "shifted_rev_prev AS (" in sql
     # Self-join CTE wires base ↔ shifted by the time-dim alias
     assert "LEFT JOIN shifted_rev_prev" in sql
@@ -480,7 +555,7 @@ async def test_byte_equivalence_time_shift_sqlite(orders_dataset: SlayerDataset)
     # The join-back offsets the base's (already truncated) bucket start.
     assert """SLAYER_DATE_ADD(base."orders.created_at", -1, 'month')""" in sql
     assert "INTERVAL" not in sql
-    assert "STRFTIME('%Y-%m-01'" in sql
+    assert "STRFTIME('%Y-%m-01 00:00:00'" in sql
 
 
 async def test_byte_equivalence_time_shift_tsql(orders_dataset: SlayerDataset) -> None:
@@ -489,7 +564,7 @@ async def test_byte_equivalence_time_shift_tsql(orders_dataset: SlayerDataset) -
     # the base's (already truncated) bucket start.
     assert "DATEADD(MONTH, -1, base.[orders___created_at])" in sql
     assert "INTERVAL" not in sql
-    # DEV-1571 Bug 1: T-SQL accepts WITH only as a statement prefix, so the
+    # T-SQL accepts WITH only as a statement prefix, so the
     # CTE chain must be hoisted onto the outer statement rather than left
     # inside ``FROM (...) AS _outer``.
     assert "DATETRUNC(month, " in sql
@@ -505,10 +580,10 @@ async def test_byte_equivalence_time_shift_tsql(orders_dataset: SlayerDataset) -
 _CUMSUM_QUERY = SlayerQuery(
     population="orders",
     metrics=[
-        QueryMetric(metric="cumsum(sum(revenue))", alias="cum_rev"),
+        QueryMetric(metric="cumsum(sum(orders.revenue))", alias="cum_rev"),
     ],
     time_dimensions=[
-        TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
+        TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH),
     ],
 )
 
@@ -517,26 +592,30 @@ _CUMSUM_QUERY = SlayerQuery(
     "dialect,expected_window",
     [
         # Postgres / SQLite quote with ANSI double quotes.
-        ("postgres", 'SUM("orders.revenue_sum") OVER (ORDER BY "orders.created_at")'),
-        ("sqlite", 'SUM("orders.revenue_sum") OVER (ORDER BY "orders.created_at")'),
-        # T-SQL quotes with brackets AND DEV-1571 Bug 2 mangles the
+        # A NULL time bucket is a series of its own (semantics Axiom 11.3).
+        ("postgres", 'SUM("orders.revenue_sum") OVER (\n      PARTITION BY CASE WHEN "orders.created_at" IS NULL '
+                     'THEN 1 ELSE 0 END\n      ORDER BY "orders.created_at"\n    )'),
+        ("sqlite", 'SUM("orders.revenue_sum") OVER (\n      PARTITION BY CASE WHEN "orders.created_at" IS NULL '
+                   'THEN 1 ELSE 0 END\n      ORDER BY "orders.created_at"\n    )'),
+        # T-SQL quotes with brackets AND mangles the
         # dotted aliases to underscore form so the ORDER BY resolver
         # can match the SELECT alias.
-        ("tsql", "SUM([orders___revenue_sum]) OVER (ORDER BY [orders___created_at])"),
+        ("tsql", "SUM([orders___revenue_sum]) OVER (\n      PARTITION BY CASE WHEN [orders___created_at] IS NULL "
+                 "THEN 1 ELSE 0 END\n      ORDER BY [orders___created_at]\n    )"),
     ],
 )
 async def test_byte_equivalence_cumsum_window_emission(
     dialect: str, expected_window: str, orders_dataset: SlayerDataset
 ) -> None:
     """Cumsum emits the same OVER (ORDER BY ...) window shape on every
-    dialect; only the identifier quoting (and DEV-1571 mangling on T-SQL)
+    dialect; only the identifier quoting (and alias mangling on T-SQL)
     differs."""
     sql = await _gen(dialect, _CUMSUM_QUERY, orders_dataset)
     assert expected_window in sql
 
 
 # ---------------------------------------------------------------------------
-# json_extract via Column.sql — covers SQLite JSON-rewrite + the per-dialect
+# json_extract via DatasetField.sql — covers SQLite JSON-rewrite + the per-dialect
 # emission differences (Postgres JSON_EXTRACT_PATH, T-SQL ISNULL(JSON_QUERY/VALUE))
 # ---------------------------------------------------------------------------
 
@@ -549,11 +628,11 @@ def orders_dataset_with_json() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="json_data",
-                sql="json_extract(blob, '$.k')",
+                expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="json_extract(blob, '$.k')") for d in ("POSTGRES", "SQLITE", "TSQL")]),
                 datatype=DataType.STRING,
             ),
         ],
@@ -562,8 +641,8 @@ def orders_dataset_with_json() -> SlayerDataset:
 
 _JSON_QUERY = SlayerQuery(
     population="orders",
-    metrics=[QueryMetric(metric="count(*)")],
-    dimensions=[QueryDimension(field="json_data")],
+    metrics=[QueryMetric(metric="count(orders.*)")],
+    dimensions=[QueryDimension(field="orders.json_data")],
 )
 
 
@@ -573,10 +652,10 @@ async def test_byte_equivalence_json_extract_sqlite_uses_function_form(
     """SQLite's JSON-extract rewrite produces the
     JSON_EXTRACT(orders.blob, '$.k') function form (not the ``->``
     operator) — required so equality matches against bare-string literals
-    work. DEV-1331.
+    work.
 
     The typed pipeline qualifies bare column references inside
-    ``Column.sql`` with the owning model's alias, so the argument is
+    ``DatasetField.sql`` with the owning dataset's alias, so the argument is
     ``orders.blob`` rather than the legacy generator's unqualified
     ``blob``. Same column, same table — ``FROM public.orders AS orders``
     is the only relation in scope."""
@@ -590,7 +669,7 @@ async def test_byte_equivalence_json_extract_postgres_uses_path_form(
     orders_dataset_with_json: SlayerDataset,
 ) -> None:
     """Postgres emits JSON_EXTRACT_PATH(orders.blob, 'k') — sqlglot's
-    translation, with the typed pipeline's model-alias qualification on
+    translation, with the typed pipeline's dataset-alias qualification on
     the bare ``blob`` reference."""
     sql = await _gen("postgres", _JSON_QUERY, orders_dataset_with_json)
     assert "JSON_EXTRACT_PATH(orders.blob, 'k')" in sql
@@ -601,7 +680,7 @@ async def test_byte_equivalence_json_extract_tsql_uses_isnull_pair(
 ) -> None:
     """T-SQL emits ISNULL(JSON_QUERY(...), JSON_VALUE(...)) — handles both
     object and scalar paths. As on the other dialects, the typed pipeline
-    qualifies the bare ``blob`` reference with the model alias.
+    qualifies the bare ``blob`` reference with the dataset alias.
 
     NOTE: the typed pipeline currently emits this pair wrapped in a
     redundant outer ``ISNULL(<pair>, <pair>)``. That doubling is a
@@ -609,8 +688,7 @@ async def test_byte_equivalence_json_extract_tsql_uses_isnull_pair(
     ``ISNULL(JSON_QUERY, JSON_VALUE)``, which re-parses to
     ``Coalesce(JSONExtract, JSONExtractScalar)`` and re-renders doubled),
     NOT intended emission — it is deliberately *not* asserted here so a
-    fix does not have to touch this test. See the DEV-1703 migration
-    report."""
+    fix does not have to touch this test."""
     sql = await _gen("tsql", _JSON_QUERY, orders_dataset_with_json)
     assert (
         "ISNULL(JSON_QUERY(orders.blob, '$.k'), JSON_VALUE(orders.blob, '$.k'))"

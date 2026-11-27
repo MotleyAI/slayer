@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType, NUMERIC_DATATYPES, TEMPORAL_DATATYPES
 from slayer.core.models import DatasetField, SlayerDataset, is_identifier
+from slayer.core.names import qualified_reference
 from slayer.core.query import SlayerQuery
 from slayer.engine.binding import range_read
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 _MAX_CATEGORICAL_VALUES = 50
 _TEXT_SAMPLE_CAP = 20
 _CATEGORICAL_TYPES = (DataType.STRING, DataType.BOOLEAN)
-_NUMERIC_TEMPORAL_TYPES = NUMERIC_DATATYPES | TEMPORAL_DATATYPES
+_RANGE_TYPES = NUMERIC_DATATYPES | TEMPORAL_DATATYPES | {DataType.TIME}
 _ALL_NULL = "all NULL"
 _TTL_SECONDS = 3600.0
 _BREAKER_THRESHOLD = 3
@@ -118,9 +119,10 @@ def _profile_type(field: DatasetField) -> DataType | None:
     return field.element_type if field.datatype is DataType.ARRAY else field.datatype
 
 
-def _values_ref(field: DatasetField) -> str:
+def _values_ref(field: DatasetField, *, dataset: SlayerDataset) -> str:
     """The reference whose values profile ``field``: a list's ``<field>.value``."""
-    return f"{field.name}.value" if field.datatype is DataType.ARRAY else field.name
+    parts = (dataset.name, field.name, "value") if field.datatype is DataType.ARRAY else (dataset.name, field.name)
+    return qualified_reference(*parts)
 
 
 def _is_sample_cached(field: DatasetField, *, dataset: SlayerDataset) -> bool:
@@ -137,7 +139,7 @@ def _is_profilable(field: DatasetField, *, dataset: SlayerDataset) -> bool:
     return (
         not field.hidden
         and not is_identifier(field=field, fields=dataset.fields)
-        and (kind in _CATEGORICAL_TYPES or kind in _NUMERIC_TEMPORAL_TYPES)
+        and (kind in _CATEGORICAL_TYPES or kind in _RANGE_TYPES)
     )
 
 
@@ -150,8 +152,9 @@ async def _profile_categorical(
     *, dataset: SlayerDataset, field: DatasetField, engine: SlayerQueryEngine,
 ) -> _Sample:
     """Top values (a list's elements) by frequency (value asc tie-break) in one scan; raises on query failure."""
-    ref = _values_ref(field)
-    counted = f"count({field.name}.*)" if field.datatype is DataType.ARRAY else "count(*)"
+    ref = _values_ref(field, dataset=dataset)
+    owner = (dataset.name, field.name) if field.datatype is DataType.ARRAY else (dataset.name,)
+    counted = f"count({qualified_reference(*owner)}.*)"
     q = SlayerQuery.model_validate({
         "population": dataset.name,
         "dimensions": [ref],
@@ -164,8 +167,9 @@ async def _profile_categorical(
         "limit": _MAX_CATEGORICAL_VALUES + 2,
     })
     r = await engine.execute(query=q, data_source=dataset.data_source or None)
-    value_key = f"{dataset.name}.{ref}"
-    count_key = f"{dataset.name}.{_COUNT}"
+    value_key = ".".join((dataset.name, field.name, "value") if field.datatype is DataType.ARRAY
+                         else (dataset.name, field.name))
+    count_key = _COUNT
     pairs = [(row.get(value_key), row.get(count_key)) for row in r.data if row.get(value_key) is not None]
     pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
     values = [str(v) for v, _ in pairs]
@@ -186,7 +190,7 @@ async def _profile_numeric_temporal(
 ) -> list[_Sample]:
     """One batched min/max query (a list's over its elements); raises on query failure."""
     metrics = [
-        {"metric": f"{agg}({_values_ref(c)})", "alias": f"_slayer_range_{c.name}_{agg}"}
+        {"metric": f"{agg}({_values_ref(c, dataset=dataset)})", "alias": f"_slayer_range_{c.name}_{agg}"}
         for c in fields for agg in ("min", "max")
     ]
     q = SlayerQuery.model_validate({"population": dataset.name, "metrics": metrics})
@@ -195,15 +199,16 @@ async def _profile_numeric_temporal(
     row = r.data[0] if r.data else {}
     out: list[_Sample] = []
     for c in fields:
-        mn = row.get(f"{dataset.name}._slayer_range_{c.name}_min")
-        mx = row.get(f"{dataset.name}._slayer_range_{c.name}_max")
+        mn = row.get(f"_slayer_range_{c.name}_min")
+        mx = row.get(f"_slayer_range_{c.name}_max")
         out.append(_Sample(sampled=_ALL_NULL if mn is None and mx is None else f"{mn} .. {mx}"))
     return out
 
 
 async def _probe(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> Exception | None:
     """Row-count the dataset; the exception when it fails, else ``None``."""
-    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": ["count(*)"]})
+    q = SlayerQuery.model_validate({"population": dataset.name,
+                                    "metrics": [f"count({qualified_reference(dataset.name)}.*)"]})
     try:
         await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception as exc:  # NOSONAR(S112) — the probe's failure IS the classification
@@ -235,12 +240,12 @@ class _Run:
         self.engine = engine
         self.storage = storage
         self.state = state
-        self.model_key = dataset_key
+        self.dataset_key = dataset_key
         self.result = result
         self.scoped = engine.policy is not None
         self.errors: list[str] = []
         self.healthy: bool | None = None
-        self.model_failed = False
+        self.dataset_failed = False
         self.streak: list[tuple[_Target, Exception]] = []
         self.pending = pending
 
@@ -249,7 +254,7 @@ class _Run:
 
     async def run(self, targets: list[_Target]) -> None:
         for t in (t for t in targets if _profile_type(t.field) in _CATEGORICAL_TYPES):
-            if self.model_failed:
+            if self.dataset_failed:
                 return
             try:
                 sample = await _profile_categorical(dataset=self.dataset, field=t.field, engine=self.engine)
@@ -257,10 +262,10 @@ class _Run:
                 await self._on_failure(target=t, exc=exc)
                 continue
             await self._on_success(target=t, sample=sample)
-        numeric = [t for t in targets if _profile_type(t.field) in _NUMERIC_TEMPORAL_TYPES]
-        if numeric and not self.model_failed:
+        numeric = [t for t in targets if _profile_type(t.field) in _RANGE_TYPES]
+        if numeric and not self.dataset_failed:
             await self._run_numeric(numeric)
-        if not self.model_failed:
+        if not self.dataset_failed:
             self._flush_streak()
 
     async def _run_numeric(self, targets: list[_Target]) -> None:
@@ -271,7 +276,7 @@ class _Run:
         except Exception as exc:  # NOSONAR(S112) — classified, then isolated per field
             await self._on_failure(target=None, exc=exc)
             for t in targets:
-                if self.model_failed:
+                if self.dataset_failed:
                     return
                 try:
                     [sample] = await _profile_numeric_temporal(
@@ -300,9 +305,9 @@ class _Run:
 
     def _fail_dataset(self, *, exc: Exception) -> None:
         msg = _first_line(exc)
-        self.model_failed = True
+        self.dataset_failed = True
         self.streak.clear()
-        self.state.failures[self.model_key] = _Entry(expires_at=self._expiry(), error=msg)
+        self.state.failures[self.dataset_key] = _Entry(expires_at=self._expiry(), error=msg)
         logger.warning(
             "sample profiling: dataset %s.%s unavailable (%d fields skipped): %s",
             self.dataset.data_source, self.dataset.name, self.pending, msg,
@@ -324,7 +329,7 @@ class _Run:
         self._flush_streak()
         self.pending -= 1
         self.state.failures.pop(target.key, None)
-        self.state.failures.pop(self.model_key, None)
+        self.state.failures.pop(self.dataset_key, None)
         self.result[target.index] = target.field.model_copy(update=sample.model_dump())
         if self.scoped:
             self.state.samples[target.key] = _Entry(expires_at=self._expiry(), sample=sample)

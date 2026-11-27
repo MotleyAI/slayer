@@ -1,10 +1,10 @@
-"""DEV-1836 D3 reroot rules over a provably to-one reverse hop.
+"""D3 reroot rules over a provably to-one reverse hop.
 
-The producer roots at the aggregate's model and reaches HOST coordinates back
-over the INVERTED forward join (DEV-1853 — no declared reverse edge): a host
+The producer roots at the aggregate's dataset and reaches HOST coordinates back
+over the INVERTED forward relationship (no declared reverse edge): a host
 time dimension re-roots leaf-wise (TimeTruncKey included), and a host-sibling
-filter binds the HOST's join instance (via-host preferred over the root's own
-same-named join).
+filter binds the HOST's relationship instance (via-host preferred over the root's own
+same-named relationship).
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -50,10 +51,10 @@ def _datasets() -> list[SlayerDataset]:
             DatasetField(name="party_b", datatype=DataType.INTEGER),
         ],
         relationships=[
-            # DEV-1853: no declared reverse edge — the policy_amount → policy
+            # No declared reverse edge — the policy_amount → policy
             # hop is the INVERTED policy → policy_amount edge, provably to-one
             # structurally (policy_identifier is policy's PK).
-            # Same sibling model as the host, joined on a DIFFERENT key.
+            # Same sibling dataset as the host, joined on a DIFFERENT key.
             DatasetRelationship(to="party", from_columns=["party_b"], to_columns=["id"]),
         ],
     )
@@ -81,7 +82,7 @@ def _seed(db_path: str) -> None:
             (2, "POL-2", "2024-02-10 00:00:00", 2),
         ])
         # party_b deliberately OPPOSITE of the owning policy's party_a, so the
-        # root's own party join selects different rows than the host's instance.
+        # root's own party relationship selects different rows than the host's instance.
         conn.executemany("INSERT INTO policy_amount VALUES (?, ?, ?, ?)", [
             (10, 1, 100.0, 2), (11, 1, 200.0, 2),
             (20, 2, 300.0, 1), (21, 2, 400.0, 1),
@@ -98,8 +99,8 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
         )
 
 
-CM = QueryMetric(metric="sum(policy_amount.policy_amount)", alias="cm")
-MONTH = [TimeDimension(field="created_at",
+CM = QueryMetric(metric="sum(policy.policy_amount.policy_amount)", alias="cm")
+MONTH = [TimeDimension(field="policy.created_at",
                        granularity=TimeGranularity.MONTH)]
 
 
@@ -113,8 +114,8 @@ class TestTimeTruncGrainReroots:
         assert resp.sql is not None
         assert_scope_closed(resp.sql, dialect="sqlite")
         by_month = {r["policy.created_at"][:7]: r for r in resp.data}
-        assert by_month["2024-01"]["policy.cm"] == pytest.approx(300.0)
-        assert by_month["2024-02"]["policy.cm"] == pytest.approx(700.0)
+        assert by_month["2024-01"]["cm"] == pytest.approx(300.0)
+        assert by_month["2024-02"]["cm"] == pytest.approx(700.0)
 
     async def test_windowed_cross_model_buckets_by_rerooted_host_td(self, engine) -> None:
         """The windowed producer's synthesized bucket is the re-rooted host TD
@@ -122,35 +123,42 @@ class TestTimeTruncGrainReroots:
         resp = await engine.execute(SlayerQuery(
             population="policy", time_dimensions=list(MONTH),
             metrics=[QueryMetric(
-                metric="sum(policy_amount.policy_amount, window='20d')", alias="w",
+                metric="sum(policy.policy_amount.policy_amount, window='20d')", alias="w",
             )],
         ))
         assert resp.sql is not None
         assert_scope_closed(resp.sql, dialect="sqlite")
         by_month = {r["policy.created_at"][:7]: r for r in resp.data}
-        # Values calibrated against the LOCAL windowed measure on identical
-        # dates/amounts — cross-model must match local window semantics. The
+        # Values calibrated against the LOCAL windowed metric on identical
+        # dates/amounts — cross-dataset must match local window semantics. The
         # 20-day February window starts on Feb 10 inclusive, so POL-2's two
         # amounts are in.
-        assert by_month["2024-01"]["policy.w"] == pytest.approx(300.0)
-        assert by_month["2024-02"]["policy.w"] == pytest.approx(700.0)
+        assert by_month["2024-01"]["w"] == pytest.approx(300.0)
+        assert by_month["2024-02"]["w"] == pytest.approx(700.0)
 
 
 class TestSiblingFilterBindsTheHostInstance:
     async def test_via_host_instance_wins_over_the_roots_own_join(self, engine) -> None:
-        """``party.code`` in host coordinates is the HOST's party join
-        (policy.party_a). The producer must inherit that instance via the
-        reverse hop — not the root's own ``party_b`` join, which selects the
-        opposite rows here."""
-        resp = await engine.execute(SlayerQuery(
-            population="policy",
-            dimensions=[QueryDimension(field="policy_number")],
-            metrics=[CM],
-            filter=["party.code = 'X'"],
-        ))
+        """From the home ``policy_amount``, ``party`` has two to-one paths (its own ``party_b``, ``policy → party_a``):
+        ``party.code`` is refused as ambiguous. Spelled from the aggregation's own anchor, ``policy.party.code`` reads
+        back along the written path, so the producer inherits the host's ``party_a`` instance."""
+        def query(condition: str) -> SlayerQuery:
+            return SlayerQuery(
+                population="policy",
+                dimensions=[QueryDimension(field="policy.policy_number")],
+                metrics=[CM],
+                filter=[condition],
+            )
+
+        unspelled = query("party.code = 'X'")
+        with pytest.raises(UnresolvableDimensionRelationshipError) as err:
+            await engine.execute(unspelled)
+        assert "policy_amount.party" in str(err.value)
+        assert "policy_amount.policy.party" in str(err.value)
+        resp = await engine.execute(query("policy.party.code = 'X'"))
         rows = {r["policy.policy_number"]: r for r in resp.data}
         assert set(rows) == {"POL-1"}, rows
-        assert rows["POL-1"]["policy.cm"] == pytest.approx(300.0), (
-            "the producer bound the root's own party join (party_b) instead of "
+        assert rows["POL-1"]["cm"] == pytest.approx(300.0), (
+            "the producer bound the root's own party relationship (party_b) instead of "
             "the host's instance"
         )

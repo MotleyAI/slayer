@@ -2,6 +2,7 @@
 format: 0.14.0
 exempt:
   - slayer/mcp/server.py
+  - tests/fixtures/ossie_corpus/**  # vendored apache/ossie files, byte-identical to upstream
 architecture: true
 reviewers:
   sonar:

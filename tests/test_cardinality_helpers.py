@@ -149,8 +149,8 @@ def test_composite_pk_member_does_not_declare_uniqueness() -> None:
 
 
 def test_explicit_unique_flag_declares_uniqueness_even_with_composite_pk() -> None:
-    # `unique` is single-column by definition, so it stands on its own
-    # regardless of how many PK columns the model has.
+    # `unique` is single-field by definition, so it stands on its own
+    # regardless of how many PK fields the dataset has.
     cols = [_c("id", pk=True), _c("sku", pk=True), _c("email", unique=True)]
     assert declares_solo_unique(fields=cols, field=cols[2]) is True
 

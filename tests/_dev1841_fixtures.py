@@ -41,11 +41,11 @@ def _customers(datasets: List[SlayerDataset]) -> SlayerDataset:
 
 
 def dev1841_datasets(**kw) -> List[SlayerDataset]:
-    """The ``_dev1840_fixtures`` graph plus a measure-local filtered column on customers:
+    """The ``_dev1840_fixtures`` graph plus a metric-local filtered field on customers:
     ``gold_spend`` = ``spend`` restricted (inside the aggregate) to gold tier."""
     models = dev1840_datasets(**kw)
     _customers(models).fields.append(
-        DatasetField(name="gold_spend", datatype=DataType.FLOAT, sql="spend",
+        DatasetField(name="gold_spend", datatype=DataType.FLOAT, expression="spend",
                filter="tier = 'gold'"),
     )
     return models
@@ -63,17 +63,17 @@ def keyless_root_datasets() -> List[SlayerDataset]:
 
 
 def crossing_input_datasets() -> List[SlayerDataset]:
-    """Graph + a customers column filtering across the fanning customers→orders hop (an input not constant per customer)."""
+    """Graph + a customers field filtering across the fanning customers→orders hop (an input not constant per customer)."""
     models = dev1840_datasets()
     _customers(models).fields.append(
-        DatasetField(name="vip_spend", datatype=DataType.FLOAT, sql="spend",
+        DatasetField(name="vip_spend", datatype=DataType.FLOAT, expression="spend",
                filter="orders.status = 'ok'"),
     )
     return models
 
 
 def field_default_agg_datasets() -> List[SlayerDataset]:
-    """Graph + a custom aggregation whose parameter *defaults* to a column (``weight`` → ``spend``)."""
+    """Graph + a custom aggregation whose parameter *defaults* to a field (``weight`` → ``spend``)."""
     models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum", expression="SUM({value} * {weight})",
@@ -129,16 +129,15 @@ LOCAL_SPEND_TOTAL = 515.0  # LOCAL spend broadcast total, incl. c7
 ASSOC_COUNT_BY_STATUS = {"ok": 5, "new": 3}  # customers.*:count, distinct/cell
 ASSOC_MEDIAN_BY_STATUS = {"ok": 80.0, "new": 100.0}  # odd populations
 ASSOC_POP_BY_STATUS = {"ok": 300.0, "new": 100.0}  # distinct regions/cell
-ASSOC_GOLD_SPEND_BY_STATUS = {"ok": 190.0, "new": 100.0}  # measure-local gold filter
+ASSOC_GOLD_SPEND_BY_STATUS = {"ok": 190.0, "new": 100.0}  # metric-local gold filter
 ASSOC_APP_SPEND_BY_STATUS = {"ok": 140.0, "new": 250.0}  # host filter channel='app'
 ASSOC_BASIC_SPEND_BY_STATUS = {"ok": 240.0, "new": 100.0}  # sibling plans.level='basic' pushed
 SPEND_BY_TIER = {"gold": 245.0, "silver": 230.0, "bronze": 40.0}  # attributable, mode-invariant
 
 
-def status_key(resp, root: str = "orders") -> dict:
-    """Rows keyed by the status cell for a ``root``-rooted query."""
-    col = f"{root}.status" if root == "orders" else f"{root}.orders.status"
-    return rows_by(resp, col)
+def status_key(resp) -> dict:
+    """Rows keyed by the ``orders.status`` cell."""
+    return rows_by(resp, "orders.status")
 
 
 __all__ = [

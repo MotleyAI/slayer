@@ -1,7 +1,7 @@
-"""Live Postgres values for dotted join paths.
+"""Live Postgres values for dotted relationship paths.
 
-* a ``__``-named model joined and grouped returns the right per-label sums;
-* two deep long-name join paths whose naive ``__`` aliases collide after
+* a ``__``-named dataset joined and grouped returns the right per-label sums;
+* two deep long-name relationship paths whose naive ``__`` aliases collide after
   Postgres's 63-byte truncation still resolve to their OWN relations.
 """
 
@@ -57,7 +57,7 @@ def _storage_for(proc, db_name, tmpdir, datasets) -> YAMLStorage:
 
 
 # --------------------------------------------------------------------------- #
-# A __-named model joined and grouped returns correct per-label sums.
+# A __-named dataset joined and grouped returns correct per-label sums.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def _dunder_storage(postgresql_proc, tmp_path_factory):
@@ -102,9 +102,9 @@ class TestDunderModelLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customer__region.label"],
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             }))
-        by_label = {r["orders.customer__region.label"]: r["orders.amount_sum"]
+        by_label = {r["customer__region.label"]: r["orders.amount_sum"]
                     for r in result.data}
         assert by_label == {"North": 15, "South": 20}
 
@@ -180,10 +180,10 @@ class TestLongAliasCollisionLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "subscription_entity",
                 "dimensions": [north, south],
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(subscription_entity.amount)"}],
             }))
         assert result.row_count == 1
         row = result.data[0]
         # The two long paths must read their OWN leaf, not a truncation-merged one.
-        assert row[f"subscription_entity.{north}"] == "N"
-        assert row[f"subscription_entity.{south}"] == "S"
+        assert row[north] == "N"
+        assert row[south] == "S"

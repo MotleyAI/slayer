@@ -1,4 +1,4 @@
-"""Declared list-valued ``{variable}`` coercion (DEV-1730 follow-up).
+"""Declared list-valued ``{variable}`` coercion.
 
 The generic Mode-A contract leaves quoting to the template author, so a scalar
 string renders UNQUOTED — that is what makes ``order_total >= {floor}`` and
@@ -8,7 +8,7 @@ author to write the quotes, so the importer declares the variable
 into a one-element list before substitution.
 
 Covers the two helpers, the engine choke point, and the boundaries that must
-NOT change: hand-written models, undeclared variables, empty lists, and the
+NOT change: hand-written datasets, undeclared variables, empty lists, and the
 scalar-position arrow variables.
 """
 from slayer.storage.sqlite_conn import transaction
@@ -50,9 +50,9 @@ def _dataset(*, sql: str, meta: dict | None = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql=sql, data_source="ds", meta=meta,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -70,7 +70,7 @@ def test_names_empty_for_hand_written_model():
 
 
 def test_names_ignores_unrelated_or_malformed_meta():
-    # A model carrying its own meta must not trip the accessor.
+    # A dataset carrying its own meta must not trip the accessor.
     assert list_valued_variable_names(
         _dataset(sql="SELECT 1", meta={"cube_variables": "not-a-dict", "owner": "x"})
     ) == set()
@@ -111,7 +111,7 @@ def test_unrelated_meta_under_the_same_key_is_not_a_declaration(bag):
     """`meta` is free-form user data, so the bag must be SELF-IDENTIFYING.
 
     A false positive here would be a regression, not a nit: declaring disables
-    the zero-variable fast path, so a hand-written model with raw brace literals
+    the zero-variable fast path, so a hand-written dataset with raw brace literals
     would start raising on a query that used to work.
     """
     model = _dataset(sql="SELECT * FROM t WHERE tags = '{1,2,3}'", meta={"cube_variables": bag})
@@ -180,7 +180,7 @@ def test_declares_variables_true_only_for_a_declaring_model():
 
 
 def test_declared_required_var_with_zero_variables_raises():
-    # The fast-path hole Codex flagged, closed for GENERATED models: a model
+    # The fast-path hole Codex flagged, closed for GENERATED datasets: a dataset
     # whose pushdowns are all required has no block to force the pass, so a
     # zero-variable call used to emit a bare {var} into the SQL.
     model = _dataset(
@@ -192,7 +192,7 @@ def test_declared_required_var_with_zero_variables_raises():
 
 
 def test_hand_written_model_keeps_the_brace_literal_protection():
-    # The DEV-1625 contract is untouched for models that declare nothing: a
+    # The brace-literal protection is untouched for datasets that declare nothing: a
     # Postgres array literal must survive a zero-variable call verbatim.
     model = _dataset(sql="SELECT * FROM t WHERE tags = '{1,2,3}'")
     out = _substitute_dataset_sql_surfaces(
@@ -293,7 +293,7 @@ async def test_e2e_scalar_and_list_return_identical_rows():
         async def _total(regions):
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"regions": regions},
             })
             resp = await engine.execute(q)

@@ -30,14 +30,14 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
             "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MODEL_SETS = {
+_DATASET_SETS = {
     "default": lambda: dev1840_datasets(),
     "weak": lambda: dev1840_datasets(strong_plans=False),
     "rev": lambda: dev1840_datasets(declare_reverse=True),
     "amb": ambiguity_datasets,
 }
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 RM = QueryMetric(metric="sum(stores.rent)", alias="rm")
 SM = QueryMetric(metric="sum(agents.score)", alias="sm")
@@ -47,43 +47,43 @@ def _cases() -> dict:
     return {
         "exists/app_by_tier": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[M, CM],
-            filter=["channel = 'app'"])},
+            filter=["orders.channel = 'app'"])},
         "exists/same_branch_two_conjuncts": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["status = 'ok'", "channel = 'app'"])},
+            filter=["orders.status = 'ok'", "orders.channel = 'app'"])},
         "exists/two_branches": {"models": "weak", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["channel = 'web'", "customers.plans.level = 'basic'"])},
+            filter=["orders.channel = 'web'", "customers.plans.level = 'basic'"])},
         "exists/composite_inverted_hop": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[M, RM],
-            filter=["channel = 'app'"])},
+            dimensions=["orders.status"], metrics=[M, RM],
+            filter=["orders.channel = 'app'"])},
         "exists/multi_hop_union_tree": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[M, RM],
-            filter=["channel = 'app'", "customers.tier = 'gold'"])},
+            dimensions=["orders.status"], metrics=[M, RM],
+            filter=["orders.channel = 'app'", "customers.tier = 'gold'"])},
         "exists/correlated_outer_ref": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.spend > amount"])},
+            filter=["customers.spend > orders.amount"])},
         "exists/forward_unproven_hop": {"models": "weak", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.plans.level = 'basic'"])},
         "exists/derived_deps_cust_tier": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[CM],
-            filter=["cust_tier = 'gold'"])},
+            dimensions=["orders.status"], metrics=[CM],
+            filter=["orders.cust_tier = 'gold'"])},
         "exists/derived_1n_last_status": {"models": "rev", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.last_status = 'ok'"])},
         "exists/nested_band_producer": {"models": "default", "query": q(
             dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
-            metrics=[M], filter=["channel = 'app'"])},
+            metrics=[M], filter=["orders.channel = 'app'"])},
         "exists/declared_reverse": {"models": "rev", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["channel = 'app'"])},
+            filter=["orders.channel = 'app'"])},
         "exists/negated_cross_path": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["NOT (channel = 'app')"])},
+            filter=["NOT (orders.channel = 'app')"])},
         "inline/safe_hop_regions": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.regions.name = 'North'"])},
@@ -92,18 +92,18 @@ def _cases() -> dict:
             filter=["customers.plans.level = 'basic'"])},
         "inline/composite_n1_root_local": {"models": "default", "query": q(
             to_many_handling="broadcast",
-            dimensions=["status"], metrics=[M, RM],
+            dimensions=["orders.status"], metrics=[M, RM],
             filter=["stores.city = 'NYC'"])},
         "excluded/mixed_or": {"models": "default", "query": q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.tier = 'gold' OR channel = 'app'"])},
+            filter=["customers.tier = 'gold' OR orders.channel = 'app'"])},
         "excluded/ambiguous_inversion": {"models": "amb", "query": tq(
-            metrics=[SM], filter=["effort > 2"])},
+            metrics=[SM], filter=["tickets.effort > 2"])},
     }
 
 
 async def _generate_one(case, dialect: str):
-    models = _MODEL_SETS[case["models"]]()
+    models = _DATASET_SETS[case["models"]]()
     try:
         return await _engine_generate(
             query=case["query"], dataset=models[0], extra_datasets=models[1:],
@@ -131,7 +131,7 @@ def test_exists_cases_carry_an_exists(baseline) -> None:
         case_id = key.rsplit("::", 1)[0]
         if case_id == "excluded/ambiguous_inversion":
             assert isinstance(value, dict), f"{key} no longer fails closed"
-            assert value.get("error") == "AmbiguousRelationshipPathError", value
+            assert value.get("error") == "UnresolvableDimensionRelationshipError", value
             continue
         assert not isinstance(value, dict), f"{key} unexpectedly raised: {value}"
         assert "__regroup__" not in value, f"{key} leaked a placeholder"

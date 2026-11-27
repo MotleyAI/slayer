@@ -1,6 +1,6 @@
 # Auto-Ingestion
 
-SLayer can introspect a database schema and automatically generate datasets with a unified `fields` list and **direct FK-based relationships**. Aggregations are picked at query time (`sum(amount)`, `count(*)`); the dataset itself doesn't carry pre-baked aggregates.
+SLayer can introspect a database schema and automatically generate datasets with a unified `fields` list and **direct FK-based relationships**. Aggregations are picked at query time (`sum(orders.amount)`, `count(orders.*)`); the dataset itself doesn't carry pre-baked aggregates.
 
 SLayer has three ingestion paths:
 
@@ -43,22 +43,23 @@ Tables with no FK references use their plain table name with no relationships.
 
 SLayer introspects each table's column types and generates a dataset:
 
-- **One `DatasetField`** per non-joined column on the source table — name, `datatype` inferred from the database (`String` / `Integer` / `Decimal` / `Float` / `Boolean` / `Date` / `DateTime` / `DateTimeTz` — `Decimal` for an exact numeric and `DateTimeTz` for a zoned timestamp — or `Opaque` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each field is used as a group-by dimension or as an aggregation source is decided per query; a [list field](queries.md#list-fields) has rules of its own.
+- **One `DatasetField`** per non-joined column on the source table — name, `datatype` inferred from the database (`String` / `Integer` / `Decimal` / `Float` / `Boolean` / `Date` / `DateTime` / `DateTimeTz` — `Decimal` for an exact numeric and `DateTimeTz` for a column holding instants (a zoned timestamp, BigQuery and MySQL `TIMESTAMP`, ClickHouse `DateTime` / `DateTime64` naming a zone; a re-ingest re-types a stored `DateTime` field over one) — or `Opaque` for a type SLayer can only store and display), `primary_key=True` for PKs. Whether each field is used as a group-by dimension or as an aggregation source is decided per query; a [list field](filters.md#list-fields) has rules of its own.
 - **List columns** become `datatype: Array` with their `element_type`: Postgres `T[]`, BigQuery `REPEATED T` / `ARRAY<T>`, DuckDB `T[]` / `LIST`, ClickHouse `Array(T)` (`Nullable` / `LowCardinality` unwrapped), Trino `array(T)` and Snowflake `ARRAY(T)`; a nested list or a list of records gets `element_type: UNKNOWN`, and a Snowflake `ARRAY` without a declared element type has it inferred from the stored elements.
 - **`db_type`** keeps the raw database type where `datatype` loses information (`Opaque`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps, lists); a native JSON column is read natively only when it is recorded, so a dataset written by hand without it reads the field as `TEXT`.
 - **Column and table comments** stored in the database become `DatasetField.description` and `SlayerDataset.description` (see [Comments and descriptions](#comments-and-descriptions) below).
 - **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — a sole `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during relationship-cardinality inference rather than being flattened onto individual fields.
+- **`enforced_keys`** lists the primary key and each unique field when the database enforces them (Postgres, MySQL/MariaDB, SQLite, SQL Server, Oracle, DuckDB), so joins onto those keys are [trusted](datasets.md#trusted-relationships). Partial and expression unique indexes never count. Snowflake, BigQuery, Redshift, Databricks, ClickHouse and Trino record none, since their constraints are informational.
 - On DuckDB (1.1 or later), columns and keys (primary, foreign, `UNIQUE`, unique indexes over plain columns) are read from DuckDB's own catalog (`duckdb_columns()`, `duckdb_constraints()`, `duckdb_indexes()`); a key that cannot be read on any database is logged as a warning and the table is ingested without it.
-- **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(*)`.
-- **No auto-generated `metrics`** — `SlayerDataset.metrics` is the named-expression library and stays empty after ingestion. You can add named expressions later via the API/MCP if you want bare-name shortcuts (`"aov"`).
-- **`count(*)`** is always available without any dataset definition.
+- **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(<dataset>.*)`.
+- **No auto-generated `metrics`** — `SlayerDataset.metrics` is the named-expression library and stays empty after ingestion. You can add named expressions later via the API/MCP if you want named shortcuts (`"orders.aov"`).
+- **`count(<dataset>.*)`** is always available without any dataset definition.
 - The `allowed_aggregations` whitelist is left at the default for the field's data type. A sole PK field is restricted to `count`/`count_distinct`/`count_distinct_approx`/`min`/`max`/`collect` automatically.
 
 FK columns from referenced tables are excluded from the source dataset to avoid redundancy — they're reachable via the relationship graph as `customers.id` etc.
 
 All datasets use `sql_table` (the source table) plus `relationships` (direct FK relationships only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the relationship graph. A **composite** foreign key becomes a single relationship carrying all of its column pairs, not one relationship per column.
 
-Each FK relationship also gets a structural [`cardinality`](models.md#relationship-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer validate-datasets --cardinality`.
+Each FK relationship also gets a structural [`cardinality`](datasets.md#relationship-cardinality) guess from the key constraints alone (no data is read): `many_to_one` by default, upgrading to `one_to_one` when the source key is itself unique. A side counts as unique only when some PK/unique key-set is a subset of the join key — if `(a)` is unique then `(a, b)` is too, but a constraint on `(a, b)` does not make `(a)` unique. When the target key cannot be *verified* unique from its constraints, cardinality is left unset rather than guessed. To infer it from the data instead, run `slayer validate-datasets --cardinality`.
 
 ### Comments and descriptions
 
@@ -213,7 +214,7 @@ After ingestion, you can query rolled-up dimensions directly:
 ```json
 {
   "population": "orders",
-  "metrics": ["count(*)", "sum(amount)"],
+  "metrics": ["count(orders.*)", "sum(orders.amount)"],
   "dimensions": ["customers.name"]
 }
 ```
@@ -223,7 +224,7 @@ Or multi-hop dimensions (resolved at query time by walking each dataset's relati
 ```json
 {
   "population": "orders",
-  "metrics": ["count(*)"],
+  "metrics": ["count(orders.*)"],
   "dimensions": ["customers.regions.name"]
 }
 ```
@@ -244,21 +245,22 @@ This avoids table alias collisions and allows querying both paths simultaneously
     "customers.regions.name",
     "warehouses.regions.name"
   ],
-  "metrics": ["count(*)"]
+  "metrics": ["count(orders.*)"]
 }
 ```
 
 ## Cycle Handling
 
-FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more relationships connect the same pair of datasets (a 2-cycle, or `billing_address_id` and `shipping_address_id` both referencing `addresses`) ingestion names each unnamed one after its FK column with a trailing `_id`/`_fk` removed (`billing_address`, `shipping_address`) — falling back to `<dataset>_<stem>`, then a numeric suffix, on a name clash, and never renaming a name you set — so you address them as `billing_address.city`.
+FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more relationships connect the same pair of datasets (a 2-cycle, or `billing_address_id` and `shipping_address_id` both referencing `addresses`) ingestion names each unnamed one after its FK column with a trailing `_id`/`_fk` removed (`billing_address`, `shipping_address`) — falling back to `<dataset>_<stem>`, then a numeric suffix, on a name clash, and never renaming a name you set — so you address them as `orders.billing_address.city`.
 
 ## Ingesting at Startup
 
 `slayer serve` and `slayer mcp` both accept `--ingest-on-startup`, an
 **opt-in** flag that walks every configured datasource and runs the same
 idempotent ingestion pass described in [Idempotent
-Re-Ingestion](#idempotent-re-ingestion) **before** the port opens / before
-stdio JSON-RPC starts. Mirrors the existing `--demo` boot hook, so both
+Re-Ingestion](#idempotent-re-ingestion). `slayer serve` runs it **before**
+the port opens; `slayer mcp` runs it in the background once stdio JSON-RPC
+starts, and every tool call waits for it. Mirrors the existing `--demo` boot hook, so both
 flags compose: `--demo` runs first (creating the Jaffle Shop datasource),
 then the startup-ingest pass runs over every datasource including the
 freshly-created demo.
@@ -327,14 +329,16 @@ app = create_app(storage=storage, ingest_on_startup=True)
 mcp = create_mcp_server(storage=storage, ingest_on_startup=True)
 ```
 
-Same "datasets are fresh by the time the constructor returns" guarantee the
-CLI gets.
+`create_app` ingests before it returns, so datasets are fresh by the time the constructor returns.
+`create_mcp_server` returns at once; ingestion runs in the background while the server runs,
+and every tool call waits for it to finish.
 
 ### Error semantics
 
 - **One datasource fails** (the ingest call raises): caught, friendly-formatted, accumulated, server starts anyway.
 - **Per-table errors inside a single datasource** (`result.errors` non-empty): printed; that datasource still counts as "succeeded" because the call itself returned.
-- **`storage.list_datasources()` raises**: propagates — server does not start. Boot should not proceed with broken storage.
+- **`storage.list_datasources()` raises**: `serve` does not start, since boot should not proceed with broken storage.
+  `mcp` reports the failure on stderr and keeps running; its tools can still fail while storage stays broken.
 - **Zero datasources**: prints `Ingest-on-startup: no datasources configured` and starts normally.
 
 ### Drift handling
@@ -363,10 +367,10 @@ Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 
 ## Idempotent Re-Ingestion
 
-`slayer ingest` (and the equivalent MCP / REST entry points) is idempotent by default — re-runs are safe. For each in-scope live table:
+`slayer ingest` (and every other ingesting entry point: `slayer datasources create --ingest`, MCP `ingest_datasource` and `create_datasource`, REST `/ingest`, the startup ingest) is idempotent by default — re-runs are safe. For each in-scope live table:
 
 - **No persisted dataset with that name** → ingest from scratch via the path above.
-- **Existing `sql_table`-mode dataset** → append new fields and relationships from the live schema. Existing user metadata is **never** overwritten — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim. The only in-place updates are strictly additive gap-fills: a relationship's `cardinality` is set only when it is currently unset (a value you chose is never replaced), a field's `unique` is only ever turned on, never off, a dataset with no primary key takes the live one (a key you set is never changed), and an **empty** `description` (field and dataset level) is filled from the live DB comment. Filling any of these is enough to trigger a save, so a re-ingest that adds no fields or relationships still persists newly-discovered metadata. Filled descriptions are reported per dataset (`DatasetAddition.described_fields`, `dataset_described`; the CLI prints `+descriptions: …`). Other metadata fills are reported as `metadata_changed` (`+key metadata`).
+- **Existing `sql_table`-mode dataset** → append new fields and relationships from the live schema. Existing user metadata is **never** overwritten — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim. The only in-place updates are strictly additive gap-fills: a relationship's `cardinality` is set only when it is currently unset (a value you chose is never replaced), a field's `unique` is only ever turned on, never off, a dataset with no primary key takes the live one (a key you set is never changed), a missing enforced key is added (one is never removed; schema drift does that), and an **empty** `description` (field and dataset level) is filled from the live DB comment. Filling any of these is enough to trigger a save, so a re-ingest that adds no fields or relationships still persists newly-discovered metadata. Filled descriptions are reported per dataset (`DatasetAddition.described_fields`, `dataset_described`; the CLI prints `+descriptions: …`). Other metadata fills are reported as `metadata_changed` (`+key metadata`).
 - **Existing `sql`-mode or query-backed dataset with the matching name** → skipped by the merge, since those are user-authored; the only change re-ingestion makes to an `sql`-mode dataset is the list re-type below.
 
 With the default YAML storage, two live tables whose quoted names differ only by letter case (`"Orders"` vs `orders`) cannot both be persisted — dataset names collide as filenames on macOS / Windows, so the save is rejected (`IdCollisionError`). The first table wins; the second surfaces as a per-dataset entry in `IdempotentIngestResult.errors` (or a per-dataset message on the CLI / MCP paths) without aborting the rest of the ingest. SQLite storage persists both.

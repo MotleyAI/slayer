@@ -19,10 +19,10 @@ from tests._engine_helpers import _engine_generate
 INT_TYPES = frozenset(exp.DataType.INTEGER_TYPES) - {exp.DataType.Type.BIT}
 
 
-async def _statement(dialect: str, *formulas: str, aggregations: Sequence[Aggregation] = ()) -> Expr:
+async def _statement(dialect: str, *expressions: str, aggregations: Sequence[Aggregation] = ()) -> Expr:
     model = orders_dataset()
     model.aggregations.extend(aggregations)
-    query = orders_q(metrics=[m(f, f"v{i}") for i, f in enumerate(formulas)])
+    query = orders_q(metrics=[m(f, f"v{i}") for i, f in enumerate(expressions)])
     sql = await _engine_generate(query=query, dataset=model, extra_datasets=[customers_dataset()], dialect=dialect)
     return sqlglot.parse_one(sql, read=dialect)
 
@@ -39,8 +39,8 @@ def _int_cast(node: Expr | None) -> bool:
 
 @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
 @pytest.mark.parametrize("formula", [
-    "weighted_avg(amount, weight=flag)", "covar_samp(amount, other=flag)",
-    "covar_pop(amount, other=flag)", "corr(amount, other=flag)",
+    "weighted_avg(orders.amount, weight=orders.flag)", "covar_samp(orders.amount, other=orders.flag)",
+    "covar_pop(orders.amount, other=orders.flag)", "corr(orders.amount, other=orders.flag)",
 ])
 async def test_parameter_takes_the_integer(dialect: str, formula: str) -> None:
     tree = await _statement(dialect, formula)
@@ -52,7 +52,7 @@ async def test_parameter_takes_the_integer(dialect: str, formula: str) -> None:
 async def test_builtin_named_override_placeholders_take_the_integer(dialect: str) -> None:
     override = Aggregation(name="weighted_avg", expression="SUM({value} * {weight}) * 1.0 / SUM({weight})",
                            params=[AggregationParam(name="weight", sql="1")])
-    tree = await _statement(dialect, "weighted_avg(amount, weight=flag)", aggregations=[override])
+    tree = await _statement(dialect, "weighted_avg(orders.amount, weight=orders.flag)", aggregations=[override])
     bare = [c.sql(dialect=dialect) for c in _flag_reads(tree) if not _int_cast(c.parent)]
     assert bare == [], tree.sql(dialect=dialect)
 
@@ -61,6 +61,6 @@ async def test_builtin_named_override_placeholders_take_the_integer(dialect: str
 async def test_custom_aggregation_placeholder_stays_boolean(dialect: str) -> None:
     custom = Aggregation(name="true_amount", expression="SUM(CASE WHEN {flag} THEN {value} END)",
                          params=[AggregationParam(name="flag", sql="TRUE")])
-    tree = await _statement(dialect, "true_amount(amount, flag=flag)", aggregations=[custom])
+    tree = await _statement(dialect, "true_amount(orders.amount, flag=orders.flag)", aggregations=[custom])
     cast = [c.sql(dialect=dialect) for c in _flag_reads(tree) if _int_cast(c.parent)]
     assert cast == [], tree.sql(dialect=dialect)

@@ -6,11 +6,13 @@ from datetime import datetime
 
 import functools
 from enum import Enum, IntEnum
-from typing import AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypeAlias, TypedDict, Union, cast,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TypeKind
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import Granularity
@@ -26,7 +28,7 @@ from slayer.core.keys import (
     _FrozenKey,
     walk_value_keys,
 )
-from slayer.core.models import EmptyValue, SlayerDataset
+from slayer.core.models import DatasetField, EmptyValue, SlayerDataset
 from slayer.core.scope import StageSchema, StaleSpelling
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
@@ -44,9 +46,13 @@ __all__ = [
     "MaskEntry",
     "MaskTyping",
     "OrderEntry",
+    "EntityDedup",
     "PickedParam",
     "PlainProducerKernel",
     "PlannedQuery",
+    "PlannedRowBranch",
+    "PlannedDomain",
+    "PlannedRowSupply",
     "ProducerKernel",
     "RankedGrainMember",
     "RankedProducerKernel",
@@ -132,7 +138,7 @@ class ValueSlot(BaseModel):
     #: re-aggregates (False); None for non-transform values (D6).
     series: Optional[bool] = None
     label: Optional[str] = None
-    type: Optional[DataType] = None
+    type: DataType
     element_type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False
@@ -143,12 +149,14 @@ class ValueSlot(BaseModel):
 
     @property
     def cast_type(self) -> Optional[DataType]:
-        """Return only casts that preserve the inferred database value; a declared Decimal keeps an exact value."""
+        """Return only casts that preserve the inferred database value; a declared Decimal keeps an exact value, and an
+        inferred timestamp is already one (a cast could only narrow its precision or drop its zone)."""
         if self.type is DataType.ARRAY or (self.type is DataType.DECIMAL and self.preserve_native_type):
             return None
         if not self.type_is_explicit and (
             self.preserve_native_type
             or (self.type == DataType.INTEGER and self.phase != Phase.ROW)
+            or self.type.kind is TypeKind.TIMESTAMP
         ):
             return None
         return self.type
@@ -208,6 +216,8 @@ class SpineFactor(BaseModel):
     lower: datetime
     upper: datetime
     size: int = Field(ge=1)
+    #: The host's path to the spine field.
+    path: Tuple[str, ...] = ()
 
 
 class MaskEntry(BaseModel):
@@ -253,6 +263,43 @@ class EmptyBaseGrainPlan(BaseModel):
     host_gated: bool = False
 
 
+class ComputedKey(BaseModel):
+    """A relationship key computed by an expression over its relation's source columns."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["computed"] = "computed"
+    text: str
+
+
+class WindowedKey(BaseModel):
+    """A relationship key read as the column its relation materialises a windowed field in."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["windowed"] = "windowed"
+    field: str
+
+
+#: A non-physical relationship key (``None`` in its place: a physical column).
+DerivedKey: TypeAlias = Union[ComputedKey, WindowedKey]
+
+
+def derived_key(field: DatasetField) -> Optional[DerivedKey]:
+    """How relationship key ``field`` is read: ``None`` for its physical column."""
+    if field.windowed:
+        return WindowedKey(field=field.name)
+    return None if field.is_base else ComputedKey(text=field.definition_sql or field.name)
+
+
+class KeyArgs(TypedDict):
+    """``SemiJoinHop``'s key fields, as ``SemiJoinHop.key_args`` builds them."""
+
+    join_pairs: Tuple[Tuple[str, str], ...]
+    quoted: Tuple[Tuple[bool, bool], ...]
+    computed: Tuple[Tuple[Optional[DerivedKey], Optional[DerivedKey]], ...]
+
+
 class SemiJoinHop(BaseModel):
     """One node of a semi-join correlation tree, joined from its parent node (the
     producer root for a first hop) on oriented PHYSICAL ``join_pairs`` (parent_col, hop_col).
@@ -264,6 +311,8 @@ class SemiJoinHop(BaseModel):
     join_pairs: Tuple[Tuple[str, str], ...]
     #: Per pair, whether each key's stored SQL quotes its physical name (``DatasetField.physical_quoted``).
     quoted: Tuple[Tuple[bool, bool], ...] = ()
+    #: Per pair, each side's derived key (``None``: a physical key).
+    computed: Tuple[Tuple[Optional[DerivedKey], Optional[DerivedKey]], ...] = ()
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
     #: analysis's input (a declared-INNER hop is never null-extended).
@@ -273,10 +322,21 @@ class SemiJoinHop(BaseModel):
     null_extended: bool = False
     #: A list child hop: the parent node's list field, unnested from the parent's row.
     lateral: Optional[str] = None
+    #: A provably but untrusted to-one hop: its target is read through its distinct projection.
+    untrusted: bool = False
 
     @property
     def node_id(self) -> str:
         return "/".join(self.node_path)
+
+    @staticmethod
+    def key_args(keys: Sequence[Tuple[DatasetField, DatasetField]]) -> KeyArgs:
+        """``join_pairs``, ``quoted`` and ``computed`` of oriented key field pairs."""
+        return {
+            "join_pairs": tuple((s.key_name, t.key_name) for s, t in keys),
+            "quoted": tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
+            "computed": tuple((derived_key(s), derived_key(t)) for s, t in keys),
+        }
 
 
 class SemiJoinFilter(BaseModel):
@@ -314,6 +374,15 @@ class PlainProducerKernel(BaseModel):
     kind: Literal["plain"] = "plain"
 
 
+class EntityDedup(BaseModel):
+    """Association's level 1 under a ranked / windowed reducer: one row per (cell, entity) picking each input once."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    #: The root's identity keys in the producer's coordinates.
+    entity_keys: List[ValueKey] = Field(default_factory=list)
+
+
 class RankedProducerKernel(BaseModel):
     """A ``first``/``last`` producer: one row per grain group, picked by ranking."""
 
@@ -322,6 +391,8 @@ class RankedProducerKernel(BaseModel):
     kind: Literal["ranked"] = "ranked"
     agg: Literal["first", "last"]
     ranking_time_key: ValueKey
+    #: Set when associating: the ranking runs over the deduplicated entity rows.
+    association: Optional[EntityDedup] = None
 
 
 class PickedParam(BaseModel):
@@ -359,6 +430,8 @@ class TrailingWindowProducerKernel(BaseModel):
     endpoints: Optional["PlannedQuery"] = None
     #: The producer's grain keys in ``endpoints``' column order.
     endpoint_keys: List[ValueKey] = Field(default_factory=list)
+    #: Set when associating: each frame's rows dedup per (bucket, cell, entity) before the reducer.
+    association: Optional[EntityDedup] = None
 
 
 class AssociationProducerKernel(BaseModel):
@@ -381,9 +454,8 @@ class AssociationProducerKernel(BaseModel):
     entity_keys: List[ValueKey] = Field(default_factory=list)
     null_safe: bool = False
     picked_params: List[PickedParam] = Field(default_factory=list)
-    #: Every associated dimension is a list child of the root: level 1 is each root row once per distinct
-    #: element combination, with no key to group by.
-    list_rows: bool = False
+    #: A ``first`` / ``last`` over an aggregate: level 2 picks the value of the cell with the least / greatest key.
+    ranking_key: Optional[ValueKey] = None
 
 
 ProducerKernel = Union[
@@ -411,12 +483,15 @@ class RegroupAttachPlan(BaseModel):
     )
     join_pairs: List[Tuple[ValueKey, SlotId]] = Field(default_factory=list)
     substitutions: List[RegroupSubstitution] = Field(default_factory=list)
+    #: A re-aggregation's operand: its consumer reads its rows as its own (every key a substitution), never joins it.
+    drives: bool = False
     partition_display: List[str] = Field(default_factory=list)
     producer_root_dataset: Optional[str] = None
     broadcast_metric: Optional[str] = None
     broadcast_dimensions: List[Tuple[str, str]] = Field(default_factory=list)
-    # Why the default mode broadcast instead of associating; ``None`` for a requested broadcast.
-    association_unsupported: Optional[str] = None
+    # The broadcast aggregate in canonical form (query-spelled references), and the ``partition_by=`` returning its values.
+    broadcast_call: Optional[str] = None
+    broadcast_partition_by: List[str] = Field(default_factory=list)
     # Associate-mode counterparts: the aggregate resolved by
     # distinct-entity association, and the unattributable dimensions its cells
     # are not additive across (empty for an explicit ``partition_by=`` grain).
@@ -460,7 +535,15 @@ class PlannedQuery(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    @property
+    def stage_field_relation(self) -> str:
+        """The relation this stage's field names drop from its result keys."""
+        return self.field_relation if self.field_relation is not None else self.source_relation
+
     source_relation: str
+    #: The relation a stage's field names drop from its result keys: its dimension anchor in an inferred stage
+    #: (``""``: none, for the unit or a product), else ``source_relation``.
+    field_relation: Optional[str] = None
     row_slots: List[ValueSlot] = Field(default_factory=list)
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
     regroup_attach_plans: List["RegroupAttachPlan"] = Field(default_factory=list)
@@ -502,6 +585,10 @@ class PlannedQuery(BaseModel):
     spine: Optional[SpineFactor] = None
     # This stage's own resolved ``to_many_handling``.
     mode_policy: ModePolicy = ModePolicy()
+    # An inferred stage's rows when several sources supply them: the union of the branches' cells.
+    row_supply: Optional["PlannedRowSupply"] = None
+    # A transform producer's rows when an attached constituent supplies cells (semantics Axiom 11.6).
+    domain: Optional["PlannedDomain"] = None
 
     @model_validator(mode="after")
     def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
@@ -718,9 +805,34 @@ def _validate_stage_order(pq: "PlannedQuery") -> None:
         _validate_stage_order(attach.producer_plan)
 
 
+class PlannedRowBranch(BaseModel):
+    """A row source's cells (a dimension-only plan), kept where they agree with each ``restrict`` plan's cells."""
+
+    cells: PlannedQuery
+    restrict: List[PlannedQuery] = Field(default_factory=list)
+
+
+class PlannedRowSupply(BaseModel):
+    """The rows of an inferred stage: the null-safe union of its branches' cells (semantics 12.4)."""
+
+    branches: List[PlannedRowBranch]
+
+
+class PlannedDomain(BaseModel):
+    """A transform producer's rows: the null-safe union of its supplying constituents' cells (Axiom 11.6)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    #: The host's own grouped rows supply cells.
+    host: bool = False
+    #: Each supplying combined attach, by one of its placeholders.
+    placeholders: List[ValueKey] = Field(default_factory=list)
+
+
 # ``producer_plan`` forward-references ``PlannedQuery``.
 RegroupAttachPlan.model_rebuild()
 TrailingWindowProducerKernel.model_rebuild()
+PlannedQuery.model_rebuild()
 
 
 def regroup_producer_identity(attach: RegroupAttachPlan) -> Hashable:
@@ -809,9 +921,14 @@ def planned_keys(planned_list) -> Iterator[ValueKey]:
 
 
 def plans_read_clock(planned_list) -> bool:
-    """Whether any plan evaluates ``now()`` / ``current_date()``."""
+    """Whether any plan reads the clock at execution: ``now()`` / ``current_time()`` anywhere, ``current_date()`` in
+    a stage without a zone (under one it is that day's literal)."""
+    def reads(planned, key) -> bool:
+        zoned = planned.stage_bundle is not None and planned.stage_bundle.time_zone is not None
+        return isinstance(key, ScalarCallKey) and (key.name in ("now", "current_time") or (key.name in CLOCK_FUNCTIONS and not zoned))
+
     return any(
-        isinstance(k, ScalarCallKey) and k.name in CLOCK_FUNCTIONS
+        reads(planned, k)
         for planned in planned_list
         for root in plan_value_keys(planned)
         for k in walk_value_keys(root)

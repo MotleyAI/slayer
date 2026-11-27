@@ -34,12 +34,12 @@ def _sq_dataset(outer: str) -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name=f"s1_{outer}", population="sales",
-                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
-                metrics=[QueryMetric(metric="sum(amount)", alias="ct")]),
+                dimensions=[QueryDimension(field="sales.region"), QueryDimension(field="sales.city")],
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="ct")]),
             SlayerQuery(
                 population=f"s1_{outer}",
-                dimensions=[QueryDimension(field="region")],
-                metrics=[QueryMetric(metric=f"{outer}(ct)", alias="v")]),
+                dimensions=[QueryDimension(field=f"s1_{outer}.region")],
+                metrics=[QueryMetric(metric=f"{outer}(s1_{outer}.ct)", alias="v")]),
         ])
 
 
@@ -62,10 +62,10 @@ class TestEquivalenceVsSourceQueries:
         """Each re-aggregation returns the manual multi-stage encoding's values,
         region by region."""
         reagg_resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], metrics=[reagg(outer, INNER_CR, name="v")]))
+            dimensions=["sales.region"], metrics=[reagg(outer, INNER_CR, name="v")]))
         manual_resp = await exec_engine.execute(f"sq_{outer}")
-        got = _by_region_suffix(reagg_resp, ".v")
-        want = _by_region_suffix(manual_resp, ".v")
+        got = _by_region_suffix(reagg_resp, "v")
+        want = _by_region_suffix(manual_resp, "v")
         assert set(got) == set(want)
         for region in want:
             g, w = got[region], want[region]
@@ -80,6 +80,6 @@ class TestNoPlaceholderLeak:
     async def test_reaggregation_sql_has_no_placeholder_leak(self, dialect):
         """The emitted SQL never leaks a ``__regroup__`` placeholder column."""
         sql = await gen(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[reagg("avg", INNER_CR, name="acr")]), dialect=dialect)
         assert "__regroup__" not in sql, sql

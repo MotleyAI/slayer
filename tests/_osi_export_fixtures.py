@@ -1,4 +1,4 @@
-"""Seed data and SLayer model builders for the Ossie export tests."""
+"""Seed data and SLayer dataset builders for the Ossie export tests."""
 
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ EXPORT_DDL = [
 ]
 
 
-def col(name: str, type_: DataType = DataType.FLOAT, sql: str | None = None, **extra: Any) -> DatasetField:
-    return DatasetField(name=name, sql=sql, datatype=type_, **extra)
+def col(name: str, type_: DataType = DataType.FLOAT, expression: str | None = None, **extra: Any) -> DatasetField:
+    return DatasetField(name=name, expression=expression, datatype=type_, **extra)
 
 
 def slayer_metric(name: str, expression: str, **extra: Any) -> DatasetMetric:
@@ -51,7 +51,7 @@ def to_customers(**extra: Any) -> DatasetRelationship:
     return DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"], **extra)
 
 
-def orders_columns() -> list[DatasetField]:
+def orders_fields() -> list[DatasetField]:
     return [
         col("id", DataType.INTEGER, "o_orderkey", primary_key=True),
         col("customer_id", DataType.INTEGER, "o_custkey"),
@@ -70,20 +70,20 @@ def orders_columns() -> list[DatasetField]:
     ]
 
 
-def orders(*, columns: list[DatasetField] | None = None, metrics: list[DatasetMetric] | None = None,
-           joins: list[DatasetRelationship] | None = None, **extra: Any) -> SlayerDataset:
-    """The ``orders`` table model; by default joined many-to-one to ``customers``."""
+def orders(*, fields: list[DatasetField] | None = None, metrics: list[DatasetMetric] | None = None,
+           relationships: list[DatasetRelationship] | None = None, **extra: Any) -> SlayerDataset:
+    """The ``orders`` table dataset; by default related many-to-one to ``customers``."""
     return SlayerDataset(
         name=extra.pop("name", "orders"), sql_table=extra.pop("sql_table", "orders"), data_source=DATASOURCE,
-        fields=orders_columns() if columns is None else columns,
+        fields=orders_fields() if fields is None else fields,
         metrics=metrics or [],
-        relationships=[to_customers()] if joins is None else joins,
+        relationships=[to_customers()] if relationships is None else relationships,
         default_time_dimension=extra.pop("default_time_dimension", "ordered_on"),
         **extra,
     )
 
 
-def customers(*, metrics: list[DatasetMetric] | None = None, joins: list[DatasetRelationship] | None = None,
+def customers(*, metrics: list[DatasetMetric] | None = None, relationships: list[DatasetRelationship] | None = None,
               **extra: Any) -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=DATASOURCE,
@@ -95,13 +95,13 @@ def customers(*, metrics: list[DatasetMetric] | None = None, joins: list[Dataset
             col("email", DataType.STRING, unique=True),
         ],
         metrics=metrics or [],
-        relationships=joins or [],
+        relationships=relationships or [],
         **extra,
     )
 
 
 def visits(**extra: Any) -> SlayerDataset:
-    """A sql-mode model over ``visits``."""
+    """A sql-mode dataset over ``visits``."""
     return SlayerDataset(
         name="visits", sql="SELECT visit_id, status, customer_id FROM visits", data_source=DATASOURCE,
         fields=[
@@ -114,20 +114,20 @@ def visits(**extra: Any) -> SlayerDataset:
 
 
 def monthly_revenue() -> SlayerDataset:
-    """A query-backed model with a ``{region}`` variable defaulting to ``US``."""
+    """A query-backed dataset with a ``{region}`` variable defaulting to ``US``."""
     return SlayerDataset(
         name="monthly_revenue", data_source=DATASOURCE,
         source_queries=[SlayerQuery.model_validate({
             "population": "orders",
-            "time_dimensions": [{"field": "ordered_on", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "revenue"}],
-            "filter": ["region = '{region}'"],
+            "time_dimensions": [{"field": "orders.ordered_on", "granularity": "month"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue"}],
+            "filter": ["orders.region = '{region}'"],
         })],
         query_variables={"region": "US"},
     )
 
 
-BASIC_MEASURES = [
+BASIC_METRICS = [
     slayer_metric("revenue", "sum(amount)"),
     slayer_metric("n", "count(*)"),
     slayer_metric("aov", "revenue / n"),
@@ -135,8 +135,8 @@ BASIC_MEASURES = [
 
 
 def rich_orders() -> SlayerDataset:
-    """``orders`` exercising every exportable measure family plus SLayer-only attributes."""
-    columns = orders_columns()
+    """``orders`` exercising every exportable metric family plus SLayer-only attributes."""
+    columns = orders_fields()
     for c in columns:
         if c.name == "amount":
             c.format = NumberFormat(type=NumberFormatType.CURRENCY, precision=2)
@@ -150,17 +150,17 @@ def rich_orders() -> SlayerDataset:
         if c.name == "note":
             c.hidden = True
     columns += [
-        col("gross", sql="price * quantity"),
-        col("net", sql="gross - discount"),
-        col("completed_amount", sql="amount", filter="status = 'completed'"),
-        col("paid_flag", DataType.BOOLEAN, sql="is_paid", filter="status <> 'test'"),
-        col("segment", DataType.STRING, sql="customers.segment"),
+        col("gross", expression="price * quantity"),
+        col("net", expression="orders.gross - discount"),
+        col("completed_amount", expression="amount", filter="status = 'completed'"),
+        col("paid_flag", DataType.BOOLEAN, expression="is_paid", filter="status <> 'test'"),
+        col("segment", DataType.STRING, expression="customers.segment"),
     ]
     return orders(
-        columns=columns,
+        fields=columns,
         aggregations=[Aggregation(name="trimmed_sum", expression="SUM(CASE WHEN {value} < 15 THEN {value} END)")],
         metrics=[
-            *BASIC_MEASURES,
+            *BASIC_METRICS,
             slayer_metric("avg_amount", "avg(amount)", label="Average amount", datatype=DataType.FLOAT,
                     meta={"owner": "finance"}),
             slayer_metric("min_amount", "min(amount)"),

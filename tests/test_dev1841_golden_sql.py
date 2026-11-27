@@ -1,5 +1,5 @@
 """Golden SQL — the two-level association producer
-across seven Tier-1 dialects, plus cross-model broadcast byte-identity
+across seven Tier-1 dialects, plus cross-dataset broadcast byte-identity
 tripwires.
 
 Blessed BEFORE implementation, so every ``bcast/`` case pins today's bytes
@@ -29,7 +29,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1841_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
             "snowflake"]
 
-_MODEL_SETS = {
+_DATASET_SETS = {
     "default": dev1840_datasets,
     "ext": dev1841_datasets,
 }
@@ -40,34 +40,34 @@ POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 MED = QueryMetric(metric="median(customers.spend)", alias="med")
 RENT = QueryMetric(metric="sum(stores.rent)", alias="rent")
 GS = QueryMetric(metric="sum(customers.gold_spend)", alias="gs")
-PART = QueryMetric(metric="sum(customers.spend, partition_by=status)", alias="cm")
+PART = QueryMetric(metric="sum(customers.spend, partition_by=orders.status)", alias="cm")
 
 
 def _cases() -> dict:
     return {
         "assoc/spend_by_status": {"models": "default", "mode": "associate",
-                                  "kw": {"dimensions": ["status"], "metrics": [CM]}},
+                                  "kw": {"dimensions": ["orders.status"], "metrics": [CM]}},
         "assoc/count_by_status": {"models": "default", "mode": "associate",
-                                  "kw": {"dimensions": ["status"], "metrics": [NC]}},
+                                  "kw": {"dimensions": ["orders.status"], "metrics": [NC]}},
         "assoc/pop_by_status": {"models": "default", "mode": "associate",
-                                "kw": {"dimensions": ["status"], "metrics": [POP]}},
+                                "kw": {"dimensions": ["orders.status"], "metrics": [POP]}},
         "assoc/median_by_status": {"models": "default", "mode": "associate",
-                                   "kw": {"dimensions": ["status"], "metrics": [MED]}},
+                                   "kw": {"dimensions": ["orders.status"], "metrics": [MED]}},
         "assoc/rent_composite_key": {"models": "default", "mode": "associate",
-                                     "kw": {"dimensions": ["status"], "metrics": [RENT]}},
+                                     "kw": {"dimensions": ["orders.status"], "metrics": [RENT]}},
         "assoc/measure_local_filter": {"models": "ext", "mode": "associate",
-                                       "kw": {"dimensions": ["status"], "metrics": [GS]}},
+                                       "kw": {"dimensions": ["orders.status"], "metrics": [GS]}},
         "assoc/explicit_partition": {"models": "default", "mode": "associate",
-                                     "kw": {"dimensions": ["status"], "metrics": [PART]}},
+                                     "kw": {"dimensions": ["orders.status"], "metrics": [PART]}},
         "bcast/spend_by_status": {"models": "default", "mode": "broadcast",
-                                  "kw": {"dimensions": ["status"], "metrics": [CM]}},
+                                  "kw": {"dimensions": ["orders.status"], "metrics": [CM]}},
         "bcast/attributable_tier": {"models": "default", "mode": None,
                                     "kw": {"dimensions": ["customers.tier"], "metrics": [CM]}},
     }
 
 
 async def _generate_one(case, dialect: str):
-    models = _MODEL_SETS[case["models"]]()
+    models = _DATASET_SETS[case["models"]]()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:
@@ -96,22 +96,13 @@ bind_golden_tests(
 # median/percentile have no grouped-aggregate form on these dialects — a general
 # SLayer limitation (tsql.py/mysql.py build_median raise), not the association
 # producer. The producer inherits the raise; it is pinned, not hidden.
-_AGG_UNSUPPORTED = {f"assoc/median_by_status::{d}" for d in ("tsql", "mysql")}
-
-
 def test_association_cases_emit_two_level_group_by(baseline) -> None:
     """Feature-missing tripwire: each associate case must generate (not raise)
-    and carry the two-level GROUP BY of the dedup-then-aggregate producer, except
-    where the level-2 aggregate is unsupported by the dialect itself (pinned as a
-    NotImplementedError); broadcast cases must generate today unchanged."""
+    and carry the two-level GROUP BY of the dedup-then-aggregate producer;
+    broadcast cases must generate today unchanged."""
     for key, value in baseline.items():
         case_id = key.rsplit("::", 1)[0]
-        if key in _AGG_UNSUPPORTED:
-            assert isinstance(value, dict), (
-                f"{key} should pin the dialect's median limitation, got {value!r}")
-            assert value.get("error") == "NotImplementedError", (
-                f"{key} should pin the dialect's median limitation, got {value!r}")
-        elif case_id.startswith("assoc/"):
+        if case_id.startswith("assoc/"):
             assert not isinstance(value, dict), f"{key} still raises: {value}"
             assert value.upper().count("GROUP BY") >= 2, (
                 f"{key} lacks the two-level association GROUP BY")

@@ -1,4 +1,4 @@
-"""DEV-1571: shared dotted-alias encode/decode bijection.
+"""Shared dotted-alias encode/decode bijection.
 
 The same bijection backs ``BigqueryDialect`` (backtick-anchored regex over
 the emitted SQL) and ``TsqlDialect`` (bracket-anchored regex). These tests
@@ -18,7 +18,7 @@ from slayer.sql.naming import (
 
 
 def test_separator_is_triple_underscore() -> None:
-    """``___`` is the chosen separator. Same as BigQuery's pre-DEV-1571
+    """``___`` is the chosen separator. Same as BigQuery's former
     private constant; T-SQL reuses it (different identifier-quote anchors
     mean the two dialects' regexes never collide).
     """
@@ -54,7 +54,7 @@ def test_encode_no_dot_returns_input() -> None:
 
 
 def test_encode_user_triple_underscore_in_leaf() -> None:
-    """A user-named measure containing ``___`` (e.g.
+    """A user-named metric containing ``___`` (e.g.
     ``orders.my___metric``) escape-doubles the inner ``___`` BEFORE the
     dot rewrite so the round-trip is unambiguous.
 
@@ -114,14 +114,14 @@ def test_decode_no_separator_is_identity() -> None:
         "orders.products.category",                 # multi-hop
         "orders.my___metric",                       # user ``___`` in leaf
         "a.b.c___d",                                # ``___`` mid-string
-        "orders.customers.regions.population_sum",  # 4-hop cross-model
+        "orders.customers.regions.population_sum",  # 4-hop cross-dataset
     ],
 )
 def test_round_trip_on_dotted_aliases(original: str) -> None:
     """``decode_alias(encode_alias(x)) == x`` for every realistic SLayer
     alias shape.
 
-    SLayer's projection aliases are always model-qualified (``<model>.X``),
+    SLayer's projection aliases are always dataset-qualified (``<dataset>.X``),
     so they always contain at least one dot. The bijection is exact on
     that subset — see ``test_decode_corrupts_no_dot_key_with_triple_underscore``
     for the documented out-of-domain case.
@@ -136,7 +136,7 @@ def test_decode_corrupts_no_dot_key_with_triple_underscore() -> None:
     Pins the documented domain constraint so a future "make it
     everywhere-defined" refactor is an explicit, reviewable change rather
     than a silent docstring-vs-behaviour drift. Mirrors BigQuery's
-    pre-DEV-1571 characterisation pin (``test_decode_corrupts_no_dot_key_with_triple_underscore``
+    characterisation pin (``test_decode_corrupts_no_dot_key_with_triple_underscore``
     in ``test_bigquery.py``).
     """
     assert decode_alias("my___metric") == "my.metric"

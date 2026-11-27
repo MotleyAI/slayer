@@ -50,12 +50,12 @@ def orders_dataset(*, filters: Optional[list[str]] = None) -> SlayerDataset:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at", filters=filters or [],
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="qty", expression="qty", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -66,13 +66,13 @@ def q(**kw) -> SlayerQuery:
 
 
 def month_td() -> list[dict]:
-    return [{"field": "created_at", "granularity": "month"}]
+    return [{"field": "orders.created_at", "granularity": "month"}]
 
 
 def cumsum_chain(**kw) -> SlayerQuery:
     """``cumsum(sum(amount))`` by month (a one-step transform chain)."""
     kw.setdefault("time_dimensions", month_td())
-    kw.setdefault("metrics", [{"metric": "cumsum(sum(amount))", "alias": "running"}])
+    kw.setdefault("metrics", [{"metric": "cumsum(sum(orders.amount))", "alias": "running"}])
     return q(**kw)
 
 
@@ -81,11 +81,11 @@ MODE_A_OR = "status = 'a' OR status = 'b'"
 
 def where_having_query() -> SlayerQuery:
     """Same-phase WHERE / HAVING conjuncts, two of them ORs."""
-    return q(dimensions=["region"], metrics=["sum(amount)"], filter=[
-        "amount > 15",
-        "region == 'US' or region == 'EU'",
-        "sum(amount) > 55 or count(amount) > 2",
-        "max(amount) < 1000",
+    return q(dimensions=["orders.region"], metrics=["sum(orders.amount)"], filter=[
+        "orders.amount > 15",
+        "orders.region == 'US' or orders.region == 'EU'",
+        "sum(orders.amount) > 55 or count(orders.amount) > 2",
+        "max(orders.amount) < 1000",
     ])
 
 

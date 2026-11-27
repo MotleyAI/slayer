@@ -1,11 +1,11 @@
-"""DEV-1859 task 4.6 — generator scope-render guards (design decision 15). The
+"""Generator scope-render guards (design decision 15). The
 one renderer (`_render_expression_source_sql` via `scope.resolve`) must register
-a constituent's join exactly ONCE; the risk is a derived-column source that
-crosses a join being rendered twice (private resolver + kwarg join-registration
+a constituent's join exactly ONCE; the risk is a derived-field source that
+crosses a relationship being rendered twice (private resolver + kwarg join-registration
 pass). These lock the invariant across the §5.4 re-cut.
 
 Spec: openspec …/specs/queries/partitioned-aggregates — "Mixed sources carry the
-full expression-source surface" (cross-model constituents).
+full expression-source surface" (cross-dataset constituents).
 """
 
 from __future__ import annotations
@@ -25,13 +25,21 @@ from tests._dev1847_fixtures import (
     SlayerQuery,
     corders_dataset,
     customers_dataset,
-    gen,
+    dev1847_datasets,
     regions_dataset,
     sales_dataset,
 )
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting_all
 
-_CROSS_MIXED = ("sum(region_id * sum(corders.amount, partition_by=region_id))")
+_CROSS_MIXED = ("sum(customers.region_id * sum(corders.amount, partition_by=customers.region_id))")
+
+
+async def _gen(query: SlayerQuery) -> str:
+    # These pins describe the inline-join lowering of trusted hops.
+    models = trusting_all(dev1847_datasets())
+    return await _engine_generate(
+        query=query, dataset=models[0], extra_datasets=models[1:], dialect="postgres", validate=False)
 
 
 def _join_count_to(sql: str, table: str) -> int:
@@ -41,21 +49,21 @@ def _join_count_to(sql: str, table: str) -> int:
 
 
 def _derived_ref_datasets():
-    """corders.cust_rid is a DERIVED column reading customers.rid1 — itself a
-    DERIVED column — across the corders→customers join."""
+    """corders.cust_rid is a DERIVED field reading customers.rid1 — itself a
+    DERIVED field — across the corders→customers relationship."""
     sales, regions, customers, corders = (
         sales_dataset(), regions_dataset(), customers_dataset(), corders_dataset())
     customers.fields.append(
-        DatasetField(name="rid1", datatype=DataType.FLOAT, sql="region_id * 1"))
+        DatasetField(name="rid1", datatype=DataType.FLOAT, expression="region_id * 1"))
     corders.fields.append(
-        DatasetField(name="cust_rid", datatype=DataType.FLOAT, sql="customers.rid1"))
-    return [corders, customers, regions, sales]
+        DatasetField(name="cust_rid", datatype=DataType.FLOAT, expression="customers.rid1"))
+    return trusting_all([corders, customers, regions, sales])
 
 
 class TestJoinEmittedOnce:
     async def test_cross_model_constituent_producer_emitted_once(self):
-        sql = await gen(SlayerQuery(
-            population="customers", dimensions=[QueryDimension(field="region_id")],
+        sql = await _gen(SlayerQuery(
+            population="customers", dimensions=[QueryDimension(field="customers.region_id")],
             metrics=[QueryMetric(metric=_CROSS_MIXED, alias="xm")]))
         producers = [n for n in re.findall(r"(_cm_\w+) AS \(", sql)
                      if "amount" in n]
@@ -73,7 +81,7 @@ class TestJoinEmittedOnce:
             query=SlayerQuery(
                 population="corders",
                 metrics=[QueryMetric(
-                    metric="sum(amount * avg(cust_rid, partition_by=customer_id))",
+                    metric="sum(corders.amount * avg(corders.cust_rid, partition_by=corders.customer_id))",
                     alias="m")]),
             dataset=models[0], extra_datasets=models[1:],
             dialect="postgres", validate=False)

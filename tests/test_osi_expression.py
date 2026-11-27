@@ -1,12 +1,12 @@
-"""OSI metric/field expression -> SLayer formula transform (slayer/importers/aggregates.py).
+"""OSI metric/field expression -> SLayer expression transform (slayer/importers/aggregates.py).
 
 ``convert_expression`` walks a SQL aggregation expression with sqlglot and emits a
-SLayer functional-syntax formula, materializing hidden derived Columns for non-bare
+SLayer functional-syntax expression, materializing hidden derived fields for non-bare
 aggregate operands, and clean-failing anything inexpressible.
 
-Callbacks (so the transform is model-agnostic and unit-testable in isolation):
-- ``owner_of(qualifier, column) -> model | None``  which dataset owns a column
-- ``ref_of(model, column) -> anchor-relative dotted ref | None``  (None = unreachable)
+Callbacks (so the transform is dataset-agnostic and unit-testable in isolation):
+- ``owner_of(qualifier, column) -> dataset | None``  which dataset owns a column
+- ``ref_of(dataset, column) -> anchor-relative dotted ref | None``  (None = unreachable)
 """
 
 import pytest
@@ -19,7 +19,7 @@ from slayer.core.syntax import parse_expr
 from slayer.importers.aggregates import convert_expression, expression_refusal
 from slayer.sql.dialects import dialect_for_ds_type
 
-# Single-model context: everything is owned by "orders"; refs are local (bare).
+# Single-dataset context: everything is owned by "orders"; refs are local (bare).
 OWNER = lambda q, c: "orders"          # noqa: E731
 REF = lambda m, c: c                    # noqa: E731
 
@@ -85,7 +85,7 @@ def test_constant_times_agg():
     assert _run("0.9 * SUM(amount)").expression == "0.9 * sum(amount)"
 
 
-# ───────────────────── derived-column materialization ───────────────────────
+# ───────────────────── derived-field materialization ───────────────────────
 
 @pytest.mark.parametrize(("expr", "inline"), [
     ("SUM(quantity * amount)", "sum(quantity * amount)"),
@@ -151,10 +151,10 @@ def test_percentile_cont_half_is_median():
     )
 
 
-def test_percentile_disc_clean_fails():
+def test_percentile_disc_converts():
     r = _run("PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY amount)")
-    assert not r.ok
-    assert "PERCENTILE_DISC" in (r.reason or "")
+    assert r.ok
+    assert r.expression == "percentile_disc(amount, p=0.9)"
 
 
 def test_percentile_out_of_range_clean_fails():
@@ -178,7 +178,7 @@ def test_array_length_with_a_dimension_clean_fails(sql: str):
 @pytest.mark.parametrize("formula", [
     "sum(length(tags))", "count(*) FILTER (WHERE contains(tags, 'a'))",
     "count(*) FILTER (WHERE contains_any(tags, tags))", "count(*) FILTER (WHERE contains_all(tags, tags))",
-    "collect(status)", "median(amount)", "percentile(amount, p=0.9)",
+    "collect(status)",
 ])
 def test_library_call_refused_by_the_target(formula: str):
     assert expression_refusal(formula, dialect=dialect_for_ds_type("mysql"))
@@ -186,10 +186,10 @@ def test_library_call_refused_by_the_target(formula: str):
 
 
 @pytest.mark.parametrize("ds_type", ["mysql", "mssql"])
-def test_percentile_on_a_refusing_dialect_clean_fails(ds_type: str):
+def test_percentile_converts_on_mysql_and_sql_server(ds_type: str):
     r = _run("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)", sql_dialect=dialect_for_ds_type(ds_type))
-    assert not r.ok
-    assert "not supported" in (r.reason or "")
+    assert r.ok
+    assert r.expression == "percentile(amount, p=0.9)"
 
 
 # ───────────────────────────── clean-fails ─────────────────────────────────
@@ -226,13 +226,12 @@ def test_non_passthrough_function_clean_fails():
     assert not r.ok
 
 
-def test_sum_distinct_clean_fails():
-    # Only COUNT(DISTINCT) is supported; SUM/AVG/MIN/MAX DISTINCT clean-fail.
-    assert not _run("SUM(DISTINCT amount)").ok
-    assert not _run("AVG(DISTINCT amount)").ok
+def test_sum_and_avg_distinct_convert():
+    assert _run("SUM(DISTINCT amount)").expression == "sum_distinct(amount)"
+    assert _run("AVG(DISTINCT amount)").expression == "avg_distinct(amount)"
 
 
-# ───────────────────────── cross-model refs ────────────────────────────────
+# ───────────────────────── cross-dataset refs ────────────────────────────────
 
 def test_qualified_column_emits_dotted_ref():
     owner = lambda q, c: "customers"  # noqa: E731
@@ -244,7 +243,7 @@ def test_qualified_column_emits_dotted_ref():
 
 def test_unreachable_ref_clean_fails():
     owner = lambda q, c: "regions"  # noqa: E731
-    ref = lambda m, c: None          # noqa: E731  (no join path from anchor)
+    ref = lambda m, c: None          # noqa: E731  (no relationship path from anchor)
     r = _run("SUM(regions.population)", owner_of=owner, ref_of=ref)
     assert not r.ok
     assert r.reason

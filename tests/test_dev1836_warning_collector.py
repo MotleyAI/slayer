@@ -16,6 +16,9 @@ from slayer.engine.query_engine import (
 
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1836_fixtures import (
+    _seed_duckdb,
+    _seed_sqlite,
+    dev1836_datasets,
     AMOUNT_BY_BAND,
     SPEND_BAND,
     SPEND_BY_BAND,
@@ -24,6 +27,8 @@ from tests._dev1836_fixtures import (
     q,
     rows_by,
 )
+from tests._engine_helpers import seeded_exec_engine
+from tests._trusted import trusting_all
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -32,7 +37,15 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def trusted_backend(request):
+    """``exec_backend`` over trusted relationships: pins the lowering these tests were written for."""
+    seed = _seed_duckdb if request.param == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=request.param, seed=seed, datasets=trusting_all(dev1836_datasets())) as (engine, _db):
+        yield request.param, engine
+
+
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 
@@ -40,12 +53,12 @@ POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 #: Outside the conjunct pushdown scope for EVERY producer root here (the OR mixes
 #: root-local with cross-path refs / spans branches), yet spine-equivalent to
 #: ``channel = 'app'`` — no region is named ``__none__`` — so the value pins hold.
-_EXCLUDED_APP = "channel = 'app' OR customers.regions.name = '__none__'"
+_EXCLUDED_APP = "orders.channel = 'app' OR customers.regions.name = '__none__'"
 
 
 class TestPushedFilterEntryIdentity:
     """The mixed-OR host filter pushes into every producer; entries
-    are keyed (location, measure, filter text) — one per measure, never one per
+    are keyed (location, metric, filter text) — one per metric, never one per
     consumer, nested producers included."""
 
     async def test_same_filter_pushed_into_two_producers_names_each_measure(
@@ -60,11 +73,11 @@ class TestPushedFilterEntryIdentity:
             ("cm", _EXCLUDED_APP), ("pop", _EXCLUDED_APP),
         ]
 
-    async def test_nested_producers_each_push_the_filter(self, exec_backend):
-        """The computed dimension's nested producer and the cross-model
-        measure's producer both push the host conjunct — one entry each; the
+    async def test_nested_producers_each_push_the_filter(self, trusted_backend):
+        """The computed dimension's nested producer and the cross-dataset
+        metric's producer both push the host conjunct — one entry each; the
         metric counts the customers with an app order (c1, c3), unfanned."""
-        _, engine = exec_backend
+        _, engine = trusted_backend
         resp = await engine.execute(q(
             dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M, CM],
@@ -73,19 +86,19 @@ class TestPushedFilterEntryIdentity:
         pushed = pushed_filter_infos(resp)
         assert {w.filter_text for w in pushed} == {_EXCLUDED_APP}
         assert len({w.metric for w in pushed}) == 2, pushed
-        by = rows_by(resp, "orders.sband")
+        by = rows_by(resp, "sband")
         # Spine: app orders only (o2, o4, o5 — all gold customers → band hi).
         assert set(by) == {("hi",)}
-        assert float(by[("hi",)]["orders.m"]) == pytest.approx(30.0)
-        assert float(by[("hi",)]["orders.cm"]) == pytest.approx(160.0)
+        assert float(by[("hi",)]["m"]) == pytest.approx(30.0)
+        assert float(by[("hi",)]["cm"]) == pytest.approx(160.0)
 
     async def test_entry_arising_only_in_a_nested_producer_surfaces(
-        self, exec_backend,
+        self, trusted_backend,
     ):
         """F7 traversal proof: the ONLY producer here is the computed
-        dimension's (rooted at regions); the sole measure is local. A collector
+        dimension's (rooted at regions); the sole metric is local. A collector
         that never walks nested plans reports nothing."""
-        _, engine = exec_backend
+        _, engine = trusted_backend
         resp = await engine.execute(q(
             dimensions=[{
                 "field": ("CASE WHEN sum(customers.regions.pop, "
@@ -98,20 +111,20 @@ class TestPushedFilterEntryIdentity:
         ))
         (pushed,) = pushed_filter_infos(resp)
         assert "tier" in pushed.filter_text
-        by = rows_by(resp, "orders.pband")
+        by = rows_by(resp, "pband")
         # Gold orders: o1/o2 (c1, North pop 100 → lo), o4/o5 (c3, South → hi).
         assert set(by) == {("hi",), ("lo",)}
-        assert float(by[("lo",)]["orders.m"]) == pytest.approx(30.0)
-        assert float(by[("hi",)]["orders.m"]) == pytest.approx(10.0)
+        assert float(by[("lo",)]["m"]) == pytest.approx(30.0)
+        assert float(by[("hi",)]["m"]) == pytest.approx(10.0)
 
 
 class TestBroadcastDedup:
     async def test_roles_dedup_but_distinct_aggregates_do_not(self, exec_backend):
         """One broadcast warning per distinct aggregate: cm appears in three
-        roles (measure, filter, order) and pop in one — two warnings total."""
+        roles (metric, filter, order) and pop in one — two warnings total."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], metrics=[M, CM, POP],
+            dimensions=["orders.status"], metrics=[M, CM, POP],
             filter=["sum(customers.spend) > 0"],
             order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
             to_many_handling="broadcast",
@@ -127,7 +140,7 @@ class TestBroadcastDedup:
         computed dimension's producer chain must not shadow the outer one."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"field": SPEND_BAND, "alias": "sband"}, "status"],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}, "orders.status"],
             metrics=[M, CM],
             to_many_handling="broadcast",
         ))
@@ -149,12 +162,12 @@ class TestBroadcastDedup:
             metrics=[M, CM],
         ))
         assert broadcast_warnings(resp) == []
-        by = rows_by(resp, "orders.sband")
+        by = rows_by(resp, "sband")
         for band in ("hi", "lo"):
-            assert float(by[(band,)]["orders.m"]) == pytest.approx(
+            assert float(by[(band,)]["m"]) == pytest.approx(
                 AMOUNT_BY_BAND[band],
             )
-            assert float(by[(band,)]["orders.cm"]) == pytest.approx(
+            assert float(by[(band,)]["cm"]) == pytest.approx(
                 SPEND_BY_BAND[band],
             )
 
@@ -162,7 +175,8 @@ class TestBroadcastDedup:
 def _attach(**overrides):
     empty = SimpleNamespace(regroup_attach_plans=[], cross_model_aggregate_plans=[])
     base = dict(
-        broadcast_metric=None, broadcast_dimensions=[], association_unsupported=None, producer_plan=empty,
+        broadcast_metric=None, broadcast_dimensions=[], producer_plan=empty,
+        broadcast_call=None, broadcast_partition_by=[],
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -182,10 +196,10 @@ class TestCollectorIdentityUnits:
         """D6 identity is per stage: same-labeled aggregates in different DAG
         stages are distinct — dimensions must not union across stages."""
         stage_one = _planned([_attach(
-            broadcast_metric="orders.cm", broadcast_dimensions=[("d1", "r1")],
+            broadcast_metric="cm", broadcast_dimensions=[("d1", "r1")],
         )])
         stage_two = _planned([_attach(
-            broadcast_metric="orders.cm", broadcast_dimensions=[("d2", "r2")],
+            broadcast_metric="cm", broadcast_dimensions=[("d2", "r2")],
         )])
         out = _collect_broadcast_warnings(
             planned_list=[stage_one, stage_two],
@@ -199,9 +213,9 @@ class TestCollectorIdentityUnits:
 
     def test_same_stage_same_measure_still_unions_dimensions(self):
         plans = _planned([
-            _attach(broadcast_metric="orders.cm",
+            _attach(broadcast_metric="cm",
                     broadcast_dimensions=[("d1", "r1")]),
-            _attach(broadcast_metric="orders.cm",
+            _attach(broadcast_metric="cm",
                     broadcast_dimensions=[("d1", "r1"), ("d2", "r2")]),
         ])
         (w,) = _collect_broadcast_warnings(
@@ -212,12 +226,12 @@ class TestCollectorIdentityUnits:
     def test_broadcast_human_message_names_location_and_reasons(self):
         (w,) = _collect_broadcast_warnings(
             planned_list=[_planned([_attach(
-                broadcast_metric="orders.cm",
+                broadcast_metric="cm",
                 broadcast_dimensions=[("status", "crosses an unproven join hop to x")],
             )])],
             stages=[SimpleNamespace(name=None)],
         )
         message = w.human_message()
-        assert "'orders.cm'" in message
+        assert "'cm'" in message
         assert "stages[0]" in message
         assert "status (crosses an unproven join hop to x)" in message

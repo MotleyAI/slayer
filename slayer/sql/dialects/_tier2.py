@@ -37,6 +37,7 @@ _EXTREMA: frozenset[NativeFn] = frozenset({"GREATEST", "LEAST"})
 
 
 class RedshiftDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = False
     sqlglot_name: str = "redshift"
     database_name: ClassVar[str] = "Redshift"
     library_functions: ClassVar[frozenset[str]] = TIER2_LIBRARY
@@ -65,14 +66,16 @@ class RedshiftDialect(SqlDialect):
 
 
 class PrestoDialect(PrestoFamilyDialect):
+    enforces_unique_keys: ClassVar[bool] = False
     sqlglot_name: str = "presto"
     database_name: ClassVar[str] = "Presto"
-    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY - {"regexp_count"}
     # Athena uses the Presto dialect via this alias.
     ds_type_aliases: frozenset[str] = frozenset({"presto", "athena"})
 
 
 class DatabricksDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = False
     sqlglot_name: str = "databricks"
     database_name: ClassVar[str] = "Databricks"
     library_functions: ClassVar[frozenset[str]] = TIER2_LIBRARY
@@ -89,6 +92,7 @@ class DatabricksDialect(SqlDialect):
 
 
 class SparkDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = False
     sqlglot_name: str = "spark"
     database_name: ClassVar[str] = "Spark"
     library_functions: ClassVar[frozenset[str]] = TIER2_LIBRARY
@@ -104,6 +108,7 @@ class SparkDialect(SqlDialect):
 
 
 class OracleDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "oracle"
     database_name: ClassVar[str] = "Oracle"
     library_functions: ClassVar[frozenset[str]] = TIER2_LIBRARY

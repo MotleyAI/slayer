@@ -1,4 +1,4 @@
-"""A join-less two-model SQLite shop in YAML storage, for CLI surface tests."""
+"""A relationship-less two-dataset SQLite shop in YAML storage, for CLI surface tests."""
 
 from __future__ import annotations
 
@@ -16,15 +16,15 @@ SHOP_DS = "shop"
 
 README_QUERY = json.dumps({
     "population": "orders",
-    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
-    "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
+    "metrics": ["sum(orders.order_total)", "change_pct(sum(orders.order_total))"],
+    "dimensions": ["stores.name", "date_trunc('month', orders.ordered_at)"],
 })
 
-TOTAL_QUERY = json.dumps({"population": "orders", "metrics": ["sum(order_total)"]})
+TOTAL_QUERY = json.dumps({"population": "orders", "metrics": ["sum(orders.order_total)"]})
 
 
 def build_shop_storage(base: Path) -> str:
-    """Storage dir whose ``orders`` (currency ``order_total``, sum 193647.33) has no join to ``stores``."""
+    """Storage dir whose ``orders`` (currency ``order_total``, sum 193647.33) has no relationship to ``stores``."""
     db = base / "shop.db"
     with transaction(db) as con:
         con.executescript(

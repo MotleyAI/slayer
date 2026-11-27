@@ -1,4 +1,4 @@
-"""DEV-1743 — the join-alias registry (WP3, D4).
+"""The join-alias registry (WP3, D4).
 
 Emitted join aliases become internal-only: minted by the per-generation
 allocator, length-fitted, and silently uniquified in case-fold space. These
@@ -7,10 +7,10 @@ never just alias spellings — a spelling collision that silently merged two
 different relations would pass a spelling-only check.
 
 Fail-first behaviors:
-* path ``(a, b)`` and a model literally named ``a__b`` in one query mint
+* path ``(a, b)`` and a dataset literally named ``a__b`` in one query mint
   DISTINCT aliases wired to their DISTINCT physical tables;
 * a 4-hop chain of long names keeps every emitted join alias within the
-  dialect's byte budget (the DEV-1756-deferred Postgres-63 defect).
+  dialect's byte budget (the Postgres-63 defect).
 
 Invariant lock:
 * a plain chain still mints ``customers`` / ``customers__regions`` byte-for-byte
@@ -23,6 +23,8 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
+from slayer.core.enums import DataType
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 
 from tests._dev1743_fixtures import (
@@ -31,7 +33,17 @@ from tests._dev1743_fixtures import (
     long_chain_datasets,
     LONG_DOTTED_PATH,
 )
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _engine_generate as _engine_generate_untrusted
+from tests._trusted import trusting, trusting_all
+
+
+async def _engine_generate(
+    *, query: SlayerQuery, dataset: SlayerDataset, extra_datasets: list[SlayerDataset], dialect: str = "postgres",
+) -> str:
+    # These pins describe the inline-join lowering of trusted hops.
+    return await _engine_generate_untrusted(
+        query=query, dataset=trusting(dataset), extra_datasets=trusting_all(extra_datasets), dialect=dialect,
+    )
 
 
 def _join_table_to_alias(sql: str, *, dialect: str = "postgres") -> dict[str, str]:
@@ -58,29 +70,29 @@ def _all_join_aliases(sql: str, *, dialect: str = "postgres") -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Spelling collision: path (a, b) vs a model literally named a__b.
+# Spelling collision: path (a, b) vs a dataset literally named a__b.
 # --------------------------------------------------------------------------- #
 class TestSpellingCollisionMintsDistinctAliases:
     @pytest.mark.asyncio
     async def test_chain_and_direct_dunder_model_are_distinct(self) -> None:
         models = ambiguity_impossible_datasets()
         host, extra = models[0], models[1:]
-        # Project two distinctly-named host columns so both joins land in one
+        # Project two distinctly-named host fields so both joins land in one
         # SELECT without tripping the orthogonal flat public-name namespace:
         #   chain_val  (sql=a.b.val)  -> chain host->a->b (alias naturally a__b)
-        #   direct_val (sql=a__b.val) -> the direct model literally named a__b
+        #   direct_val (sql=a__b.val) -> the direct dataset literally named a__b
         sql = await _engine_generate(
             query=SlayerQuery(population="host",
-                              dimensions=["chain_val", "direct_val"]),
+                              dimensions=["host.chain_val", "host.direct_val"]),
             dataset=host, extra_datasets=extra,
         )
         tbl = _join_table_to_alias(sql)
         # Both distinct physical tables are joined.
         assert "b" in tbl, f"chain leaf table 'b' not joined:\n{sql}"
-        assert "a_b_direct" in tbl, f"direct model table not joined:\n{sql}"
+        assert "a_b_direct" in tbl, f"direct dataset table not joined:\n{sql}"
         # And their aliases are distinct (no silent merge).
         assert tbl["b"] != tbl["a_b_direct"], (
-            f"chain and direct model collapsed onto one alias:\n{sql}"
+            f"chain and direct dataset collapsed onto one alias:\n{sql}"
         )
 
 
@@ -118,24 +130,24 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
     async def test_host_grain_agg_qualifies_to_chain_leaf_not_direct_model(self) -> None:
         """FAIL-FIRST (CR): a host-grain aggregate over the chain path (a, b) must
         qualify to the EMITTED chain-leaf alias, not a raw ``"__".join(path)`` —
-        which, when a direct model literally named ``a__b`` is also joined,
+        which, when a direct dataset literally named ``a__b`` is also joined,
         silently reads the WRONG physical table (a_b_direct instead of b)."""
         models = ambiguity_impossible_datasets()
         host, extra = models[0], models[1:]
-        # Group by the direct model's column, order by the CHAIN path → the
-        # planner wraps the un-grouped chain column in a host-grain MIN.
+        # Group by the direct dataset's field, order by the CHAIN path → the
+        # planner wraps the un-grouped chain field in a host-grain MIN.
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({
                 "population": "host",
-                "dimensions": ["direct_val"],
-                "metrics": ["count(*)"],
+                "dimensions": ["host.direct_val"],
+                "metrics": ["count(host.*)"],
                 "order": [{"field": "a.b.val", "direction": "asc"}],
             }),
             dataset=host, extra_datasets=extra,
         )
         tbl = _join_table_to_alias(sql)
         b_alias = tbl["b"]                 # chain leaf physical table
-        direct_alias = tbl["a_b_direct"]  # the direct __-named model
+        direct_alias = tbl["a_b_direct"]  # the direct __-named dataset
         assert b_alias != direct_alias, f"aliases collapsed:\n{sql}"
         tree = sqlglot.parse_one(sql, dialect="postgres")
         aggs = list(tree.find_all(exp.Min)) + list(tree.find_all(exp.Max))
@@ -147,9 +159,52 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
             f"host-grain agg does not read the chain leaf alias {b_alias!r}:\n{sql}"
         )
         assert direct_alias not in quals, (
-            f"host-grain agg reads the WRONG table (direct model alias "
+            f"host-grain agg reads the WRONG table (direct dataset alias "
             f"{direct_alias!r}):\n{sql}"
         )
+
+
+def _root_folding_datasets() -> tuple[SlayerDataset, SlayerDataset]:
+    """``orders`` relating to ``customers`` by ``Orders`` (case-folds onto the root); ``customers`` has derived
+    fields ``region_up`` and ``signed_up_day``."""
+    customers = SlayerDataset(name="customers", sql_table="customers", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="region", datatype=DataType.STRING),
+        DatasetField(name="signed_up_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="region_up", datatype=DataType.STRING, expression="UPPER(region)"),
+        DatasetField(name="signed_up_day", datatype=DataType.DATE, expression="CAST(signed_up_at AS DATE)"),
+    ])
+    orders = SlayerDataset(
+        name="orders", sql_table="orders", data_source="test",
+        fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+        ],
+        relationships=[DatasetRelationship(name="Orders", to="customers", from_columns=["customer_id"],
+                                           to_columns=["id"])],
+    )
+    return orders, customers
+
+
+class TestDerivedFieldBareReadsUseEmittedAlias:
+    """A relationship named like its root in another case is minted a suffixed alias; a derived field's bare column
+    reads follow that alias, never the raw relationship name (which binds to the root)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("body", "column"), [
+        ({"dimensions": ["customers.region_up"]}, "region"),
+        ({"time_dimensions": [{"field": "customers.signed_up_day", "granularity": "month"}]}, "signed_up_at"),
+    ])
+    async def test_a_relationship_folding_onto_the_root_reads_its_own_join(self, body: dict, column: str) -> None:
+        orders, customers = _root_folding_datasets()
+        sql = await _engine_generate(
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(orders.amount)"], **body}),
+            dataset=orders, extra_datasets=[customers],
+        )
+        alias = _join_table_to_alias(sql)["customers"]
+        tree = sqlglot.parse_one(sql, dialect="postgres")
+        assert {c.table for c in tree.find_all(exp.Column) if c.name == column} == {alias}, sql
 
 
 class TestPlainChainSpellingIsStable:
@@ -172,7 +227,7 @@ class TestPlainChainSpellingIsStable:
 
 # --------------------------------------------------------------------------- #
 # [C8] The registry is keyed by (root, path), not path alone: a query with two
-# roots (a cross-model measure reroots at a__b while the outer query joins the
+# roots (a cross-dataset metric reroots at a__b while the outer query joins the
 # a -> b chain) whose target spelling coincides must still wire correctly.
 # --------------------------------------------------------------------------- #
 class TestTwoRootsSameSpelling:
@@ -191,5 +246,5 @@ class TestTwoRootsSameSpelling:
         # Both relations are present and the query is structurally valid
         # (_engine_generate scope-checks it): a path-only registry key would
         # risk collapsing the chain alias and the reroot root.
-        assert "a_b_direct" in sql, f"direct model a__b missing:\n{sql}"
+        assert "a_b_direct" in sql, f"direct dataset a__b missing:\n{sql}"
         assert "b" in _join_table_to_alias(sql) or " b " in sql

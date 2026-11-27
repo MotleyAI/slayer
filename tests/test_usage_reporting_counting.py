@@ -20,11 +20,10 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 from mcp import ClientSession
+from mcp.client import Client
 from mcp.client.sse import sse_client
-from mcp.server.session import ServerSession
-from mcp.shared.exceptions import McpError
-from mcp.shared.memory import create_connected_server_and_client_session
-from mcp.types import CancelledNotification, CancelledNotificationParams, ClientNotification, Implementation
+from mcp.server.connection import Connection
+from mcp.types import Implementation
 from sqlalchemy import exc as sa_exc
 
 from slayer import usage_reporting
@@ -63,7 +62,7 @@ from tests.pg_facade.test_connection import (
     _terminate,
 )
 
-_QUERY = {"population": "orders", "metrics": ["sum(amount)"]}
+_QUERY = {"population": "orders", "metrics": ["sum(orders.amount)"]}
 _PG_QUERY = "SELECT revenue_sum FROM orders"
 _FLIGHT_QUERY = "SELECT revenue_sum FROM jaffle.orders"
 
@@ -120,8 +119,8 @@ def test_parse_error_exits_before_any_usage_reporting(usage_reporting_env) -> No
 
 
 def test_cli_failure_counted_as_error(store: str) -> None:
-    cli(["query", json.dumps({"population": "no_such_model", "metrics": ["count(*)"]}), "--storage", store])
-    cli(["datasets", "--storage", store, "show", "no_such_model"])
+    cli(["query", json.dumps({"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}), "--storage", store])
+    cli(["datasets", "--storage", store, "show", "no_such_dataset"])
     report = show()
     for key in ("cli:query", "cli:datasets.show"):
         entry = usage(report, key)
@@ -138,10 +137,10 @@ class _UnlistedError(Exception):
 
 async def test_mcp_tool_calls_counted_once_each(store: str, started) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         await session.call_tool("list_datasources", {})
         await session.call_tool("list_datasources", {})
-        await session.call_tool("inspect", {"entity_type": "dataset", "reference": "no_such_model", "compact": False})
+        await session.call_tool("inspect", {"entity_type": "dataset", "reference": "no_such_dataset", "compact": False})
     end_process()
     report = show()
     assert usage(report, "mcp:list_datasources") == {"ok": 2, "errors": {}}
@@ -156,7 +155,7 @@ async def test_mcp_unlisted_exception_counted_as_other(
 
     monkeypatch.setattr(SlayerQueryEngine, "execute", explode)
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         await session.call_tool("query", {"query": _QUERY})
     end_process()
     assert usage(show(), "mcp:query") == {"ok": 0, "errors": {"other": 1}}
@@ -176,6 +175,15 @@ async def test_mcp_cancelled_tool_call_counted(
     assert usage(show(), "mcp:query") == {"ok": 0, "errors": {"cancelled": 1}}
 
 
+async def test_mcp_call_without_a_request_context_counted_with_no_session(store: str, started) -> None:
+    server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
+    await server.call_tool("list_datasources", {})
+    end_process()
+    report = show()
+    assert usage(report, "mcp:list_datasources") == {"ok": 1, "errors": {}}
+    assert session_rows(report) == []
+
+
 @pytest.mark.parametrize(("name", "version", "client", "major"), [
     ("claude-code", "2.3.1", "claude-code", 2),
     ("acme-finance-bot", "2.3.1", "other", None),
@@ -185,7 +193,7 @@ async def test_mcp_client_counted_per_session(
 ) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
     info = Implementation(name=name, version=version)
-    async with create_connected_server_and_client_session(server, client_info=info) as session:
+    async with Client(server, mode="legacy", client_info=info) as session:
         await session.call_tool("list_datasources", {})
         await session.call_tool("list_datasources", {})
     end_process()
@@ -196,7 +204,7 @@ async def test_mcp_client_counted_per_session(
 async def test_mcp_client_unparseable_version(store: str, started) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
     info = Implementation(name="claude-code", version="nightly")
-    async with create_connected_server_and_client_session(server, client_info=info) as session:
+    async with Client(server, mode="legacy", client_info=info) as session:
         await session.call_tool("list_datasources", {})
     end_process()
     assert show()["mcp_clients"] == [{"client": "claude-code", "major": None, "sessions": 1}]
@@ -223,7 +231,7 @@ def test_rest_counts_route_templates(store: str, started) -> None:
     client = TestClient(create_app(storage=YAMLStorage(base_dir=store)))
     assert client.get("/health").status_code == 200
     client.get("/datasets/orders")
-    client.get("/datasets/no_such_model")
+    client.get("/datasets/no_such_dataset")
     assert client.post("/query", json=_QUERY).status_code == 200
     end_process()
     report = show()
@@ -376,23 +384,23 @@ async def test_pg_engine_error_counted(started) -> None:
 # --- MCP sessions -----------------------------------------------------------------------------------
 
 
-_FAILING_QUERY = {"population": "no_such_model", "metrics": ["count(*)"]}
+_FAILING_QUERY = {"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}
 _T0 = datetime.datetime(2026, 5, 4, 12, 0, tzinfo=datetime.timezone.utc)
 
 
 async def test_session_counts_ok_and_failed_queries(store: str, started) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         await session.call_tool("query", {"query": _QUERY})
         await session.call_tool("query", {"query": _QUERY})
-        assert (await session.call_tool("query", {"query": _FAILING_QUERY})).isError
+        assert (await session.call_tool("query", {"query": _FAILING_QUERY})).is_error
     end_process()
     assert session_rows(show()) == [("2-5", "1", 1)]
 
 
 async def test_session_without_queries(store: str, started) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         await session.call_tool("list_datasources", {})
     end_process()
     assert session_rows(show()) == [("0", "0", 1)]
@@ -400,8 +408,8 @@ async def test_session_without_queries(store: str, started) -> None:
 
 async def test_dry_run_not_counted_for_the_session(store: str, started) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
-        assert not (await session.call_tool("query", {"query": _QUERY, "dry_run": True})).isError
+    async with Client(server, mode="legacy") as session:
+        assert not (await session.call_tool("query", {"query": _QUERY, "dry_run": True})).is_error
     end_process()
     report = show()
     assert session_rows(report) == [("0", "0", 1)]
@@ -419,14 +427,12 @@ async def test_cancelled_query_counted_as_failed(
 
     monkeypatch.setattr(SlayerQueryEngine, "execute", hang)
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         call = asyncio.create_task(session.call_tool("query", {"query": _QUERY}))
         await asyncio.wait_for(entered.wait(), timeout=10)
-        await session.send_notification(ClientNotification(CancelledNotification(
-            params=CancelledNotificationParams(requestId=session._request_id - 1),
-        )))
-        with pytest.raises(McpError):
-            await asyncio.wait_for(call, timeout=10)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
         await session.call_tool("list_datasources", {})
     end_process()
     report = show()
@@ -436,7 +442,7 @@ async def test_cancelled_query_counted_as_failed(
 
 async def test_concurrent_calls_in_one_session_counted_once_each(store: str, started) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         await asyncio.gather(*(session.call_tool("query", {"query": _QUERY}) for _ in range(7)))
     end_process()
     assert session_rows(show()) == [("6-20", "0", 1)]
@@ -493,13 +499,13 @@ async def test_ended_sessions_release_live_state_and_keep_totals(
     store: str, started, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     created: list[weakref.ref] = []
-    real_init = ServerSession.__init__
+    real_init = Connection.__init__
 
     def tracked_init(self, *args, **kwargs) -> None:
         real_init(self, *args, **kwargs)
         created.append(weakref.ref(self))
 
-    monkeypatch.setattr(ServerSession, "__init__", tracked_init)
+    monkeypatch.setattr(Connection, "__init__", tracked_init)
     with _serve(create_app(storage=YAMLStorage(base_dir=store))) as url:
         for _ in range(12):
             await _sse_session(url, queries=[_QUERY])
@@ -514,7 +520,7 @@ async def test_send_mid_session_carries_no_session_row(store: str, usage_reporti
     usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=1))
     usage_reporting.start()
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         await session.call_tool("query", {"query": _QUERY})
         usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=25))
         await session.call_tool("list_datasources", {})
@@ -532,7 +538,7 @@ async def test_send_on_the_last_call_keeps_the_session_row(store: str, usage_rep
     usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=1))
     usage_reporting.start()
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         usage_reporting_env.set_now(_T0 + datetime.timedelta(hours=25))
         await session.call_tool("query", {"query": _QUERY})
         (request,) = usage_reporting_env.capture.wait_for(count=1)
@@ -543,7 +549,7 @@ async def test_send_on_the_last_call_keeps_the_session_row(store: str, usage_rep
 
 _FORK_SCRIPT = """
 import asyncio, gc, os
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.client import Client
 from slayer import usage_reporting
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -558,10 +564,10 @@ def fork_and_flush():
 async def main():
     usage_reporting.start()
     server = create_mcp_server(storage=YAMLStorage(base_dir={store!r}), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         await session.call_tool("query", {{"query": {query!r}}})
         fork_and_flush()
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         await session.call_tool("list_datasources", {{}})
     gc.collect()
     fork_and_flush()
@@ -594,7 +600,7 @@ def _unavailable() -> Exception:
 _DB_FAILURE_CALLS = [
     ("query", (SlayerQueryEngine, "execute"), {"query": _QUERY}),
     ("create_dataset", (SlayerQueryEngine, "save_dataset"),
-     {"name": "m", "sql_table": "orders", "data_source": "test", "fields": [{"name": "id", "sql": "id", "datatype": "number"}]}),
+     {"name": "m", "sql_table": "orders", "data_source": "test", "fields": [{"name": "id", "expression": "id", "datatype": "number"}]}),
     ("create_dataset", (SlayerQueryEngine, "create_dataset_from_query"), {"name": "m", "query": _QUERY}),
     ("validate_datasets", (SlayerQueryEngine, "validate_datasets"), {}),
     ("ingest_datasource", (engine_ingestion, "ingest_datasource_idempotent"), {"datasource_name": "test"}),
@@ -613,10 +619,10 @@ async def test_mcp_database_failure_counted_with_a_database_token(
 
     monkeypatch.setattr(*target, fail)
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         result = await session.call_tool(tool, arguments)
     end_process()
-    assert result.isError
+    assert result.is_error
     entry = usage(show(), f"mcp:{tool}")
     assert entry["ok"] == 0
     (token,) = entry["errors"]
@@ -631,7 +637,7 @@ async def test_session_counts_a_database_failure_as_failed(
         raise _operational()
 
     server = create_mcp_server(storage=YAMLStorage(base_dir=store), _seed_help=False)
-    async with create_connected_server_and_client_session(server) as session:
+    async with Client(server, mode="legacy") as session:
         await session.call_tool("query", {"query": _QUERY})
         monkeypatch.setattr(SlayerQueryEngine, "execute", fail)
         await session.call_tool("query", {"query": _QUERY})

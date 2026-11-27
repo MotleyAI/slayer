@@ -1,4 +1,4 @@
-"""Renamed-key join graph: ``orders → customers → regions``, every key column's
+"""Renamed-key relationship graph: ``orders → customers → regions``, every key field's
 logical ``name`` differing from its physical ``sql`` spelling.
 
 Physical tables::
@@ -52,7 +52,7 @@ def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", sql="region_pk", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="id", expression="region_pk", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
@@ -60,7 +60,7 @@ def regions_dataset() -> SlayerDataset:
 
 def customers_dataset(*, rename_pk: bool = True, pk_sql: str = "customer_pk") -> SlayerDataset:
     """``rename_pk=False`` spells the PK by its physical name (``customer_pk``)."""
-    pk = (DatasetField(name="id", sql=pk_sql, datatype=DataType.INTEGER, primary_key=True)
+    pk = (DatasetField(name="id", expression=pk_sql, datatype=DataType.INTEGER, primary_key=True)
           if rename_pk else
           DatasetField(name="customer_pk", datatype=DataType.INTEGER, primary_key=True))
     return SlayerDataset(
@@ -68,7 +68,7 @@ def customers_dataset(*, rename_pk: bool = True, pk_sql: str = "customer_pk") ->
         fields=[
             pk,
             DatasetField(name="name", datatype=DataType.STRING),
-            DatasetField(name="region_id", sql="region_fk", datatype=DataType.INTEGER),
+            DatasetField(name="region_id", expression="region_fk", datatype=DataType.INTEGER),
             DatasetField(name="tier", datatype=DataType.STRING),
             DatasetField(name="credit", datatype=DataType.FLOAT),
         ],
@@ -78,12 +78,12 @@ def customers_dataset(*, rename_pk: bool = True, pk_sql: str = "customer_pk") ->
 
 def orders_dataset(*, rename_fk: bool = True, target_key: str = "id") -> SlayerDataset:
     """``rename_fk=False`` spells the FK by its physical name (``cust_fk``)."""
-    fk = (DatasetField(name="customer_id", sql="cust_fk", datatype=DataType.INTEGER)
+    fk = (DatasetField(name="customer_id", expression="cust_fk", datatype=DataType.INTEGER)
           if rename_fk else DatasetField(name="cust_fk", datatype=DataType.INTEGER))
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="order_pk", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="id", expression="order_pk", datatype=DataType.INTEGER, primary_key=True),
             fk,
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="status", datatype=DataType.STRING),
@@ -150,7 +150,7 @@ async def make_exec_engine(
 
 
 def cells(resp, *, dim_suffix: str, metric: str) -> dict:
-    """``{dimension value: float(measure)}``; both columns found by suffix."""
+    """``{dimension value: float(metric)}``; both columns found by suffix."""
     row = resp.data[0]
     dim = next(k for k in row if k.endswith(dim_suffix))
     val = next(k for k in row if k == metric or k.endswith(f".{metric}"))

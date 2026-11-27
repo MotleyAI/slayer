@@ -1,15 +1,15 @@
-"""DEV-1513: unified entity-pair dispatch helpers in ``slayer.search.render``.
+"""Unified entity-pair dispatch helpers in ``slayer.search.render``.
 
 The plan extracts two helpers from the duplicated per-call-site dispatch
 logic so the corpus build, the embedding refresh, and the new
 named-entity surfacing all walk the same shape:
 
-* ``collect_model_entity_pairs(model)`` — returns
-  ``List[RenderedEntity]`` for the model + non-hidden columns + named
-  measures + aggregations. Hidden models return ``[]``.
-* ``render_datasource_pair(*, name, models)`` — returns one
+* ``collect_dataset_entity_pairs(dataset)`` — returns
+  ``List[RenderedEntity]`` for the dataset + non-hidden fields + named
+  metrics + aggregations. Hidden datasets return ``[]``.
+* ``render_datasource_pair(*, name, datasets)`` — returns one
   ``RenderedEntity`` for the datasource doc, with the visibility filter
-  on ``models`` applied internally.
+  on ``datasets`` applied internally.
 
 ``RenderedEntity`` is a Pydantic ``BaseModel`` carrying
 ``canonical_id: str``, ``kind: str``, ``text: str``.
@@ -23,6 +23,7 @@ output.
 from __future__ import annotations
 
 import tempfile
+from typing import Any
 from collections.abc import AsyncIterator
 
 import pytest
@@ -114,8 +115,8 @@ def test_collect_model_entity_pairs_visible_model_produces_full_subtree() -> Non
     canonicals = [p.canonical_id for p in pairs]
     kinds = {p.canonical_id: p.kind for p in pairs}
 
-    # Model itself, every visible (non-hidden) column, every named
-    # measure, every aggregation. Hidden column + unnamed measure
+    # Dataset itself, every visible (non-hidden) field, every named
+    # metric, every aggregation. Hidden field + unnamed metric
     # excluded.
     assert "warehouse.orders" in canonicals
     assert kinds["warehouse.orders"] == "dataset"
@@ -136,19 +137,19 @@ def test_collect_model_entity_pairs_hidden_model_returns_empty() -> None:
 
 def test_collect_render_pairs_uses_unified_helper() -> None:
     """The corpus-build path (``index._collect_render_pairs``) consumes
-    the same render output as ``collect_model_entity_pairs``. Concretely:
-    the (canonical_id, kind, text) triples produced for a model in the
-    corpus build are identical to what ``collect_model_entity_pairs``
-    returns for that model."""
+    the same render output as ``collect_dataset_entity_pairs``. Concretely:
+    the (canonical_id, kind, text) triples produced for a dataset in the
+    corpus build are identical to what ``collect_dataset_entity_pairs``
+    returns for that dataset."""
     model = _dataset_with_full_subtree()
     corpus_pairs = _collect_render_pairs(
         memories=[], visible_datasets=[model], datasources=[],
     )
-    # Filter out the (datasource doc, etc.) — keep only the model's subtree.
+    # Filter out the (datasource doc, etc.) — keep only the dataset's subtree.
     model_canonicals = {
         re.canonical_id for re in collect_dataset_entity_pairs(dataset=model)
     }
-    # DEV-1549: _collect_render_pairs now yields 4-tuples
+    # _collect_render_pairs yields 4-tuples
     # (canonical, kind, text, description). Strip description for parity.
     corpus_subset = [
         (c, k, t) for c, k, t, _d in corpus_pairs if c in model_canonicals
@@ -179,7 +180,7 @@ async def test_embedding_refresh_model_subtree_uses_unified_helper(
 ) -> None:
     """``EmbeddingRetriever.refresh_dataset_subtree`` produces (canonical_id,
     entity_kind, content_hash) triples that match what would be derived
-    from ``collect_model_entity_pairs``. This pins the unification: any
+    from ``collect_dataset_entity_pairs``. This pins the unification: any
     drift between the corpus-build dispatch and the embedding-refresh
     dispatch will fail."""
     captured: list[str] = []
@@ -210,7 +211,7 @@ async def test_embedding_refresh_model_subtree_uses_unified_helper(
 
 
 # ---------------------------------------------------------------------------
-# Test 30: datasource embedding/text parity across all paths, incl. zero-model
+# Test 30: datasource embedding/text parity across all paths, incl. zero-dataset
 # ---------------------------------------------------------------------------
 
 
@@ -221,8 +222,8 @@ async def test_render_datasource_pair_used_by_index_and_embedding_paths(
 ) -> None:
     """``render_datasource_pair`` produces identical text to the
     embedding-side and index-side datasource doc renders, including for
-    a datasource with zero models."""
-    # ---- "warehouse" (has models) -----------------------------------------
+    a datasource with zero datasets."""
+    # ---- "warehouse" (has datasets) ---------------------------------------
     orders = await storage.get_dataset("orders", data_source="warehouse")
     audit = await storage.get_dataset("internal_audit", data_source="warehouse")
     assert orders is not None
@@ -236,7 +237,7 @@ async def test_render_datasource_pair_used_by_index_and_embedding_paths(
 
     corpus_pairs = _collect_render_pairs(
         memories=[],
-        visible_datasets=[orders],  # hidden model already filtered upstream
+        visible_datasets=[orders],  # hidden dataset already filtered upstream
         datasources=["warehouse"],
     )
     corpus_ws_text = next(
@@ -260,11 +261,11 @@ async def test_render_datasource_pair_used_by_index_and_embedding_paths(
     await svc.refresh_datasource(name="warehouse", datasets=[orders, audit])
     assert pair_ws.text in captured
 
-    # ---- "empty_ds" (zero models) -----------------------------------------
+    # ---- "empty_ds" (zero datasets) ---------------------------------------
     pair_empty = render_datasource_pair(name="empty_ds", datasets=[])
     assert pair_empty.canonical_id == "empty_ds"
     assert pair_empty.kind == "datasource"
-    # Should produce some non-empty text (datasource doc is valid w/o models).
+    # Should produce some non-empty text (datasource doc is valid w/o datasets).
     assert pair_empty.text != ""
 
     captured.clear()
@@ -304,7 +305,7 @@ def test_index_corpus_path_actually_calls_collect_model_entity_pairs(
         canonical_id="SENTINEL.x", kind="dataset", text="SENTINEL_TEXT",
     )
 
-    def stub(*, dataset: SlayerDataset) -> list[RenderedEntity]:  # noqa: ARG001
+    def stub(*, dataset: SlayerDataset, concepts: Any = None) -> list[RenderedEntity]:  # noqa: ARG001
         return [sentinel]
 
     monkeypatch.setattr(index_mod, "collect_dataset_entity_pairs", stub)
@@ -313,7 +314,7 @@ def test_index_corpus_path_actually_calls_collect_model_entity_pairs(
         visible_datasets=[_dataset_with_full_subtree()],
         datasources=[],
     )
-    # DEV-1549: 4-tuples (canonical, kind, text, description).
+    # 4-tuples (canonical, kind, text, description).
     assert any(
         c == "SENTINEL.x" and t == "SENTINEL_TEXT"
         for c, k, t, _d in pairs
@@ -333,7 +334,7 @@ async def test_embedding_path_actually_calls_collect_model_entity_pairs(
         canonical_id="SENTINEL.x", kind="dataset", text=sentinel_text,
     )
 
-    def stub(*, dataset: SlayerDataset) -> list[RenderedEntity]:  # noqa: ARG001
+    def stub(*, dataset: SlayerDataset, concepts: Any = None) -> list[RenderedEntity]:  # noqa: ARG001
         return [sentinel]
 
     monkeypatch.setattr(emb_mod, "collect_dataset_entity_pairs", stub)
@@ -376,7 +377,7 @@ def test_index_corpus_path_actually_calls_render_datasource_pair(
     pairs = index_mod._collect_render_pairs(
         memories=[], visible_datasets=[], datasources=["anything"],
     )
-    # DEV-1549: 4-tuples.
+    # 4-tuples.
     assert any(
         c == "SENTINEL_DS" and t == "SENTINEL_DS_TEXT"
         for c, k, t, _d in pairs

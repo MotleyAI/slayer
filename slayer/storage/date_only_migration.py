@@ -1,8 +1,9 @@
 """SlayerModel v24 / SlayerQuery v15 / Memory v11: a stored date-only comparison keeps its whole-day meaning.
 
-Stored-only, and gated by each nested document's own version. Whether an operand is a TIMESTAMP is read from the
-datasource's stored models plus the built-in spine, which the storage load path provides (``typing_with``); a comparison
-whose operand cannot be typed is left as written and logged.
+Stored-only, and gated by each nested document's own version. A model's own texts are upgraded here, their operands
+typed from the datasource's stored models plus the built-in spine, which the storage load path provides
+(``typing_with``); a stored query is upgraded by the storage load path's typed step. A comparison whose operand cannot
+be typed is left as written and logged.
 """
 
 import logging
@@ -22,9 +23,9 @@ from slayer.core.time_points import is_date_only
 from slayer.core.spine_names import TIME_SPINE_FIELD, TIME_SPINE_FIELD_TYPE, TIME_SPINE_DATASET
 from slayer.core.legacy_spellings import rewrite_spans
 from slayer.core.vocabulary import extension_dataset
-from slayer.storage.document_keys import DocumentKeys, LEGACY_KEYS, relationship_pairs
+from slayer.storage.document_keys import CURRENT_KEYS, LEGACY_KEYS, DocumentKeys, dataset_in, relationship_pairs
 from slayer.storage.migrations import document_label, register_migration, stamp_stored
-from slayer.storage.rank_direction_migration import rewrite_query_fields, stamp_memory_query
+from slayer.storage.rank_direction_migration import stamp_memory_query
 
 #: The first versions whose date-only comparisons are midnight.
 UPGRADED_AT = {"SlayerModel": 24, "SlayerQuery": 15, "Memory": 11}
@@ -181,6 +182,13 @@ class StoredDatasets(BaseModel):
             return None
         return peer
 
+    def incident_names(self, name: str) -> frozenset[str]:
+        """The names of the edges incident to the stored dataset ``name``, declared on either side."""
+        current = self._dataset(name)
+        if current is None:
+            return frozenset()
+        return frozenset(n for n, _ in self._incident(current=current, extensions=[]) if n)
+
     def _incident(self, *, current: dict, extensions: list[dict]) -> list[tuple[str | None, str]]:
         """``(edge name, model at the other end)`` per stored join incident to ``current``, declared on either side, plus
         an unnamed virtual edge between the spine and every stored model; an exact-inverse twin counts once."""
@@ -222,46 +230,35 @@ def below_date_only_upgrade(entity: str, data: Any) -> bool:
     return isinstance(data, dict) and int(data.get("version", 1)) < UPGRADED_AT[entity]
 
 
-def needs_typing(entity: str, data: Any) -> bool:
-    """Whether stored ``data``, or a document nested in it, predates the upgrade and holds a date-only literal."""
-    if not isinstance(data, dict):
-        return False
-    if entity == "Memory":
-        return needs_typing("SlayerQuery", data.get("query"))
-    texts = _query_texts(data) if entity == "SlayerQuery" else _dataset_texts(data)
-    if below_date_only_upgrade(entity, data) and any(map(_holds_date_literal, texts)):
-        return True
-    return entity == "SlayerModel" and any(needs_typing("SlayerQuery", q) for q in data.get("source_queries") or [])
+def needs_typing(data: Any) -> bool:
+    """Whether a stored model predates the upgrade and holds a date-only literal in its own texts."""
+    return below_date_only_upgrade("SlayerModel", data) and any(map(_holds_date_literal, _dataset_texts(data)))
 
 
 def _holds_date_literal(text: str) -> bool:
     return any(is_date_only(s.value) for s in string_literal_spans(text))
 
 
-def _dataset_texts(data: dict) -> list[str]:
+def _text_keys(keys: DocumentKeys) -> tuple[tuple[str, str], ...]:
+    return (keys.metrics, keys.expression), ("columns", "filter")
+
+
+def _dataset_texts(data: dict, keys: DocumentKeys = LEGACY_KEYS) -> list[str]:
     """``data``'s measure formulas and column filters."""
     out: list[str] = []
-    for key, field in (("measures", "formula"), ("columns", "filter")):
+    for key, field in _text_keys(keys):
         items = data.get(key)
         if isinstance(items, list):
             out.extend(i[field] for i in items if isinstance(i, dict) and isinstance(i.get(field), str))
     return out
 
 
-def _query_texts(data: dict) -> list[str]:
-    """Every Mode-B text of ``data`` the upgrade reads: its own fields and its extensions' texts."""
-    out: list[str] = []
-
-    def collect(text: str) -> str:
-        out.append(text)
-        return text
-
-    rewrite_query_fields(dict(data), collect)
-    raw = data.get("extensions")
-    for e in raw if isinstance(raw, list) else []:
-        if isinstance(e, dict):
-            out.extend(_dataset_texts(e))
-    return out
+def warn_untyped(label: str | None, text: str) -> None:
+    """Log that ``text`` of stored document ``label`` holds a date-only comparison whose operand could not be typed."""
+    _logger.warning(
+        "stored document %r: a date-only comparison whose operand could not be typed is left as written, and "
+        "now compares with midnight: %s", label, text.replace("\r", "\\r").replace("\n", "\\n"),
+    )
 
 
 def _upgraded(text: str, *, label: str | None, host: dict | None, extensions: list[dict]) -> str:
@@ -276,17 +273,8 @@ def _upgraded(text: str, *, label: str | None, host: dict | None, extensions: li
             rewrite.append(site)
         untyped = untyped or t is None
     if untyped:
-        _logger.warning(
-            "stored document %r: a date-only comparison whose operand could not be typed is left as written, and "
-            "now compares with midnight: %s", label, text.replace("\r", "\\r").replace("\n", "\\n"),
-        )
+        warn_untyped(label, text)
     return rewrite_spans(text, rewrite)
-
-
-def upgraded_text(text: str, *, host: dict, datasets: StoredDatasets, extensions: list[dict], label: str | None) -> str:
-    """``text`` upgraded, typed from ``host`` with ``datasets``."""
-    with typing_with(datasets):
-        return _upgraded(text, label=label, host=host, extensions=extensions)
 
 
 def _with_text(item: Any, key: str, fn) -> Any:
@@ -295,13 +283,15 @@ def _with_text(item: Any, key: str, fn) -> Any:
     return item
 
 
-def _upgraded_dataset_texts(data: dict, *, label: str | None, host: dict | None, extensions: list[dict]) -> dict:
+def _upgraded_dataset_texts(
+    data: dict, *, label: str | None, host: dict | None, extensions: list[dict], keys: DocumentKeys = LEGACY_KEYS,
+) -> dict:
     """``data``'s measure formulas and column filters upgraded, typed from ``host``."""
 
     def fn(text: str) -> str:
         return _upgraded(text, label=label, host=host, extensions=extensions)
 
-    for key, field in (("measures", "formula"), ("columns", "filter")):
+    for key, field in _text_keys(keys):
         if isinstance(data.get(key), list):
             data[key] = [_with_text(item, field, fn) for item in data[key]]
     return data
@@ -315,24 +305,33 @@ def upgrade_dataset(data: dict) -> dict:
     return data
 
 
-def upgrade_query(data: dict) -> dict:
-    """Upgrade every Mode-B field and each extension's measures and column filters."""
-    models = _typing.get()
-    label = document_label(data)
+def holds_extension_date_literal(data: dict) -> bool:
+    """Whether a migrated stored query's extension texts hold a date-only literal."""
     raw = data.get("extensions")
-    extensions = [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
-    host = models.host(data.get("source_model")) if models else None
-    data = rewrite_query_fields(data, lambda text: _upgraded(text, label=label, host=host, extensions=extensions))
-    if isinstance(data.get("extensions"), list):
-        data["extensions"] = [
-            _upgraded_dataset_texts(dict(e), label=label, extensions=extensions,
-                                  host=models.host(extension_dataset(e)) if models else None)
+    return any(_holds_date_literal(t) for e in raw if isinstance(e, dict) for t in _dataset_texts(e, CURRENT_KEYS)
+               ) if isinstance(raw, list) else False
+
+
+def upgraded_extension_texts(data: dict, *, datasets: StoredDatasets, label: str | None) -> dict:
+    """A migrated stored query with its extensions' metric expressions and field filters upgraded, each typed from the
+    dataset its extension names."""
+    raw = data.get("extensions")
+    if not isinstance(raw, list):
+        return data
+    extensions = [dataset_in(e, LEGACY_KEYS) for e in raw if isinstance(e, dict)]
+    with typing_with(datasets):
+        return {**data, "extensions": [
+            _upgraded_dataset_texts(dict(e), label=label, extensions=extensions, keys=CURRENT_KEYS,
+                                    host=datasets.host(extension_dataset(e)))
             if isinstance(e, dict) else e
-            for e in data["extensions"]
-        ]
+            for e in raw
+        ]}
+
+
+def _stamp(data: dict) -> dict:
     return data
 
 
 register_migration(entity="SlayerModel", source_version=23, stored_only=True)(upgrade_dataset)
-register_migration(entity="SlayerQuery", source_version=14, stored_only=True)(upgrade_query)
+register_migration(entity="SlayerQuery", source_version=14, stored_only=True)(_stamp)
 register_migration(entity="Memory", source_version=10, stored_only=True)(stamp_memory_query)

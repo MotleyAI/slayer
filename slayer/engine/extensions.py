@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Dict, FrozenSet, List, Literal, Optional, Tuple
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import JoinType
 from slayer.core.errors import (
+    SlayerError,
     AmbiguousRelationshipPathError,
     AmbiguousReferenceError,
     CircularRelationshipPathError,
@@ -20,23 +22,31 @@ from slayer.core.relationship_edges import EdgeMerge
 from slayer.core.relationship_walker import OrientedRelationship, resolve_hop, walk
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.names import match_name
-from slayer.core.query import DatasetExtension, SlayerQuery, extension_dataset_names
-from slayer.core.scope import DatasetScope, StageSchema
-from slayer.core.syntax import drop_root_hop, drop_root_qualifier, text_paths
+from slayer.core.query import (
+    DatasetExtension, SlayerQuery, TimeDimension, computed_dimension_name, declared_aliases, extension_dataset_names,
+    field_ref_of,
+)
+from slayer.core.scope import DatasetScope
+from slayer.core.syntax import (
+    DottedRef, ParsedExpr, Ref, StarSource, drop_root_hop, map_refs, parse_expr, text_paths, walk_references,
+)
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population import dimension_routing
+from slayer.engine.population.anchors import anchor_route, find_anchor
 from slayer.ir.source_bundle import (
     InnerRestriction,
     ResolvedSourceBundle,
+    absorb_inherited,
     follow_sibling_chain,
     overlay_metrics,
+    without_inherited,
 )
+from slayer.sql.naming import expression_text_alias
 
 __all__ = [
     "FieldKind",
     "QueryScope",
     "apply_query_extensions",
-    "declaring_dataset_path",
     "extension_of",
     "query_field_texts",
     "query_reference_parts",
@@ -44,6 +54,8 @@ __all__ = [
     "resolve_path",
     "respelled",
     "respelled_stages",
+    "sibling_host",
+    "stage_output_names",
     "with_own_extension",
 ]
 
@@ -187,41 +199,54 @@ def _restriction(*, declaring: str, relationship: DatasetRelationship, merge: Ed
     )
 
 
-def declaring_dataset_path(
-    restriction: InnerRestriction, *, host: Optional[SlayerDataset], datasets_by_name: Dict[str, SlayerDataset],
-) -> Tuple[str, ...]:
-    """The population's path to ``restriction.dataset``: as spelled when root or adjacent, else short-form routed."""
-    spelled = (restriction.dataset,)
-    if host is None or not drop_root_qualifier((*spelled, restriction.key), host.spelling, quoted=())[:-1]:
-        return spelled
-    datasets_by_name = {**datasets_by_name, host.name: datasets_by_name.get(host.name, host)}
-    try:
-        if resolve_hop(current=host, token=restriction.dataset, datasets_by_name=datasets_by_name) is not None:
-            return spelled
-    except AmbiguousRelationshipPathError:
-        return spelled
-    return tuple(dimension_routing.route_dotted_target(
-        root=host, target_dataset=restriction.dataset, leaf=restriction.token, datasets_by_name=datasets_by_name,
-    ))
+def _flag(quoted: Sequence[bool], i: int) -> bool:
+    return i < len(quoted) and quoted[i]
 
 
 def resolve_path(
     hops: Sequence[str], *, root: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+    quoted: Sequence[bool] = (),
 ) -> Optional[Tuple[Tuple[str, ...], List[OrientedRelationship]]]:
     """``hops`` from ``root`` as the binder resolves them — its own qualifier dropped, walked, a lone unmatched hop
-    short-form routed — with the edges walked; ``None`` when unresolvable or ambiguous."""
-    hops = drop_root_hop(hops, root.spelling, head_quoted=False)
+    short-form routed — with the edges walked; ``None`` when unresolvable or ambiguous. A hop flagged in ``quoted``
+    matches only its exact spelling."""
+    written = tuple(hops)
+    hops = drop_root_hop(written, root.spelling, head_quoted=_flag(quoted, 0))
+    quoted = tuple(quoted[len(written) - len(hops):])
     try:
-        chain = walk(root=root, path=hops, datasets_by_name=datasets_by_name)
+        chain = walk(root=root, path=hops, datasets_by_name=datasets_by_name, quoted=quoted)
         if chain is None and len(hops) == 1 and resolve_hop(
-                current=root, token=hops[0], datasets_by_name=datasets_by_name) is None:
+                current=root, token=hops[0], datasets_by_name=datasets_by_name, quoted=_flag(quoted, 0)) is None:
             route = dimension_routing.short_form_route_or_none(
                 root=root, target_dataset=hops[0], datasets_by_name=datasets_by_name)
             hops = tuple(route or ())
-            chain = walk(root=root, path=hops, datasets_by_name=datasets_by_name) if route else None
+            chain = walk(root=root, path=(), via=hops, datasets_by_name=datasets_by_name) if route else None
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
         return None
     return (hops, chain) if chain is not None else None
+
+
+def resolve_anchored_path(
+    hops: Sequence[str], *, reader: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+    quoted: Sequence[bool] = (),
+) -> Optional[Tuple[Tuple[str, ...], List[OrientedRelationship]]]:
+    """A query reference's ``hops`` from ``reader`` as the binder resolves them — the first an anchor reached by the
+    shared anchor resolver, the rest an explicit route — with the edges walked; ``None`` when refused. A hop flagged
+    in ``quoted`` matches only its exact spelling."""
+    if not hops:
+        return (), []
+    universe = {**datasets_by_name, reader.name: reader}
+    try:
+        anchor = find_anchor(hops[0], quoted=_flag(quoted, 0), reader=reader, datasets_by_name=universe)
+        if anchor is None:
+            return None
+        route = anchor_route(reader=reader, anchor=anchor, datasets_by_name=universe, rest=hops[1:]).route
+        path = (*route, *hops[1:])
+        chain = walk(root=reader, path=hops[1:], via=route, datasets_by_name=universe,
+                     quoted=tuple(_flag(quoted, i) for i in range(1, len(hops))))
+    except SlayerError:
+        return None
+    return (path, chain) if chain is not None else None
 
 
 class QueryScope(BaseModel):
@@ -253,10 +278,15 @@ class QueryScope(BaseModel):
     def base(self) -> Optional[str]:
         return self.bases.get("")
 
-    def resolve(self, hops: Sequence[str], *, root: Optional[SlayerDataset] = None):
+    def resolve(self, hops: Sequence[str], *, root: Optional[SlayerDataset] = None, quoted: Sequence[bool] = ()):
         """``resolve_path`` over this scope, from ``root`` (default: the host)."""
         start = root if root is not None else self.host
-        return None if start is None else resolve_path(hops, root=start, datasets_by_name=self.datasets)
+        return None if start is None else resolve_path(hops, root=start, datasets_by_name=self.datasets, quoted=quoted)
+
+    def resolve_reference(self, hops: Sequence[str], *, quoted: Sequence[bool] = ()):
+        """``resolve_anchored_path`` of the query's own reference ``hops`` from the host."""
+        return None if self.host is None else resolve_anchored_path(
+            hops, reader=self.host, datasets_by_name=self.datasets, quoted=quoted)
 
 
 def query_scopes(
@@ -349,7 +379,7 @@ def _scope(
     siblings = [n for n in named if n != query.name]
     spec = query.population
     datasets: Dict[str, SlayerDataset] = {
-        **stored, **{n: _sibling_host(n, query=query, data_source=data_source) for n in siblings}}
+        **stored, **{n: sibling_host(n, query=query, data_source=data_source) for n in siblings}}
     host_name = spec if _chain_base(spec, named=named)[0] else None
     datasets, restrictions = extend_datasets(
         query, datasets, lookup=lambda name, universe: universe.get(name), on_conflict=lambda _exc: None)
@@ -358,11 +388,11 @@ def _scope(
     return QueryScope.model_construct(
         data_source=data_source, host=host, bases=bases, datasets=datasets, shadowed=frozenset(siblings),
         query=query,
-        inner_refs=tuple(r for r in (_inner_ref(x, host=host, datasets=datasets) for x in restrictions) if r is not None),
+        inner_refs=tuple(r.parts for r in restrictions),
     )
 
 
-def _sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerDataset:
+def sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerDataset:
     """Sibling stage ``name`` as ``query`` reads it: the output fields its extension relationships name, on either side."""
     keys = [
         pair[0 if e.dataset == name else 1]
@@ -373,15 +403,75 @@ def _sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerD
         name=name, data_source=data_source, fields=[DatasetField(name=k) for k in dict.fromkeys(keys)])
 
 
-def _inner_ref(
-    restriction: InnerRestriction, *, host: Optional[SlayerDataset], datasets: Dict[str, SlayerDataset],
-) -> Optional[Tuple[str, ...]]:
-    try:
-        path = declaring_dataset_path(restriction, host=host, datasets_by_name=datasets)
-    except ValueError:  # an unreachable or ambiguous declaring dataset fails the engine, not the static reader
-        return None
-    return (*drop_root_hop(path, host.spelling if host is not None else None, head_quoted=False), restriction.token,
-            restriction.key)
+def stage_output_names(query: SlayerQuery) -> List[str]:
+    """The output column names of stage ``query`` as its compiled schema names them, read statically."""
+    root = query.population_name
+    aliases = declared_aliases(query)
+    names: List[str] = []
+    for d in query.dimensions or []:
+        names.append(d.alias or _reference_field_name(d.field, root=root) or computed_dimension_name(d.template))
+    names.extend(_time_dimension_field_names(query.time_dimensions or [], root=root))
+    for m in query.metrics or []:
+        names.append(m.alias or _reference_field_name(m.metric, root=root) or _expression_field_name(
+            m.metric, root=root, aliases=aliases))
+    return list(dict.fromkeys(names))
+
+
+def _time_dimension_field_names(tds: Sequence[TimeDimension], *, root: Optional[str]) -> List[str]:
+    """Time-dimension field names; an unaliased one whose source another one shares takes its granularity suffix."""
+    sources = [("ref", f) if (f := _reference_field_name(td.field, root=root)) else ("expr", td.template)
+               for td in tds]
+    shared = Counter(sources)
+    out: List[str] = []
+    for td, source in zip(tds, sources):
+        base = td.alias or (source[1] if source[0] == "ref" else computed_dimension_name(td.template))
+        out.append(f"{base}__{td.granularity}" if td.alias is None and shared[source] > 1 else base)
+    return out
+
+
+def _flat_name(key: Sequence[str], *, root: Optional[str], head_quoted: bool = False) -> str:
+    """A result key's field name: its root qualifier dropped, flattened."""
+    return "__".join(drop_root_hop(key, root, head_quoted=head_quoted))
+
+
+def _reference_field_name(text: str, *, root: Optional[str]) -> Optional[str]:
+    ref = field_ref_of(text)
+    return None if ref is None else _flat_name(ref.parts, root=root, head_quoted=bool(ref.quoted and ref.quoted[0]))
+
+
+def _expression_field_name(text: str, *, root: Optional[str], aliases: Sequence[str]) -> str:
+    """An unaliased expression's field name: named from its references' common head, which leads its key."""
+    parsed = parse_expr(text)
+    paths: List[Tuple[str, ...]] = []
+    for node, _agg in walk_references(parsed):
+        if isinstance(node, DottedRef):
+            paths.append(node.parts[:-1])
+        elif not (isinstance(node, Ref) and match_name(name=node.name, declared=aliases, quoted=node.quoted)):
+            paths.append(())
+    head = _common_prefix(paths)
+
+    def rebased(ref: Ref | DottedRef) -> ParsedExpr:
+        if not isinstance(ref, DottedRef):
+            return ref
+        rest = ref.parts[len(head):]
+        if rest == ("*",):
+            return StarSource()
+        return Ref(name=rest[0], evaluated=ref.evaluated) if len(rest) == 1 else DottedRef(
+            parts=rest, evaluated=ref.evaluated)
+
+    name = expression_text_alias(map_refs(parsed, rebased) if head else parsed)
+    return _flat_name((*head, *name.split(".")), root=root)
+
+
+def _common_prefix(paths: Sequence[Tuple[str, ...]]) -> Tuple[str, ...]:
+    """The longest prefix all ``paths`` share (``()`` for none)."""
+    head = paths[0] if paths else ()
+    for path in paths[1:]:
+        n = 0
+        while n < min(len(head), len(path)) and head[n] == path[n]:
+            n += 1
+        head = head[:n]
+    return head
 
 
 def _extended(
@@ -410,15 +500,17 @@ def _reserved_names(datasets: Dict[str, SlayerDataset], bundle: ResolvedSourceBu
 
 
 def apply_query_extensions(
-    *, query: SlayerQuery, scope: "DatasetScope | StageSchema | None", bundle: ResolvedSourceBundle,
-) -> "Tuple[DatasetScope | StageSchema | None, ResolvedSourceBundle]":
+    *, query: SlayerQuery, scope: "DatasetScope | None", bundle: ResolvedSourceBundle,
+) -> "Tuple[DatasetScope | None, ResolvedSourceBundle]":
     """``query``'s extensions applied to the stage's datasets: metrics overlaid, relationships merged into the relationship graph,
     and each INNER join recorded as a population filter."""
     if not query.extensions:
         return scope, bundle
     display = bundle.stage_displays.get(query.name) if query.name else None
     where = display.label if display is not None else None
-    universe = _universe(bundle)
+    # Inherited edges sit out the merge, then yield to what the extensions declared.
+    stripped = {n: without_inherited(m) for n, m in _universe(bundle).items()}
+    universe = {n: m for n, (m, _) in stripped.items()}
 
     def conflict(exc: ValueError) -> None:
         if isinstance(exc, QueryExtensionError):
@@ -434,13 +526,18 @@ def apply_query_extensions(
             *(j.name for m in universe.values() for j in m.relationships if j.name and not j.query_local),
         ],
     )
+    datasets = absorb_inherited({
+        n: m.model_copy(update={"relationships": [*m.relationships, *stripped[n][1]]}) if n in stripped and stripped[n][1]
+        else m
+        for n, m in datasets.items()
+    })
     source = datasets[bundle.population.name] if bundle.population is not None else None
     bundle = bundle.model_copy(update={
         "population": source,
         "referenced_datasets": [datasets.get(m.name, m) for m in bundle.referenced_datasets],
         "inner_restrictions": (*bundle.inner_restrictions, *restrictions),
     })
-    return _extended_scope(scope, query=query, datasets=datasets, source=source), bundle
+    return _extended_scope(scope, datasets=datasets), bundle
 
 
 def _universe(bundle: ResolvedSourceBundle) -> Dict[str, SlayerDataset]:
@@ -452,18 +549,7 @@ def _universe(bundle: ResolvedSourceBundle) -> Dict[str, SlayerDataset]:
     return out
 
 
-def _extended_scope(
-    scope: "DatasetScope | StageSchema | None", *, query: SlayerQuery, datasets: Dict[str, SlayerDataset],
-    source: Optional[SlayerDataset],
-) -> "DatasetScope | StageSchema | None":
-    if isinstance(scope, DatasetScope) and scope.population is not None:
+def _extended_scope(scope: "DatasetScope | None", *, datasets: Dict[str, SlayerDataset]) -> "DatasetScope | None":
+    if scope is not None and scope.population is not None:
         return DatasetScope(population=datasets.get(scope.population.name, scope.population))
-    if isinstance(scope, StageSchema) and source is not None and _touches(query, source.name):
-        return DatasetScope(population=source)
     return scope
-
-
-def _touches(query: SlayerQuery, name: str) -> bool:
-    """Whether ``query`` extends dataset ``name`` or relates to it."""
-    return extension_of(query, name) is not None or any(
-        j.to == name for e in query.extensions or [] for j in e.relationships or [])

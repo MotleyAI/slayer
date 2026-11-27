@@ -1,7 +1,7 @@
-"""Mode-A variable discoverability in inspect renders (DEV-1730).
+"""Mode-A variable discoverability in inspect renders.
 
-An sql-mode model parameterised with ``{var}`` / ``{? ... ?}`` surfaces its
-required/optional variables through the model skeleton (additive, no schema
+An sql-mode dataset parameterised with ``{var}`` / ``{? ... ?}`` surfaces its
+required/optional variables through the dataset skeleton (additive, no schema
 bump), so an agent can learn the query contract without reading the SQL.
 """
 
@@ -20,7 +20,7 @@ def _dataset() -> SlayerDataset:
         sql="SELECT '{d_from}' AS d FROM t WHERE 1=1 "
             "AND {? brand IN ({brand}) ?} AND {? mkt IN ({market}) ?}",
         data_source="ds",
-        fields=[DatasetField(name="d", sql="d", datatype=DataType.DATETIME)],
+        fields=[DatasetField(name="d", expression="d", datatype=DataType.DATETIME)],
     )
 
 
@@ -41,14 +41,14 @@ def test_skeleton_render_lists_variables_line():
 def test_skeleton_render_omits_variables_line_when_none():
     plain = SlayerDataset(
         name="m", sql_table="t", data_source="ds",
-        fields=[DatasetField(name="a", sql="a", datatype=DataType.STRING)],
+        fields=[DatasetField(name="a", expression="a", datatype=DataType.STRING)],
     )
     out = render_dataset_skeleton(dataset=plain)
     assert "Variables:" not in out
 
 
 def test_variables_are_derived_not_persisted_no_schema_bump():
-    # Discoverability is structural: no new persisted SlayerModel field, so the
+    # Discoverability is structural: no new persisted SlayerDataset field, so the
     # serialized schema version is unchanged and no `variables` key is stored.
     model = _dataset()
     dumped = model.model_dump()
@@ -59,7 +59,7 @@ def test_variables_are_derived_not_persisted_no_schema_bump():
 def _metric_dataset(**kw) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
+        fields=[DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)],
         metrics=[DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         **kw,
     )

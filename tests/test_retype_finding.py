@@ -18,6 +18,7 @@ from sqlalchemy.dialects import mysql
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.live_schema import schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -55,12 +56,12 @@ def _pk() -> DatasetField:
     return DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)
 
 
-# DuckDB models typed as 1.6.0 typed them: info-schema reflection (table-backed), the category probe (sql-mode).
+# DuckDB datasets typed as 1.6.0 typed them: info-schema reflection (table-backed), the category probe (sql-mode).
 
 def _legacy() -> SlayerDataset:
     return SlayerDataset(name="legacy", sql_table="kinds", data_source="ds", fields=[
         _pk(), DatasetField(name="flags", datatype=DataType.STRING), DatasetField(name="span", datatype=DataType.STRING),
-        DatasetField(name="doc", datatype=DataType.STRING), DatasetField(name="flags_upper", sql="upper(flags)", datatype=DataType.STRING),
+        DatasetField(name="doc", datatype=DataType.STRING), DatasetField(name="flags_upper", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="upper(flags)")]), datatype=DataType.STRING),
     ], metrics=[DatasetMetric(name="n_flags", expression="count_distinct(flags)")])
 
 
@@ -96,7 +97,7 @@ def _dropped() -> SlayerDataset:
     ], metrics=[DatasetMetric(name="n_gone", expression="count_distinct(gone)")])
 
 
-DUCK_MODELS = (_legacy, _legacy_sql, _retyped, _listy, _listy_sql, _dropped)
+DUCK_DATASETS = (_legacy, _legacy_sql, _retyped, _listy, _listy_sql, _dropped)
 
 
 class Duck:
@@ -124,7 +125,7 @@ async def duck(tmp_path: Path) -> AsyncGenerator[Duck]:
     ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     await storage.save_datasource(ds)
-    for build in DUCK_MODELS:
+    for build in DUCK_DATASETS:
         await storage.save_dataset(build())
     try:
         yield Duck(root=tmp_path, ds=ds, storage=storage)
@@ -148,7 +149,7 @@ async def _save_pg_datasets(storage: YAMLStorage) -> None:
     # As 1.6.0 reflection typed the table (interval TEXT, json UNKNOWN, oid TEXT, money DOUBLE, xml TEXT),
     # plus ``duration`` stored as TIMESTAMP over the interval.
     await storage.save_dataset(SlayerDataset(name="pg_table", sql_table="pgtypes", data_source="pg", fields=[
-        _pk(), DatasetField(name="duration", sql="dur", datatype=DataType.DATETIME), DatasetField(name="dur", datatype=DataType.STRING),
+        _pk(), DatasetField(name="duration", expression="dur", datatype=DataType.DATETIME), DatasetField(name="dur", datatype=DataType.STRING),
         DatasetField(name="payload", datatype=DataType.OPAQUE), DatasetField(name="ref", datatype=DataType.STRING),
         DatasetField(name="amount", datatype=DataType.FLOAT), DatasetField(name="doc", datatype=DataType.STRING),
     ]))
@@ -183,7 +184,7 @@ def _retypes(entries: list[dict[str, Any]], dataset: str) -> dict[str, dict[str,
 
 
 def _removed(entries: list[dict[str, Any]], dataset: str) -> set[str]:
-    """Every column and measure ``dataset`` loses to the deletes in ``entries``."""
+    """Every field and metric ``dataset`` loses to the deletes in ``entries``."""
     out: set[str] = set()
     for e in entries:
         if e.get("dataset_name") != dataset:
@@ -276,7 +277,7 @@ class TestTypedBy160Probe:
         assert set(found) == {"span", "flags", "tz"}, entries
         _assert_live(found["span"], stored=DataType.DATETIME, live=DataType.STRING, db_type="INTERVAL")
         _assert_live(found["flags"], stored=DataType.STRING, live=DataType.BOOLEAN, db_type="BIT")
-        _assert_live(found["tz"], stored=DataType.DATETIME, live=DataType.STRING, db_type="TIME WITH TIME ZONE")
+        _assert_live(found["tz"], stored=DataType.DATETIME, live=DataType.OPAQUE, db_type="TIME WITH TIME ZONE")
         assert {f["remedy_kind"] for f in found.values()} == {"set_type"}, found
         assert _removed(entries, "legacy_sql") == set(), entries
 
@@ -329,8 +330,8 @@ class TestForceClean:
             assert sum(f"{model}.{column}" in line for line in lines) == 1, (model, column, result.stdout)
 
 
-def _carried(err: SchemaDriftError, *, dataset: str, column: str) -> bool:
-    wanted = {"finding": "retype", "dataset_name": dataset, "field": column}
+def _carried(err: SchemaDriftError, *, dataset: str, field: str) -> bool:
+    wanted = {"finding": "retype", "dataset_name": dataset, "field": field}
     carried = [f.model_dump(mode="json") for f in getattr(err, "findings", [])]
     for f in carried:
         _assert_remedy_agrees(f)
@@ -342,7 +343,7 @@ class TestQueryTime:
         engine = duck.engine()
         try:
             with pytest.raises(SchemaDriftError) as info:
-                await engine.execute({"population": "legacy", "dimensions": ["flags_upper"]})
+                await engine.execute({"population": "legacy", "dimensions": ["legacy.flags_upper"]})
         finally:
             await engine.aclose()
             engine.close()
@@ -350,16 +351,16 @@ class TestQueryTime:
         assert "flags" not in _removed(_dump(err.to_delete), "legacy"), err.to_delete
         assert "legacy.flags" in str(err), str(err)
         assert "BIT" in str(err), str(err)
-        assert _carried(err, dataset="legacy", column="flags"), err.findings
+        assert _carried(err, dataset="legacy", field="flags"), err.findings
 
     async def test_postgres_json_grouped(self, pg: SlayerQueryEngine) -> None:
         with pytest.raises(SchemaDriftError) as info:
-            await pg.execute({"population": "pg_sql", "dimensions": ["payload"], "metrics": ["count(*)"]})
+            await pg.execute({"population": "pg_sql", "dimensions": ["pg_sql.payload"], "metrics": ["count(pg_sql.*)"]})
         err = info.value
         assert "payload" not in _removed(_dump(err.to_delete), "pg_sql"), err.to_delete
         assert "pg_sql.payload" in str(err), str(err)
         assert "json" in str(err), str(err)
-        assert _carried(err, dataset="pg_sql", column="payload"), err.findings
+        assert _carried(err, dataset="pg_sql", field="payload"), err.findings
 
 
 class TestOneShape:
@@ -369,7 +370,7 @@ class TestOneShape:
         assert rest.status_code == 200, rest.text
         server: Any = create_mcp_server(storage=duck.storage)
         try:
-            blocks, _ = await server.call_tool(name="validate_datasets", arguments={"data_source": "ds"})
+            blocks = (await server.call_tool(name="validate_datasets", arguments={"data_source": "ds"})).content
         finally:
             await server._slayer_engine.aclose()
         mcp = json.loads(blocks[0].text)
@@ -420,8 +421,8 @@ class TestSqliteProbe:
         ds = DatasourceConfig(name="s", type="sqlite", database=str(db))
         model = SlayerDataset(name="t", sql_table="t", data_source="s", fields=[
             _pk(), DatasetField(name="code", datatype=DataType.INTEGER), DatasetField(name="amt", datatype=DataType.INTEGER),
-            DatasetField(name="amount", sql='"amt"', datatype=DataType.INTEGER)])
-        findings: list[schema_drift.RetypeFinding] = []
+            DatasetField(name="amount", expression='"amt"', datatype=DataType.INTEGER)])
+        findings: list[schema_drift.RetypeFinding | schema_drift.UntypedFinding] = []
         client = SlayerSQLClient(datasource=ds)
         try:
             await schema_drift.validate_datasource(datasource=ds, datasets=[model], client=client,
@@ -434,7 +435,9 @@ class TestSqliteProbe:
         for f in findings:
             _assert_remedy_agrees(f.model_dump(mode="json"))
         # ``code`` is a bucket conflict over a live TEXT column, not a probe verdict.
-        assert {f.field: f.remedy_kind for f in findings} == {
+        retypes = [f for f in findings if isinstance(f, schema_drift.RetypeFinding)]
+        assert retypes == findings
+        assert {f.field: f.remedy_kind for f in retypes} == {
             "amount": "reingest", "amt": "reingest", "code": "set_type"}
 
 

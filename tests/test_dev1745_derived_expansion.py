@@ -1,5 +1,5 @@
-"""DEV-1745 (W8) — derived-column expansion must work when the whole
-``Column.sql`` is a single bare reference to another derived column.
+"""W8 — derived-field expansion must work when the whole
+``DatasetField.sql`` is a single bare reference to another derived field.
 
 ``_process_column_node_sync`` finishes by calling
 ``col.replace(exp.Paren(this=expanded_ast))``. When the fragment is exactly one
@@ -8,12 +8,12 @@ parent, so sqlglot's ``replace`` is a no-op: the correctly-expanded inner SQL is
 computed and then discarded, and ``expand_derived_refs_sync`` returns the
 original text.
 
-The emitted SQL then references a SLayer-derived column as if it were a
-physical one (``customers__regions.pop_x2``), which no database can bind. Adding
+The emitted SQL then references a SLayer-derived field as if it were a
+physical column (``customers__regions.pop_x2``), which no database can bind. Adding
 any surrounding expression — even parentheses — makes it work, which is what
 makes the defect easy to miss.
 
-Not limited to cross-model: a same-model derived alias fails identically.
+Not limited to cross-dataset: a same-dataset derived alias fails identically.
 """
 
 from __future__ import annotations
@@ -21,15 +21,17 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.field_expansion import expand_derived_refs_sync
 
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting, trusting_all
 
 
 # ---------------------------------------------------------------------------
-# Fixtures — orders -> customers -> regions, with derived columns at each hop
+# Fixtures — orders -> customers -> regions, with derived fields at each hop
 # ---------------------------------------------------------------------------
 
 
@@ -40,9 +42,9 @@ def _regions() -> SlayerDataset:
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="population", datatype=DataType.FLOAT),
-            # derived ON regions, referencing a regions column BARE
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
-            DatasetField(name="is_live", sql="status = 'live'", datatype=DataType.BOOLEAN),
+            # derived ON regions, referencing a regions field BARE
+            DatasetField(name="pop_x2", expression="population * 2", datatype=DataType.FLOAT),
+            DatasetField(name="is_live", expression="status = 'live'", datatype=DataType.BOOLEAN),
         ],
     )
 
@@ -67,17 +69,17 @@ def _orders() -> SlayerDataset:
             DatasetField(name="amount", datatype=DataType.FLOAT),
             # 'status' ALSO exists on regions — same-name collision shape
             DatasetField(name="status", datatype=DataType.STRING),
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT),
+            DatasetField(name="doubled", expression="amount * 2", datatype=DataType.FLOAT),
             # --- the defect shapes: sql is ONE bare derived reference ---
-            DatasetField(name="alias_local", sql="doubled", datatype=DataType.FLOAT),
-            DatasetField(name="deep_pop", sql="customers.regions.pop_x2",
+            DatasetField(name="alias_local", expression="orders.doubled", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="customers.regions.pop_x2",
                    datatype=DataType.FLOAT),
-            DatasetField(name="deep_live", sql="customers.regions.is_live",
+            DatasetField(name="deep_live", expression="customers.regions.is_live",
                    datatype=DataType.BOOLEAN),
             # --- controls: same reference inside a larger expression ---
-            DatasetField(name="deep_pop_compound", sql="customers.regions.pop_x2 * 1",
+            DatasetField(name="deep_pop_compound", expression="customers.regions.pop_x2 * 1",
                    datatype=DataType.FLOAT),
-            DatasetField(name="deep_pop_paren", sql="(customers.regions.pop_x2)",
+            DatasetField(name="deep_pop_paren", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="(customers.regions.pop_x2)") for d in ("DUCKDB", "POSTGRES")]),
                    datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
@@ -86,17 +88,17 @@ def _orders() -> SlayerDataset:
     )
 
 
-_MODELS = {"orders": _orders(), "customers": _customers(), "regions": _regions()}
+_DATASETS = {"orders": _orders(), "customers": _customers(), "regions": _regions()}
 
 
 def _expand(sql: str) -> str:
-    # The SAME ``_MODELS`` instances — the reference resolver walks
-    # ``model``'s joins by identity, so passing a second, equal-but-distinct
+    # The SAME ``_DATASETS`` instances — the reference resolver walks
+    # ``dataset``'s relationships by identity, so passing a second, equal-but-distinct
     # ``_orders()`` would diverge the moment the root path resolves.
     # ``owner_path=()`` (the default) roots at ``orders``.
     out = expand_derived_refs_sync(
-        sql=sql, dataset=_MODELS["orders"], alias_path="orders",
-        datasets_by_name=_MODELS, dialect="postgres",
+        sql=sql, dataset=_DATASETS["orders"], alias_path="orders",
+        datasets_by_name=_DATASETS, dialect="postgres",
     )
     assert out is not None, f"expansion returned None for {sql!r}"
     return out
@@ -116,16 +118,16 @@ class TestBareDerivedReferenceExpands:
         # SQL no database can bind.
         out = _expand("customers.regions.pop_x2")
         assert "pop_x2" not in out, (
-            f"derived column name leaked into emitted SQL: {out!r}"
+            f"derived field name leaked into emitted SQL: {out!r}"
         )
         assert "customers__regions.population" in out
         assert "* 2" in out
 
     def test_same_model_bare_derived_alias_expands(self) -> None:
-        # Not a cross-model problem: a local derived alias fails identically.
-        out = _expand("doubled")
+        # Not a cross-dataset problem: a local derived alias fails identically.
+        out = _expand("orders.doubled")
         assert "doubled" not in out, (
-            f"derived column name leaked into emitted SQL: {out!r}"
+            f"derived field name leaked into emitted SQL: {out!r}"
         )
         assert "orders.amount" in out
         assert "* 2" in out
@@ -133,7 +135,7 @@ class TestBareDerivedReferenceExpands:
     def test_boolean_derived_of_derived_expands(self) -> None:
         out = _expand("customers.regions.is_live")
         assert "is_live" not in out, (
-            f"derived column name leaked into emitted SQL: {out!r}"
+            f"derived field name leaked into emitted SQL: {out!r}"
         )
         assert "customers__regions.status" in out
 
@@ -168,15 +170,15 @@ class TestDerivedOfDerivedEmission:
 
     async def _sql(self, query: SlayerQuery) -> str:
         return await _engine_generate(
-            query=query, dataset=_orders(), dialect="postgres", validate=False,
-            extra_datasets=[_customers(), _regions()],
+            query=query, dataset=trusting(_orders()), dialect="postgres", validate=False,
+            extra_datasets=trusting_all([_customers(), _regions()]),
         )
 
     async def test_dimension_on_derived_of_derived(self) -> None:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "deep_pop", "alias": "deep_pop"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
+            "dimensions": [{"field": "orders.deep_pop", "alias": "deep_pop"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
         }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
@@ -186,8 +188,8 @@ class TestDerivedOfDerivedEmission:
     async def test_measure_over_derived_of_derived(self) -> None:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
-            "metrics": [{"metric": "sum(deep_pop)", "alias": "m0"}],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
+            "metrics": [{"metric": "sum(orders.deep_pop)", "alias": "m0"}],
         }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
@@ -195,9 +197,9 @@ class TestDerivedOfDerivedEmission:
     async def test_filter_on_derived_of_derived(self) -> None:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
-            "filter": ["deep_pop > 100"],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
+            "filter": ["orders.deep_pop > 100"],
         }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
@@ -205,8 +207,8 @@ class TestDerivedOfDerivedEmission:
     async def test_local_derived_alias_dimension(self) -> None:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "alias_local", "alias": "alias_local"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
+            "dimensions": [{"field": "orders.alias_local", "alias": "alias_local"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
         }))
         # 'doubled' is derived on orders; it must inline, not be referenced.
         # Today this emits a BARE, unqualified `doubled` — invalid on any DB.
@@ -216,14 +218,14 @@ class TestDerivedOfDerivedEmission:
     async def test_same_named_column_resolves_to_owning_model(self) -> None:
         """`status` exists on BOTH orders and regions. The derived
         `deep_live` (regions.is_live -> "status = 'live'") must resolve
-        against REGIONS, not the root model."""
+        against REGIONS, not the root dataset."""
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "deep_live", "alias": "deep_live"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
+            "dimensions": [{"field": "orders.deep_live", "alias": "deep_live"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
         }))
         assert "customers__regions.status" in sql, (
-            f"derived sql resolved against the wrong model:\n{sql}"
+            f"derived sql resolved against the wrong dataset:\n{sql}"
         )
 
 
@@ -238,8 +240,8 @@ async def test_derived_of_derived_executes_on_duckdb() -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "deep_pop", "alias": "deep_pop"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
+            "dimensions": [{"field": "orders.deep_pop", "alias": "deep_pop"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "m0"}],
         }),
         dataset=_orders(), dialect="duckdb", validate=False,
         extra_datasets=[_customers(), _regions()],

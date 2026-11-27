@@ -1,6 +1,6 @@
-"""Alias validity and result-key uniformity for unnamed formula measures.
+"""Alias validity and result-key uniformity for unnamed expression metrics.
 
-A fixed battery of unnamed-measure shapes crossed with every supported
+A fixed battery of unnamed-metric shapes crossed with every supported
 dialect: emitted projection aliases must be valid identifiers for the
 dialect after its emission rewrites, and derived result keys must be
 identical across dialects.
@@ -45,12 +45,12 @@ _BARE_ALIAS_RE = re.compile(_IDENT)
 _DOTTED_ALIAS_RE = re.compile(rf"{_IDENT}(\.{_IDENT})*")
 
 _SHAPES = {
-    "arithmetic": "sum(logo_churn) / sum(logo_bop)",
-    "transform": "time_shift(sum(cmrr_eop), -1, 'year')",
-    "transform_of_composite": "time_shift(sum(logo_churn) / sum(logo_bop), -1)",
-    "mixed_literal": "sum(logo_churn) * 100",
-    "cross_model_composite": "sum(logo_churn) / sum(targets.goal)",
-    "parametric_agg": "percentile(price, p=0.9)",
+    "arithmetic": "sum(mart.logo_churn) / sum(mart.logo_bop)",
+    "transform": "time_shift(sum(mart.cmrr_eop), -1, 'year')",
+    "transform_of_composite": "time_shift(sum(mart.logo_churn) / sum(mart.logo_bop), -1)",
+    "mixed_literal": "sum(mart.logo_churn) * 100",
+    "cross_model_composite": "sum(mart.logo_churn) / sum(targets.goal)",
+    "parametric_agg": "percentile(mart.price, p=0.9)",
 }
 
 # Capability gaps, not alias concerns: these dialects raise a loud
@@ -67,7 +67,7 @@ def _shape_query(shape: str) -> SlayerQuery:
         metrics=[QueryMetric(metric=_SHAPES[shape])],
         time_dimensions=[
             TimeDimension(
-                field="created_at",
+                field="mart.created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
@@ -107,7 +107,7 @@ async def test_aliases_valid_per_dialect(shape: str, dialect: str) -> None:
         f"invalid {dialect} alias {alias!r} in:\n{sql}"
     )
     assert alias in _projection_aliases(sql, dialect), (
-        f"measure alias {alias!r} not projected in:\n{sql}"
+        f"metric alias {alias!r} not projected in:\n{sql}"
     )
 
 
@@ -129,12 +129,12 @@ async def test_bigquery_unnamed_formula_measures() -> None:
     query = SlayerQuery(
         population="mart",
         metrics=[
-            QueryMetric(metric="sum(logo_churn) / sum(logo_bop)"),
-            QueryMetric(metric="time_shift(sum(cmrr_eop), -1, 'year')"),
+            QueryMetric(metric="sum(mart.logo_churn) / sum(mart.logo_bop)"),
+            QueryMetric(metric="time_shift(sum(mart.cmrr_eop), -1, 'year')"),
         ],
         time_dimensions=[
             TimeDimension(
-                field="created_at",
+                field="mart.created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
@@ -150,5 +150,5 @@ async def test_bigquery_unnamed_formula_measures() -> None:
         assert key in resp.columns
         mangled = key.replace(".", "___")
         assert mangled in _projection_aliases(sql, "bigquery"), (
-            f"measure alias {mangled!r} not projected in:\n{sql}"
+            f"metric alias {mangled!r} not projected in:\n{sql}"
         )

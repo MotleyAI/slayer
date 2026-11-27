@@ -2,8 +2,8 @@
 
 Mirror of test_integration_postgres.py, exercising the MySQL
 dialect's variance-decomposition path for corr/covar_*, the MySQL-specific
-``VAR_SAMP``/``VAR_POP`` Anonymous overrides, and the NotImplementedError
-emitted for median/percentile.
+``VAR_SAMP``/``VAR_POP`` Anonymous overrides, and median/percentile interpolated
+over windows.
 
 Skipped silently when:
 - ``testcontainers[mysql]`` is not installed (importorskip)
@@ -14,9 +14,10 @@ The CI workflow at .github/workflows/integration-mysql.yml asserts
 in CI surfaces as a workflow failure, not a silent skip.
 """
 
+import asyncio
 import math as _math
 import statistics
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 import tempfile
 from collections.abc import Iterator
 import uuid
@@ -36,11 +37,29 @@ from tests._dev1737_fixtures import (
     matrix_query,
     server_seed_statements,
 )
+from tests._dev2000_fixtures import (
+    DS as TZ_DS,
+    MARKS as TZ_MARKS,
+    NY as TZ_NY,
+    ROWS as TZ_ROWS,
+    TOKYO as TZ_TOKYO,
+    amount as tz_amount,
+    day as tz_day,
+    instant_typing_queries,
+    local as tz_local,
+    marks_dataset as tz_marks_dataset,
+    orders_dataset as tz_orders_dataset,
+    orders_naive_instant_dataset,
+    row_values,
+)
 from tests._engine_helpers import disposable_engine
 from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
+from tests.integration import _dev2458_matrix as dev2458
 
 from slayer.async_utils import run_sync
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -62,7 +81,14 @@ from tests.integration._dev2015_server import (
     server_statements,
     with_granularities,
 )
-from tests._cast_fixtures import check_try_cast_targets
+from tests._dev2018_fixtures import (
+    check_bucket_matrix,
+    check_mixed,
+    server_datasets as logical_type_datasets,
+    server_statements as logical_type_statements,
+    with_granularities as logical_type_granularities,
+)
+from tests._cast_fixtures import check_author_casts, check_boolean_casts, check_try_cast_targets
 from tests._dev2101_fixtures import (
     check_filtered_aggregations,
     check_null_ordering,
@@ -74,11 +100,21 @@ from tests._dev2101_fixtures import (
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
+    REFUSED_FUNCTIONS,
     check_library,
     check_native_json,
     lib_dataset,
     lib_query,
     server_table_statements as dev2120_table_statements,
+)
+from tests._dev2457_fixtures import server_statements as window_statements, window_datasets
+from tests._dev2457_matrix import (
+    CASE_IDS as WINDOW_CASE_IDS,
+    CASES as WINDOW_CASES,
+    WindowCase,
+    assert_typed_refusal,
+    check_case,
+    window_values,
 )
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
@@ -212,7 +248,7 @@ def _ds_config(mysql_container, db_name: str) -> DatasourceConfig:
 @pytest.fixture(scope="module")
 def _mysql_env_storage(mysql_container, tmp_path_factory):
     """Module-scoped: per-module MySQL DB seeded with orders + customers
-    (InnoDB, with FK), plus a YAMLStorage with both models pre-saved.
+    (InnoDB, with FK), plus a YAMLStorage with both datasets pre-saved.
     """
     db_name = _create_module_db(mysql_container)
     try:
@@ -265,12 +301,12 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
             sql_table="orders",
             data_source="testmysql",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="avg_amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         customers_model = SlayerDataset(
@@ -278,9 +314,9 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
             sql_table="customers",
             data_source="testmysql",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
         run_sync(storage.save_dataset(orders_model))
@@ -303,36 +339,35 @@ def mysql_env(_mysql_env_storage) -> SlayerQueryEngine:
 @pytest.mark.integration
 class TestMySQLQueries:
     async def test_count_all(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)"}]})
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, mysql_env: SlayerQueryEngine) -> None:
-        """A model column holding a ``(?:...)`` regex literal and a ``%``
+        """A dataset field holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         orders = await mysql_env.storage.get_dataset("orders")
         assert orders is not None
         await mysql_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
+            *orders.fields, DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="CASE WHEN status LIKE '%pend%' OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END")]), datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
-            dimensions=[QueryDimension(field="rx")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders_rx.rx")],
+            metrics=[QueryMetric(metric="count(orders_rx.*)")],
         )
         result = await mysql_env.execute(query=query)
         by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.total)"}]})
         result = await mysql_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     async def test_avg_measure(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(avg_amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(orders.avg_amount)"}]})
         result = await mysql_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
@@ -340,8 +375,8 @@ class TestMySQLQueries:
     async def test_group_by_status(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "dimensions": ["orders.status"],
         })
         result = await mysql_env.execute(query=query)
         by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
@@ -352,8 +387,8 @@ class TestMySQLQueries:
     async def test_filter_equals(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["status == 'completed'"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.status == 'completed'"],
         })
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
@@ -361,8 +396,8 @@ class TestMySQLQueries:
     async def test_filter_gt(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["total > 100"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.total > 100"],
         })
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
@@ -374,8 +409,8 @@ class TestMySQLQueries:
         for total = 100."""
         acceptance = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["trunc(total) >= 100"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["trunc(orders.total) >= 100"],
         })
         result = await mysql_env.execute(query=acceptance)
         assert result.data[0]["orders._count"] > 0
@@ -384,8 +419,8 @@ class TestMySQLQueries:
 
         truncates = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["trunc(total / 40.0) == 2"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["trunc(orders.total / 40.0) == 2"],
         })
         result = await mysql_env.execute(query=truncates)
         assert result.data[0]["orders._count"] == 1, result.sql
@@ -393,9 +428,9 @@ class TestMySQLQueries:
     async def test_order_by_desc(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "dimensions": ["status"],
-            "order": [{"field": "count", "direction": "desc"}],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "dimensions": ["orders.status"],
+            "order": [{"field": "count(orders.*)", "direction": "desc"}],
         })
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
@@ -403,8 +438,8 @@ class TestMySQLQueries:
     async def test_limit(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "dimensions": ["orders.status"],
             "limit": 2,
         })
         result = await mysql_env.execute(query=query)
@@ -413,8 +448,8 @@ class TestMySQLQueries:
     async def test_multiple_measures(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}, {"metric": "sum(total)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "count(orders.*)"}, {"metric": "sum(orders.total)"}],
+            "dimensions": ["orders.status"],
         })
         result = await mysql_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
@@ -426,8 +461,8 @@ class TestMySQLQueries:
         return 3 months."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
         })
         result = await mysql_env.execute(query=query)
         assert result.row_count == 3
@@ -435,9 +470,9 @@ class TestMySQLQueries:
     async def test_time_dimension_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "time_dimensions": [{
-                "field": "created_at",
+                "field": "orders.created_at",
                 "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
@@ -449,8 +484,8 @@ class TestMySQLQueries:
     async def test_composite_filter(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["status == 'completed' or status == 'pending'"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.status == 'completed' or orders.status == 'pending'"],
         })
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders._count"] == 5
@@ -459,104 +494,104 @@ class TestMySQLQueries:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev_month"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="time_shift(sum(orders.total), -1, 'month')", alias="prev_month"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(375.0)
-        assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
+        assert float(result.data[0]["prev_month"]) == pytest.approx(200.0)
 
     async def test_consecutive_periods_with_boolean_predicate(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="consecutive_periods(sum(total) > 200)", alias="positive_run"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="consecutive_periods(sum(orders.total) > 200)", alias="positive_run"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
-        assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
+        assert [r["positive_run"] for r in result.data] == [1, 0, 1]
 
     @pytest.mark.parametrize("column,granularity", CALENDAR_CASES)
     async def test_consecutive_periods_breaks_on_calendar_gap(
         self, mysql_env: SlayerQueryEngine, column: str, granularity: str,
     ) -> None:
-        await assert_calendar_streak(mysql_env, column=column, granularity=granularity)
+        await assert_calendar_streak(mysql_env, field=column, granularity=granularity)
 
     async def test_change_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="change(sum(total))", alias="amount_change"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="change(sum(orders.total))", alias="amount_change"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
-        assert float(result.data[0]["orders.amount_change"]) == pytest.approx(175.0)
+        assert float(result.data[0]["amount_change"]) == pytest.approx(175.0)
 
     async def test_change_pct_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="change_pct(sum(total))", alias="pct"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="change_pct(sum(orders.total))", alias="pct"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
-        assert float(result.data[0]["orders.pct"]) == pytest.approx(0.875)
+        assert float(result.data[0]["pct"]) == pytest.approx(0.875)
 
     async def test_multiple_date_range_shifts(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             metrics=[
-                QueryMetric(metric="sum(total)"),
-                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev"),
-                QueryMetric(metric="time_shift(sum(total), 1, 'month')", alias="next"),
+                QueryMetric(metric="sum(orders.total)"),
+                QueryMetric(metric="time_shift(sum(orders.total), -1, 'month')", alias="prev"),
+                QueryMetric(metric="time_shift(sum(orders.total), 1, 'month')", alias="next"),
             ],
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(200.0)
-        assert float(result.data[0]["orders.prev"]) == pytest.approx(300.0)
-        assert float(result.data[0]["orders.next"]) == pytest.approx(375.0)
+        assert float(result.data[0]["prev"]) == pytest.approx(300.0)
+        assert float(result.data[0]["next"]) == pytest.approx(375.0)
 
 
 # ---------------------------------------------------------------------------
-# Cross-model + multistage
+# Cross-dataset + multistage
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def mysql_cross_dataset_env(mysql_container):
-    """MySQL env with orders + customers (with score) and explicit join."""
+    """MySQL env with orders + customers (with score) and explicit relationship."""
     db_name = _create_module_db(mysql_container)
     conn = _admin_connect(mysql_container, dbname=db_name)
     try:
@@ -604,21 +639,21 @@ def mysql_cross_dataset_env(mysql_container):
         name="orders", sql_table="orders", data_source="testmysql",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testmysql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="avg_score", sql="score", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="avg_score", expression="score", datatype=DataType.FLOAT),
         ],
     )))
     yield SlayerQueryEngine(storage=storage)
@@ -631,24 +666,24 @@ class TestCrossModelAndMultistageMySQL:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="avg(customers.avg_score)")],
-            order=[OrderItem(field="created_at", direction="asc")],
+            metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="avg(customers.avg_score)")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         result = await mysql_cross_dataset_env.execute(query=query)
         assert result.row_count == 3
-        assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
+        assert [float(r["customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
     async def test_query_list_named(self, mysql_cross_dataset_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="monthly", population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total)")],
+            metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="sum(orders.total)")],
         )
-        outer = SlayerQuery(population="monthly", metrics=[QueryMetric(metric="count(*)")])
+        outer = SlayerQuery(population="monthly", metrics=[QueryMetric(metric="count(monthly.*)")])
         result = await mysql_cross_dataset_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
@@ -656,25 +691,25 @@ class TestCrossModelAndMultistageMySQL:
         source = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity=TimeGranularity.MONTH,
+                field="orders.created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total)")],
+            metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="sum(orders.total)")],
         )
         saved = await mysql_cross_dataset_env.create_dataset_from_query(query=source, name="mysql_monthly")
         assert saved.source_queries is not None
         result = await mysql_cross_dataset_env.execute(
-            query=SlayerQuery(population="mysql_monthly", metrics=[QueryMetric(metric="count(*)")])
+            query=SlayerQuery(population="mysql_monthly", metrics=[QueryMetric(metric="count(mysql_monthly.*)")])
         )
         assert result.data[0]["mysql_monthly._count"] == 3
 
     async def test_sql_dimension(self, mysql_cross_dataset_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", alias="tier")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="CASE WHEN orders.amount > 100 THEN 'high' ELSE 'low' END", alias="tier")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await mysql_cross_dataset_env.execute(query=query)
-        by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
+        by_tier = {r["tier"]: r["orders._count"] for r in result.data}
         assert by_tier["high"] == 3
         assert by_tier["low"] == 3
 
@@ -784,11 +819,11 @@ class TestRollupIngestionMySQL:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
-        by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
+        by_name = {r["customers.name"]: r["orders._count"] for r in result.data}
         assert by_name["Acme"] == 2
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
@@ -804,11 +839,11 @@ class TestRollupIngestionMySQL:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}, {"metric": "sum(amount)"}],
+            "metrics": [{"metric": "count(orders.*)"}, {"metric": "sum(orders.amount)"}],
             "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
-        by_region = {r["orders.customers.regions.name"]: r for r in result.data}
+        by_region = {r["customers.regions.name"]: r for r in result.data}
         assert by_region["US"]["orders._count"] == 3
         assert by_region["EU"]["orders._count"] == 1
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
@@ -837,11 +872,11 @@ class TestRollupIngestionMySQL:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
-        by_region = {r["orders.customers.regions.name"]: r["orders._count"] for r in result.data}
+        by_region = {r["customers.regions.name"]: r["orders._count"] for r in result.data}
         assert by_region["US"] == 3
         assert by_region["EU"] == 1
 
@@ -853,7 +888,7 @@ class TestRollupIngestionMySQL:
         for m in models:
             await storage.save_dataset(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)"}]})
         result = await engine.execute(query=query)
         assert "LEFT JOIN" not in result.sql
         assert result.data[0]["orders._count"] == 4
@@ -868,7 +903,7 @@ class TestRollupIngestionMySQL:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
@@ -886,7 +921,7 @@ class TestRollupIngestionMySQL:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
@@ -923,34 +958,68 @@ class TestRollupIngestionMySQL:
 
 
 # ---------------------------------------------------------------------------
-# Median / percentile — MySQL raises NotImplementedError
+# Median / percentile — interpolated over windows
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-class TestMySQLMedianPercentileRaises:
-    async def test_median_raises(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(total)"}]})
-        with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
-            await mysql_env.execute(query=query)
+class TestMySQLMedianPercentile:
+    async def test_median(self, mysql_env: SlayerQueryEngine) -> None:
+        # amounts = [100, 200, 50, 150, 75, 300] -> median 125
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
+        result = await mysql_env.execute(query=query)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
-    async def test_median_grouped_raises(self, mysql_env: SlayerQueryEngine) -> None:
-        """Grouped median path goes through the same dialect hook; must also raise."""
+    async def test_percentile_quartiles(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "median(total)"}],
-            "dimensions": ["status"],
+            "metrics": [{"metric": "percentile(orders.total, p=0.25)"}, {"metric": "percentile(orders.total, p=0.75)"}],
         })
-        with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
-            await mysql_env.execute(query=query)
+        row = (await mysql_env.execute(query=query)).data[0]
+        assert float(row["orders.total_percentile_p_0_25"]) == pytest.approx(81.25)
+        assert float(row["orders.total_percentile_p_0_75"]) == pytest.approx(187.5)
 
-    async def test_percentile_raises(self, mysql_env: SlayerQueryEngine) -> None:
+    async def test_median_grouped(self, mysql_env: SlayerQueryEngine) -> None:
+        # completed: [100, 150, 200] -> 150; pending: [50, 300] -> 175; cancelled: [75] -> 75
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "percentile(total, p=0.5)"}],
+            "metrics": [{"metric": "median(orders.total)"}],
+            "dimensions": ["orders.status"],
         })
-        with pytest.raises(NotImplementedError, match="(?i)percentile.*mysql"):
-            await mysql_env.execute(query=query)
+        result = await mysql_env.execute(query=query)
+        by_status = {r["orders.status"]: float(r["orders.total_median"]) for r in result.data}
+        assert by_status == pytest.approx({"completed": 150, "pending": 175, "cancelled": 75})
+
+
+@pytest.fixture(scope="module")
+def _mysql_dev2458_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in dev2458.statements(dialect="mysql"):
+                    cur.execute(stmt)
+            conn.commit()
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dev2458")))
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        for model in dev2458.datasets(data_source="testmysql"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+class TestMySQLDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles — the ordered-set split's discrete pick, executed."""
+
+    @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_exact],
+                             ids=lambda c: c.__name__)
+    async def test_matrix(self, _mysql_dev2458_storage, check) -> None:
+        await dev2458.run_check(check, storage=_mysql_dev2458_storage)
 
 
 # ---------------------------------------------------------------------------
@@ -972,7 +1041,7 @@ class TestMySQLStatAggregations:
     """
 
     async def test_stddev_samp_native_mysql(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "stddev_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "stddev_samp(orders.total)"}]})
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
@@ -982,7 +1051,7 @@ class TestMySQLStatAggregations:
     async def test_stddev_pop_native_mysql(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "stddev_pop(total)"}],
+            "metrics": [{"metric": "stddev_pop(orders.total)"}],
         })
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -994,7 +1063,7 @@ class TestMySQLStatAggregations:
         """The MysqlDialect.build_stat_agg_1arg Anonymous wrap means the
         emitted SQL contains literal ``VAR_SAMP(``, not sqlglot's default
         ``VARIANCE``. Pin via dry_run."""
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "var_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "var_samp(orders.total)"}]})
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_var_samp"]) == pytest.approx(
@@ -1011,7 +1080,7 @@ class TestMySQLStatAggregations:
     async def test_var_pop_uses_canonical_mysql_name(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"metric": "var_pop(total)"}],
+            metrics=[{"metric": "var_pop(orders.total)"}],
         )
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1031,7 +1100,7 @@ class TestMySQLStatAggregations:
         (no native function). Pin both numeric correctness AND SQL shape."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "corr(total, other=customer_id)"}],
+            "metrics": [{"metric": "corr(orders.total, other=orders.customer_id)"}],
         })
         result = await mysql_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1056,7 +1125,7 @@ class TestMySQLStatAggregations:
     async def test_covar_samp_variance_decomposition_mysql(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "covar_samp(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_samp(orders.total, other=orders.customer_id)"}],
         })
         result = await mysql_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1078,7 +1147,7 @@ class TestMySQLStatAggregations:
     async def test_covar_pop_variance_decomposition_mysql(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "covar_pop(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_pop(orders.total, other=orders.customer_id)"}],
         })
         result = await mysql_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1103,11 +1172,11 @@ class TestMySQLStatAggregations:
         """Trailing 90d windows (bucket end exclusive) over the six seeded orders."""
         query = SlayerQuery(
             population="orders",
-            time_dimensions=[TimeDimension(field="created_at",
+            time_dimensions=[TimeDimension(field="orders.created_at",
                                            granularity=TimeGranularity.MONTH)],
             metrics=[
-                QueryMetric(metric="covar_samp(total, other=customer_id, window='90d')", alias="cv"),
-                QueryMetric(metric="corr(total, other=customer_id, window='90d')", alias="co"),
+                QueryMetric(metric="covar_samp(orders.total, other=orders.customer_id, window='90d')", alias="cv"),
+                QueryMetric(metric="corr(orders.total, other=orders.customer_id, window='90d')", alias="co"),
             ],
         )
         rows = [  # (amount, customer_id, created_at)
@@ -1128,12 +1197,12 @@ class TestMySQLStatAggregations:
         assert set(by_month) == set(month_ends)
         for month in month_ends:
             xs, ys = members(month)
-            assert float(by_month[month]["orders.cv"]) == pytest.approx(
+            assert float(by_month[month]["cv"]) == pytest.approx(
                 statistics.covariance(xs, ys), rel=1e-9, abs=1e-9,
             )
         for month in ("2024-02", "2024-03"):
             xs, ys = members(month)
-            assert float(by_month[month]["orders.co"]) == pytest.approx(
+            assert float(by_month[month]["co"]) == pytest.approx(
                 statistics.correlation(xs, ys), rel=1e-9,
             )
 
@@ -1151,8 +1220,8 @@ class TestMySQLStatAggregations:
 @pytest.fixture
 def mysql_log10_env(mysql_container):
     """Dedicated function-scoped env for the log10 round-trip test so its
-    Column-add doesn't leak into the module-scoped storage (would corrupt
-    the shared model across sibling tests)."""
+    field-add doesn't leak into the module-scoped storage (would corrupt
+    the shared dataset across sibling tests)."""
     db_name = _create_module_db(mysql_container)
     conn = _admin_connect(mysql_container, dbname=db_name)
     try:
@@ -1176,9 +1245,9 @@ def mysql_log10_env(mysql_container):
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testmysql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="log_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="log10(amount)")]), datatype=DataType.FLOAT),
         ],
     )))
     yield SlayerQueryEngine(storage=storage)
@@ -1192,14 +1261,14 @@ async def test_log10_round_trip_mysql(mysql_log10_env: SlayerQueryEngine) -> Non
     ``LOG(10, ...)`` form."""
 
     result = await mysql_log10_env.execute(
-        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]})
+        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(orders.log_amount)"}]})
     )
     assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
         _math.log10(300.0), rel=1e-9
     )
 
     dry = await mysql_log10_env.execute(
-        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]}),
+        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(orders.log_amount)"}]}),
         dry_run=True,
     )
     assert dry.sql is not None
@@ -1219,7 +1288,7 @@ async def test_log10_round_trip_mysql(mysql_log10_env: SlayerQueryEngine) -> Non
 
 @pytest.fixture
 def planets_mysql_env(mysql_container):
-    """Planets fixture (MySQL) with a Column.sql containing ROW_NUMBER()."""
+    """Planets fixture (MySQL) with a DatasetField.sql containing ROW_NUMBER()."""
     db_name = _create_module_db(mysql_container)
     conn = _admin_connect(mysql_container, dbname=db_name)
     try:
@@ -1256,12 +1325,12 @@ def planets_mysql_env(mysql_container):
             sql_table="planets",
             data_source="testmysql",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.STRING),
-                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", expression="name", datatype=DataType.STRING),
+                DatasetField(name="mass", expression="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
-                    sql="row_number() over (order by mass desc)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="row_number() over (order by mass desc)")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1272,25 +1341,26 @@ def planets_mysql_env(mysql_container):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_mysql_raises(planets_mysql_env) -> None:
+async def test_filter_on_windowed_column_mysql(planets_mysql_env) -> None:
+    """A filter on a windowed field applies outside the materialised window."""
     engine = planets_mysql_env
     query = SlayerQuery(
         population="planets",
-        dimensions=["name"],
-        filter=["rn <= 3"],
+        dimensions=["planets.name"],
+        filter=["planets.rn <= 3"],
     )
-    with pytest.raises(ValueError, match="(?i)window function|rank"):
-        await engine.execute(query)
+    result = await engine.execute(query)
+    assert {r["planets.name"] for r in result.data} == {"Jupiter", "Saturn", "Neptune"}
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql
+# Cross-dataset derived DatasetField.sql
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def mysql_derived_chain_env(mysql_container):
-    """A→B fixture with a derived column on B referenced by A (MySQL)."""
+    """A→B fixture with a derived field on B referenced by A (MySQL)."""
     db_name = _create_module_db(mysql_container)
     conn = _admin_connect(mysql_container, dbname=db_name)
     try:
@@ -1320,9 +1390,9 @@ def mysql_derived_chain_env(mysql_container):
             data_source="testmysql",
             sql_table="b_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="foo_raw", expression="foo_raw", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", expression="foo_raw / 100.0", datatype=DataType.FLOAT),
             ],
         )
     ))
@@ -1332,13 +1402,13 @@ def mysql_derived_chain_env(mysql_container):
             data_source="testmysql",
             sql_table="a_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
-                DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
-                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="bar", expression="bar", datatype=DataType.FLOAT),
+                DatasetField(name="b_id", expression="b_id", datatype=DataType.FLOAT),
+                DatasetField(name="raw_a", expression="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
-                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="a_tbl.bar / b_tbl.foo_normalized")]),
                     datatype=DataType.FLOAT,
                 ),
             ],
@@ -1357,10 +1427,10 @@ async def test_integration_mysql_cross_model_derived_columnsql(
         SlayerQuery(
             population="a_tbl",
             dimensions=[
-                QueryDimension(field="id"),
-                QueryDimension(field="ratio_using_derived"),
+                QueryDimension(field="a_tbl.id"),
+                QueryDimension(field="a_tbl.ratio_using_derived"),
             ],
-            order=[OrderItem(field="id", direction="asc")],
+            order=[OrderItem(field="a_tbl.id", direction="asc")],
         )
     )
     assert response.row_count == 2
@@ -1385,7 +1455,7 @@ _MYSQL_ESC_ROWS = [
 
 @pytest.fixture(scope="module")
 def _mysql_esc_storage(mysql_container, tmp_path_factory):
-    """Per-module MySQL DB with an ``esc`` table of tricky-status rows + a model
+    """Per-module MySQL DB with an ``esc`` table of tricky-status rows + a dataset
     whose Mode-A filter carries a ``{v}`` placeholder."""
     db_name = _create_module_db(mysql_container)
     try:
@@ -1412,12 +1482,12 @@ def _mysql_esc_storage(mysql_container, tmp_path_factory):
             name="esc",
             sql_table="esc",
             data_source="testmysql",
-            # Mode-A model filter with a {var} placeholder (escape="sql").
+            # Mode-A dataset filter with a {var} placeholder (escape="sql").
             filters=["status = '{v}'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )))
         yield storage
@@ -1445,7 +1515,7 @@ class TestMySQLModeAEscaping:
     ) -> None:
         resp = await mysql_esc_env.execute(SlayerQuery.model_validate({
             "population": "esc",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(esc.amount)"}],
             "variables": {"v": value},
         }))
         assert resp.row_count == 1
@@ -1461,7 +1531,7 @@ class TestMySQLModeAEscaping:
         # NULL on MySQL, 0 on ClickHouse — either way a weaker signal).
         resp = await mysql_esc_env.execute(SlayerQuery.model_validate({
             "population": "esc",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(esc.*)"}],
             "variables": {"v": "x\\' OR '1'='1"},
         }))
         assert int(resp.data[0]["esc._count"]) == 0
@@ -1526,8 +1596,8 @@ class TestMySQLDateFunctions:
 
     async def test_hourly_time_dimension_keeps_the_hour(self, mysql_dates: SlayerQueryEngine) -> None:
         resp = await mysql_dates.execute(SlayerQuery.model_validate({
-            "population": "dt", "dimensions": ["id"],
-            "time_dimensions": [{"field": "t1", "granularity": "hour"}],
+            "population": "dt", "dimensions": ["dt.id"],
+            "time_dimensions": [{"field": "dt.t1", "granularity": "hour"}],
         }))
         buckets = {int(r["dt.id"]): r["dt.t1"] for r in resp.data}
         assert str(buckets[1])[:19] == "2024-01-31 23:00:00"
@@ -1564,6 +1634,40 @@ def _mysql_spine_storage(mysql_container, tmp_path_factory):
 class TestMySQLTimeSpine:
     async def test_scenarios(self, _mysql_spine_storage) -> None:
         await check_all(SlayerQueryEngine(storage=_mysql_spine_storage), data_source="my", ts_data_source="my_ts")
+
+
+# ---------------------------------------------------------------------------
+# One logical bucket type; a DATE meeting a TIMESTAMP reads as midnight
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _mysql_logical_types_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in logical_type_statements("mysql"):
+                    cur.execute(stmt)
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_logical_types")))
+        base = _ds_config(mysql_container, db_name)
+        run_sync(storage.save_datasource(logical_type_granularities(base, name="my_lt")))
+        for model in logical_type_datasets(data_source="my_lt"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.mark.integration
+class TestMySQLLogicalTypes:
+    async def test_bucket_matrix(self, _mysql_logical_types_storage) -> None:
+        await check_bucket_matrix(SlayerQueryEngine(storage=_mysql_logical_types_storage), backend="mysql", data_source="my_lt")
+
+    async def test_mixed_date_timestamp(self, _mysql_logical_types_storage) -> None:
+        await check_mixed(SlayerQueryEngine(storage=_mysql_logical_types_storage), backend="mysql", data_source="my_lt")
 
 
 @pytest.mark.integration
@@ -1629,6 +1733,10 @@ class TestMySQLModeBGrammar:
     async def test_try_cast_integer_targets(self, _mysql_dev2101_storage) -> None:
         await check_try_cast_targets(SlayerQueryEngine(storage=_mysql_dev2101_storage), dataset="orders")
 
+    async def test_author_casts(self, _mysql_dev2101_storage) -> None:
+        await check_author_casts(SlayerQueryEngine(storage=_mysql_dev2101_storage), dataset="orders")
+        await check_boolean_casts(SlayerQueryEngine(storage=_mysql_dev2101_storage), dataset="orders")
+
     async def test_filtered_aggregations(self, _mysql_dev2101_storage) -> None:
         await check_filtered_aggregations(SlayerQueryEngine(storage=_mysql_dev2101_storage))
 
@@ -1664,16 +1772,64 @@ def _mysql_dev2120_storage(mysql_container, tmp_path_factory):
 @pytest.mark.integration
 class TestMySQLPortableLibrary:
     async def test_library(self, _mysql_dev2120_storage) -> None:
-        await check_library(SlayerQueryEngine(storage=_mysql_dev2120_storage))
+        await check_library(SlayerQueryEngine(storage=_mysql_dev2120_storage), gated=REFUSED_FUNCTIONS["mysql"],
+                            refusal="MySQL")
 
     async def test_native_json_column(self, _mysql_dev2120_storage) -> None:
         await check_native_json(SlayerQueryEngine(storage=_mysql_dev2120_storage))
 
     async def test_comparisons_follow_the_column_collation(self, _mysql_dev2120_storage) -> None:
         engine = SlayerQueryEngine(storage=_mysql_dev2120_storage)
-        for filt, expected in (("word = 'ada'", {3, 4}), ("word IN ('paid')", {1, 2}), ("word LIKE 'ada%'", {3, 4})):
+        for filt, expected in (("lib.word = 'ada'", {3, 4}), ("lib.word IN ('paid')", {1, 2}), ("lib.word LIKE 'ada%'", {3, 4})):
             resp = await engine.execute(lib_query(filter=[filt]))
             assert {int(r["lib.id"]) for r in resp.data} == expected, (filt, resp.sql)
+
+
+# ---------------------------------------------------------------------------
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error; NULL sorts as the largest value in a window's ordering)
+# ---------------------------------------------------------------------------
+
+_RANGE_OFFSET = "SUM(scores.score) OVER (ORDER BY scores.score{nulls} RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)"
+
+
+@pytest.fixture(scope="module")
+def _mysql_windows_storage(mysql_container, tmp_path_factory):
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                for stmt in window_statements("mysql"):
+                    cur.execute(stmt)
+        finally:
+            conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_windows")))
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        for model in window_datasets(data_source="testmysql"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.fixture
+def mysql_windows(_mysql_windows_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_mysql_windows_storage)
+
+
+@pytest.mark.integration
+class TestMySQLWindows:
+    @pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+    async def test_the_matrix(self, mysql_windows: SlayerQueryEngine, case: WindowCase) -> None:
+        await check_case(mysql_windows, case)
+
+    async def test_a_placement_the_database_cannot_give_is_refused(self, mysql_windows: SlayerQueryEngine) -> None:
+        await assert_typed_refusal(mysql_windows, "scores", _RANGE_OFFSET.format(nulls=""), r"scores\.score", "MySQL")
+
+    async def test_a_stated_placement_the_database_can_give_runs(self, mysql_windows: SlayerQueryEngine) -> None:
+        got = await window_values(mysql_windows, "scores", _RANGE_OFFSET.format(nulls=" NULLS FIRST"))
+        assert {k: None if v is None else float(v) for k, v in got.items()} == {1: 10.0, 2: None, 3: 5.0}
 
 
 @pytest.fixture
@@ -1934,3 +2090,275 @@ def test_queries_keep_their_timeout_on_a_read_only_session(read_only_ds: Datasou
     finally:
         client.close()
     assert [float(r["t"]) for r in rows] == [_TIMEOUT_SET[ds_type]]
+
+
+# ---------------------------------------------------------------------------
+# Time zones (spec: queries/time-zones › Executed per dialect; MySQL without time-zone tables)
+# ---------------------------------------------------------------------------
+
+_TZ_SESSION = "--default-time-zone=+05:30"
+_TZ_MARKER = "tz_marker_total"
+
+
+def _tz_container(*, skip_tz_tables: bool) -> MySqlContainer:
+    container = MySqlContainer(
+        "mysql:8.0", username="slayer", password="slayer",  # NOSONAR(S2068) — testcontainer credentials
+        dbname="slayer_root", root_password="root",  # NOSONAR(S2068) — testcontainer credentials
+    ).with_command(_TZ_SESSION)
+    return container.with_env("MYSQL_INITDB_SKIP_TZINFO", "1") if skip_tz_tables else container
+
+
+@pytest.fixture(scope="module")
+def mysql_tz_container():
+    """A MySQL server with time-zone tables and a +05:30 session zone."""
+    with _tz_container(skip_tz_tables=False) as c:
+        yield c
+
+
+@pytest.fixture(scope="module")
+def mysql_no_tz_container():
+    """A MySQL server without time-zone tables."""
+    with _tz_container(skip_tz_tables=True) as c:
+        yield c
+
+
+def _seed_tz_db(container) -> str:
+    db_name = _create_module_db(container)
+    conn = _admin_connect(container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET time_zone = '+00:00'")  # TIMESTAMP rows hold the UTC instants of ordered_at
+            cur.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount DOUBLE, ordered_at DATETIME, "
+                "paid_at TIMESTAMP NULL, local_slot DATETIME, order_day DATE, created_raw DATETIME)"
+            )
+            cur.executemany(
+                "INSERT INTO orders VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                [(i, a, ts, ts, slot, d, ts) for i, (a, ts, slot, d) in TZ_ROWS.items()],
+            )
+            cur.execute("CREATE TABLE marks (marked_at DATETIME PRIMARY KEY, label VARCHAR(32))")
+            cur.executemany("INSERT INTO marks VALUES (%s, %s)", list(TZ_MARKS.items()))
+            cur.execute("SET GLOBAL log_output = 'TABLE'")
+            cur.execute("SET GLOBAL general_log = 'ON'")
+    finally:
+        conn.close()
+    return db_name
+
+
+def _probe_count(container) -> int:
+    conn = _admin_connect(container)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM mysql.general_log WHERE command_type = 'Query' "
+                "AND argument LIKE %s AND argument NOT LIKE %s",
+                ("%CONVERT_TZ('2000-01-01 00:00:00', '+00:00'%", "%general_log%"),
+            )
+            row = cur.fetchone()
+            assert row is not None
+            return int(row[0])
+    finally:
+        conn.close()
+
+
+def _data_statements(container) -> int:
+    conn = _admin_connect(container)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM mysql.general_log WHERE command_type = 'Query' "
+                "AND argument LIKE %s AND argument NOT LIKE %s",
+                (f"%{_TZ_MARKER}%", "%general_log%"),
+            )
+            row = cur.fetchone()
+            assert row is not None
+            return int(row[0])
+    finally:
+        conn.close()
+
+
+def _tz_storage(container, db_name: str, base_dir: str) -> YAMLStorage:
+    storage = YAMLStorage(base_dir=base_dir)
+    ds = DatasourceConfig.model_validate({**_ds_config(container, db_name).model_dump(), "name": TZ_DS, "time_zone": "UTC"})
+    run_sync(storage.save_datasource(ds))
+    run_sync(storage.save_dataset(tz_orders_dataset()))
+    run_sync(storage.save_dataset(orders_naive_instant_dataset()))
+    run_sync(storage.save_dataset(tz_marks_dataset()))
+    return storage
+
+
+@pytest.fixture
+def mysql_tz_env(mysql_tz_container, tmp_path) -> Iterator[SlayerQueryEngine]:
+    db_name = _seed_tz_db(mysql_tz_container)
+    try:
+        yield SlayerQueryEngine(storage=_tz_storage(mysql_tz_container, db_name, str(tmp_path / "store")))
+    finally:
+        _drop_module_db(mysql_tz_container, db_name)
+
+
+@pytest.fixture
+def mysql_no_tz_env(mysql_no_tz_container, tmp_path) -> Iterator[SlayerQueryEngine]:
+    db_name = _seed_tz_db(mysql_no_tz_container)
+    try:
+        yield SlayerQueryEngine(storage=_tz_storage(mysql_no_tz_container, db_name, str(tmp_path / "store")))
+    finally:
+        _drop_module_db(mysql_no_tz_container, db_name)
+
+
+def _local_day_query(field: str, *, zone: str = TZ_NY) -> SlayerQuery:
+    return SlayerQuery.model_validate({
+        "population": "orders", "time_zone": zone, "metrics": [{"metric": "sum(orders.amount)", "alias": _TZ_MARKER}],
+        "time_dimensions": [{"field": f"orders.{field}", "granularity": "day"}],
+    })
+
+
+@pytest.mark.integration
+class TestMySQLTimeZones:
+    @pytest.mark.parametrize("field", ["ordered_at", "paid_at"])
+    async def test_local_day_under_a_non_utc_session(self, mysql_tz_env: SlayerQueryEngine, field: str) -> None:
+        resp = await mysql_tz_env.execute(_local_day_query(field))
+        got = {tz_day(r[f"orders.{field}"]): float(r[_TZ_MARKER]) for r in resp.data}
+        assert got == {tz_local(i, TZ_NY).date(): tz_amount(i) for i in TZ_ROWS}, resp.sql
+
+    async def test_the_zone_probe_runs_once_per_engine(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
+        before = _probe_count(mysql_tz_container)
+        await mysql_tz_env.execute(_local_day_query("ordered_at"))
+        await mysql_tz_env.execute(_local_day_query("paid_at"))
+        assert _probe_count(mysql_tz_container) - before == 2  # New York and the datasource's UTC
+
+    async def test_concurrent_statements_share_the_probe(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
+        before = _probe_count(mysql_tz_container)
+        await asyncio.gather(*(mysql_tz_env.execute(_local_day_query("ordered_at")) for _ in range(4)))
+        assert _probe_count(mysql_tz_container) - before == 2  # New York and the datasource's UTC
+
+    async def test_each_zone_probes_once(self, mysql_tz_env: SlayerQueryEngine, mysql_tz_container) -> None:
+        before = _probe_count(mysql_tz_container)
+        for zone in (TZ_NY, TZ_TOKYO, TZ_NY, TZ_TOKYO):
+            await mysql_tz_env.execute(_local_day_query("ordered_at", zone=zone))
+        assert _probe_count(mysql_tz_container) - before == 3  # New York, Tokyo and the datasource's UTC
+
+    async def test_instant_typing_changes_nothing_without_a_zone(self, mysql_tz_env: SlayerQueryEngine) -> None:
+        for zoned, naive in zip(instant_typing_queries("orders"), instant_typing_queries("orders_naive")):
+            got, want = await mysql_tz_env.execute(zoned), await mysql_tz_env.execute(naive)
+            assert row_values(got) == row_values(want), got.sql
+
+    async def test_missing_time_zone_tables_fail_before_the_statement(
+        self, mysql_no_tz_env: SlayerQueryEngine, mysql_no_tz_container,
+    ) -> None:
+        probes, data = _probe_count(mysql_no_tz_container), _data_statements(mysql_no_tz_container)
+        query = _local_day_query("ordered_at")
+        for _ in range(2):
+            with pytest.raises(core_errors.TimeZoneError) as info:
+                await mysql_no_tz_env.execute(query)
+            message = str(info.value)
+            assert TZ_NY in message, message
+            assert "time zone tables" in message.lower().replace("-", " "), message
+        assert _probe_count(mysql_no_tz_container) - probes == 1
+        assert _data_statements(mysql_no_tz_container) == data
+
+    async def test_a_zoned_query_converting_nothing_needs_no_zone_tables(
+        self, mysql_no_tz_env: SlayerQueryEngine, mysql_no_tz_container,
+    ) -> None:
+        probes = _probe_count(mysql_no_tz_container)
+        resp = await mysql_no_tz_env.execute(SlayerQuery.model_validate({
+            "population": "orders", "time_zone": TZ_NY, "metrics": [{"metric": "sum(orders.amount)", "alias": "s"}],
+        }))
+        assert float(resp.data[0]["s"]) == sum(tz_amount(i) for i in TZ_ROWS), resp.sql
+        assert _probe_count(mysql_no_tz_container) == probes
+
+
+# ---------------------------------------------------------------------------
+# Time of day (spec: queries/time-of-day): the driver returns a duration, and ``TIME`` also holds durations
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(params=["mysql", "mariadb"])
+def shifts_env(request: pytest.FixtureRequest) -> Iterator[SlayerQueryEngine]:
+    container = request.getfixturevalue(f"{request.param}_container")
+    db_name = _create_module_db(container)
+    conn = _admin_connect(container, dbname=db_name)
+    try:
+        with conn.cursor() as cur:
+            for table in ("shifts", "long_shifts"):
+                cur.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, starts_at TIME(6), label VARCHAR(20))")
+            cur.execute("INSERT INTO shifts VALUES (1, '09:30:00', 'a'), (2, '17:00:00.25', 'b'), (3, NULL, 'c')")
+            cur.execute("INSERT INTO long_shifts VALUES (1, '25:00:00', 'x'), (2, '-01:30:00', 'y')")
+    finally:
+        conn.close()
+    datasource = _ds_config(container, db_name).model_copy(update={"type": request.param})
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp())
+    run_sync(storage.save_datasource(datasource))
+    for table in ("shifts", "long_shifts"):
+        run_sync(storage.save_dataset(SlayerDataset(name=table, sql_table=table, data_source="testmysql", fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="starts_at", datatype=DataType.TIME),
+            DatasetField(name="label", datatype=DataType.STRING)])))
+    yield SlayerQueryEngine(storage=storage)
+    _drop_module_db(container, db_name)
+
+
+def _shift_query(**fields: Any) -> SlayerQuery:
+    return SlayerQuery.model_validate({"population": "shifts", **fields})
+
+
+async def _shift_value(engine: SlayerQueryEngine, expression: str) -> Any:
+    resp = await engine.execute(_shift_query(dimensions=[{"field": expression, "alias": "v"}], filter=["shifts.id = 1"]))
+    assert len(resp.data) == 1, resp.sql
+    return resp.data[0]["v"]
+
+
+@pytest.mark.integration
+class TestTimeOfDay:
+    async def test_a_time_column_is_a_time_of_day(self, shifts_env: SlayerQueryEngine) -> None:
+        rows = await shifts_env.execute(_shift_query(dimensions=["shifts.id", "shifts.starts_at"]))
+        ends = await shifts_env.execute(_shift_query(metrics=[{"metric": "min(shifts.starts_at)", "alias": "lo"},
+                                                              {"metric": "max(shifts.starts_at)", "alias": "hi"}]))
+        late = await shifts_env.execute(_shift_query(dimensions=["shifts.id"], filter=["shifts.starts_at >= '12:00'"]))
+        got = {int(r["shifts.id"]): r["shifts.starts_at"] for r in rows.data}
+        assert got == {1: time(9, 30), 2: time(17, 0, 0, 250000), 3: None}
+        assert all(v is None or type(v) is time for v in got.values()), got
+        assert ends.data == [{"lo": time(9, 30), "hi": time(17, 0, 0, 250000)}], ends.sql
+        assert [int(r["shifts.id"]) for r in late.data] == [2]
+
+    @pytest.mark.parametrize(("expression", "expected"), [
+        ("TIME '10:30:00'", time(10, 30)), ("TIME '10:30:00.123456'", time(10, 30, 0, 123456)),
+        ("CAST('10:30:00' AS TIME)", time(10, 30)), ("TRY_CAST('10:30:00' AS TIME)", time(10, 30)),
+        ("CAST(TIMESTAMP '2024-01-15 10:30:45' AS TIME)", time(10, 30, 45)),
+        ("TRY_CAST('25:00:00' AS TIME)", None), ("TRY_CAST('-01:00:00' AS TIME)", None),
+        ("TRY_CAST('bogus' AS TIME)", None),
+        ("TRY_CAST('10:30:00junk' AS TIME)", None), ("TRY_CAST('10:30:' AS TIME)", None),
+        ("TRY_CAST('1a:30' AS TIME)", None), ("TRY_CAST('10:30' AS TIME)", time(10, 30)),
+        ("TRY_CAST('10:30:45.5' AS TIME)", time(10, 30, 45, 500000)),
+        ("date_part('hour', shifts.starts_at)", 9), ("EXTRACT(MINUTE FROM shifts.starts_at)", 30),
+        ("SECOND(TIME '10:30:45')", 45), ("CAST(shifts.starts_at AS VARCHAR)", "09:30:00"),
+        ("CAST(TIME '10:30:00.5' AS VARCHAR)", "10:30:00.5"),
+    ])
+    async def test_a_construct(self, shifts_env: SlayerQueryEngine, expression: str, expected: Any) -> None:
+        got = await _shift_value(shifts_env, expression)
+        if isinstance(expected, int):
+            assert int(got) == expected
+            return
+        assert type(got) is type(expected), (got, expected)
+        assert got == expected
+
+    async def test_the_clock(self, shifts_env: SlayerQueryEngine) -> None:
+        resp = await shifts_env.execute(_shift_query(
+            dimensions=[{"field": "CURRENT_TIME", "alias": "ct"}, {"field": "current_time()", "alias": "fn"}]))
+        [row] = resp.data
+        assert type(row["ct"]) is time, row
+        assert row["ct"] == row["fn"], row
+
+    @pytest.mark.parametrize(("row", "stored"), [(1, "25:00:00"), (2, "-01:30:00")])
+    async def test_a_stored_duration_fails_the_query(self, shifts_env: SlayerQueryEngine, row: int, stored: str) -> None:
+        query = SlayerQuery.model_validate({
+            "population": "long_shifts", "dimensions": ["long_shifts.starts_at"],
+            "filter": [f"long_shifts.id = {row}"]})
+        with pytest.raises(core_errors.SlayerError) as info:
+            await shifts_env.execute(query)
+        assert "long_shifts.starts_at" in str(info.value)
+        assert stored in str(info.value)
+
+    async def test_time_columns_ingest_as_time(self, shifts_env: SlayerQueryEngine) -> None:
+        datasource = await shifts_env.storage.get_datasource("testmysql")
+        assert datasource is not None
+        datasets = await _ingest(datasource, include_tables=["shifts"])
+        assert {f.name: f.datatype for f in datasets[0].fields}["starts_at"] is DataType.TIME

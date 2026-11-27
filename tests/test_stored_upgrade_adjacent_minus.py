@@ -15,7 +15,7 @@ from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
     customers_v10,
-    measure_total,
+    metric_total,
     orders_v10,
     query_backed_v10,
     raw_store,
@@ -93,7 +93,7 @@ async def test_stored_double_negation_returns_its_old_value(tmp_path, shop_ds, b
                              "measures": [{"formula": "sum(amount) --sum(amount)", "name": "rev"}]}
     storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), query_backed_v10(name="rev_q", stages=[stage])])
-    total = measure_total(await run(storage, {"population": "orders", "metrics": [{"metric": "sum(amount)",
-                                                                                     "alias": "t"}]}), measure="t")
-    resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev)"]})
-    assert measure_total(resp, measure="rev_sum") == 2 * total
+    total = metric_total(await run(storage, {"population": "orders", "metrics": [{"metric": "sum(orders.amount)",
+                                                                                     "alias": "t"}]}), metric="t")
+    resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev_q.rev)"]})
+    assert metric_total(resp, metric="rev_sum") == 2 * total

@@ -1,4 +1,4 @@
-"""Laws over spine populations: measure invariance, grain-union broadcast, NULL axes, DATE/TIMESTAMP axes, model filters."""
+"""Laws over spine populations: measure monotonicity, grain-union broadcast, NULL axes, DATE/TIMESTAMP axes, dataset filters."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ BASES: dict[str, dict[str, Any]] = {
     "fact-filter": {"filter": ["orders.amount > 60"]},
     "p-filter": {"dimensions": ["customers.region"], "filter": ["customers.region != 'E'"]},
 }
-MEASURE_SETS = {"one": POOL[:1], "facts": POOL[:3], "all": POOL}
+METRIC_SETS = {"one": POOL[:1], "facts": POOL[:3], "all": POOL}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -54,14 +54,14 @@ def _cells(resp, *, by: list[str]) -> dict[tuple, dict[str, Any]]:
 
 
 @pytest.mark.parametrize("base", BASES)
-async def test_measures_never_change_rows_or_siblings(engine, base) -> None:
+async def test_measures_never_remove_rows_or_change_siblings(engine, base) -> None:
     extra = dict(BASES[base])
     by = [d.rsplit(".", 1)[-1] for d in extra.get("dimensions", [])]
     results = {k: _cells(await engine.execute(spine_query(metrics=ms, **extra)), by=by)
-               for k, ms in MEASURE_SETS.items()}
+               for k, ms in METRIC_SETS.items()}
     full = results["all"]
     for name, cells in results.items():
-        assert set(cells) == set(full), name
+        assert set(cells) <= set(full), name
         for cell, values in cells.items():
             for measure, v in values.items():
                 assert v == full[cell][measure], (name, cell, measure)
@@ -76,7 +76,7 @@ async def test_grain_union_broadcast(engine) -> None:
         dimensions=["customers.region"], date_range=JAN_MAR,
     ))
     got = by_bucket(resp, ["share", "events"], by=["region"])
-    assert len(got) == 9
+    assert len(got) == 6  # region E has no fact in range
     assert got[("N", "2025-01")][0] == pytest.approx(100 / 170)
     assert got[("N", "2025-02")][0] == pytest.approx(70 / 170)
     assert got[("S", "2025-01")][0] == pytest.approx(1.0)
@@ -84,7 +84,6 @@ async def test_grain_union_broadcast(engine) -> None:
     assert {k: v[1] for k, v in got.items()} == {
         ("N", "2025-01"): 1.0, ("N", "2025-02"): 2.0, ("N", "2025-03"): 0.0,
         ("S", "2025-01"): 1.0, ("S", "2025-02"): 0.0, ("S", "2025-03"): 1.0,
-        ("E", "2025-01"): 0.0, ("E", "2025-02"): 0.0, ("E", "2025-03"): 0.0,
     }
 
 

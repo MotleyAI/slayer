@@ -1,4 +1,4 @@
-"""DEV-1549: compact-by-default search.
+"""Compact-by-default search.
 
 Tests cover:
 * ``SearchHit.description`` field present.
@@ -12,10 +12,10 @@ Tests cover:
 * Drill-in pattern: search(entities=["memory:<id>"], max_results=1,
   compact=False) returns the full body.
 * Empty-input recency fallback honours compact.
-* Compact + lazy column-sample refresh: text stays empty (Codex#3).
-* Compact + DEV-1428 stale entity tags: tags are filtered out before
+* Compact + lazy field-sample refresh: text stays empty (Codex#3).
+* Compact + stale entity tags: tags are filtered out before
   matched_entities is computed (compact mode does not bypass this).
-* Compact + DEV-1464 cypher_filter pre-filter.
+* Compact + cypher_filter pre-filter.
 * Compact + datasource pre-filter.
 * Compact + empty-input + datasource.
 * matched_entities is identical across modes.
@@ -269,7 +269,7 @@ async def test_example_query_hit_compact_preserves_query(
 ) -> None:
     sample = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(amount_paid)")],
+        metrics=[QueryMetric(metric="sum(orders.amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,
@@ -293,7 +293,7 @@ async def test_example_query_hit_verbose_preserves_query(
 ) -> None:
     sample = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(amount_paid)")],
+        metrics=[QueryMetric(metric="sum(orders.amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,
@@ -318,13 +318,13 @@ async def test_example_query_hit_verbose_preserves_query(
 async def test_entity_hit_compact_surfaces_entity_description(
     service: SearchService,
 ) -> None:
-    """The seeded `amount_paid` column has description="Net paid in USD."."""
+    """The seeded `amount_paid` field has description="Net paid in USD."."""
     resp = await service.search(question="amount paid net usd", compact=True)
     column_hits = [
         h for h in resp.results
         if h.kind == "field" and h.id == "warehouse.orders.amount_paid"
     ]
-    assert column_hits, "expected the amount_paid column to surface"
+    assert column_hits, "expected the amount_paid field to surface"
     hit = column_hits[0]
     assert hit.description == "Net paid in USD."
     assert hit.text == ""
@@ -334,7 +334,7 @@ async def test_entity_hit_compact_surfaces_entity_description(
 async def test_entity_hit_compact_description_none_when_entity_has_none(
     storage: StorageBackend, service: SearchService,
 ) -> None:
-    """A column without a description gets SearchHit.description = None."""
+    """A field without a description gets SearchHit.description = None."""
     await storage.save_dataset(SlayerDataset(
         name="bare", sql_table="bare", data_source="warehouse",
         fields=[
@@ -364,7 +364,7 @@ async def test_entity_hit_verbose_uses_full_render_text(
     ]
     assert column_hits
     hit = column_hits[0]
-    # Verbose text is the full multi-line render — first line names the column.
+    # Verbose text is the full multi-line render — first line names the field.
     assert "warehouse.orders.amount_paid" in hit.text
     assert hit.description == "Net paid in USD."
 
@@ -445,7 +445,7 @@ async def test_matched_entities_unchanged_by_compact(
 
 
 # ---------------------------------------------------------------------------
-# Codex#3: compact + lazy column-sample refresh
+# Codex#3: compact + lazy field-sample refresh
 # ---------------------------------------------------------------------------
 
 
@@ -453,10 +453,10 @@ async def test_matched_entities_unchanged_by_compact(
 async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
     storage: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Codex#3 (strengthened): force the lazy column-refresh path to
+    """Codex#3 (strengthened): force the lazy field-refresh path to
     actually run (monkeypatch ensure_samples_fresh to return a
-    materially-updated column) and assert compact=True keeps text="" while
-    description still reflects the freshly refreshed column."""
+    materially-updated field) and assert compact=True keeps text="" while
+    description still reflects the freshly refreshed field."""
     # A real engine satisfies the truthy-engine gate in SearchService.
     engine = SlayerQueryEngine(storage=storage)
     service = SearchService(storage=storage, engine=engine)
@@ -464,7 +464,7 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
     refreshed_calls = []
 
     async def fake_refresh(*, dataset, fields, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
-        # Materially-different columns, so the production path treats them as refreshed.
+        # Materially-different fields, so the production path treats them as refreshed.
         refreshed_calls.extend((dataset.name, c.name) for c in fields)
         return ProfileOutcome(
             fields=[c.model_copy(update={"description": "FRESH"}) for c in fields], errors=[],
@@ -474,11 +474,11 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
 
     resp = await service.search(question="amount paid net", compact=True)
     column_hits = [h for h in resp.results if h.kind == "field"]
-    assert column_hits, "expected at least one column hit to trigger refresh"
+    assert column_hits, "expected at least one field hit to trigger refresh"
     assert refreshed_calls, "expected the refresh hook to fire"
     for h in column_hits:
         assert h.text == ""
-    # The refreshed description must surface on at least one column hit.
+    # The refreshed description must surface on at least one field hit.
     assert any(h.description == "FRESH" for h in column_hits)
 
 
@@ -500,7 +500,7 @@ async def test_verbose_plus_lazy_column_refresh_regenerates_text(
     resp = await service.search(question="amount paid", compact=False)
     column_hits = [h for h in resp.results if h.kind == "field"]
     assert column_hits
-    # Verbose text is the full render — first line names the column.
+    # Verbose text is the full render — first line names the field.
     assert any(
         "warehouse.orders" in h.text or "amount_paid" in h.text
         for h in column_hits
@@ -516,11 +516,11 @@ async def test_verbose_plus_lazy_column_refresh_regenerates_text(
 async def test_compact_with_stale_entity_tags(
     storage: StorageBackend, service: SearchService,
 ) -> None:
-    """DEV-1428 stale-tag filtering must apply BEFORE matched_entities is
+    """Stale-tag filtering must apply BEFORE matched_entities is
     surfaced, regardless of compact mode.
 
     Setup: save memory with a stale tag, then call search with the stale
-    tag itself as input. Without DEV-1428 filtering the stale tag would
+    tag itself as input. Without stale-tag filtering the stale tag would
     appear in matched_entities. Compact mode must not bypass the filter.
     """
     mem_id = await _save_memory_returning_id(
@@ -543,7 +543,7 @@ async def test_compact_with_stale_entity_tags(
     assert hits, "expected memory to surface via the live tag"
     hit = hits[0]
     # The stale tag must NOT appear in matched_entities even though the
-    # user passed it as input — the DEV-1428 filter strips it server-side.
+    # user passed it as input — the stale-tag filter strips it server-side.
     assert "warehouse.orders.does_not_exist_anymore" not in hit.matched_entities
     assert "warehouse.orders.amount_paid" in hit.matched_entities
     assert hit.text == ""
@@ -554,12 +554,12 @@ async def test_compact_with_stale_entity_tags(
 async def test_compact_with_cypher_filter_excludes_non_matching(
     storage: StorageBackend, service: SearchService,
 ) -> None:
-    """DEV-1464 cypher_filter allowlist must apply to compact-mode hits.
+    """The cypher_filter allowlist must apply to compact-mode hits.
 
     Setup: save a memory that WOULD surface without the filter
-    (baseline), then re-search with the column-kind cypher filter and
-    assert (a) the memory is excluded, (b) at least one column hit
-    survives, and (c) the surviving column hit is rendered in compact
+    (baseline), then re-search with the field-kind cypher filter and
+    assert (a) the memory is excluded, (b) at least one field hit
+    survives, and (c) the surviving field hit is rendered in compact
     shape (text="", description set)."""
     mem_id = await _save_memory_returning_id(
         storage,
@@ -572,7 +572,7 @@ async def test_compact_with_cypher_filter_excludes_non_matching(
     assert any(h.id == mem_id for h in baseline.results)
 
     # The full-graph engine uses label "DatasetField"; the naive-fallback
-    # parser uses "Field". Both should narrow to column-only hits.
+    # parser uses "Field". Both should narrow to field-only hits.
     column_label = "DatasetField" if _graph_mod.is_available() else "Field"
     filtered = await service.search(
         question="amount paid",
@@ -581,7 +581,7 @@ async def test_compact_with_cypher_filter_excludes_non_matching(
     )
     assert all(h.id != mem_id for h in filtered.results)
     column_hits = [h for h in filtered.results if h.kind == "field"]
-    assert column_hits, "expected column hits to survive the cypher filter"
+    assert column_hits, "expected field hits to survive the cypher filter"
     for h in column_hits:
         assert h.text == ""
 
@@ -592,7 +592,7 @@ async def test_compact_with_datasource_pre_filter(
 ) -> None:
     """`datasource=` arg limits the corpus across all channels.
 
-    Baseline first: without the filter, the other_ds column surfaces.
+    Baseline first: without the filter, the other_ds field surfaces.
     Then assert the filter excludes other_ds AND warehouse hits survive
     in compact shape.
     """

@@ -1,10 +1,11 @@
-"""DEV-1838 — a transform-wrapped cross-model aggregate predicate lowers POST,
-never to the combined outer WHERE (mask lowering, DEV-1865)."""
+"""A transform-wrapped cross-dataset aggregate predicate lowers POST,
+never to the combined outer WHERE (mask lowering)."""
 
 from __future__ import annotations
 
 from decimal import Decimal
 
+from slayer.core.enums import DataType
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -37,7 +38,7 @@ def _plan_with_mask(
     mask_key, *, phase: Phase, mask_stage: Stage, extra_row_slots=(),
     extra_combined_slots=(),
 ) -> PlannedQuery:
-    slot = ValueSlot(
+    slot = ValueSlot(type=DataType.INTEGER,
         id="s1", key=mask_key, declared_name="__slayer_mask_0",
         hidden=True, phase=phase, stage=mask_stage,
     )
@@ -61,7 +62,7 @@ def _plan_with_mask(
 def test_transform_wrapped_cross_model_predicate_is_not_combined() -> None:
     cumsum = TransformKey(op="cumsum", input=_SPEND)
     cj = ArithmeticKey(op=">", operands=(cumsum, _GT0))
-    cumsum_slot = ValueSlot(
+    cumsum_slot = ValueSlot(type=DataType.INTEGER,
         id="t1", key=cumsum, declared_name="_cumsum_inner", hidden=True,
         phase=Phase.POST, stage=Stage(kind=StageKind.DERIVED, level=1),
         needs_field=True,
@@ -79,7 +80,7 @@ def test_transform_wrapped_cross_model_predicate_is_not_combined() -> None:
 
 def test_bare_cross_model_predicate_still_routes_combined() -> None:
     cj = ArithmeticKey(op=">", operands=(_PLACEHOLDER, _GT0))
-    ph_slot = ValueSlot(
+    ph_slot = ValueSlot(type=DataType.INTEGER,
         id="s2", key=_PLACEHOLDER, declared_name="__regroup__0__spend_sum",
         hidden=True, phase=Phase.ROW, stage=_PRODUCER,
     )

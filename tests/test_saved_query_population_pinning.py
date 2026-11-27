@@ -18,14 +18,15 @@ from tests._engine_helpers import seeded_exec_engine
 from tests._saved_query_refinement_fixtures import call_tool_json
 
 REVENUE = {"metric": "sum(orders.amount)", "alias": "revenue"}
-# Rootless: infers ``customers``; with an ``orders.status`` filter it would infer ``orders``.
+# Rootless: infers the anchor ``customers``; a filter never moves it.
 BY_CUSTOMER: Dict[str, Any] = {"dimensions": ["customers.name"], "metrics": [REVENUE]}
 OK_FILTER = {"filter": ["orders.status = 'ok'"]}
-N = {"metric": "count(*)", "alias": "n"}
-# The final stage infers model ``orders``, which a sibling stage is named.
+N = {"metric": "count(orders.*)", "alias": "n"}
+# The final stage infers dataset ``orders``, which a sibling stage is named.
 COLLIDING: List[Any] = [
-    {"name": "orders", "population": "customers", "dimensions": ["name"], "metrics": [N]},
-    {"dimensions": ["customers.name", "products.title"], "metrics": [N]},
+    {"name": "orders", "population": "customers", "dimensions": ["customers.name"],
+     "metrics": [{"metric": "count(customers.*)", "alias": "n"}]},
+    {"dimensions": ["customers.name", "products.title"], "metrics": [{"metric": "count(products.*)", "alias": "n"}]},
 ]
 
 
@@ -91,18 +92,18 @@ class TestPinnedOnSave:
         before = await engine.execute(BY_CUSTOMER)
         await engine.create_dataset_from_query(query=BY_CUSTOMER, name="by_customer")
         (stage,) = await stored_stages(engine, "by_customer")
-        assert stage.population == "customers"
+        assert (stage.population, stage.population_inferred) == ("customers", True)
         after = await engine.execute("by_customer")
         assert after.columns == before.columns
         assert rows(after) == rows(before)
-        assert (after.population, after.population_inferred) == ("customers", False)
+        assert (after.population, after.population_inferred) == ("customers", True)
 
     async def test_save_model(self, engine: SlayerQueryEngine) -> None:
         await engine.save_dataset(SlayerDataset(
             name="by_customer", data_source="test", source_queries=[SlayerQuery.model_validate(BY_CUSTOMER)],
         ))
         (stage,) = await stored_stages(engine, "by_customer")
-        assert stage.population == "customers"
+        assert (stage.population, stage.population_inferred) == ("customers", True)
 
     async def test_edit_model_source_queries(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(
@@ -114,7 +115,7 @@ class TestPinnedOnSave:
         )
         assert payload["success"] is True
         (stage,) = await stored_stages(engine, "edited")
-        assert stage.population == "customers"
+        assert (stage.population, stage.population_inferred) == ("customers", True)
 
     async def test_every_rootless_stage_pinned_and_rooted_stages_verbatim(
         self, sqlite_engine: SlayerQueryEngine,
@@ -123,11 +124,11 @@ class TestPinnedOnSave:
         await sqlite_engine.create_dataset_from_query(query=[
             {"name": "per_customer", **BY_CUSTOMER},
             {"name": "ext", "population": "orders", "extensions": [extension],
-             "metrics": [{"metric": "double_amount", "alias": "d"}]},
-            {"population": "per_customer", "metrics": [{"metric": "sum(revenue)", "alias": "total"}]},
+             "metrics": [{"metric": "orders.double_amount", "alias": "d"}]},
+            {"population": "per_customer", "metrics": [{"metric": "sum(per_customer.revenue)", "alias": "total"}]},
         ], name="staged")
         stages = {s.name: s for s in await stored_stages(sqlite_engine, "staged")}
-        assert stages["per_customer"].population == "customers"
+        assert (stages["per_customer"].population, stages["per_customer"].population_inferred) == ("customers", True)
         assert stages["ext"].population == "orders"
         assert stages["ext"].extensions == SlayerQuery.model_validate(
             {"population": "orders", "extensions": [extension]}).extensions
@@ -138,9 +139,10 @@ class TestRefinementKeepsPopulation:
     async def test_refined_run_keeps_pinned_population(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(query=BY_CUSTOMER, name="by_customer")
         refined = await engine.execute("by_customer", refine=OK_FILTER)
-        hand_written = await engine.execute({"population": "customers", **BY_CUSTOMER, **OK_FILTER})
+        hand_written = await engine.execute({"population": "customers", "population_inferred": True, **BY_CUSTOMER,
+                                             **OK_FILTER})
         assert refined.population == "customers"
-        assert refined.columns == hand_written.columns == ["customers.name", "customers.revenue"]
+        assert refined.columns == hand_written.columns == ["customers.name", "revenue"]
         assert rows(refined) == rows(hand_written)
 
 
@@ -170,7 +172,8 @@ class TestLegacyUnpinnedModel:
     async def test_refined_run_pins_from_unrefined_stage(self, engine: SlayerQueryEngine) -> None:
         await self._store_legacy(engine, "legacy", [BY_CUSTOMER])
         refined = await engine.execute("legacy", refine=OK_FILTER)
-        hand_written = await engine.execute({"population": "customers", **BY_CUSTOMER, **OK_FILTER})
+        hand_written = await engine.execute({"population": "customers", "population_inferred": True, **BY_CUSTOMER,
+                                             **OK_FILTER})
         assert refined.population == "customers"
         assert refined.columns == hand_written.columns
         assert rows(refined) == rows(hand_written)

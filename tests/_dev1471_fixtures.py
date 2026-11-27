@@ -29,20 +29,20 @@ def date_str(value: Any) -> Optional[str]:
 
 
 def one_value(row: dict, *, exclude: Iterable[str] = ()) -> Any:
-    """The single measure value in ``row`` once the excluded dimension keys are dropped."""
+    """The single metric value in ``row`` once the excluded dimension keys are dropped."""
     vals = [v for k, v in row.items() if k not in set(exclude)]
     assert len(vals) == 1, f"expected one value, got {row}"
     return vals[0]
 
 
-def _orders_columns(extra: Iterable[DatasetField] = ()) -> list[DatasetField]:
+def _orders_fields(extra: Iterable[DatasetField] = ()) -> list[DatasetField]:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-        DatasetField(name="region", sql="region", datatype=DataType.STRING),
-        DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-        DatasetField(name="shipped_at", sql="shipped_at", datatype=DataType.DATETIME),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+        DatasetField(name="region", expression="region", datatype=DataType.STRING),
+        DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+        DatasetField(name="shipped_at", expression="shipped_at", datatype=DataType.DATETIME),
     ]
     cols.extend(extra)
     return cols
@@ -51,26 +51,26 @@ def _orders_columns(extra: Iterable[DatasetField] = ()) -> list[DatasetField]:
 def orders_dataset(
     *,
     data_source: str = "ds",
-    extra_columns: Iterable[DatasetField] = (),
+    extra_fields: Iterable[DatasetField] = (),
     default_time_dimension: Optional[str] = "created_at",
 ) -> SlayerDataset:
-    """The single-table ``orders`` model (id, customer_id, amount, region, created_at, shipped_at)."""
+    """The single-table ``orders`` dataset (id, customer_id, amount, region, created_at, shipped_at)."""
     return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source=data_source,
         default_time_dimension=default_time_dimension,
-        fields=_orders_columns(extra_columns),
+        fields=_orders_fields(extra_fields),
     )
 
 
-def orders_table_spec(rows: list[tuple], *, extra_columns: Iterable[tuple[str, str]] = ()) -> dict:
+def orders_table_spec(rows: list[tuple], *, extra_fields: Iterable[tuple[str, str]] = ()) -> dict:
     """Table spec for the ``orders`` seed; ``rows`` column order must match."""
     columns = [
         ("id", "INT"), ("customer_id", "INT"), ("amount", "DOUBLE"),
         ("region", "TEXT"), ("created_at", "TIMESTAMP"), ("shipped_at", "TIMESTAMP"),
     ]
-    columns.extend(extra_columns)
+    columns.extend(extra_fields)
     return {"name": "orders", "columns": columns, "rows": rows}
 
 
@@ -85,35 +85,35 @@ MONTHLY_ROWS = [
 # Inner stage: monthly revenue over ``orders.created_at`` (shared stage-axis fixture).
 MONTHLY_INNER = SlayerQuery.model_validate({
     "name": "s1", "population": "orders",
-    "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-    "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+    "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
+    "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
 })
 
 
-# --- orders → customers → regions join chain (multi-hop flat-name tests) ---
+# --- orders → customers → regions relationship chain (multi-hop flat-name tests) ---
 
 def region_chain_datasets(*, data_source: str = "ds") -> list[SlayerDataset]:
     regions = SlayerDataset(
         name="regions", sql_table="regions", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="last_activity_at", sql="last_activity_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="last_activity_at", expression="last_activity_at", datatype=DataType.DATETIME),
         ],
     )
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
@@ -137,12 +137,12 @@ def region_chain_tables(
 async def make_engine(
     backend: str, *, base_dir: str, db_path: str, tables: list[dict], datasets: list[SlayerDataset],
 ) -> SlayerQueryEngine:
-    """Seed ``tables`` into a fresh ``backend`` DB and return an engine over ``models``.
+    """Seed ``tables`` into a fresh ``backend`` DB and return an engine over ``datasets``.
 
     ``tables`` items: ``{"name", "columns": [(col, kind)], "rows": [tuple, ...]}``.
     DuckDB is skipped (``importorskip``) when the driver is absent.
 
-    DEV-1943: not folded onto ``seeded_exec_engine`` — the caller supplies
+    Not folded onto ``seeded_exec_engine`` — the caller supplies
     ``base_dir``/``db_path`` and a dynamic ``tables`` spec, so it does not fit
     the tempdir-owning context; its sqlite seeding already routes through the door.
     """

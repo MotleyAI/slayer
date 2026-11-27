@@ -1,11 +1,11 @@
-"""DEV-1832 task 1.5 — ``Column.filter`` is a conditional derived definition.
+"""``DatasetField.filter`` is a conditional derived definition.
 
 Every ``#### Scenario`` of ``models/column-filters`` › *Column.filter is a
 conditional derived definition*, plus the three BREAKING behaviour changes as
 explicit fail-without-fix tests: an aggregation's parameters are no longer
-masked by the source column's filter (#1); a filtered column used as a parameter
-now IS masked (#2); a filtered column in dimension / filter / order / partition
-position now reads the masked value (#3). Single-column aggregate SQL and the
+masked by the source field's filter (#1); a filtered field used as a parameter
+now IS masked (#2); a filtered field in dimension / filter / order / partition
+position now reads the masked value (#3). Single-field aggregate SQL and the
 ranked masked-pick are unchanged (regression guards).
 """
 
@@ -18,6 +18,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -72,7 +73,7 @@ async def exec_qdouble(request):
     models = dev1832_datasets()
     sales = next(m for m in models if m.name == "sales")
     sales.fields.append(
-        DatasetField(name="q_double", datatype=DataType.FLOAT, sql="q_amount * 2"))
+        DatasetField(name="q_double", datatype=DataType.FLOAT, expression="sales.q_amount * 2"))
     async for engine in make_exec_engine(request, datasets=models):
         yield engine
 
@@ -82,7 +83,7 @@ def _metric(metric: str, alias: str = "m") -> QueryMetric:
 
 
 async def _save_validated(dataset: SlayerDataset) -> None:
-    """Save ``model`` with save-time validation on (raises on cycle / bad path)."""
+    """Save ``dataset`` with save-time validation on (raises on cycle / bad path)."""
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=os.path.join(d, "store"))
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
@@ -113,29 +114,29 @@ def _tsales_dataset() -> SlayerDataset:
             DatasetField(name="product", datatype=DataType.STRING),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="ts", datatype=DataType.DATETIME),
-            DatasetField(name="q_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="q_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="product = 'Q'"),
         ])
 
 
 # --------------------------------------------------------------------------- #
-# Single-column and ranked masked pick are unchanged (regression guards).
+# Single-field and ranked masked pick are unchanged (regression guards).
 # --------------------------------------------------------------------------- #
 class TestSingleColumnUnchanged:
     async def test_single_column_aggregate_sql_unchanged(self) -> None:
-        sql = _norm(await gen(sales_q(metrics=[_metric("sum(q_amount)")])))
+        sql = _norm(await gen(sales_q(metrics=[_metric("sum(sales.q_amount)")])))
         assert "SUM(CASE WHEN" in sql.upper().replace("SUM (", "SUM("), sql
         assert "'Q'" in sql
         assert "amount" in sql
 
     async def test_single_column_value(self, exec_backend) -> None:
-        resp = await exec_backend.execute(sales_q(metrics=[_metric("sum(q_amount)")]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(QAMT_SUM)
+        resp = await exec_backend.execute(sales_q(metrics=[_metric("sum(sales.q_amount)")]))
+        assert float(resp.data[0]["m"]) == pytest.approx(QAMT_SUM)
 
     async def test_ranked_over_filtered_picks_masked_value_sql(self) -> None:
-        # q_amount:last needs a ranking time column; the masked value is picked.
+        # q_amount:last needs a ranking time field; the masked value is picked.
         sql = await gen(
-            SlayerQuery(population="tsales", metrics=[_metric("last(q_amount)")]),
+            SlayerQuery(population="tsales", metrics=[_metric("last(tsales.q_amount)")]),
             datasets=[_tsales_dataset()])
         assert "CASE WHEN" in sql.upper(), sql
         assert "'Q'" in sql, sql
@@ -148,23 +149,23 @@ class TestSingleColumnUnchanged:
             (3, "P", 999.0, "2024-06-01"),
         ])
         resp = await engine.execute(
-            SlayerQuery(population="tsales", metrics=[_metric("last(q_amount)")]))
-        assert resp.data[0]["tsales.m"] is None
+            SlayerQuery(population="tsales", metrics=[_metric("last(tsales.q_amount)")]))
+        assert resp.data[0]["m"] is None
 
     @pytest.mark.parametrize("position", ["measure", "dimension", "filter", "last"])
     async def test_filtered_physical_column_masked_once(self, position: str) -> None:
-        # A filtered column with no sql (or sql == name) wraps exactly one CASE WHEN.
+        # A filtered field with no sql (or sql == name) wraps exactly one CASE WHEN.
         model = _tsales_dataset()
         model.fields.append(
             DatasetField(name="amt", datatype=DataType.FLOAT, filter="product = 'Q'"))
         query = {
-            "measure": SlayerQuery(population="tsales", metrics=[_metric("sum(amt)")]),
+            "measure": SlayerQuery(population="tsales", metrics=[_metric("sum(tsales.amt)")]),
             "dimension": SlayerQuery(
-                population="tsales", dimensions=[QueryDimension(field="amt")],
-                metrics=[_metric("count(id)")]),
+                population="tsales", dimensions=[QueryDimension(field="tsales.amt")],
+                metrics=[_metric("count(tsales.id)")]),
             "filter": SlayerQuery(
-                population="tsales", metrics=[_metric("count(id)")], filter=["amt > 0"]),
-            "last": SlayerQuery(population="tsales", metrics=[_metric("last(amt)")]),
+                population="tsales", metrics=[_metric("count(tsales.id)")], filter=["tsales.amt > 0"]),
+            "last": SlayerQuery(population="tsales", metrics=[_metric("last(tsales.amt)")]),
         }[position]
         sql = await gen(query, datasets=[model])
         expected = 2 if position == "dimension" else 1  # projection + GROUP BY
@@ -178,8 +179,8 @@ class TestSingleColumnUnchanged:
             (2, "Q", 70.0, "2024-06-01"),
         ])
         resp = await engine.execute(
-            SlayerQuery(population="tsales", metrics=[_metric("last(q_amount)")]))
-        assert float(resp.data[0]["tsales.m"]) == pytest.approx(70.0)
+            SlayerQuery(population="tsales", metrics=[_metric("last(tsales.q_amount)")]))
+        assert float(resp.data[0]["m"]) == pytest.approx(70.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -191,20 +192,20 @@ class TestBehaviourChanges:
         weight — the former filter-everything form is now wrong. The built-in
         weighted_avg skips the masked (NULL) values' weights, like any NULL value."""
         resp = await exec_backend.execute(
-            sales_q(metrics=[_metric("wavg(q_amount, weight=quantity)")]))
-        got = float(resp.data[0]["sales.m"])
+            sales_q(metrics=[_metric("wavg(sales.q_amount, weight=sales.quantity)")]))
+        got = float(resp.data[0]["m"])
         assert got == pytest.approx(WAVG_QAMT_WEIGHT_QTY)
         assert got != pytest.approx(WAVG_QAMT_WEIGHT_QTY_WRONG)
         builtin = await exec_backend.execute(
-            sales_q(metrics=[_metric("weighted_avg(q_amount, weight=quantity)")]))
-        assert float(builtin.data[0]["sales.m"]) == pytest.approx(WEIGHTED_AVG_QAMT_WEIGHT_QTY)
+            sales_q(metrics=[_metric("weighted_avg(sales.q_amount, weight=sales.quantity)")]))
+        assert float(builtin.data[0]["m"]) == pytest.approx(WEIGHTED_AVG_QAMT_WEIGHT_QTY)
 
     async def test_filtered_column_used_as_parameter_is_masked(self, exec_backend) -> None:
         """#2: weighted_avg(amount, weight=q_amount) masks the weight (NULL on
         non-Q rows), not the former silently-unfiltered weight."""
         resp = await exec_backend.execute(
-            sales_q(metrics=[_metric("weighted_avg(amount, weight=q_amount)")]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
+            sales_q(metrics=[_metric("weighted_avg(sales.amount, weight=sales.q_amount)")]))
+        assert float(resp.data[0]["m"]) == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
 
     async def test_filtered_column_as_dimension_groups_non_matching_under_null(
         self, exec_backend,
@@ -212,8 +213,8 @@ class TestBehaviourChanges:
         """#3: grouping by q_amount reads the masked value — non-Q rows form the
         NULL group, each Q amount its own cell."""
         resp = await exec_backend.execute(
-            sales_q(dimensions=["q_amount"], metrics=[_metric("count(*)", "n")]))
-        counts = {k[0]: int(v["sales.n"]) for k, v in rows_by(resp, "sales.q_amount").items()}
+            sales_q(dimensions=["sales.q_amount"], metrics=[_metric("count(sales.*)", "n")]))
+        counts = {k[0]: int(v["n"]) for k, v in rows_by(resp, "sales.q_amount").items()}
         assert counts == COUNT_BY_QAMOUNT
 
 
@@ -225,13 +226,13 @@ class TestFilteredColumnPositions:
         expected = sum(r[4] for r in _SALES_ROWS
                        if r[3] == "Q" and r[4] is not None and r[4] > 10)
         resp = await exec_backend.execute(
-            sales_q(metrics=[_metric("sum(amount)")], filter=["q_amount > 10"]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(expected)
+            sales_q(metrics=[_metric("sum(sales.amount)")], filter=["sales.q_amount > 10"]))
+        assert float(resp.data[0]["m"]) == pytest.approx(expected)
 
     async def test_order_reads_masked_value(self, exec_backend) -> None:
         query = sales_q(
-            dimensions=["q_amount"], metrics=[_metric("sum(amount)")],
-            order=[OrderItem(field="q_amount", direction="asc")])
+            dimensions=["sales.q_amount"], metrics=[_metric("sum(sales.amount)")],
+            order=[OrderItem(field="sales.q_amount", direction="asc")])
         resp = await exec_backend.execute(query)
         ordered = [row["sales.q_amount"] for row in resp.data]
         # Only the masked Q amounts are cells, in ascending order; non-Q rows
@@ -244,8 +245,8 @@ class TestFilteredColumnPositions:
 
     async def test_partition_key_reads_masked_value(self, exec_backend) -> None:
         query = sales_q(
-            dimensions=["q_amount"],
-            metrics=[_metric("sum(amount, partition_by=q_amount)")])
+            dimensions=["sales.q_amount"],
+            metrics=[_metric("sum(sales.amount, partition_by=sales.q_amount)")])
         resp = await exec_backend.execute(query)
         cells = {row["sales.q_amount"] for row in resp.data}
         assert cells == set(COUNT_BY_QAMOUNT)  # one cell per masked value, incl. NULL
@@ -260,37 +261,37 @@ class TestFilteredColumnPositions:
 class TestFilteredLeafInExpression:
     async def test_sum_over_filtered_leaf_expression(self, exec_backend) -> None:
         resp = await exec_backend.execute(
-            sales_q(metrics=[_metric("sum(q_amount - 1)")]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(SUM_QAMT_MINUS_1)
+            sales_q(metrics=[_metric("sum(sales.q_amount - 1)")]))
+        assert float(resp.data[0]["m"]) == pytest.approx(SUM_QAMT_MINUS_1)
 
     async def test_count_over_filtered_leaf_expression(self, exec_backend) -> None:
         resp = await exec_backend.execute(
-            sales_q(metrics=[_metric("count(q_amount - 1)")]))
-        assert int(resp.data[0]["sales.m"]) == COUNT_QAMT_MINUS_1
+            sales_q(metrics=[_metric("count(sales.q_amount - 1)")]))
+        assert int(resp.data[0]["m"]) == COUNT_QAMT_MINUS_1
 
 
 # --------------------------------------------------------------------------- #
-# Filtered leaf on a joined model contributes its filter's crossings.
+# Filtered leaf on a joined dataset contributes its filter's crossings.
 # --------------------------------------------------------------------------- #
 class TestFilteredLeafOnJoinedModel:
     async def test_filtered_joined_leaf_expression(self, exec_backend) -> None:
         resp = await exec_backend.execute(orders_q(
-            dimensions=["status"],
-            metrics=[_metric("sum(amount - customers.north_spend)")]))
-        got = {s: float(v["orders.m"]) for s, v in status_key(resp).items()}
+            dimensions=["orders.status"],
+            metrics=[_metric("sum(orders.amount - customers.north_spend)")]))
+        got = {s: float(v["m"]) for s, v in status_key(resp).items()}
         for status, expected in NORTH_SPEND_EXPR_BY_STATUS.items():
             assert got[status] == pytest.approx(expected)
 
     async def test_fanning_filter_leaf_fails_closed(self) -> None:
         # bad_pop_spend = spend filtered by regions.bad_pop > 0, crossing the
         # fanning regions→region_events hop.
-        query = orders_q(metrics=[_metric("sum(amount - customers.bad_pop_spend)")])
+        query = orders_q(metrics=[_metric("sum(orders.amount - customers.bad_pop_spend)")])
         with pytest.raises(ValueError, match="unproven or fanning relationship hop") as ei:
             await gen(query)
         assert "Aggregate the target field directly" in str(ei.value)
 
     async def test_fanning_filter_default_parameter_fails_closed(self) -> None:
-        # A filtered PHYSICAL column (no sql) whose filter crosses the fanning hop,
+        # A filtered PHYSICAL field (no sql) whose filter crosses the fanning hop,
         # used as a definition default: its crossings close like a derived one's.
         models = dev1832_datasets()
         cust = next(m for m in models if m.name == "customers")
@@ -306,20 +307,20 @@ class TestFilteredLeafOnJoinedModel:
 
 
 # --------------------------------------------------------------------------- #
-# Host-locality reaches into Column.filter, not just Column.sql (DEV-1832 / Codex).
+# Host-locality reaches into DatasetField.filter, not just DatasetField.sql (Codex).
 # --------------------------------------------------------------------------- #
 class TestHostLocalFilterReachability:
-    """A host-declared derived column whose VALUE crosses into a joined model but
-    whose ``Column.filter`` reads a host-local column is host-local: its mask
-    must stay at the host, where that column is bound. Host-locality must consult
+    """A host-declared derived field whose VALUE crosses into a joined dataset but
+    whose ``DatasetField.filter`` reads a host-local field is host-local: its mask
+    must stay at the host, where that field is bound. Host-locality must consult
     the filter fragment, not only the value (which the crossed set already
     covers)."""
 
-    def _orders_bundle(self, *, sql: str | None, filter_: str):
+    def _orders_bundle(self, *, expression: str | None, filter_: str):
         models = dev1832_datasets()
         orders = next(m for m in models if m.name == "orders")
         orders.fields.append(DatasetField(
-            name="probe", datatype=DataType.FLOAT, sql=sql, filter=filter_))
+            name="probe", datatype=DataType.FLOAT, expression=expression, filter=filter_))
         b = ResolvedSourceBundle(
             dialect="sqlite",
             population=orders,
@@ -330,7 +331,7 @@ class TestHostLocalFilterReachability:
     def test_cross_model_value_with_host_local_filter_is_host_local(self) -> None:
         # value crosses orders → customers (to-one); filter reads host orders.amount.
         orders, key, b = self._orders_bundle(
-            sql="customers.discount", filter_="amount > 5")
+            expression="customers.discount", filter_="amount > 5")
         assert key_has_host_local_ref(
             key=key, anchor_dataset=orders, anchor_relation="orders",
             bundle=b, cache={}) is True
@@ -338,7 +339,7 @@ class TestHostLocalFilterReachability:
     def test_cross_model_value_and_cross_model_filter_is_not_host_local(self) -> None:
         # Control: both fragments cross to customers — nothing anchors at the host.
         orders, key, b = self._orders_bundle(
-            sql="customers.discount", filter_="customers.tier = 'gold'")
+            expression="customers.discount", filter_="customers.tier = 'gold'")
         assert key_has_host_local_ref(
             key=key, anchor_dataset=orders, anchor_relation="orders",
             bundle=b, cache={}) is False
@@ -346,32 +347,32 @@ class TestHostLocalFilterReachability:
     def test_filtered_physical_column_with_cross_model_filter_is_host_local(
         self,
     ) -> None:
-        # A column with NO sql masks its own physical value (host-local); a
-        # cross-model filter must NOT strip that host-locality (Codex edge case).
+        # A field with NO sql masks its own physical value (host-local); a
+        # cross-dataset filter must NOT strip that host-locality (Codex edge case).
         orders, key, b = self._orders_bundle(
-            sql=None, filter_="customers.tier = 'gold'")
+            expression=None, filter_="customers.tier = 'gold'")
         assert key_has_host_local_ref(
             key=key, anchor_dataset=orders, anchor_relation="orders",
             bundle=b, cache={}) is True
 
 
 # --------------------------------------------------------------------------- #
-# Derived column over a filtered column expands the wrapped value.
+# Derived field over a filtered field expands the wrapped value.
 # --------------------------------------------------------------------------- #
 class TestDerivedOverFiltered:
     async def test_derived_column_expands_wrapped_value_sql(self) -> None:
         model = sales_dataset()
         model.fields.append(
-            DatasetField(name="q_double", datatype=DataType.FLOAT, sql="q_amount * 2"))
-        sql = await gen(sales_q(metrics=[_metric("sum(q_double)")]), datasets=[model])
+            DatasetField(name="q_double", datatype=DataType.FLOAT, expression="sales.q_amount * 2"))
+        sql = await gen(sales_q(metrics=[_metric("sum(sales.q_double)")]), datasets=[model])
         assert "CASE WHEN" in sql.upper(), sql
         assert "'Q'" in sql, sql
 
     async def test_derived_column_expands_wrapped_value_exec(self, exec_qdouble) -> None:
         # q_double = q_amount * 2, so sum over Q rows = 2 * QAMT_SUM; a wrong
         # expansion (raw amount) would sum every row and miss this value.
-        resp = await exec_qdouble.execute(sales_q(metrics=[_metric("sum(q_double)")]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(2 * QAMT_SUM)
+        resp = await exec_qdouble.execute(sales_q(metrics=[_metric("sum(sales.q_double)")]))
+        assert float(resp.data[0]["m"]) == pytest.approx(2 * QAMT_SUM)
 
 
 # --------------------------------------------------------------------------- #
@@ -381,10 +382,10 @@ class TestVariableSubstitution:
     async def test_variables_substitute_into_sql_and_filter(self) -> None:
         model = sales_dataset()
         model.fields.append(DatasetField(
-            name="vcol", datatype=DataType.FLOAT, sql="amount * {mult}",
+            name="vcol", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * {mult}")]),
             filter="product = '{prod}'"))
         sql = await gen(
-            sales_q(metrics=[_metric("sum(vcol)")], variables={"mult": 2, "prod": "Q"}),
+            sales_q(metrics=[_metric("sum(sales.vcol)")], variables={"mult": 2, "prod": "Q"}),
             datasets=[model])
         assert "{" not in sql, sql
         assert "'Q'" in sql, sql
@@ -396,7 +397,7 @@ class TestVariableSubstitution:
 # --------------------------------------------------------------------------- #
 class TestCycleAndPathValidation:
     async def test_filtered_columns_pass_cycle_validation(self) -> None:
-        # A filtered physical column and a filtered derived column both save —
+        # A filtered physical field and a filtered derived field both save —
         # the wrapped value's reference to its own physical column is not a cycle.
         await _save_validated(SlayerDataset(
             name="fcyc", sql_table="sales", data_source="test",
@@ -404,22 +405,22 @@ class TestCycleAndPathValidation:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="product", datatype=DataType.STRING),
                 DatasetField(name="amount", datatype=DataType.FLOAT, filter="product = 'Q'"),
-                DatasetField(name="der", datatype=DataType.FLOAT, sql="amount",
+                DatasetField(name="der", datatype=DataType.FLOAT, expression="fcyc.amount",
                        filter="product = 'Q'"),
             ]))
 
     async def test_filter_naming_another_derived_is_a_legal_edge(self) -> None:
-        # der2's filter names der1 (another derived column): a dependency EDGE,
-        # not a cycle — the model saves.
+        # der2's filter names der1 (another derived field): a dependency EDGE,
+        # not a cycle — the dataset saves.
         await _save_validated(SlayerDataset(
             name="fedge", sql_table="sales", data_source="test",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="product", datatype=DataType.STRING),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="der1", datatype=DataType.FLOAT, sql="amount"),
-                DatasetField(name="der2", datatype=DataType.FLOAT, sql="amount",
-                       filter="der1 > 0"),
+                DatasetField(name="der1", datatype=DataType.FLOAT, expression="amount"),
+                DatasetField(name="der2", datatype=DataType.FLOAT, expression="amount",
+                       filter="fedge.der1 > 0"),
             ]))
 
     async def test_filter_naming_own_column_is_a_cycle(self) -> None:
@@ -428,51 +429,51 @@ class TestCycleAndPathValidation:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="loop", datatype=DataType.FLOAT, sql="amount",
-                       filter="loop > 0"),
+                DatasetField(name="loop", datatype=DataType.FLOAT, expression="amount",
+                       filter="floop.loop > 0"),
             ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
             await _save_validated(model)
 
     async def test_filter_naming_own_physical_column_is_not_a_cycle(self) -> None:
-        # A filter naming its own column reads the PHYSICAL column when that column
+        # A filter naming its own field reads the PHYSICAL column when that field
         # is a bare physical one (``val`` → ``val``), not the recursive masked
         # value — so it is not a cycle (contrast the DERIVED ``loop`` above).
         await _save_validated(SlayerDataset(
             name="fself", sql_table="sales", data_source="test",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="val", datatype=DataType.FLOAT, sql="val",
+                DatasetField(name="val", datatype=DataType.FLOAT, expression="val",
                        filter="val > 0"),
             ]))
 
     async def test_query_over_self_filtered_physical_column_reads_physical(self) -> None:
-        # Companion to the save test above: a query over the same column must also
+        # Companion to the save test above: a query over the same field must also
         # expand — its filter's self-reference reads the physical column, so exactly
-        # one CASE WHEN and no ColumnCycleError (CR: physical-read exemption).
+        # one CASE WHEN and no DatasetFieldCycleError (CR: physical-read exemption).
         model = SlayerDataset(
             name="fself", sql_table="fself", data_source="test",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="val", datatype=DataType.FLOAT, sql="val", filter="val > 0"),
+                DatasetField(name="val", datatype=DataType.FLOAT, expression="val", filter="val > 0"),
             ])
         sql = await gen(
-            SlayerQuery(population="fself", metrics=[_metric("sum(val)")]),
+            SlayerQuery(population="fself", metrics=[_metric("sum(fself.val)")]),
             datasets=[model])
         masks = re.findall(r"CASE\s+WHEN\s+fself\.val > 0", sql, flags=re.I)
         assert len(masks) == 1, sql
 
     def test_cross_column_filter_cycle_still_raises_in_expansion(self) -> None:
-        # The physical-read exemption is LOCAL to a column's own filter fragment,
-        # never inherited into a referenced column's definition — so column
-        # expansion's own cycle-safety still fires on a genuine cross-column cycle
+        # The physical-read exemption is LOCAL to a field's own filter fragment,
+        # never inherited into a referenced field's definition — so field
+        # expansion's own cycle-safety still fires on a genuine cross-field cycle
         # (x.filter→y, y.sql→x), defence-in-depth below elaboration (Codex leak).
         model = SlayerDataset(
             name="cyc", sql_table="cyc", data_source="test",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="x", datatype=DataType.FLOAT, sql="x", filter="y > 0"),
-                DatasetField(name="y", datatype=DataType.FLOAT, sql="x")])
+                DatasetField(name="x", datatype=DataType.FLOAT, expression="x", filter="cyc.y > 0"),
+                DatasetField(name="y", datatype=DataType.FLOAT, expression="cyc.x")])
         x_col = model.get_field("x")
         assert x_col is not None
         with pytest.raises(DatasetFieldCycleError):
@@ -487,10 +488,10 @@ class TestCycleAndPathValidation:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="der_a", datatype=DataType.FLOAT, sql="amount",
-                       filter="der_b > 0"),
-                DatasetField(name="der_b", datatype=DataType.FLOAT, sql="amount",
-                       filter="der_a > 0"),
+                DatasetField(name="der_a", datatype=DataType.FLOAT, expression="amount",
+                       filter="fmutual.der_b > 0"),
+                DatasetField(name="der_b", datatype=DataType.FLOAT, expression="amount",
+                       filter="fmutual.der_a > 0"),
             ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
             await _save_validated(model)
@@ -501,7 +502,7 @@ class TestCycleAndPathValidation:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="bad", datatype=DataType.FLOAT, sql="amount",
+                DatasetField(name="bad", datatype=DataType.FLOAT, expression="amount",
                        filter="ghost.col = 1"),
             ])
         with pytest.raises(ValueError) as ei:
@@ -509,13 +510,13 @@ class TestCycleAndPathValidation:
         assert "ghost" in str(ei.value).lower()
 
     def test_filter_to_known_but_unloaded_peer_is_skipped(self) -> None:
-        # A reverse-direction join declared on the peer is invisible when the peer
+        # A reverse-direction relationship declared on the peer is invisible when the peer
         # failed to load; the filter is unproven, not broken — skip, never raise (CR).
         host = SlayerDataset(
             name="host", data_source="test", sql_table="host",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="masked", datatype=DataType.FLOAT, sql="id",
+                DatasetField(name="masked", datatype=DataType.FLOAT, expression="id",
                        filter="peer.flag = 1")])
         col = host.get_field("masked")
         assert col is not None
@@ -531,7 +532,7 @@ class TestCycleAndPathValidation:
             name="host", data_source="test", sql_table="host",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="masked", datatype=DataType.FLOAT, sql="id",
+                DatasetField(name="masked", datatype=DataType.FLOAT, expression="id",
                        filter="peer.flag = 1")])
         col = host.get_field("masked")
         assert col is not None

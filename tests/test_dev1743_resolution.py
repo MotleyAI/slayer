@@ -1,14 +1,14 @@
-"""DEV-1743 — the one Mode-A resolution door (WP2), through public seams.
+"""The one Mode-A resolution door (WP2), through public seams.
 
-Exercised end-to-end (``engine.save_model`` for the save-time pass [C5],
+Exercised end-to-end (``engine.save_dataset`` for the save-time pass [C5],
 ``_engine_generate`` for the generation-time door) rather than against a private
 helper, so the tests are robust to the resolver's internal shape.
 
 Fail-first behaviors (feature missing today):
-* a ``__``-named model resolves as an exact-match join target in Mode-A SQL;
+* a ``__``-named dataset resolves as an exact-match relationship target in Mode-A SQL;
 * the legacy ``customers__regions`` split-alias form is a hard D2 error naming
   the dotted replacement, at BOTH save time and generation time;
-* a dotted chain whose later hop is not a join raises naming the failing hop.
+* a dotted chain whose later hop is not a relationship raises naming the failing hop.
 
 Invariant locks (must hold before and after):
 * a physical ``schema.table.column`` reference stays opaque (never split).
@@ -25,6 +25,7 @@ from sqlglot import exp
 import slayer.engine.query_engine as qe_mod
 from slayer.core.enums import DataType
 from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.field_expansion import _requalify
@@ -43,7 +44,7 @@ from tests._engine_helpers import _engine_generate
 
 
 async def _engine_with(datasets, *, dialect="postgres"):
-    """Build an engine over ``models`` saved through the ENGINE (save-time pass)."""
+    """Build an engine over ``datasets`` saved through the ENGINE (save-time pass)."""
     d = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=d)
     await storage.save_datasource(DatasourceConfig(name="test", type=dialect))
@@ -61,7 +62,7 @@ def _joined_table_names(sql: str) -> set[str]:
 
 
 # --------------------------------------------------------------------------- #
-# A __-named model resolves as an exact-match Mode-A join target.
+# A __-named dataset resolves as an exact-match Mode-A relationship target.
 # --------------------------------------------------------------------------- #
 class TestDunderTargetResolves:
     def _host_with_label(self) -> SlayerDataset:
@@ -70,10 +71,10 @@ class TestDunderTargetResolves:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="cr_id", datatype=DataType.INTEGER),
-                # Mode-A reference to a DIRECT join target literally named
+                # Mode-A reference to a DIRECT relationship target literally named
                 # ``customer__region`` — exact match, single hop.
                 DatasetField(name="region_label", datatype=DataType.STRING,
-                       sql="customer__region.label"),
+                       expression="customer__region.label"),
             ],
             relationships=[DatasetRelationship(to="customer__region",
                              from_columns=["cr_id"], to_columns=["id"])],
@@ -83,7 +84,7 @@ class TestDunderTargetResolves:
     async def test_dunder_target_joins_and_projects(self) -> None:
         host = self._host_with_label()
         sql = await _engine_generate(
-            query=SlayerQuery(population="orders", dimensions=["region_label"]),
+            query=SlayerQuery(population="orders", dimensions=["orders.region_label"]),
             dataset=host, extra_datasets=[dunder_target()],
         )
         # The dim's physical table is joined and its label column read.
@@ -101,11 +102,11 @@ class TestLegacyDunderIsHardErrorAtSave:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
-                # No model literally named ``customers__regions`` exists; the
+                # No dataset literally named ``customers__regions`` exists; the
                 # naive split walks customers -> regions, so this must be a D2
                 # error naming the dotted replacement.
                 DatasetField(name="rn", datatype=DataType.STRING,
-                       sql="customers__regions.name"),
+                       expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="customers__regions.name")])),
             ],
             relationships=[DatasetRelationship(to="customers",
                              from_columns=["customer_id"], to_columns=["id"])],
@@ -137,7 +138,7 @@ class TestLegacyDunderIsHardErrorAtGeneration:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
                 DatasetField(name="rn", datatype=DataType.STRING,
-                       sql="customers__regions.name"),
+                       expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="customers__regions.name")])),
             ],
             relationships=[DatasetRelationship(to="customers",
                              from_columns=["customer_id"], to_columns=["id"])],
@@ -145,7 +146,7 @@ class TestLegacyDunderIsHardErrorAtGeneration:
 
     @pytest.mark.asyncio
     async def test_generation_raises_d2(self) -> None:
-        query = SlayerQuery(population="orders", dimensions=["rn"])
+        query = SlayerQuery(population="orders", dimensions=["orders.rn"])
         model = self._orders_with_legacy_alias()
         extras = [chain_customers(), chain_regions()]
         with pytest.raises(ValueError) as ei:
@@ -159,13 +160,13 @@ class TestLegacyDunderIsHardErrorAtGeneration:
 
 
 # --------------------------------------------------------------------------- #
-# Save-time Mode-A validation covers reverse-only chains on joinless models.
+# Save-time Mode-A validation covers reverse-only chains on relationship-less datasets.
 # --------------------------------------------------------------------------- #
 class TestModeAValidationOverReverseOnlyEdge:
     @pytest.mark.asyncio
     async def test_broken_tail_hop_rejected_on_joinless_model(self) -> None:
-        # orders declares the only edge; customers has NO joins, but its
-        # Mode-A chain over the reverse hop still validates (DEV-1853).
+        # orders declares the only edge; customers has NO relationships, but its
+        # Mode-A chain over the reverse hop still validates.
         orders = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
@@ -181,7 +182,7 @@ class TestModeAValidationOverReverseOnlyEdge:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="bad", datatype=DataType.STRING,
-                       sql="orders.nonexistent.name"),
+                       expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="orders.nonexistent.name")])),
             ],
         )
         with pytest.raises(UnresolvableDimensionRelationshipError):
@@ -189,7 +190,7 @@ class TestModeAValidationOverReverseOnlyEdge:
 
 
 # --------------------------------------------------------------------------- #
-# A dotted chain whose later hop is not a join raises naming the failing hop.
+# A dotted chain whose later hop is not a relationship raises naming the failing hop.
 # --------------------------------------------------------------------------- #
 class TestBrokenChainNamesFailingHop:
     def _orders_broken_chain(self) -> SlayerDataset:
@@ -198,9 +199,9 @@ class TestBrokenChainNamesFailingHop:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
-                # customers is a join target; nonexistent is not a join on it.
+                # customers is a relationship target; nonexistent is not one on it.
                 DatasetField(name="bad", datatype=DataType.STRING,
-                       sql="customers.nonexistent.name"),
+                       expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="customers.nonexistent.name")])),
             ],
             relationships=[DatasetRelationship(to="customers",
                              from_columns=["customer_id"], to_columns=["id"])],
@@ -215,7 +216,7 @@ class TestBrokenChainNamesFailingHop:
         assert "nonexistent" in str(ei.value)
 
 
-# Physical-ref opacity ("a non-join-target qualifier is never segmented") is a
+# Physical-ref opacity ("a non-relationship-target qualifier is never segmented") is a
 # resolver-level invariant tested against the normalizer in the flipped
 # tests/test_dot_path_in_sql.py — end-to-end it fights the scope checker, since
 # a 3-part ref to a table that is not actually joined leaks scope regardless of
@@ -234,12 +235,12 @@ class TestExactHostQualifier:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 # Explicit host qualifier — resolves to the host relation.
-                DatasetField(name="doubled", datatype=DataType.FLOAT, sql="orders.amount * 2"),
+                DatasetField(name="doubled", datatype=DataType.FLOAT, expression="orders.amount * 2"),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
         )
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(doubled)"}]}),
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.doubled)"}]}),
             dataset=host,
         )
         assert "amount" in sql
@@ -247,7 +248,7 @@ class TestExactHostQualifier:
 
 # --------------------------------------------------------------------------- #
 # The same resolution applies on the OTHER two Mode-A free-SQL surfaces:
-# Column.filter and SlayerModel.filters (the plan changes all three).
+# DatasetField.filter and SlayerDataset.filters (the plan changes all three).
 # --------------------------------------------------------------------------- #
 class TestFilterSurfacesResolve:
     def _host(self, *, col_filter=None, dataset_filters=None) -> SlayerDataset:
@@ -281,8 +282,8 @@ class TestFilterSurfacesResolve:
 
 
 # --------------------------------------------------------------------------- #
-# D1 headline: ambiguity is structurally impossible. With a direct model named
-# ``a__b`` AND a chain ``a → b``, ``a__b.x`` is the direct model and ``a.b.x`` is
+# D1 headline: ambiguity is structurally impossible. With a direct dataset named
+# ``a__b`` AND a chain ``a → b``, ``a__b.x`` is the direct dataset and ``a.b.x`` is
 # the chain — both resolve, to DIFFERENT relations, no error.
 # --------------------------------------------------------------------------- #
 class TestAmbiguityImpossible:
@@ -293,8 +294,8 @@ class TestAmbiguityImpossible:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="a_id", datatype=DataType.INTEGER),
                 DatasetField(name="ab_id", datatype=DataType.INTEGER),
-                DatasetField(name="chain_val", datatype=DataType.STRING, sql="a.b.val"),
-                DatasetField(name="direct_val", datatype=DataType.STRING, sql="a__b.val"),
+                DatasetField(name="chain_val", datatype=DataType.STRING, expression="a.b.val"),
+                DatasetField(name="direct_val", datatype=DataType.STRING, expression="a__b.val"),
             ],
             relationships=[
                 DatasetRelationship(to="a", from_columns=["a_id"], to_columns=["id"]),
@@ -306,13 +307,13 @@ class TestAmbiguityImpossible:
     async def test_direct_model_and_chain_resolve_to_distinct_relations(self) -> None:
         sql = await _engine_generate(
             query=SlayerQuery(population="host",
-                              dimensions=["chain_val", "direct_val"]),
+                              dimensions=["host.chain_val", "host.direct_val"]),
             dataset=self._host(), extra_datasets=[ai_a(), ai_b(), ai_a__b()],
         )
-        # The chain's leaf table and the direct model's table are BOTH joined
+        # The chain's leaf table and the direct dataset's table are BOTH joined
         # (assert on parsed exp.Table names, not a raw substring).
         joined = _joined_table_names(sql)
-        assert "a_b_direct" in joined, f"direct model a__b not joined:\n{sql}"
+        assert "a_b_direct" in joined, f"direct dataset a__b not joined:\n{sql}"
         assert "b" in joined, f"chain leaf table b not joined:\n{sql}"
 
 
@@ -343,7 +344,7 @@ class TestDeepDottedChainResolves:
                 DatasetField(name="aa_id", datatype=DataType.INTEGER),
                 # 5 name parts: aa.bb.cc.dd.v — a nested-Dot AST, not 4-part
                 # Column.parts. The extraction layer must still walk it.
-                DatasetField(name="deep", datatype=DataType.STRING, sql="aa.bb.cc.dd.v"),
+                DatasetField(name="deep", datatype=DataType.STRING, expression="aa.bb.cc.dd.v"),
             ],
             relationships=[DatasetRelationship(to="aa", from_columns=["aa_id"], to_columns=["id"])],
         )
@@ -353,7 +354,7 @@ class TestDeepDottedChainResolves:
     async def test_five_part_chain_resolves(self) -> None:
         host, extra = self._four_hop_datasets()
         sql = await _engine_generate(
-            query=SlayerQuery(population="hh", dimensions=["deep"]),
+            query=SlayerQuery(population="hh", dimensions=["hh.deep"]),
             dataset=host, extra_datasets=extra,
         )
         # Every hop's physical table is actually joined (parsed exp.Table names,
@@ -386,7 +387,7 @@ class TestModeAValidationDialect:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="cr_id", datatype=DataType.INTEGER),
-                DatasetField(name="rl", datatype=DataType.STRING, sql="customer__region.label"),
+                DatasetField(name="rl", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="MYSQL", expression="customer__region.label")])),
             ],
             relationships=[DatasetRelationship(to="customer__region",
                              from_columns=["cr_id"], to_columns=["id"])],

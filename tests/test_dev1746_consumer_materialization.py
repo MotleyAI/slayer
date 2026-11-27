@@ -1,5 +1,5 @@
-"""``ScopeFrame.resolve(consumer=…)`` becomes the single materialiser on the cross-model path.
-It projects a join-crossing value inside the producing scope under a ``_val_<n>`` alias and references it from the consumer, replacing the generator's own ``allocate_val()`` flow. Migrated sites (inside ``_render_cross_model_cte``): a crossing grain (grouping a first/last cross-model aggregate by a derived dimension whose SQL reaches a further join) and a crossing value (the aggregated expression itself crosses a join). Both dedup on resolved SQL text, so the swap is byte-preserving — except one fixed defect: grouping a first/last aggregate by the same expression it aggregates used to project it twice; one per-scope table collapses it to one.
+"""``ScopeFrame.resolve(consumer=…)`` becomes the single materialiser on the cross-dataset path.
+It projects a relationship-crossing value inside the producing scope under a ``_val_<n>`` alias and references it from the consumer, replacing the generator's own ``allocate_val()`` flow. Migrated sites (inside ``_render_cross_model_cte``): a crossing grain (grouping a first/last cross-dataset aggregate by a derived dimension whose SQL reaches a further relationship) and a crossing value (the aggregated expression itself crosses a relationship). Both dedup on resolved SQL text, so the swap is byte-preserving — except one fixed defect: grouping a first/last aggregate by the same expression it aggregates used to project it twice; one per-scope table collapses it to one.
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ from slayer.core.models import DatasetField
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.sql.scope import ScopeFrame
 
-from tests._cross_model_chain import _gen
 from tests._engine_helpers import _extract_cte_body, _norm
+from tests._trusted import trusted_chain_gen as _gen
+
 
 # Byte-parity baselines: swapping which materialiser mints ``_val_<n>`` must not change these
 # fragments; the ranking window's ORDER BY is asserted structurally (NULL flag, then the key).
@@ -26,16 +27,16 @@ _JOIN = (
     "LEFT JOIN regions AS regions ON customers_v2.region_id = regions.id"
 )
 CROSSING_GRAIN_CTE = (
-    'SELECT _val_0 AS "customers_v2.deep_pop",',
-    'THEN _val_1 END) AS DOUBLE PRECISION) AS "customers_v2.lifetime_value_first"',
+    'SELECT _val_0 AS "deep_pop",',
+    'THEN _val_1 END) AS DOUBLE PRECISION) AS "lifetime_value_first"',
     "FROM ( SELECT regions.population AS _val_0, customers_v2.lifetime_value AS _val_1,",
     _JOIN,
     ") AS _ranked_src GROUP BY _val_0",
 )
 
 CROSSING_VALUE_CTE = (
-    'SELECT _val_0 AS "customers_v2.status",',
-    'THEN _val_1 END) AS DOUBLE PRECISION) AS "customers_v2.deep_weight_first"',
+    'SELECT _val_0 AS "status",',
+    'THEN _val_1 END) AS DOUBLE PRECISION) AS "deep_weight_first"',
     "FROM ( SELECT customers_v2.status AS _val_0, regions.weight AS _val_1,",
     _JOIN,
     ") AS _ranked_src GROUP BY _val_0",
@@ -145,7 +146,7 @@ class TestConsumerMaterializationOnTheProductionPath:
         await _gen(query_factory(), dialect="postgres")
         assert spy.calls, "no value was closed through a scope at all"
         assert spy.consumer_calls > 0, (
-            "no production call named a `consumer=` — the cross-model CTE is "
+            "no production call named a `consumer=` — the cross-dataset CTE is "
             "still minting `_val_` aliases through the generator's own "
             "materialiser, so the projection-boundary branch remains "
             f"unexercised in production ({len(spy.calls)} consumer-less calls)."
@@ -216,7 +217,7 @@ class TestDedupParity:
     async def test_two_distinct_crossing_values_get_distinct_aliases(
         self,
     ) -> None:
-        """Different values must never collapse onto one alias (would aggregate the wrong column)."""
+        """Different values must never collapse onto one alias (would aggregate the wrong field)."""
         sql = await _gen(_two_distinct_crossing_values_query(), dialect="postgres")
         assert "_val_0" in sql, f"first materialisation missing:\n{sql}"
         assert "_val_1" in sql, f"second materialisation missing:\n{sql}"
@@ -260,13 +261,13 @@ class TestDedupParity:
 
 class TestRankedPathUsesTheOneMaterialiser:
     """The host-rooted ranked path uses the one per-scope materialiser too.
-    Reaching it needs a HOST-rooted aggregate (a ``customers_v2.…`` measure roots at the target instead), so the host gets a derived column crossing into the joined model and first/last runs over that.
+    Reaching it needs a HOST-rooted aggregate (a ``customers_v2.…`` metric roots at the target instead), so the host gets a derived field crossing into the joined dataset and first/last runs over that.
     """
 
-    _HOST_CROSSING_COLUMN = [
+    _HOST_CROSSING_FIELD = [
         DatasetField(
             name="cust_ltv",
-            sql="customers_v2.lifetime_value",
+            expression="customers_v2.lifetime_value",
             datatype=DataType.FLOAT,
         ),
     ]
@@ -274,13 +275,13 @@ class TestRankedPathUsesTheOneMaterialiser:
     def _query(self) -> SlayerQuery:
         return SlayerQuery(
             population="orders_x",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="first(cust_ltv)", alias="f")],
+            dimensions=[QueryDimension(field="orders_x.status")],
+            metrics=[QueryMetric(metric="first(orders_x.cust_ltv)", alias="f")],
         )
 
     async def test_local_first_last_still_materialises_correctly(self) -> None:
         sql = await _gen(
-            self._query(), orders_extra=self._HOST_CROSSING_COLUMN,
+            self._query(), orders_extra=self._HOST_CROSSING_FIELD,
             dialect="postgres",
         )
         assert "_val_" in sql, (
@@ -295,7 +296,7 @@ class TestRankedPathUsesTheOneMaterialiser:
         spy = _MaterializeSpy()
         spy.install(monkeypatch)
         sql = await _gen(
-            self._query(), orders_extra=self._HOST_CROSSING_COLUMN,
+            self._query(), orders_extra=self._HOST_CROSSING_FIELD,
             dialect="postgres",
         )
         emitted = set(_re.findall(r"\b_val_\d+\b", sql))

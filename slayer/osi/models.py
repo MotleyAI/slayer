@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from slayer.core.enums import DataType
+from slayer.core.ossie_expression import OSIExpression, OSINonportableExtension
 
 #: Ossie's datatype names, each SLayer's value of the same name.
 OSSIE_DATATYPES: dict[str, DataType] = {t.value: t for t in DataType if t is not DataType.ARRAY}
@@ -37,26 +38,6 @@ class OSIAIContextObject(BaseModel):
 
 # ai_context is either a plain string or the structured object above.
 OSIAIContext = Union[str, OSIAIContextObject]
-
-
-class OSINonportableExtension(BaseModel):
-    """Vendor-specific state; ``data`` is raw (checked by the importer), ``legacy`` when read from ``custom_extensions``."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    vendor_name: Any = None
-    data: Any = None
-    _legacy: bool = PrivateAttr(default=False)
-
-    @property
-    def legacy(self) -> bool:
-        return self._legacy
-
-    @model_validator(mode="before")
-    @classmethod
-    def _non_mapping_entry(cls, data: Any) -> Any:
-        # A non-mapping entry reaches the importer's check (and its report) instead of refusing the document.
-        return data if isinstance(data, (dict, OSINonportableExtension)) else {"data": data}
 
 
 class _Extensible(BaseModel):
@@ -90,31 +71,6 @@ class _Extensible(BaseModel):
             entry._legacy = True
         entity._legacy_key = True
         return entity
-
-
-class OSIDialectExpression(BaseModel):
-    """Expression in one dialect; ``dialect`` is any non-blank token."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    dialect: str
-    expression: str
-
-    @field_validator("dialect")
-    @classmethod
-    def _non_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("dialect must be a non-blank string")
-        return v
-
-
-class OSIExpression(BaseModel):
-    """Portable ``sql`` (OSSIE_SQL_2026) and/or per-dialect entries."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    sql: Optional[str] = None
-    dialects: list[OSIDialectExpression] = []
 
 
 class OSIDimension(BaseModel):

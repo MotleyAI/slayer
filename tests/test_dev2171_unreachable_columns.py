@@ -1,4 +1,4 @@
-"""``unreachable_columns`` drops a column only when no join reaches the path it reads."""
+"""``unreachable_fields`` drops a field only when no relationship reaches the path it reads."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ CHAIN = ("a", "b", "c", "d", "e")
 
 
 def _chain(reader_sql: str) -> dict[str, SlayerDataset]:
-    """``a`` → ``b`` → … → ``e``, each joined to the next; ``a`` has a column ``r`` reading ``reader_sql``."""
+    """``a`` → ``b`` → … → ``e``, each joined to the next; ``a`` has a field ``r`` reading ``reader_sql``."""
     models = {}
     for i, name in enumerate(CHAIN):
         nxt = CHAIN[i + 1] if i + 1 < len(CHAIN) else None
@@ -21,7 +21,7 @@ def _chain(reader_sql: str) -> dict[str, SlayerDataset]:
             columns.append(DatasetField(name=f"{nxt}_id"))
             joins.append(DatasetRelationship(to=nxt, from_columns=[f"{nxt}_id"], to_columns=["id"]))
         if name == "a":
-            columns.append(DatasetField(name="r", sql=reader_sql))
+            columns.append(DatasetField(name="r", expression=reader_sql))
         models[name] = SlayerDataset(name=name, sql_table=name, data_source="d", fields=columns, relationships=joins)
     return models
 

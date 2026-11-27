@@ -39,9 +39,16 @@ def converted(kind: str, value: Any) -> tuple[BaseModel, set[tuple[str, str]]]:
     return model, reported
 
 
+def _outside_the_rename(reported: tuple[str, str]) -> bool:
+    """Field ``sql``'s own deprecation and the ``broadcast`` mode's are not part of this rename."""
+    return reported == ("sql", "expression") or "broadcast" in reported[0]
+
+
 def problem(pair: dict[str, Any]) -> str | None:
     old, old_reported = converted(pair["kind"], pair["old"])
     new, new_reported = converted(pair["kind"], pair["new"])
+    old_reported = {r for r in old_reported if not _outside_the_rename(r)}
+    new_reported = {r for r in new_reported if not _outside_the_rename(r)}
     if old != new:
         return "converts to something else"
     if new_reported:

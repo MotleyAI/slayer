@@ -1,5 +1,7 @@
 """Tests for number format propagation through the query engine metadata pipeline."""
 
+from typing import Optional
+
 import pytest
 
 from slayer.core.format import NumberFormat, NumberFormatType
@@ -14,20 +16,26 @@ from slayer.core.enums import (
     PRESERVING_AGGREGATIONS,
     classify_aggregation,
 )
-from slayer.core.keys import AggregateKey, FieldKey, StarKey
+from slayer.core.keys import AggregateKey, FieldKey, StarKey, ValueKey
+from slayer.core.scope import DatasetScope
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import FieldMetadata
 
-# DEV-1485 Stage D: imported through ``query_engine`` while the legacy
-# ``_query_as_model`` re-exported it; now imported from its owning module.
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.engine.query_engine import ResponseAttributes
 from slayer.mcp.server import _format_attributes
 from slayer.engine.key_metadata import (
-    aggregated_type,
+    SlotTyping,
+    field_aggregate_type,
     metric_key_format_description,
-    metric_key_type,
 )
+
+
+def _key_type(*, dataset: SlayerDataset, key: ValueKey) -> Optional[DataType]:
+    """The one derivation's type of ``key`` over ``dataset``."""
+    bundle = ResolvedSourceBundle(dialect="postgres", population=dataset)
+    return SlotTyping(scope=DatasetScope(population=dataset), bundle=bundle).value_type(key)
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +44,7 @@ from slayer.engine.key_metadata import (
 
 
 class TestInferAggregatedFormat:
-    """Tests for _infer_aggregated_format resolving formats from source measures."""
+    """Tests for _infer_aggregated_format resolving formats from source metrics."""
 
     @pytest.fixture()
     def dataset(self):
@@ -45,20 +53,20 @@ class TestInferAggregatedFormat:
             sql_table="orders",
             data_source="test_ds",
             fields=[
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
                 DatasetField(
                     name="revenue",
-                    sql="amount",
+                    expression="amount",
                     datatype=DataType.FLOAT,
                     format=NumberFormat(type=NumberFormatType.CURRENCY, symbol="€"),
                 ),
                 DatasetField(
                     name="margin",
-                    sql="margin",
+                    expression="margin",
                     datatype=DataType.FLOAT,
                     format=NumberFormat(type=NumberFormatType.PERCENT),
                 ),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", expression="quantity", datatype=DataType.FLOAT),
             ],
         )
 
@@ -75,7 +83,7 @@ class TestInferAggregatedFormat:
         assert fmt.type == NumberFormatType.INTEGER
 
     def test_avg_inherits_currency(self, dataset):
-        # DEV-1788: avg-family now inherits the source column's units (was FLOAT).
+        # avg-family now inherits the source field's units (was FLOAT).
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="revenue", aggregation="avg")
         assert fmt.type == NumberFormatType.CURRENCY
         assert fmt.symbol == "€"
@@ -99,7 +107,7 @@ class TestInferAggregatedFormat:
         assert fmt.type == NumberFormatType.CURRENCY
 
     def test_sum_no_format_returns_none(self, dataset):
-        """Preserving aggregation over a measure without format returns None."""
+        """Preserving aggregation over a metric without format returns None."""
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="quantity", aggregation="sum")
         assert fmt is None
 
@@ -164,9 +172,9 @@ class TestMcpFormatMeta:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1788 shared classifier drift guard.
+# Shared classifier drift guard.
 #
-# ``aggregated_type`` (slot DataType) and ``_infer_aggregated_format`` (display
+# ``field_aggregate_type`` (slot DataType) and ``_infer_aggregated_format`` (display
 # NumberFormat) both read the single ``classify_aggregation`` classifier, so the
 # type and format axes cannot drift apart again. These tests pin the full
 # four-bucket table across formatted / unformatted / int-typed sources and
@@ -228,13 +236,13 @@ class TestSharedClassifier:
         )
 
     def test_custom_aggregation_falls_back_to_preserving(self, dataset):
-        # Model-defined aggregations (not builtin) inherit source type & format
+        # Dataset-defined aggregations (not builtin) inherit source type & format
         # through both consumers, not only the classifier.
         assert (
             classify_aggregation(metric_name="revenue", aggregation="my_custom", source_type=None)
             == AggregationValueClass.PRESERVING
         )
-        assert aggregated_type(dataset=dataset, metric_name="revenue", aggregation="my_custom") == DataType.FLOAT
+        assert field_aggregate_type(dataset=dataset, field_name="revenue", aggregation="my_custom") == DataType.FLOAT
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="revenue", aggregation="my_custom")
         assert fmt.type == NumberFormatType.CURRENCY
         assert fmt.symbol == "€"
@@ -258,14 +266,14 @@ class TestSharedClassifier:
     @pytest.mark.parametrize("measure", ["revenue", "quantity", "qty_int"])
     @pytest.mark.parametrize("aggregation", sorted(INTEGER_AGGREGATIONS))
     def test_count_bucket(self, dataset, aggregation, measure):
-        assert aggregated_type(dataset=dataset, metric_name=measure, aggregation=aggregation) == DataType.INTEGER
+        assert field_aggregate_type(dataset=dataset, field_name=measure, aggregation=aggregation) == DataType.INTEGER
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name=measure, aggregation=aggregation).type
             == NumberFormatType.INTEGER
         )
 
     def test_star_count_bucket(self, dataset):
-        assert aggregated_type(dataset=dataset, metric_name="*", aggregation="count") == DataType.INTEGER
+        assert field_aggregate_type(dataset=dataset, field_name="*", aggregation="count") == DataType.INTEGER
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name="*", aggregation="count").type
             == NumberFormatType.INTEGER
@@ -275,27 +283,27 @@ class TestSharedClassifier:
 
     @pytest.mark.parametrize("aggregation", sorted(PRESERVING_AGGREGATIONS))
     def test_preserving_currency_source(self, dataset, aggregation):
-        assert aggregated_type(dataset=dataset, metric_name="revenue", aggregation=aggregation) == DataType.FLOAT
+        assert field_aggregate_type(dataset=dataset, field_name="revenue", aggregation=aggregation) == DataType.FLOAT
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="revenue", aggregation=aggregation)
         assert fmt.type == NumberFormatType.CURRENCY
         assert fmt.symbol == "€"
 
     @pytest.mark.parametrize("aggregation", sorted(PRESERVING_AGGREGATIONS))
     def test_preserving_unformatted_double_source(self, dataset, aggregation):
-        assert aggregated_type(dataset=dataset, metric_name="quantity", aggregation=aggregation) == DataType.FLOAT
+        assert field_aggregate_type(dataset=dataset, field_name="quantity", aggregation=aggregation) == DataType.FLOAT
         assert _infer_aggregated_format(dataset=dataset, metric_name="quantity", aggregation=aggregation) is None
 
     @pytest.mark.parametrize("aggregation", sorted(PRESERVING_AGGREGATIONS))
     def test_preserving_int_source_inherits_int(self, dataset, aggregation):
         # The type axis: PRESERVING inherits the source's INT type ...
-        assert aggregated_type(dataset=dataset, metric_name="qty_int", aggregation=aggregation) == DataType.INTEGER
+        assert field_aggregate_type(dataset=dataset, field_name="qty_int", aggregation=aggregation) == DataType.INTEGER
         assert _infer_aggregated_format(dataset=dataset, metric_name="qty_int", aggregation=aggregation) is None
 
     # --- FLOAT_SOURCE_UNITS bucket: DOUBLE type always; format inherits, else FLOAT ---
 
     @pytest.mark.parametrize("aggregation", sorted(FLOAT_SOURCE_UNIT_AGGREGATIONS))
     def test_float_source_units_currency(self, dataset, aggregation):
-        assert aggregated_type(dataset=dataset, metric_name="revenue", aggregation=aggregation) == DataType.FLOAT
+        assert field_aggregate_type(dataset=dataset, field_name="revenue", aggregation=aggregation) == DataType.FLOAT
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="revenue", aggregation=aggregation)
         assert fmt.type == NumberFormatType.CURRENCY
         assert fmt.symbol == "€"
@@ -304,7 +312,7 @@ class TestSharedClassifier:
     @pytest.mark.parametrize("aggregation", sorted(FLOAT_SOURCE_UNIT_AGGREGATIONS))
     def test_float_source_units_unformatted_falls_back_to_float(self, dataset, aggregation, measure):
         # ... whereas FLOAT_SOURCE_UNITS FORCES DOUBLE, even over an INT source.
-        assert aggregated_type(dataset=dataset, metric_name=measure, aggregation=aggregation) == DataType.FLOAT
+        assert field_aggregate_type(dataset=dataset, field_name=measure, aggregation=aggregation) == DataType.FLOAT
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name=measure, aggregation=aggregation).type
             == NumberFormatType.FLOAT
@@ -315,27 +323,27 @@ class TestSharedClassifier:
     @pytest.mark.parametrize("measure", ["revenue", "quantity", "qty_int"])
     @pytest.mark.parametrize("aggregation", sorted(FLOAT_PLAIN_AGGREGATIONS))
     def test_float_plain_bucket(self, dataset, aggregation, measure):
-        assert aggregated_type(dataset=dataset, metric_name=measure, aggregation=aggregation) == DataType.FLOAT
+        assert field_aggregate_type(dataset=dataset, field_name=measure, aggregation=aggregation) == DataType.FLOAT
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name=measure, aggregation=aggregation).type
             == NumberFormatType.FLOAT
         )
 
-    # --- missing source column ---
+    # --- missing source field ---
 
     def test_preserving_missing_column(self, dataset):
-        assert aggregated_type(dataset=dataset, metric_name="nope", aggregation="sum") is None
+        assert field_aggregate_type(dataset=dataset, field_name="nope", aggregation="sum") is None
         assert _infer_aggregated_format(dataset=dataset, metric_name="nope", aggregation="sum") is None
 
     def test_float_source_units_missing_column_falls_back_to_float(self, dataset):
-        assert aggregated_type(dataset=dataset, metric_name="nope", aggregation="avg") == DataType.FLOAT
+        assert field_aggregate_type(dataset=dataset, field_name="nope", aggregation="avg") == DataType.FLOAT
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name="nope", aggregation="avg").type
             == NumberFormatType.FLOAT
         )
 
     def test_float_plain_missing_column(self, dataset):
-        assert aggregated_type(dataset=dataset, metric_name="nope", aggregation="corr") == DataType.FLOAT
+        assert field_aggregate_type(dataset=dataset, field_name="nope", aggregation="corr") == DataType.FLOAT
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name="nope", aggregation="corr").type
             == NumberFormatType.FLOAT
@@ -354,13 +362,13 @@ class TestSharedClassifier:
     )
     def test_public_callers_agree_per_bucket(self, dataset, aggregation, exp_type, exp_fmt):
         key = AggregateKey(source=FieldKey(leaf="revenue"), agg=aggregation)
-        assert metric_key_type(dataset=dataset, key=key) == exp_type
+        assert _key_type(dataset=dataset, key=key) == exp_type
         fmt, _desc = metric_key_format_description(dataset=dataset, key=key)
         assert fmt.type == exp_fmt
 
     def test_public_callers_star_count(self, dataset):
         key = AggregateKey(source=StarKey(), agg="count")
-        assert metric_key_type(dataset=dataset, key=key) == DataType.INTEGER
+        assert _key_type(dataset=dataset, key=key) == DataType.INTEGER
         fmt, desc = metric_key_format_description(dataset=dataset, key=key)
         assert fmt.type == NumberFormatType.INTEGER
         assert desc is None

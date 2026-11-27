@@ -119,6 +119,35 @@ class TestUnitLiterals:
         assert not (isinstance(bucket, ScalarCall) and bucket.name == "date_part")
 
 
+class TestBarePartWord:
+    @pytest.mark.parametrize("part", PARTS)
+    def test_bare_part_parses_as_quoted(self, part: str) -> None:
+        assert parse_expr(f"date_part({part.upper()}, created_at)") == parse_expr(f"date_part('{part}', created_at)")
+
+    @pytest.mark.parametrize("alias,part", [("ISODOW", "day_of_week"), ("doy", "day_of_year"), ("IsoYear", "iso_year")])
+    def test_bare_alias_folds_to_part(self, alias: str, part: str) -> None:
+        assert parse_expr(f"date_part({alias}, created_at)") == parse_expr(f"date_part('{part}', created_at)")
+
+    def test_bare_and_quoted_bind_alike(self) -> None:
+        assert _bind("date_part(MONTH, created_at)") == _bind("date_part('month', created_at)")
+
+    def test_bare_matches_extract(self) -> None:
+        assert parse_expr("DATE_PART(MONTH, created_at)") == parse_expr("EXTRACT(MONTH FROM created_at)")
+
+    # `date_part(status, …)` stays a "string literal" refusal: test_non_literal_unit_rejected.
+    @pytest.mark.parametrize("expr", [
+        "date_part(fortnight, created_at) = 1",
+        "date_part(dow, created_at) = 1",
+    ])
+    def test_bare_non_part_rejected(self, expr: str) -> None:
+        with pytest.raises(ValueError, match="day_of_week"):
+            _bind(expr)
+
+    def test_evaluated_ref_is_not_a_bare_part(self) -> None:
+        with pytest.raises(ValueError, match="string literal"):
+            _bind("date_part(AGG(month), created_at) = 1")
+
+
 class TestClockCalls:
     @pytest.mark.parametrize("text,name", [
         ("now()", "now"), ("NOW()", "now"), ("current_date()", "current_date"), ("Current_Date()", "current_date"),

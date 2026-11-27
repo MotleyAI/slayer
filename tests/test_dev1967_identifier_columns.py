@@ -1,4 +1,4 @@
-"""Only a model's sole primary-key column is an identifier; composite-key members are ordinary columns."""
+"""Only a dataset's sole primary-key field is an identifier; composite-key members are ordinary fields."""
 
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ def order_lines(*, line_no_aggs=None) -> SlayerDataset:
     return SlayerDataset(
         name="order_lines", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="order_id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="line_no", sql="customer_id", datatype=DataType.INTEGER, primary_key=True,
+            DatasetField(name="order_id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="line_no", expression="customer_id", datatype=DataType.INTEGER, primary_key=True,
                    allowed_aggregations=line_no_aggs),
             DatasetField(name="status", datatype=DataType.STRING, primary_key=True),
             DatasetField(name="amount", datatype=DataType.FLOAT),
@@ -69,7 +69,7 @@ def _col(*, dataset: SlayerDataset, name: str) -> DatasetField:
 
 
 async def _sampled(*, dataset: SlayerDataset, engine, names: tuple[str, ...] | None = None) -> dict[str, str | None]:
-    """Profile ``model`` (or just ``names``) through the owner; ``{column: sampled}``."""
+    """Profile ``dataset`` (or just ``names``) through the owner; ``{field: sampled}``."""
     cols = [c for c in dataset.fields if names is None or c.name in names]
     outcome = await ensure_samples_fresh(dataset=dataset, fields=cols, engine=engine, storage=engine.storage)
     return {c.name: c.sampled for c in outcome.fields}
@@ -77,7 +77,7 @@ async def _sampled(*, dataset: SlayerDataset, engine, names: tuple[str, ...] | N
 
 class TestAggregationGate:
     @pytest.mark.parametrize("formula", [
-        "count(id)", "count_distinct(id)", "count_distinct_approx(id)", "min(id)", "max(id)",
+        "count(orders.id)", "count_distinct(orders.id)", "count_distinct_approx(orders.id)", "min(orders.id)", "max(orders.id)",
     ])
     def test_sole_primary_key_accepts_count_family_and_min_max(self, formula) -> None:
         _plan(dataset=orders_dataset(), expression=formula)
@@ -85,12 +85,12 @@ class TestAggregationGate:
     def test_sole_primary_key_refuses_sum(self) -> None:
         model = orders_dataset()
         with pytest.raises(AggregationNotAllowedError):
-            _plan(dataset=model, expression="sum(id)")
+            _plan(dataset=model, expression="sum(orders.id)")
 
     def test_sole_primary_key_accepts_collect(self) -> None:
-        _plan(dataset=orders_dataset(), expression="collect(id)")
+        _plan(dataset=orders_dataset(), expression="collect(orders.id)")
 
-    @pytest.mark.parametrize("formula", ["max(line_no)", "sum(line_no)"])
+    @pytest.mark.parametrize("formula", ["max(order_lines.line_no)", "sum(order_lines.line_no)"])
     def test_composite_member_aggregates_by_type(self, formula) -> None:
         _plan(dataset=order_lines(), expression=formula)
 
@@ -146,20 +146,20 @@ class TestCatalogEligibility:
 class TestInspectSampling:
     def test_composite_member_is_a_sample_dimension(self) -> None:
         dims, _ = _choose_sample_dims(order_lines())
-        assert "status" in dims
+        assert "order_lines.status" in dims
 
     def test_sole_primary_key_is_not_a_sample_dimension(self) -> None:
         dims, _ = _choose_sample_dims(codes())
-        assert dims == ["label"]
+        assert dims == ["codes.label"]
 
     def test_composite_members_are_sample_measures(self) -> None:
         formulas = [m["metric"] for m in _build_sample_query_args(dataset=order_lines(), num_rows=3)["metrics"]]
-        assert any("(order_id)" in f for f in formulas)
-        assert any("(line_no)" in f for f in formulas)
+        assert any("(order_lines.order_id)" in f for f in formulas)
+        assert any("(order_lines.line_no)" in f for f in formulas)
 
     def test_sole_primary_key_is_not_a_sample_measure(self) -> None:
         formulas = [m["metric"] for m in _build_sample_query_args(dataset=orders_dataset(), num_rows=3)["metrics"]]
-        assert not any("(id)" in f for f in formulas)
+        assert not any("(orders.id)" in f for f in formulas)
 
     def test_composite_member_sample_cache_is_checked(self) -> None:
         model = order_lines()

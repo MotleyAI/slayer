@@ -1,0 +1,832 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+# Ossie Proposal: Expression Language
+
+**Current Status:** Proposed Final
+
+**Working Group**
+
+| Lead(s) | Participants |
+| :---- | :---- |
+| Will Pugh, Snowflake Khushboo Bhatia, Snowflake  | LLyod Tabb, Malloy Dianne Wood, Atscale Lior Ebel, Salesforce   Quigley Malcolm, dbt Labs Kurt, Relational AI Justin Talbot, Databricks Pavel Tiunov, Cube Damian Waldron, Thoughtspot Oliver Laslett, Lightdash Martin Traverso, Starburst JB Onofré, The ASF Raul Beiroa, Denodo |
+
+## Overview
+
+![Ossie Layers](img/ossie_layers.png)
+
+There are two layers in Ossie that need an expression language:
+
+* **Ontology layer.**  This layer maps onto the ontology layer which sits above the logical layer.  It maps more closely to modelling languages like OWL, [(Py)Rel](https://docs.relational.ai) from RelationalAI, and [Legend](https://legend.finos.org) from Goldman Sachs  
+* **Logical layer.**  This layer maps directly to the databases and physical layer.  It maps closely to traditional BI semantic models.
+
+This proposal is only targeted at the Logical Layer.  It would be nice if the Ontological layer could reuse the same expression language, but that will be treated as a separate proposal.
+
+This document defines the SQL expression language subset that Ossie-compliant implementations MUST support. The goal is to provide a portable expression language that works across all Ossie implementations while allowing vendors to expose richer database-specific functionality through dialect extensions.  In particular, it is meant for expressions at the logical layer.  This means metrics, fields, filters, etc  In the future, expressions such as arbitrary join expressions should also use this expression language.
+
+This document defines the portable Ossie dialect. Implementations may also carry non-portable vendor dialects; for how they fit into the specification and are mapped from the portable dialect, see [Dialect Extensions](#dialect-extensions).
+
+We expect there will be extensions to this language to cover concepts such as sub-queries, grain calculations, etc.  However, these will each have their own proposal.
+
+### Model Declaration vs. Querying
+
+This expression language is scoped to *declaring* a model — authoring the logical layer's metrics, fields, and filters. It does not define a query interface. The two are distinct:
+
+* **Declaration** uses expressions to define what a model is. This document governs declaration.
+* **Querying** evaluates a question against a declared model and returns rows. Query interfaces will be defined in separate documents.
+
+Consequently, the expressions defined here only declare a model: adding a dialect here does not mean Ossie supports querying with that dialect.
+
+### Design Principles
+
+1. **Portability**: Core functions work identically across all implementations  
+2. **Familiarity**: Based on widely-adopted SQL syntax and semantics  
+3. **Analytical Focus**: Prioritizes functions commonly used in BI and analytics  
+4. **Extensibility**: Vendor dialects can extend beyond the core
+
+### Changes to YAML
+
+1) OSSIE\_SQL\_2026 is registered as a dialect in the Ossie spec; it refers to this language specification.  
+2) Make OSSIE\_SQL\_2026 the default dialect if one is not chosen.
+
+### Standards Reference
+
+The core language is based on **ANSI SQL:2003 Core** (ISO/IEC 9075-2:2003), selected for its:
+
+- Wide adoption across SQL database engines  
+- Well-defined semantics  
+- Support for modern analytical features (window functions, CTEs)
+
+The language also requires optional SQL:2003 feature T612, the aggregate `<filter clause>` (`FILTER (WHERE ...)`), which is not part of Core. See [Conditional Aggregations](#conditional-aggregations-required).
+
+### Namespacing and Identifier Resolution
+
+The identifiers will match standard SQL identifiers:
+
+`Field: <SQL Identifier>`
+
+`FieldExpr: Field | Field ‘.’ Field`
+
+The Ossie spec currently contains three namespaces, which determine the visibility and uniqueness of each value.  Where and how a field (or metric) is defined will determine the namespace for it, which in turn determines the ways it can be addressed by other fields.
+
+All identifiers MUST be valid names and follow ANSI SQL naming, with the size limitation of 128 characters for identifiers.  Many databases support longer identifiers, however, this number is safe for a broad number of vendors.
+
+Regular identifiers (unquoted) should be case insensitive.    For example, an identifier id is regular, so it would match with Id or iD.  Comparing quoted and non-quoted identifiers is DB specific, so for best portability it is best to use simple identifiers.
+
+Function names should also be case insensitive.  For example, `SUM`, `sum`, and `Sum` name the same function.
+
+The quote character for the Ossie dialect will follow ANSI SQL and support the double quote character (“).  This means that if an expression is in a field expression or as an identifier in the YAML, this will be the expected quoting.  However, there are some databases that use other escape characters.  Working with these have the option of either creating expressions using their dialect or having the Ossie document written in the Ossie dialect, but then queried in the local dialect.
+
+#### Comparison Table
+
+| You type this in SQL | Equivalent to | Will it match a column created as id?             |
+| :---- |:-------------|:--------------------------------------------------|
+| id | ID           | **Yes** (Standard behavior)                       |
+| Id | ID           | **Yes** (Standard behavior)                       |
+| "ID" | ID           | **Yes** (Force-matched to normalized case)        |
+| "id" | id           | **No** (Quotes cause an exact match to lowercase) |
+
+Sometimes, we may refer to a **normalized identifier**.  This is a form the identifiers can be put in, so they can be matched easily and matches can be made with case-sensitive, exact matching.  For **normalized identifiers**:
+
+* Regular identifiers are upper cased  
+* Quoted identifiers have their quotes stripped and any escaped characters are unescaped
+
+#### Name Spaces
+
+Namespaces define how an identifier is looked up in an expression.  Identifiers
+will be able to be multi-part and the parts will be separated by the '.' characters,  E.g. `dataset.field`  This matches SQL conventions.
+
+What an identifier refers to depends on where the expression appears:
+
+* In a **field expression**, identifiers refer to columns of the dataset's `source`.  A field expression cannot refer to other fields or to a measure column of the `source`.
+* In a **dataset-scoped metric expression**, unqualified identifiers refer to fields declared in that dataset, even when a source column has the same name.  Identifiers qualified with `source`, as in `source.column`, refer to columns of the dataset's `source`.  The `source` qualifier is case insensitive.  If the dataset declares a field named `source`, the name refers to that field, and the dataset's metrics cannot refer to source columns.  Inside `AGG`, an identifier written `source.measure` refers to a measure column of the dataset's `source`; this is the only way to refer to a source measure.
+* In a **model-scoped metric expression**, identifiers must be qualified.  An identifier written `dataset.field` refers to a field declared in that dataset, not to a source column.  Inside `AGG`, an identifier written `dataset.metric` refers to a dataset-scoped metric of that dataset; this `AGG(dataset.metric)` form is the only way to reference a metric.
+
+See [Name Resolution](spec.md#name-resolution) in the core specification.
+
+## SQL Language Subset
+
+### Supported SQL Constructs
+
+Ossie expressions support the following SQL constructs within any expression:
+
+| Construct | Notes                                                                                                                                                                                                                                                                                 |
+| :---- |:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Column and Metric references | Varies based on whether in Ontology or Semantic models. For semantic models, see [Name Resolution](spec.md#name-resolution). See also namespacing in [Ossie Discussion Point: Core Analytic Abstractions](https://docs.google.com/document/d/1si8DqU4arG18ZgX4HnRG5D_zS2X7V1s-vgNY35rvxhM/edit?tab=t.0#heading=h.le505t8uoyfy) And future Ontology documentation |
+| Arithmetic operators | `+`, `-`, `*`, `/` (true division, see [Numeric Semantics](#numeric-semantics)), `%` (modulo)                                                                                                                                                                                                                                                      |
+| Comparison operators | `=`, `<>`, `!=`, `<`, `>`, `<=`, `>=`                                                                                                                                                                                                                                                 |
+| Logical operators | `AND`, `OR`, `NOT`                                                                                                                                                                                                                                                                    |
+| `BETWEEN` | `x BETWEEN a AND b`                                                                                                                                                                                                                                                                   |
+| `IN` / `NOT IN` | `x IN (a, b, c)` This only supports lists of values, not subqueries.                                                                                                                                                                                                                  |
+| `LIKE` / `ILIKE` | Pattern matching                                                                                                                                                                                                                                                                      |
+| `IS NULL` / `IS NOT NULL` | Null checks                                                                                                                                                                                                                                                                           |
+| `CASE WHEN` | Conditional logic                                                                                                                                                                                                                                                                     |
+| Aggregate functions | Core functions used for aggregations                                                                                                                                                                                                                                                  |
+| Window functions | Core supported window functions                                                                                                                                                                                                                                                       |
+| Scalar functions | See function categories below                                                                                                                                                                                                                                                         |
+| Parentheses | Expression grouping                                                                                                                                                                                                                                                                   |
+
+### Not Supported in Expressions
+
+| Construct | Reason |
+| :---- | :---- |
+| `SELECT` / `FROM` / `JOIN` | Handled by semantic layer |
+| `GROUP BY` | Controlled by grain specification |
+| `WHERE` | Use filter property instead |
+| Subqueries | Use field references instead, or EXISTS\_IN() for filtering based on a subquery. |
+| CTEs | Use field references instead |
+| `UNION` / `INTERSECT` / `EXCEPT` | Not applicable to expressions |
+| DDL statements | Out of scope |
+| DML statements | Out of scope |
+| `AGG(...)` outside a metric | Reserved for a future version. Metrics may call `AGG` only in the forms that [Measure Evaluation: `AGG`](#measure-evaluation-agg) lists. |
+
+### Operator Precedence
+
+Standard SQL operator precedence applies (highest to lowest):
+
+1. Parentheses `()`  
+2. Unary operators: `+`, `-`  
+3. Multiplication/Division: `*`, `/`, `%`  
+4. Addition/Subtraction: `+`, `-`  
+5. Comparison: `=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `IN`, `BETWEEN`, `IS NULL`  
+6. Logical NOT: `NOT`  
+7. Logical AND: `AND`  
+8. Logical OR: `OR`
+
+---
+
+## Aggregation Functions
+
+### Core Aggregation Functions (REQUIRED)
+
+| Function | Syntax | Description | Decomposability |
+| :---- | :---- | :---- | :---- |
+| `SUM` | `SUM(expr)` | Sum of values | Distributive |
+| `COUNT` | `COUNT(expr)` | Count of non-null values | Distributive |
+| `COUNT(*)` | `COUNT(*)` | Count of all rows | Distributive |
+| `COUNT(DISTINCT expr)` | `COUNT(DISTINCT expr)` | Count of distinct values | Holistic |
+| `AVG` | `AVG(expr)` | Arithmetic mean | Algebraic |
+| `MIN` | `MIN(expr)` | Minimum value | Distributive |
+| `MAX` | `MAX(expr)` | Maximum value | Distributive |
+
+### Statistical Aggregations (REQUIRED)
+
+| Function | Syntax | Description | Decomposability |
+| :---- | :---- | :---- | :---- |
+| `STDDEV` | `STDDEV(expr)` | Sample standard deviation | Algebraic |
+| `STDDEV_POP` | `STDDEV_POP(expr)` | Population standard deviation | Algebraic |
+| `STDDEV_SAMP` | `STDDEV_SAMP(expr)` | Sample standard deviation (alias for STDDEV) | Algebraic |
+| `VARIANCE` | `VARIANCE(expr)` | Sample variance | Algebraic |
+| `VAR_POP` | `VAR_POP(expr)` | Population variance | Algebraic |
+| `VAR_SAMP` | `VAR_SAMP(expr)` | Sample variance (alias for VARIANCE) | Algebraic |
+
+### Percentile Functions (REQUIRED)
+
+| Function | Syntax | Description | Decomposability |
+| :---- | :---- | :---- | :---- |
+| `MEDIAN` | `MEDIAN(expr)` | Median value (50th percentile) | Holistic |
+| `PERCENTILE_CONT` | `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY expr)` | Continuous percentile (interpolated) | Holistic |
+| `PERCENTILE_DISC` | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY expr)` | Discrete percentile (actual value) | Holistic |
+
+Where `p` is a value between 0 and 1 (e.g., 0.5 for median, 0.75 for 75th percentile).
+
+### Approximate Aggregations (RECOMMENDED)
+
+Approximate functions trade exact accuracy for significantly better performance on large datasets. They use probabilistic algorithms (sketches) that are efficiently mergeable, making them well-suited for distributed computation.
+
+| Function | Syntax | Description | Typical Error |
+| :---- | :---- | :---- | :---- |
+| `APPROX_COUNT_DISTINCT` | `APPROX_COUNT_DISTINCT(expr)` | Approximate distinct count using HyperLogLog or something similar.  Actual method is up to providers. | \~2% |
+| `APPROX_PERCENTILE` | `APPROX_PERCENTILE(expr, p)` | Approximate percentile using t-digest or similar | \~1% |
+
+```sql
+-- Approximate distinct count (much faster than COUNT(DISTINCT) on large data)
+APPROX_COUNT_DISTINCT(customer_id)
+
+-- Approximate median
+APPROX_PERCENTILE(amount, 0.5)
+
+-- Approximate 95th percentile  
+APPROX_PERCENTILE(response_time, 0.95)
+```
+
+Engine support for approximate aggregates varies. For a non-normative mapping, see [extensions/function_mappings.md](../extensions/function_mappings.md#approximate-aggregates).
+
+---
+
+### Conditional Aggregations (REQUIRED)
+
+SUM / COUNT aggregation functions support `DISTINCT.`  
+All aggregations except `AGG` must support filtered aggregation:
+
+```sql
+-- DISTINCT modifier
+SUM(DISTINCT amount)
+COUNT(DISTINCT customer_id)
+
+-- Filtered aggregation via CASE
+SUM(CASE WHEN status = 'completed' THEN amount END)
+COUNT(CASE WHEN status = 'completed' THEN 1 END)
+
+-- Filtered aggregation via FILTER (WHERE ...)
+SUM(amount) FILTER (WHERE status = 'completed')
+COUNT(*) FILTER (WHERE status = 'completed')
+```
+
+#### `FILTER (WHERE ...)` (REQUIRED)
+
+Every aggregate function except `AGG` must support a postfix `FILTER (WHERE <predicate>)` modifier:
+
+```
+<aggregate_function>(<args>) FILTER (WHERE <predicate>)
+```
+
+In this version, `AGG` takes no `FILTER` clause (see [Measure Evaluation: `AGG`](#measure-evaluation-agg)).
+
+The clause has the semantics of the SQL:2003 `<filter clause>` (optional feature T612): the aggregate considers only the rows for which `<predicate>` succeeds. `FILTER` is applied to the aggregate's input, not as a query `WHERE`, so it never removes output groups. A converter or engine MUST NOT rewrite an intrinsic `FILTER` predicate into a query-level `WHERE` clause when doing so would change group membership.
+
+`FILTER (WHERE ...)` is a modifier on an aggregate expression. It is not the standalone `WHERE` clause listed under [Not Supported in Expressions](#not-supported-in-expressions). The `<predicate>` must reference only fields of the same dataset as the aggregate's arguments.
+
+An engine MAY evaluate `FILTER (WHERE ...)` by rewriting it to an equivalent expression, but the result MUST be identical to the result that the `<filter clause>` semantics define.
+
+*Note (non-normative):* For an aggregate function that ignores `NULL` inputs, `FILTER (WHERE ...)` is equivalent to a `CASE` expression with no `ELSE`:
+
+```sql
+SUM(amount) FILTER (WHERE status = 'completed')                  --> SUM(CASE WHEN status = 'completed' THEN amount END)
+COUNT(*) FILTER (WHERE status = 'completed')                     --> COUNT(CASE WHEN status = 'completed' THEN 1 END)
+COUNT(DISTINCT customer_id) FILTER (WHERE status = 'completed')  --> COUNT(DISTINCT CASE WHEN status = 'completed' THEN customer_id END)
+```
+
+A non-matching row contributes `NULL`, which these functions ignore. An `ELSE 0` would count as a real row and would corrupt `AVG`, `MIN`, `MAX`, and `COUNT`. The identity does not hold for an aggregate function that does not ignore `NULL` inputs, such as `ARRAY_AGG`.
+
+### Measure Evaluation: `AGG`
+
+Ossie SQL reserves the function name `AGG` for evaluating a measure: a column that holds an aggregate calculation instead of a value for each row. The [Relational Query Interface](relational_semantics.md) defines measures (Section 4) and `AGG` (Section 6), including its valid arguments. In `OSSIE_SQL_2026` expressions, an implementation MUST NOT give `AGG` any other meaning. Expressions in other dialects are not affected. Because function names should be case insensitive, the reservation covers every capitalization, such as `agg` and `Agg`.
+
+This version defines two uses of `AGG`, both in metrics (see [Metric Scoping](spec.md#metric-scoping)):
+
+* A model-scoped metric may use `AGG` to evaluate a dataset-scoped metric, as in `AGG(orders.total_revenue)`. The argument is a single `dataset.metric` reference.
+* A dataset-scoped metric may use `AGG` to evaluate a measure of the dataset's `source`, as in `AGG(source.total_revenue)`, when the `source` is a measure relation (see [Measure Relation as a `source`](spec.md#measure-relation-as-a-source)). The argument is a single `source.measure` reference. The call composes the measure into the metric: the measure is evaluated when a consuming query evaluates the metric, not where the metric is defined.
+
+In both uses, the call takes no `FILTER (WHERE ...)` clause. `OSSIE_SQL_2026` expressions MUST NOT call `AGG` anywhere else until a future version defines it.
+
+**Compatibility.** Earlier versions of this specification did not reserve `AGG`, so an older `OSSIE_SQL_2026` expression might call a different function by that name. To update it, rename that function or write the expression in a vendor dialect. Reserving `AGG` as a function name does not prevent a field, metric, or column from being named `agg`.
+
+### Decomposability Reference
+
+For multi-stage aggregation (see [Ossie Analytical Context Extension](https://docs.google.com/document/d/1MKNySGmEv_C6CzBZ7um9Ym3_mMvmOolpDuwPvRzQ1bo/edit?usp=sharing)):
+
+| Category | Functions |
+| :---- | :---- |
+| **Distributive** | SUM, COUNT, MIN, MAX |
+| **Algebraic** | AVG, STDDEV, VARIANCE |
+| **Holistic** | MEDIAN, PERCENTILE, COUNT DISTINCT |
+| **Sketch-based** | APPROX\_COUNT\_DISTINCT, APPROX\_PERCENTILE |
+
+---
+
+## Date/Time Functions
+
+### Current Date/Time (REQUIRED)
+
+| Function | Syntax | Returns | Description |
+| :---- | :---- | :---- | :---- |
+| `CURRENT_DATE` | `CURRENT_DATE` or `CURRENT_DATE()` | DATE | Current date |
+| `CURRENT_TIMESTAMP` | `CURRENT_TIMESTAMP` or `CURRENT_TIMESTAMP()` | TIMESTAMP | Current timestamp |
+| `CURRENT_TIME` | `CURRENT_TIME` or `CURRENT_TIME()` | TIME | Current time |
+
+### Date/Time Extraction (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `YEAR` | `YEAR(date_expr)` | Extract year (integer) |
+| `QUARTER` | `QUARTER(date_expr)` | Extract quarter (1-4) |
+| `MONTH` | `MONTH(date_expr)` | Extract month (1-12) |
+| `DAY` | `DAY(date_expr)` | Extract day of month (1-31) |
+| `DAYOFYEAR` | `DAYOFYEAR(date_expr)` | Day of year (1-366) |
+| `HOUR` | `HOUR(timestamp_expr)` | Extract hour (0-23) |
+| `MINUTE` | `MINUTE(timestamp_expr)` | Extract minute (0-59) |
+| `SECOND` | `SECOND(timestamp_expr)` | Extract second (0-59) |
+
+### Alternative Extraction Syntax (REQUIRED)
+
+```sql
+-- EXTRACT function (SQL standard)
+EXTRACT(YEAR FROM date_expr)
+EXTRACT(MONTH FROM date_expr)
+EXTRACT(DAY FROM date_expr)
+
+-- DATE_PART function (common alternative)
+DATE_PART('year', date_expr)
+DATE_PART('month', date_expr)
+DATE_PART('day', date_expr)
+```
+
+Supported date parts for `EXTRACT` and `DATE_PART`:
+
+- `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`  
+- `DAYOFWEEK`, `DAYOFYEAR`  
+- `HOUR`, `MINUTE`, `SECOND`, `MILLISECOND`
+
+### Date Truncation (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `DATE_TRUNC` | `DATE_TRUNC(part, date_expr)` | Truncate to specified precision |
+
+Supported parts: `'year'`, `'quarter'`, `'month'`, `'week'`, `'day'`, `'hour'`, `'minute'`, `'second'`
+
+```sql
+-- Examples
+DATE_TRUNC('month', order_date)    -- First day of month
+DATE_TRUNC('quarter', order_date)  -- First day of quarter
+DATE_TRUNC('week', order_date)     -- First day of week (Monday)
+```
+
+### Date Arithmetic (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `DATEADD` | `DATEADD(part, amount, date_expr)` | Add interval to date |
+| `DATEDIFF` | `DATEDIFF(part, start_date, end_date)` | Difference between dates |
+
+```sql
+-- Add/subtract intervals
+DATEADD(day, 7, order_date)         -- Add 7 days
+DATEADD(month, -1, order_date)      -- Subtract 1 month
+DATEADD(year, 1, order_date)        -- Add 1 year
+
+-- Calculate differences
+DATEDIFF(day, start_date, end_date)    -- Days between dates
+DATEDIFF(month, start_date, end_date)  -- Months between dates
+DATEDIFF(year, start_date, end_date)   -- Years between dates
+```
+
+### Date/Time Construction (REQUIRED)
+
+Construct DATE, TIME, and TIMESTAMP values using ANSI typed literals or `CAST`.
+ISO-8601 strings (`YYYY-MM-DD`, `YYYY-MM-DD HH:MI:SS`, `HH:MI:SS`) require no format
+model and behave identically across engines, making them the portable default.
+
+| Form | Syntax | Description |
+| :---- | :---- | :---- |
+| Typed literal | `DATE '2024-01-15'` | Construct a DATE |
+| Typed literal | `TIMESTAMP_NTZ '2024-01-15 10:30:00'` | Construct a wall-clock timestamp (no time zone) |
+| Typed literal | `TIME '10:30:00'` | Construct a TIME |
+| Cast | `CAST('2024-01-15' AS DATE)` | Parse ISO string to DATE |
+| Cast | `CAST('2024-01-15 10:30:00' AS TIMESTAMP_NTZ)` | Parse ISO string to timestamp |
+| Cast | `CAST('10:30:00' AS TIME)` | Parse ISO string to TIME |
+| `TO_DATE` | `TO_DATE(string)` | Parse ISO string to DATE |
+| `TO_TIMESTAMP` | `TO_TIMESTAMP(string)` | Parse ISO string to timestamp |
+
+### Date/Time Construction from Format Strings (EXPERIMENTAL)
+
+Parsing with an explicit format string relies on a datetime format model whose token
+vocabulary differs across engines. For the main format-model families, see the non-normative
+[extensions/function_mappings.md](../extensions/function_mappings.md#datetime-format-tokens).
+
+For portability, we are looking to restrict the `format` argument to
+the portable core format tokens defined in Date Formatting below, and prefer the
+single-argument, ISO-8601 forms above where possible.
+
+**Since, this differs so widely across databases, consider this experimental for now.**  
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `TO_DATE` | `TO_DATE(string, format)` | Parse string to date |
+| `TO_TIMESTAMP` | `TO_TIMESTAMP(string, format)` | Parse string to timestamp |
+
+### Date Formatting (EXPERIMENTAL)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `TO_CHAR` | `TO_CHAR(date_expr, format)` | Format date as string |
+
+Ossie defines a portable core of format tokens: the tokens that can be expressed in
+every major engine's datetime format model.
+
+This feature is experimental.  Implementations choosing to support these should support the following tokens for the
+`format` argument of `TO_CHAR`. For each token's equivalent in other format models, see
+[extensions/function_mappings.md](../extensions/function_mappings.md#datetime-format-tokens).
+
+| Token | Meaning |
+| :---- | :---- |
+| `YYYY` | 4-digit year |
+| `YY` | 2-digit year |
+| `MM` | Month (01-12) |
+| `MON` | Abbreviated month name |
+| `MONTH` | Full month name |
+| `DD` | Day of month (01-31) |
+| `DY` | Abbreviated day name |
+| `DAY` | Full day name |
+| `HH24` | Hour (00-23) |
+| `HH12` (`HH`) | Hour (01-12) |
+| `MI` | Minute (00-59) |
+| `SS` | Second (00-59) |
+| `AM` / `PM` | Meridiem indicator |
+
+**Locale-dependent output.** The name tokens (`MON`, `MONTH`, `DY`, `DAY`, `AM`/`PM`)
+render text whose language is governed by engine/session locale settings; the spelling
+is not guaranteed identical across engines.
+
+**Fractional seconds** are available everywhere but the token and precision differ across
+engines; treat sub-second formatting as a dialect extension.
+---
+
+## String Functions
+
+### String Manipulation (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `CONCAT` | `CONCAT(str1, str2, ...)` | Concatenate strings |
+| `\|\|` | `str1 \|\| str2` | Concatenation operator |
+| `LENGTH` | `LENGTH(str)` | String length in characters |
+| `LOWER` | `LOWER(str)` | Convert to lowercase |
+| `UPPER` | `UPPER(str)` | Convert to uppercase |
+| `TRIM` | `TRIM(str)` | Remove leading/trailing whitespace |
+| `LTRIM` | `LTRIM(str)` | Remove leading whitespace |
+| `RTRIM` | `RTRIM(str)` | Remove trailing whitespace |
+| `LEFT` | `LEFT(str, n)` | First n characters |
+| `RIGHT` | `RIGHT(str, n)` | Last n characters |
+| `SUBSTRING` | `SUBSTRING(str, start, length)` | Extract substring |
+| `REPLACE` | `REPLACE(str, from, to)` | Replace occurrences |
+| `SPLIT_PART` | `SPLIT_PART(str, delimiter, part)` | Extract part by delimiter |
+
+### String Search (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `POSITION` | `POSITION(substr IN str)` | Position of substring (1-based) |
+| `CHARINDEX` | `CHARINDEX(substr, str)` | Alias for POSITION |
+| `CONTAINS` | `CONTAINS(str, substr)` | Returns TRUE if contains |
+| `STARTSWITH` | `STARTSWITH(str, prefix)` | Returns TRUE if starts with |
+| `ENDSWITH` | `ENDSWITH(str, suffix)` | Returns TRUE if ends with |
+
+### Pattern Matching (REQUIRED)
+
+| Pattern | Syntax | Description |
+| :---- | :---- | :---- |
+| `LIKE` | `str LIKE pattern` | Case-sensitive pattern match |
+| `ILIKE` | `str ILIKE pattern` | Case-insensitive pattern match |
+| `REGEXP_LIKE` | `REGEXP_LIKE(str, pattern)` | Regular expression match |
+
+Pattern wildcards for `LIKE`:
+
+- `%` \- Match any sequence of characters  
+- `_` \- Match any single character
+
+### Regular Expressions (RECOMMENDED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `REGEXP_EXTRACT` | `REGEXP_EXTRACT(str, pattern)` | Extract first match |
+| `REGEXP_REPLACE` | `REGEXP_REPLACE(str, pattern, replacement)` | Replace matches |
+| `REGEXP_COUNT` | `REGEXP_COUNT(str, pattern)` | Count matches |
+
+---
+
+## Mathematical Functions
+
+### Basic Math (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `ABS` | `ABS(x)` | Absolute value |
+| `ROUND` | `ROUND(x, d)` | Round to d decimal places; a value exactly halfway rounds away from zero (see [Numeric Semantics](#numeric-semantics)) |
+| `FLOOR` | `FLOOR(x)` | Round down to integer |
+| `CEIL` / `CEILING` | `CEIL(x)` | Round up to integer |
+| `TRUNC` / `TRUNCATE` | `TRUNC(x, d)` | Truncate to d decimal places |
+| `MOD` | `MOD(x, y)` | Modulo (remainder) |
+| `SIGN` | `SIGN(x)` | Sign (-1, 0, or 1\) |
+
+### Numeric Semantics
+
+Two results depend on the engine unless the language fixes them, so the same metric
+could return different numbers on different engines:
+
+- **`ROUND(x, d)` breaks ties half away from zero.** A value exactly halfway between two
+  results rounds to the one farther from zero: `ROUND(2.5, 0)` is `3`, `ROUND(-2.5, 0)` is
+  `-3`, `ROUND(0.125, 2)` is `0.13`. The rule is exact for `DECIMAL` / `NUMERIC` values.
+  For `FLOAT` / `DOUBLE` it applies to the value as stored (`2.675` is not exactly halfway
+  in binary), and engines differ near such values, so binary floating-point ties are best
+  effort.
+- **`/` is true division.** The quotient keeps its fractional part whatever the operand
+  types: `5 / 2` is `2.5`, not `2`. Integer division is written explicitly, for example
+  `TRUNC(x / y, 0)` (toward zero) or `FLOOR(x / y)`.
+
+An engine whose default differs evaluates an equivalent expression instead, and
+because the rules are fixed a converter can emit it:
+
+- **Integer division** (two integer operands): `CAST(x AS DECIMAL(p, s)) / y`, which is
+  exact where the engine keeps `DECIMAL` arithmetic in `DECIMAL`, or `CAST(x AS DOUBLE) / y`,
+  which loses precision for integers above 2^53.
+- **Half-to-even or missing `ROUND`** (for example, an engine whose `ROUND` on doubles breaks
+  ties to even, or has no two-argument form; see
+  [extensions/function_mappings.md](../extensions/function_mappings.md#rounding)): with `y = ABS(x) * f`,
+  where for a literal `d` the factor `f` is `10` to the power `d` written as an exact
+  literal (`100` for `d = 2`),
+  `SIGN(x) * (FLOOR(y) + CASE WHEN y - FLOOR(y) >= 0.5 THEN 1 ELSE 0 END) / f`.
+  It takes the fraction first, so it does not round when it adds `0.5` (as
+  `FLOOR(y + 0.5)` does for large doubles and for values just below a tie). It is exact
+  where `DECIMAL` arithmetic stays `DECIMAL`; where the engine computes it in `DOUBLE`, the
+  `FLOAT` / `DOUBLE` caveat above applies.
+- Engine functions can also differ in their arguments (for example SQLite's `TRUNC` takes
+  one argument, and its `ROUND` ignores a negative `d`); a converter targeting such an
+  engine rewrites those calls too.
+
+### Advanced Math (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `POWER` | `POWER(x, y)` | x raised to power y |
+| `SQRT` | `SQRT(x)` | Square root |
+| `EXP` | `EXP(x)` | e raised to power x |
+| `LN` | `LN(x)` | Natural logarithm |
+| `LOG` | `LOG(base, x)` | Logarithm with specified base |
+| `LOG10` | `LOG10(x)` | Base-10 logarithm |
+
+### Trigonometric (RECOMMENDED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `SIN` | `SIN(x)` | Sine (x in radians) |
+| `COS` | `COS(x)` | Cosine |
+| `TAN` | `TAN(x)` | Tangent |
+| `ASIN` | `ASIN(x)` | Arc sine |
+| `ACOS` | `ACOS(x)` | Arc cosine |
+| `ATAN` | `ATAN(x)` | Arc tangent |
+| `ATAN2` | `ATAN2(y, x)` | Arc tangent of y/x |
+| `RADIANS` | `RADIANS(degrees)` | Convert degrees to radians |
+| `DEGREES` | `DEGREES(radians)` | Convert radians to degrees |
+| `PI` | `PI()` | Value of π |
+
+### Comparison Functions (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `GREATEST` | `GREATEST(x, y, ...)` | Maximum of arguments |
+| `LEAST` | `LEAST(x, y, ...)` | Minimum of arguments |
+
+---
+
+## Conditional Functions
+
+### CASE Expression (REQUIRED)
+
+```sql
+-- Searched CASE
+CASE
+  WHEN condition1 THEN result1
+  WHEN condition2 THEN result2
+  ELSE default_result
+END
+
+-- Simple CASE
+CASE expression
+  WHEN value1 THEN result1
+  WHEN value2 THEN result2
+  ELSE default_result
+END
+```
+
+### Conditional Functions (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `IF` | `IF(condition, true_result, false_result)` | Ternary conditional |
+| `IFF` | `IFF(condition, true_result, false_result)` | Alias for IF |
+| `NULLIF` | `NULLIF(expr1, expr2)` | Returns NULL if equal |
+| `COALESCE` | `COALESCE(expr1, expr2, ...)` | First non-null value |
+| `IFNULL` | `IFNULL(expr, default)` | Alias for COALESCE with 2 args |
+| `NVL` | `NVL(expr, default)` | Alias for COALESCE with 2 args |
+| `NVL2` | `NVL2(expr, not_null_result, null_result)` | Different results for null/not-null |
+| `ZeroIfNull` | `ZEROIFNULL(expr)` | Returns 0 if null |
+| `NullIfZero` | `NULLIFZERO(expr)` | Returns NULL if zero |
+
+### Boolean Functions (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `BOOLEAN` | `TRUE`, `FALSE` | Boolean literals |
+| `NOT` | `NOT expr` | Logical negation |
+| `AND` | `expr1 AND expr2` | Logical AND |
+| `OR` | `expr1 OR expr2` | Logical OR |
+
+---
+
+## Window Functions
+
+Window functions operate over a window frame defined by `OVER()`. This should act consistently with window functions in ANSI SQL.
+When, adding the query interface, window functions will be subject to where they are allowed.
+
+### Syntax
+
+```sql
+function_name(args) OVER (
+  [PARTITION BY partition_expr, ...]
+  [ORDER BY order_expr [ASC|DESC] [NULLS {FIRST|LAST}], ...]
+  [frame_clause]
+)
+```
+
+Each `ORDER BY` item has three independent parts:
+
+- `order_expr`: the value rows are sorted by.
+- `ASC` or `DESC`: the sort direction of non-NULL values.
+- `NULLS FIRST` or `NULLS LAST`: whether NULL values of `order_expr` sort before or after its non-NULL values, regardless of the sort direction.
+
+```sql
+-- Rank non-NULL revenues from high to low, rows with a NULL revenue last
+RANK() OVER (ORDER BY revenue DESC NULLS LAST)
+```
+
+Without `NULLS FIRST` or `NULLS LAST`, NULL sorts as the largest value: last for `ASC`, first for `DESC`. This applies to `OSSIE_SQL_2026` expressions; other dialects keep their own semantics. Implementations MUST produce this order whatever the native default of the engine, or report the error that [Window ORDER BY NULL Placement](#window-order-by-null-placement) requires. An implementation that converts a native expression into `OSSIE_SQL_2026` MUST add `NULLS FIRST` or `NULLS LAST` to each item whose native placement differs from this default.
+
+```sql
+-- revenue over three rows: 10, NULL, 5; each comment lists the values numbered 1, 2, 3
+ROW_NUMBER() OVER (ORDER BY revenue)       -- 5, 10, NULL
+ROW_NUMBER() OVER (ORDER BY revenue DESC)  -- NULL, 10, 5
+```
+
+Frame clause options:
+
+- `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`  
+- `ROWS BETWEEN n PRECEDING AND n FOLLOWING`  
+- `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`
+
+### Ranking Functions (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `ROW_NUMBER` | `ROW_NUMBER() OVER (...)` | Sequential row number |
+| `RANK` | `RANK() OVER (...)` | Rank with gaps for ties |
+| `DENSE_RANK` | `DENSE_RANK() OVER (...)` | Rank without gaps |
+| `NTILE` | `NTILE(n) OVER (...)` | Divide into n buckets |
+| `PERCENT_RANK` | `PERCENT_RANK() OVER (...)` | Relative rank (0-1) |
+| `CUME_DIST` | `CUME_DIST() OVER (...)` | Cumulative distribution |
+
+### Offset Functions (REQUIRED)
+
+| Function | Syntax | Description |
+| :---- | :---- | :---- |
+| `LAG` | `LAG(expr, offset, default) OVER (...)` | Value from previous row |
+| `LEAD` | `LEAD(expr, offset, default) OVER (...)` | Value from next row |
+| `FIRST_VALUE` | `FIRST_VALUE(expr) OVER (...)` | First value in window |
+| `LAST_VALUE` | `LAST_VALUE(expr) OVER (...)` | Last value in window |
+| `NTH_VALUE` | `NTH_VALUE(expr, n) OVER (...)` | Nth value in window |
+
+### Window Aggregations (REQUIRED)
+
+All standard aggregation functions can be used as window functions:
+
+```sql
+-- Running total
+SUM(amount) OVER (ORDER BY order_date)
+
+-- Running average
+AVG(amount) OVER (ORDER BY order_date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)
+
+-- Partition totals
+SUM(amount) OVER (PARTITION BY region)
+
+-- Percent of total
+amount / SUM(amount) OVER () * 100
+```
+
+---
+
+## Type Conversion Functions
+
+### CAST (REQUIRED)
+
+```sql
+CAST(expression AS target_type)
+```
+
+Supported target types:
+
+- `VARCHAR` / `STRING` \- Character string  
+- `INTEGER` / `INT` / `BIGINT` \- Integer  
+- `DECIMAL` / `NUMERIC` \- Fixed-point decimal  
+- `FLOAT` / `DOUBLE` \- Floating-point  
+- `BOOLEAN`  \- Boolean  
+- `DATE` \- Date  
+- `TIMESTAMP` \- Timestamp  
+- `TIME` \- Time
+
+### TRY\_CAST (RECOMMENDED)
+
+```sql
+TRY_CAST(expression AS target_type)  -- Returns NULL on failure
+```
+---
+
+### Null-Safe Comparison
+
+```sql
+-- Standard comparison (returns NULL if either side is NULL)
+a = b
+
+-- Null-safe comparison (treats NULLs as equal)
+a IS NOT DISTINCT FROM b    -- TRUE if both are NULL
+a IS DISTINCT FROM b        -- TRUE if one is NULL and other isn't
+```
+
+---
+
+## Dialect Extensions
+
+Ossie implementations MAY support additional functions through dialect-specific extensions. When using dialect extensions, the expression must specify the dialect.
+
+The Ossie dialect should always be supported.  Other dialects MAY be ignored.  There is no guarantee that all different dialects for an expression will act the same, so implementations should be consistent with their dialect handling.  This means that if an Ossie model has an expression written in two dialects, the implementation should deterministically choose which dialect to use.  
+
+The `dialect` field is a free-form string; the core specification does not enumerate a closed set. For a non-normative catalog of dialects well-known tools use, see [extensions/dialects.md](../extensions/dialects.md).
+
+### Declaring Dialect-Specific Expressions
+
+Put the portable expression in `sql` and keep vendor-specific variants in
+`dialects`:
+
+```yaml
+expression:
+  sql: DATE_TRUNC('month', order_date)
+  dialects:
+    - dialect: SNOWFLAKE
+      expression: DATE_TRUNC('month', order_date)
+    - dialect: BIGQUERY
+      expression: DATE_TRUNC(order_date, MONTH)
+```
+
+For a non-normative mapping from the portable Ossie dialect to vendor dialects
+and expressions, see [extensions/function_mappings.md](../extensions/function_mappings.md).
+
+### Dialect-Specific Extensions
+
+Vendors may expose their own feature through extensions, however the default for Ossie should be to pass unknown values through.
+
+---
+
+## Window ORDER BY NULL Placement
+
+When an `ORDER BY` item omits the clause, the Ossie placement is `NULLS LAST` for `ASC` and `NULLS FIRST` for `DESC`. An implementation produces any placement, given or default, as follows:
+
+- On an engine with `NULLS FIRST` and `NULLS LAST`, it emits the clause. It MAY omit a default placement that the native default already gives. This holds only if the session cannot change that default, or the implementation sets it. Some engines let a session change it; see [extensions/function_mappings.md](../extensions/function_mappings.md#null-ordering-defaults-by-engine).
+- On an engine without them, it puts a sort key `CASE WHEN order_expr IS NULL THEN 1 ELSE 0 END` immediately before each `ORDER BY` item, built from that item's `order_expr`. The key is ascending to put NULLs last and descending to put them first. For example, `ORDER BY d_year, d_moy DESC` becomes `ORDER BY CASE WHEN d_year IS NULL THEN 1 ELSE 0 END, d_year, CASE WHEN d_moy IS NULL THEN 1 ELSE 0 END DESC, d_moy DESC`. Where the native placement already matches, it MAY omit the key, on the same condition as in the bullet above.
+- If an item needs the key and the engine cannot add it, the implementation MUST report an error instead of emitting SQL that places NULLs differently. For example, an engine may allow only one `ORDER BY` expression in a `RANGE` frame with an offset.
+
+For each engine's native defaults, see the non-normative [extensions/function_mappings.md](../extensions/function_mappings.md#null-ordering-defaults-by-engine).
+
+---
+
+## Compliance Levels
+
+### MUST Support (Core)
+
+Implementations MUST support all functions marked as **REQUIRED** in this specification. These represent the minimum portable expression language.
+
+### SHOULD Support (Recommended)
+
+Implementations SHOULD support functions marked as **RECOMMENDED**. These are common analytical functions that may not be available in all databases.
+
+### MAY Support (Extensions)
+
+Implementations MAY support additional functions through dialect extensions. These should be documented as dialect-specific.
+
+---
+
+## ANTLR4 Grammar
+
+A machine-readable ANTLR 4 grammar for this language is available in [`grammar/`](grammar/). It is a
+tooling aid; where it and this document differ, this document is authoritative.
+
+## Version History
+
+| Version   | Date       | Changes |
+|:----------|:-----------| :---- |
+| 0.2.0.dev | 2026-07-15 | Initial draft |
+| 0.2.0.dev | 2026-10-29 | State that function names are case insensitive. Reserve `AGG` for measure evaluation; expressions that call another function named `AGG` must rename it or move to a vendor dialect |
+| 0.3.0.dev0 | 2026-11-06 | Allow model-scoped metrics to evaluate a dataset-scoped metric with `AGG(dataset.metric)` |
+| 0.3.0.dev0 | 2026-11-20 | Allow dataset-scoped metrics to evaluate a source measure with `AGG(source.measure)` when the `source` is a measure relation |
+
+---
+
+## References
+
+- [SQL:2003 Standard](https://www.iso.org/standard/34132.html) (ISO/IEC 9075-2:2003)  

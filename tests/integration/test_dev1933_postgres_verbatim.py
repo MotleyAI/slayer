@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -99,8 +100,8 @@ async def pg_env(_pg_datasource, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="testpg",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
         ],
     )
     async with pg_query_engine(_pg_datasource, base_dir=str(tmp_path), datasets=[model]) as engine:
@@ -127,12 +128,13 @@ class TestPostgresVerbatimExecution:
         orders = await pg_env.storage.get_dataset("orders")
         assert orders is not None
         await pg_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
-            *orders.fields, DatasetField(name="rx", sql=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')", datatype=DataType.STRING),
+            *orders.fields, DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(
+                dialect="POSTGRES", expression=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')")]), datatype=DataType.STRING),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
-            dimensions=[QueryDimension(field="rx")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders_rx.rx")],
+            metrics=[QueryMetric(metric="count(orders_rx.*)")],
         )
         result = await pg_env.execute(query=query)
         # No status matches the pattern, so REGEXP_REPLACE returns each unchanged.

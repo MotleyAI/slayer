@@ -22,10 +22,13 @@ import urllib.request
 
 BASE_URL = os.environ.get("SLAYER_URL", "http://localhost:5143")
 
-# Repeated literals (hoisted per SonarCloud python:S1192) — these strings
-# would otherwise show up nine and eight times respectively.
+# Repeated literal (hoisted per SonarCloud python:S1192).
 QUERY_PATH = "/query"
-COUNT_METRIC = "count(*)"
+
+
+def count_metric(population):
+    """The row count of ``population``."""
+    return f"count({population}.*)"
 
 _passed = 0
 _failed = 0
@@ -96,20 +99,20 @@ def main():
     print("\nBaseline counts:")
     total_orders = api(
         method="POST", path=QUERY_PATH,
-        body={"population": "orders", "metrics": [COUNT_METRIC]},
+        body={"population": "orders", "metrics": [count_metric("orders")]},
     )["data"][0]["orders._count"]
     check(name="orders count > 0", condition=total_orders > 0)
     print(f"    (orders._count = {total_orders})")
 
     total_users = api(
         method="POST", path=QUERY_PATH,
-        body={"population": "users", "metrics": [COUNT_METRIC]},
+        body={"population": "users", "metrics": [count_metric("users")]},
     )["data"][0]["users._count"]
     check(name="users count > 0", condition=total_users > 0)
 
     total_products = api(
         method="POST", path=QUERY_PATH,
-        body={"population": "products", "metrics": [COUNT_METRIC]},
+        body={"population": "products", "metrics": [count_metric("products")]},
     )["data"][0]["products._count"]
     # thelook_ecommerce.products has roughly 29k rows; allow a wide band.
     check(
@@ -124,8 +127,8 @@ def main():
         method="POST", path=QUERY_PATH,
         body={
             "population": "orders",
-            "metrics": [COUNT_METRIC],
-            "dimensions": ["status"],
+            "metrics": [count_metric("orders")],
+            "dimensions": ["orders.status"],
         },
     )["data"]
     summed = sum(row["orders._count"] for row in by_status)
@@ -149,14 +152,14 @@ def main():
         method="POST", path=QUERY_PATH,
         body={
             "population": "order_items",
-            "metrics": [COUNT_METRIC],
+            "metrics": [count_metric("order_items")],
             "dimensions": ["products.category"],
         },
     )["data"]
     check(name="by-category rows present", condition=len(by_category) > 0)
     total_items = api(
         method="POST", path=QUERY_PATH,
-        body={"population": "order_items", "metrics": [COUNT_METRIC]},
+        body={"population": "order_items", "metrics": [count_metric("order_items")]},
     )["data"][0]["order_items._count"]
     summed_cat = sum(row["order_items._count"] for row in by_category)
     check(
@@ -170,9 +173,9 @@ def main():
         method="POST", path=QUERY_PATH,
         body={
             "population": "order_items",
-            "metrics": [COUNT_METRIC],
-            "dimensions": ["users.country"],
-            "order": [{"field": "count", "direction": "desc"}],
+            "metrics": [count_metric("order_items")],
+            "dimensions": ["order_items.users.country"],
+            "order": [{"field": count_metric("order_items"), "direction": "desc"}],
             "limit": 5,
         },
     )["data"]
@@ -189,10 +192,10 @@ def main():
         body={
             "population": "order_items",
             "metrics": [
-                "sum(sale_price)",
-                "avg(sale_price)",
-                "min(sale_price)",
-                "max(sale_price)",
+                "sum(order_items.sale_price)",
+                "avg(order_items.sale_price)",
+                "min(order_items.sale_price)",
+                "max(order_items.sale_price)",
             ],
         },
     )["data"][0]
@@ -211,11 +214,11 @@ def main():
         method="POST", path=QUERY_PATH,
         body={
             "population": "orders",
-            "metrics": [COUNT_METRIC],
+            "metrics": [count_metric("orders")],
             "time_dimensions": [
-                {"field": "created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "month"},  # NOSONAR(S1192) — each query spells its references inline, as a reader copies them
             ],
-            "order": [{"field": "created_at", "direction": "asc"}],
+            "order": [{"field": "orders.created_at", "direction": "asc"}],
             "limit": 6,
         },
     )["data"]

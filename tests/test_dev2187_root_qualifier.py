@@ -1,4 +1,4 @@
-"""A leading qualifier naming the query root resolves to the root at bind time (semantics.arc42.md Principle 1)."""
+"""The population's own name is an ordinary anchor (semantics.arc42.md Principle 1)."""
 
 from __future__ import annotations
 
@@ -7,15 +7,16 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import RefinementConflictError
+from slayer.core.errors import RefinementConflictError, UnknownReferenceError, UnresolvableDimensionRelationshipError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from slayer.engine.population.inference import spine_datasource
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1866_fixtures import DS_FAN, make_inference_storage
 from tests._dev2137_fixtures import list_engine, metric
-from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, orders_engine, orders_dataset
+from tests._dev2187_fixtures import BACKENDS, canonical_rows, orders_engine, orders_dataset
 from tests._saved_query_refinement_fixtures import MONTHLY, REVENUE, by_month, refine_engine
 from tests._unrelated_datasets_fixtures import m, main_engine, query
 
@@ -30,23 +31,33 @@ def _orders(**body: Any) -> dict[str, Any]:
     return {"population": "orders", **body}
 
 
+async def assert_same(engine: SlayerQueryEngine, left: Any, right: Any, *, same_keys: bool = True) -> SlayerResponse:
+    """``left`` and ``right`` give one row set, and one SQL and key list unless ``same_keys`` is off."""
+    a = await engine.execute(left)
+    b = await engine.execute(right)
+    assert canonical_rows(a) == canonical_rows(b)
+    assert (a.columns == b.columns) is same_keys
+    if same_keys:
+        assert a.sql == b.sql
+    return a
+
+
 # --------------------------------------------------------------------------- #
-# Qualified ≡ bare, every position, model root
+# The population's anchor ≡ its 1.x bare twin, every position
 # --------------------------------------------------------------------------- #
 async def test_every_position_at_once(engine: SlayerQueryEngine) -> None:
     resp = await assert_same(
         engine,
         _orders(dimensions=["orders.status"], time_dimensions=["date_trunc('month', orders.created_at)"],
                 metrics=["sum(orders.amount)"], filter=["orders.amount > 5"], order=[{"field": "orders.status"}]),
-        _orders(dimensions=["status"], time_dimensions=["date_trunc('month', created_at)"],
-                metrics=["sum(amount)"], filter=["amount > 5"], order=[{"field": "status"}]),
+        _orders(dimensions=["orders.status"], time_dimensions=["date_trunc('month', orders.created_at)"],
+                metrics=["sum(orders.amount)"], filter=["orders.amount > 5"], order=[{"field": "orders.status"}]),
     )
     assert resp.columns == ["orders.status", "orders.created_at", "orders.amount_sum"]
 
 
 POSITIONS = {
     "dimension": ({"dimensions": ["orders.status"]}, {"dimensions": ["status"]}),
-    "joined-dimension": ({"dimensions": ["orders.customers.name"]}, {"dimensions": ["customers.name"]}),
     "column-time-dimension": (
         {"time_dimensions": [{"field": "orders.created_at", "granularity": "month", "label": "M"}]},
         {"time_dimensions": [{"field": "created_at", "granularity": "month", "label": "M"}]},
@@ -62,7 +73,6 @@ POSITIONS = {
         {"metrics": [{"metric": "sum(orders.amount) / count(orders.*)", "alias": "avg_amount"}]},
         {"metrics": [{"metric": "sum(amount) / count(*)", "alias": "avg_amount"}]},
     ),
-    "joined-measure": ({"metrics": ["avg(orders.customers.score)"]}, {"metrics": ["avg(customers.score)"]}),
     "saved-measure": ({"metrics": ["orders.revenue"]}, {"metrics": ["revenue"]}),
     "aggregate-filter": (
         {"metrics": [{"metric": "sum(orders.amount) FILTER (WHERE orders.status = 'paid')", "alias": "p"}]},
@@ -108,19 +118,31 @@ async def test_qualified_equals_bare(engine: SlayerQueryEngine, position: str) -
     await assert_same(engine, _orders(**qualified), _orders(**bare))
 
 
-async def test_a_non_root_qualifier_keeps_its_hop(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(dimensions=["customers.name"], metrics=["count(*)"]))
+JOINED_POSITIONS = {
+    "joined-dimension": ({"dimensions": ["orders.customers.name"]}, {"dimensions": ["customers.name"]}),
+    "joined-measure": ({"metrics": ["avg(orders.customers.score)"]}, {"metrics": ["avg(customers.score)"]}),
+}
+
+
+@pytest.mark.parametrize("position", sorted(JOINED_POSITIONS))
+async def test_two_anchors_of_one_column_are_two_keys(engine: SlayerQueryEngine, position: str) -> None:
+    via_population, direct = JOINED_POSITIONS[position]
+    await assert_same(engine, _orders(**via_population), _orders(**direct), same_keys=False)
+
+
+async def test_a_dataset_anchor_reads_its_only_to_one_path(engine: SlayerQueryEngine) -> None:
+    resp = await engine.execute(_orders(dimensions=["customers.name"], metrics=["count(orders.*)"]))
     assert canonical_rows(resp) == [("ann", "2"), ("bob", "2")]
 
 
-async def test_an_inner_hop_named_like_the_root_is_still_a_revisit(engine: SlayerQueryEngine) -> None:
-    body = _orders(metrics=["count(customers.orders.id)"])
-    with pytest.raises(Exception, match="customers"):
-        await engine.execute(body)
+async def test_an_inner_hop_named_like_the_root_reads_from_its_own_frame(engine: SlayerQueryEngine) -> None:
+    resp = await engine.execute(_orders(metrics=["count(customers.orders.id)"]))
+    assert canonical_rows(resp) == [("4",)]
+    assert canonical_rows(resp) == canonical_rows(await engine.execute(_orders(metrics=["count(orders.id)"])))
 
 
 async def test_a_longer_name_is_no_root_qualifier(engine: SlayerQueryEngine) -> None:
-    body = _orders(metrics=["count(*)"], filter=["reorders.status = 'paid'"])
+    body = _orders(metrics=["count(orders.*)"], filter=["reorders.status = 'paid'"])
     with pytest.raises(Exception, match="reorders"):
         await engine.execute(body)
 
@@ -129,16 +151,16 @@ async def test_a_longer_name_is_no_root_qualifier(engine: SlayerQueryEngine) -> 
 # Auto-names keep the written text
 # --------------------------------------------------------------------------- #
 async def test_computed_dimension_auto_name_keeps_its_text(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(dimensions=[{"field": "orders.amount * 2"}], metrics=["count(*)"]))
-    assert resp.columns == ["orders.orders_amount_2", "orders._count"]
+    resp = await engine.execute(_orders(dimensions=[{"field": "orders.amount * 2"}], metrics=["count(orders.*)"]))
+    assert resp.columns == ["orders.amount_2", "orders._count"]
 
 
 async def test_expression_time_dimension_auto_name_keeps_its_text(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(_orders(
         time_dimensions=[{"field": "coalesce(orders.shipped_at, orders.created_at)", "granularity": "month"}],
-        metrics=["count(*)"],
+        metrics=["count(orders.*)"],
     ))
-    assert resp.columns == ["orders.coalesce_orders_shipped_at_orders_created_at", "orders._count"]
+    assert resp.columns == ["orders.coalesce_shipped_at_created_at", "orders._count"]
 
 
 # --------------------------------------------------------------------------- #
@@ -160,12 +182,12 @@ async def test_query_backed_root_measure(engine: SlayerQueryEngine) -> None:
     await assert_same(
         engine,
         {"population": "qb", "dimensions": ["qb.status"], "metrics": ["sum(qb.tot)"], "filter": ["qb.tot > 25"]},
-        {"population": "qb", "dimensions": ["status"], "metrics": ["sum(tot)"], "filter": ["tot > 25"]},
+        {"population": "qb", "dimensions": ["qb.status"], "metrics": ["sum(qb.tot)"], "filter": ["qb.tot > 25"]},
     )
 
 
-S1 = {"name": "s1", "population": "orders", "dimensions": ["status"],
-      "metrics": [{"metric": "sum(amount)", "alias": "tot"}]}
+S1 = {"name": "s1", "population": "orders", "dimensions": ["orders.status"],
+      "metrics": [{"metric": "sum(orders.amount)", "alias": "tot"}]}
 
 STAGE_POSITIONS = {
     "computed-dimension": (
@@ -190,25 +212,25 @@ async def test_a_stage_root_takes_its_own_name(engine: SlayerQueryEngine, positi
 
 
 async def test_a_stage_root_qualifies_a_list_columns_elements() -> None:
-    stage = {"name": "s", "population": "contractors", "dimensions": ["team"],
+    stage = {"name": "s", "population": "contractors", "dimensions": ["contractors.team"],
              "metrics": [metric("collect(skills.value)", "team_skills")]}
     async with list_engine() as eng:
         await assert_same(
             eng,
             [stage, {"population": "s", "dimensions": ["s.team_skills.value"],
                      "metrics": [metric("count(s.team_skills.*)", "n")]}],
-            [stage, {"population": "s", "dimensions": ["team_skills.value"],
+            [stage, {"population": "s", "dimensions": ["s.team_skills.value"],
                      "metrics": [metric("count(team_skills.*)", "n")]}],
         )
 
 
 async def test_downstream_keys_of_a_qualified_dimension(engine: SlayerQueryEngine) -> None:
-    final = {"population": "s1", "dimensions": ["status"], "metrics": ["sum(amount_sum)"]}
+    final = {"population": "s1", "dimensions": ["s1.status"], "metrics": ["sum(s1.amount_sum)"]}
     await assert_same(
         engine,
         [{"name": "s1", "population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.amount)"]},
          final],
-        [{"name": "s1", "population": "orders", "dimensions": ["status"], "metrics": ["sum(amount)"]}, final],
+        [{"name": "s1", "population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.amount)"]}, final],
     )
 
 
@@ -218,9 +240,9 @@ async def test_downstream_keys_of_a_qualified_dimension(engine: SlayerQueryEngin
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_the_root_wins_over_an_edge_named_like_it(backend: str) -> None:
     async with orders_engine(backend, edge_name="orders") as eng:
-        own = await eng.execute(_orders(dimensions=["orders.status"], metrics=["count(*)"]))
+        own = await eng.execute(_orders(dimensions=["orders.status"], metrics=["count(orders.*)"]))
         assert canonical_rows(own) == [("open", "1"), ("paid", "3")]
-        joined = await eng.execute(_orders(dimensions=["orders.orders.name"], metrics=["count(*)"]))
+        joined = await eng.execute(_orders(dimensions=["orders.orders.name"], metrics=["count(orders.*)"]))
         assert canonical_rows(joined) == [("ann", "2"), ("bob", "2")]
 
 
@@ -228,22 +250,21 @@ async def test_the_root_wins_over_an_edge_named_like_it(backend: str) -> None:
 async def test_a_column_sql_root_qualifier_keeps_an_edge_named_like_the_root(backend: str) -> None:
     async with orders_engine(backend, edge_name="orders") as eng:
         model = orders_dataset(edge_name="orders")
-        extra = DatasetField(name="cust_name", datatype=DataType.STRING, sql="orders.orders.name")
+        extra = DatasetField(name="cust_name", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="orders.orders.name"), DialectEntry(dialect="SQLITE", expression="orders.orders.name")]))
         await eng.storage.save_dataset(model.model_copy(update={"fields": [*model.fields, extra]}), _validate=False)
-        resp = await eng.execute(_orders(dimensions=["cust_name"], metrics=["count(*)"]))
+        resp = await eng.execute(_orders(dimensions=["orders.cust_name"], metrics=["count(orders.*)"]))
         assert canonical_rows(resp) == [("ann", "2"), ("bob", "2")]
 
 
 # --------------------------------------------------------------------------- #
-# Every reader of a query's references is root-relative
+# Every reader of a query's references anchors at its first segment
 # --------------------------------------------------------------------------- #
-async def test_a_root_qualified_spine_filter(engine: SlayerQueryEngine) -> None:
-    body = {"dimensions": ["status"], "metrics": ["count(*)"]}
-    await assert_same(
-        engine,
-        _orders(**body, filter=["orders.time_spine.timestamp >= date '2025-02-01'"]),
-        _orders(**body, filter=["time_spine.timestamp >= date '2025-02-01'"]),
-    )
+async def test_a_route_never_crosses_the_spine(engine: SlayerQueryEngine) -> None:
+    body = {"dimensions": ["orders.status"], "metrics": ["count(orders.*)"]}
+    await engine.execute(_orders(**body, filter=["time_spine.timestamp >= date '2025-02-01'"]))
+    crossing = _orders(**body, filter=["orders.time_spine.timestamp >= date '2025-02-01'"])
+    with pytest.raises(UnresolvableDimensionRelationshipError, match="time_spine"):
+        await engine.execute(crossing)
 
 
 @pytest.mark.parametrize("body", [
@@ -259,18 +280,19 @@ async def test_a_spine_rooted_reference_anchors_its_datasource(body: dict[str, A
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
-async def test_a_root_qualified_hop_into_an_unrelated_dataset(backend: str) -> None:
+async def test_an_unrelated_dataset_is_only_an_anchor(backend: str) -> None:
     async with main_engine(backend) as eng:
-        await assert_same(eng, query(metrics=[m("count(customers.events.id)", "n")]),
-                          query(metrics=[m("count(events.id)", "n")]))
+        await eng.execute(query(metrics=[m("count(events.id)", "n")]))
+        broken = query(metrics=[m("count(customers.events.id)", "n")])
+        with pytest.raises(UnresolvableDimensionRelationshipError, match="events"):
+            await eng.execute(broken)
 
 
-async def test_a_root_qualified_filter_matches_a_selected_dotted_measure(engine: SlayerQueryEngine) -> None:
-    await assert_same(
-        engine,
-        _orders(metrics=["customers.aov"], filter=["orders.customers.aov > 1"]),
-        _orders(metrics=["customers.aov"], filter=["customers.aov > 1"]),
-    )
+async def test_a_filter_matches_only_the_selected_metric_of_its_anchor(engine: SlayerQueryEngine) -> None:
+    await engine.execute(_orders(metrics=["customers.aov"], filter=["customers.aov > 1"]))
+    routed = _orders(metrics=["customers.aov"], filter=["orders.customers.aov > 1"])
+    with pytest.raises(UnknownReferenceError, match="orders.customers.aov"):
+        await engine.execute(routed)
 
 
 # --------------------------------------------------------------------------- #
@@ -311,8 +333,8 @@ def test_spacing_variants_collapse_at_construction() -> None:
 async def test_a_root_qualified_duplicate_runs_once(engine: SlayerQueryEngine) -> None:
     await assert_same(
         engine,
-        _orders(time_dimensions=["date_trunc('month', created_at)", "date_trunc('month', orders.created_at)"], metrics=["count(*)"]),
-        _orders(time_dimensions=["date_trunc('month', created_at)"], metrics=["count(*)"]),
+        _orders(time_dimensions=["date_trunc('month', orders.created_at)", "date_trunc('month', orders.created_at)"], metrics=["count(orders.*)"]),
+        _orders(time_dimensions=["date_trunc('month', orders.created_at)"], metrics=["count(orders.*)"]),
     )
 
 
@@ -346,7 +368,7 @@ async def test_a_root_qualified_entry_is_the_saved_entry(refine: SlayerQueryEngi
 ], ids=["named", "unnamed", "shorthand", "root-qualified", "root-qualified-named"])
 async def test_restating_a_saved_measure_by_name(refine: SlayerQueryEngine, measures: list) -> None:
     refined = await refine.execute("monthly_revenue", refine={"metrics": measures})
-    expected = await refine.execute("monthly_revenue", refine={"metrics": ["count(*)"]})
+    expected = await refine.execute("monthly_revenue", refine={"metrics": ["count(orders.*)"]})
     assert refined.sql == expected.sql
     assert refined.columns == expected.columns
     assert by_month(refined.data) == MONTHLY
@@ -360,7 +382,7 @@ async def test_a_root_qualified_restatement_with_another_label_conflicts(refine:
 
 
 async def test_a_root_qualified_unnamed_formula_is_the_saved_formula(refine: SlayerQueryEngine) -> None:
-    await refine.create_dataset_from_query(query={"population": "orders", "metrics": ["sum(amount)"]}, name="total")
+    await refine.create_dataset_from_query(query={"population": "orders", "metrics": ["sum(orders.amount)"]}, name="total")
     plain = await refine.execute("total")
     refined = await refine.execute("total", refine={"metrics": ["sum(orders.amount)"]})
     assert refined.sql == plain.sql
@@ -369,8 +391,8 @@ async def test_a_root_qualified_unnamed_formula_is_the_saved_formula(refine: Sla
 
 async def test_refinement_literals_are_never_conflated(refine: SlayerQueryEngine) -> None:
     await refine.create_dataset_from_query(
-        query={"population": "orders", "metrics": ["sum(iif(status = 'paid', amount, 0))"]}, name="paid_total",
+        query={"population": "orders", "metrics": ["sum(iif(orders.status = 'paid', orders.amount, 0))"]}, name="paid_total",
     )
-    resp = await refine.execute("paid_total", refine={"metrics": ["sum(iif(status = 'orders.paid', amount, 0))"]})
+    resp = await refine.execute("paid_total", refine={"metrics": ["sum(iif(orders.status = 'orders.paid', orders.amount, 0))"]})
     assert len(resp.columns) == 2
     assert sorted(float(v) for v in resp.data[0].values()) == [0.0, 255.0]

@@ -1,4 +1,4 @@
-"""Ossie export: joins become FK-direction relationships keyed by field names."""
+"""Ossie export: relationships export in FK direction, keyed by field names."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.enums import RelationshipCardinality, JoinType
 from slayer.core.models import DatasetRelationship
-from tests._osi_export_fixtures import BASIC_MEASURES, customers, orders, to_customers, visits
+from tests._osi_export_fixtures import BASIC_METRICS, customers, orders, orders_fields, to_customers, visits
 from tests._osi_export_helpers import export_datasets, make_env, mentions, relationships, validate
 
 
@@ -27,45 +27,67 @@ _FK = ("orders", "customers", ["customer_id"], ["id"])
 
 
 async def test_many_to_one_join(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS))
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
 
 
 async def test_one_to_one_join(env) -> None:
-    model = orders(metrics=BASIC_MEASURES, joins=[to_customers(cardinality=RelationshipCardinality.ONE_TO_ONE)])
+    model = orders(metrics=BASIC_METRICS, relationships=[to_customers(cardinality=RelationshipCardinality.ONE_TO_ONE)])
     result = await export_datasets(env, customers(), model)
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
 
 
 async def test_one_to_many_join_is_reversed(env) -> None:
-    result = await export_datasets(env, customers(joins=[_to_orders(RelationshipCardinality.ONE_TO_MANY)]),
-                                 orders(metrics=BASIC_MEASURES, joins=[]))
+    result = await export_datasets(env, customers(relationships=[_to_orders(RelationshipCardinality.ONE_TO_MANY)]),
+                                 orders(metrics=BASIC_METRICS, relationships=[]))
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
 
 
-async def test_mirrored_joins_merge_into_one_relationship(env) -> None:
+async def test_a_named_mirror_exports_as_a_second_relationship(env) -> None:
     result = await export_datasets(
         env,
-        customers(joins=[_to_orders(RelationshipCardinality.ONE_TO_MANY).model_copy(update={"name": "placed_orders"})]),
-        orders(metrics=BASIC_MEASURES))
-    assert [_shape(r) for r in relationships(result.document)] == [_FK]
+        customers(relationships=[_to_orders(RelationshipCardinality.ONE_TO_MANY).model_copy(update={"name": "placed_orders"})]),
+        orders(metrics=BASIC_METRICS))
+    exported = relationships(result.document)
+    assert [_shape(r) for r in exported] == [_FK, _FK]
+    assert "placed_orders" in [r["name"] for r in exported]
+
+
+async def test_undetermined_cardinality_keys_containing_a_key_point_as_routing_reads_them(env) -> None:
+    """``customers.[id, segment]`` contains its primary key, so the relationship runs from ``orders`` as routing has it,
+    though ``orders.[customer_id, status]`` matches an ``orders`` key exactly."""
+    fields = [f.model_copy(update={"primary_key": f.name in ("customer_id", "status")}) for f in orders_fields()]
+    unclassified = DatasetRelationship(to="customers", from_columns=["customer_id", "status"],
+                                       to_columns=["id", "segment"])
+    result = await export_datasets(env, customers(), orders(fields=fields, metrics=BASIC_METRICS,
+                                                            relationships=[unclassified]))
+    assert [_shape(r) for r in relationships(result.document)] == [
+        ("orders", "customers", ["customer_id", "status"], ["id", "segment"])]
 
 
 async def test_undetermined_cardinality_proven_by_target_key(env) -> None:
-    model = orders(metrics=BASIC_MEASURES, joins=[to_customers(cardinality=None)])
+    model = orders(metrics=BASIC_METRICS, relationships=[to_customers(cardinality=None)])
     result = await export_datasets(env, customers(), model)
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
     assert not result.entries
 
 
+async def test_undetermined_cardinality_proven_by_an_exported_composite_unique_key(env) -> None:
+    unclassified = DatasetRelationship(to="customers", from_columns=["region", "price"], to_columns=["segment", "rate"])
+    result = await export_datasets(env, customers(meta={"osi_unique_keys": [["segment", "rate"]]}),
+                                   orders(metrics=BASIC_METRICS, relationships=[unclassified]))
+    assert [_shape(r) for r in relationships(result.document)] == [
+        ("orders", "customers", ["region", "price"], ["segment", "rate"])]
+
+
 async def test_undetermined_cardinality_proven_by_source_key(env) -> None:
-    result = await export_datasets(env, customers(joins=[_to_orders(None)]), orders(metrics=BASIC_MEASURES, joins=[]))
+    result = await export_datasets(env, customers(relationships=[_to_orders(None)]), orders(metrics=BASIC_METRICS, relationships=[]))
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
 
 
 async def test_undetermined_cardinality_not_provable_is_reported(env) -> None:
     unkeyed = DatasetRelationship(to="orders", from_columns=["status"], to_columns=["status"])
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), visits(relationships=[unkeyed]))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS), visits(relationships=[unkeyed]))
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
     [entry] = mentions(result, "visits", severity="dropped")
     assert entry.suggestion is not None
@@ -76,14 +98,14 @@ async def test_undetermined_cardinality_not_provable_is_reported(env) -> None:
 async def test_many_to_many_join_is_reported(env) -> None:
     m2m = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                     cardinality=RelationshipCardinality.MANY_TO_MANY)
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, joins=[]), visits(relationships=[m2m]))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS, relationships=[]), visits(relationships=[m2m]))
     assert relationships(result.document) == []
     [entry] = mentions(result, "visits", severity="dropped")
     assert entry.suggestion
 
 
 async def test_relationship_named_after_its_join(env) -> None:
-    model = orders(metrics=BASIC_MEASURES, joins=[to_customers(name="buyer")])
+    model = orders(metrics=BASIC_METRICS, relationships=[to_customers(name="buyer")])
     [rel] = relationships((await export_datasets(env, customers(), model)).document)
     assert rel["name"] == "buyer"
 
@@ -91,7 +113,7 @@ async def test_relationship_named_after_its_join(env) -> None:
 async def test_generated_relationship_names_are_unique(env) -> None:
     to_cust = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                         cardinality=RelationshipCardinality.MANY_TO_ONE)
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), visits(relationships=[to_cust]))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS), visits(relationships=[to_cust]))
     names = [r["name"] for r in relationships(result.document)]
     assert len(names) == 2
     assert len(set(names)) == 2
@@ -99,5 +121,5 @@ async def test_generated_relationship_names_are_unique(env) -> None:
 
 
 async def test_inner_join_is_exported(env) -> None:
-    model = orders(metrics=BASIC_MEASURES, joins=[to_customers(join_type=JoinType.INNER)])
+    model = orders(metrics=BASIC_METRICS, relationships=[to_customers(join_type=JoinType.INNER)])
     assert [_shape(r) for r in relationships((await export_datasets(env, customers(), model)).document)] == [_FK]

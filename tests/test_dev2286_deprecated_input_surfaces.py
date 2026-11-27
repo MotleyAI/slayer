@@ -1,4 +1,4 @@
-"""Deprecated-input reports on REST ``strict: null``, two forms in one query, MCP dry runs and MCP model saves.
+"""Deprecated-input reports on REST ``strict: null``, two forms in one query, MCP dry runs and MCP dataset saves.
 
 Spec: compatibility/removal-tripwire › Deprecated input forms convert with a structured warning;
 mcp/query-tool › Execution wrappers and output shaping; mcp/response-row-cap › Explain plan rows capped without a limit.
@@ -28,10 +28,10 @@ from tests._deprecated_input_helpers import (
     strict,
 )
 from tests._library_names_fixtures import agg, metric, stored_engine, t_doc
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 
 EXTENSION_OLD = "An extension object in `population`"
-LEGACY_CLEAN = {"population": {"source_name": "orders"}, "metrics": ["count(*)"]}
+LEGACY_CLEAN = {"population": {"source_name": "orders"}, "metrics": ["count(orders.*)"]}
 TWO_FORMS = strict(LEGACY_CLEAN)
 
 
@@ -169,7 +169,7 @@ class TestDryRun:
         assert warnings_block.splitlines() == [f"  - {_strict_message()}"]
 
     async def test_mcp_json_carries_a_library_name_shadow(self) -> None:
-        query = {"population": "t", "metrics": [metric("reverse(a)")]}
+        query = {"population": "t", "metrics": [metric("reverse(t.a)")]}
         async with stored_engine(datasets=[t_doc(aggregations=[agg("reverse")])]) as engine:
             text = await _dry_run(engine.storage, query, "json")
         shadows = [w for w in json.loads(text)["warnings"] if w.get("kind") == "library_name_shadow"]

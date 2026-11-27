@@ -1,9 +1,9 @@
-"""Tests for the Cube conversion report shapes (slayer/cube/report.py).
-
-DEV-1608 §10.
-"""
+"""Tests for the Cube conversion report shapes (slayer/cube/report.py)."""
 
 import json
+
+import pytest
+from pydantic import ValidationError
 
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeCube, CubeDimension, CubeProject, CubeView, CubeViewCubeRef
@@ -48,7 +48,7 @@ def test_report_filters_by_category_and_severity():
 def test_report_has_no_errors_when_all_info_or_warning():
     report = CubeConversionReport()
     report.add(CubeConversionIssue(
-        category=CubeIssueCategory.SEGMENT_AS_COLUMN, severity="info", message="x"))
+        category=CubeIssueCategory.SEGMENT_AS_FIELD, severity="info", message="x"))
     assert not report.has_errors
 
 
@@ -80,8 +80,22 @@ def test_result_json_round_trips():
     assert restored.report.issues[0].raw == "name: main"
 
 
+def test_segment_category_serialises_as_segment_as_field():
+    report = CubeConversionReport(issues=[CubeConversionIssue(
+        category=CubeIssueCategory.SEGMENT_AS_FIELD, severity="info", message="x")])
+    parsed = json.loads(CubeConversionResult(report=report).model_dump_json())
+    assert parsed["report"]["issues"][0]["category"] == "segment_as_field"
+
+
+def test_old_segment_category_value_is_rejected():
+    blob = json.dumps({"report": {"issues": [
+        {"category": "segment_as_column", "severity": "info", "message": "x"}]}})
+    with pytest.raises(ValidationError):
+        CubeConversionResult.model_validate_json(blob)
+
+
 def test_converter_derives_report_counts():
-    """The converter must populate model/hidden/view counts on the report."""
+    """The converter must populate dataset/hidden/view counts on the report."""
     project = CubeProject(
         cubes=[
             CubeCube(name="orders", sql_table="public.orders",

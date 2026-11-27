@@ -1,6 +1,6 @@
-"""DEV-1859 task 4.2 — the recursive determination arm (design decision 12).
+"""The recursive determination arm (design decision 12).
 ``grain_determines`` on an aggregate is True iff the grain determines EACH of
-its partition keys: a grain member, a to-one-reached column, or an
+its partition keys: a grain member, a to-one-reached field, or an
 aggregate-valued key whose own grain is determined; an expression-valued
 partition key is determined only as an exact grain member.
 
@@ -122,7 +122,7 @@ class TestUndeterminedStaysConservative:
 
 
 class TestColumnArmControl:
-    """The column arm already determines a to-one reach today — a positive
+    """The field arm already determines a to-one reach today — a positive
     control that must stay green (the aggregate arm builds on it)."""
 
     def test_to_one_column_over_entity_seed(self):

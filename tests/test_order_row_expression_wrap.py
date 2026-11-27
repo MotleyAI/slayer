@@ -21,39 +21,39 @@ async def engine(tmp_path):
     return SlayerQueryEngine(storage=storage)
 
 
-async def _statuses(engine: SlayerQueryEngine, *, column: str, direction: str) -> list[str]:
+async def _statuses(engine: SlayerQueryEngine, *, field: str, direction: str) -> list[str]:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["status"], "metrics": ["sum(amount)"],
-        "order": [{"field": column, "direction": direction}],
+        "population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.amount)"],
+        "order": [{"field": field, "direction": direction}],
     }))
     return [r["orders.status"] for r in resp.data]
 
 
 # amount - fee: paid 9, 38; open 16, -3.  suppliers.revenue - fee: paid 999, 998; open 1996, 1992.
 @pytest.mark.parametrize(("column", "direction", "expected"), [
-    ("amount - fee", "desc", ["paid", "open"]),
-    ("amount - fee", "asc", ["open", "paid"]),
-    ("fee - amount", "desc", ["open", "paid"]),
-    ("suppliers.revenue - fee", "desc", ["open", "paid"]),
+    ("orders.amount - orders.fee", "desc", ["paid", "open"]),
+    ("orders.amount - orders.fee", "asc", ["open", "paid"]),
+    ("orders.fee - orders.amount", "desc", ["open", "paid"]),
+    ("suppliers.revenue - orders.fee", "desc", ["open", "paid"]),
     ("lower(customers.region)", "asc", ["open", "paid"]),
-    ("amount > 30", "desc", ["paid", "open"]),
+    ("orders.amount > 30", "desc", ["paid", "open"]),
 ])
 async def test_off_grain_row_expression_sorts_by_group_extremum(
     engine: SlayerQueryEngine, column: str, direction: str, expected: list[str],
 ) -> None:
-    assert await _statuses(engine, column=column, direction=direction) == expected
+    assert await _statuses(engine, field=column, direction=direction) == expected
 
 
 async def test_same_order_as_explicit_extremum(engine: SlayerQueryEngine) -> None:
     for direction, agg in (("asc", "min"), ("desc", "max")):
-        assert await _statuses(engine, column="amount - fee", direction=direction) == await _statuses(
-            engine, column=f"{agg}(amount - fee)", direction=direction,
+        assert await _statuses(engine, field="orders.amount - orders.fee", direction=direction) == await _statuses(
+            engine, field=f"{agg}(orders.amount - orders.fee)", direction=direction,
         )
 
 
 async def test_grouped_by_non_identifier_dimensions(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["id", "amount"],
-        "order": [{"field": "amount - fee", "direction": "desc"}],
+        "population": "orders", "dimensions": ["orders.id", "orders.amount"],
+        "order": [{"field": "orders.amount - orders.fee", "direction": "desc"}],
     }))
     assert [r["orders.id"] for r in resp.data] == [2, 3, 1, 4]

@@ -52,7 +52,7 @@ async def pg_query_engine(
     ds: DatasourceConfig, *, base_dir: str, datasets: Sequence[SlayerDataset] = (), validate: bool = True,
     **engine_kwargs: Any,
 ) -> AsyncGenerator[SlayerQueryEngine]:
-    """``owned_query_engine`` over a fresh ``YAMLStorage`` holding ``ds`` and ``models``."""
+    """``owned_query_engine`` over a fresh ``YAMLStorage`` holding ``ds`` and ``datasets``."""
     storage = YAMLStorage(base_dir=base_dir)
     async with owned_query_engine(storage=storage, datasources=[ds], **engine_kwargs) as engine:
         for model in datasets:

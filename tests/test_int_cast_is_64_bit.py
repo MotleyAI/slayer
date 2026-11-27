@@ -21,13 +21,13 @@ from tests._pg_helpers import pg_database
 postgresql_proc = factories.postgresql_proc(port=None)
 
 _BIG = "id * 3000000000"
-_QUERY = SlayerQuery.model_validate({"population": "t", "dimensions": ["big"], "order": [{"field": "big"}]})
+_QUERY = SlayerQuery.model_validate({"population": "t", "dimensions": ["t.big"], "order": [{"field": "t.big"}]})
 
 
-def _dataset(sql: str, *, data_source: str = "ds") -> SlayerDataset:
+def _dataset(expression: str, *, data_source: str = "ds") -> SlayerDataset:
     return SlayerDataset(name="t", sql_table="t", data_source=data_source, fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-        DatasetField(name="big", sql=sql, datatype=DataType.INTEGER),
+        DatasetField(name="big", expression=expression, datatype=DataType.INTEGER),
     ])
 
 

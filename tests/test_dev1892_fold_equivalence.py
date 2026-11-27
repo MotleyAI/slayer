@@ -1,8 +1,8 @@
 """The folded pick path renders every value-source shape identically, whether
-or not a parameter rides alongside: a to-one-path measure
+or not a parameter rides alongside: a to-one-path metric
 filter and ``count(*)`` keep their executed values (fold regression), a
-cross-model to-one derived source carries a weight, and a definition default
-anchored on the owner binds the TARGET column even when the host shares the bare
+cross-dataset to-one derived source carries a weight, and a definition default
+anchored on the owner binds the TARGET field even when the host shares the bare
 name.
 
 Spec: queries/attribution-modes — "Association eligibility, input handling and row identity";
@@ -80,20 +80,20 @@ class TestBaseValueFoldRegression:
     async def test_star_count_still_counts_distinct_entities(self, assoc_engine):
         """The fold's no-value (``count(*)``) branch is unchanged."""
         resp = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="count(customers.*)", alias="nc")]))
-        vals = _vals(resp, "orders.nc")
+        vals = _vals(resp, "nc")
         for status, n in ASSOC_COUNT_BY_STATUS.items():
             assert int(vals[status]) == n
 
     async def test_to_one_path_measure_filter_unchanged(self, toone_filter_engine):
-        """A measure-local filter over a target-relative to-one path
+        """A metric-local filter over a target-relative to-one path
         (regions.name='North') restricts the association identically after the
         fold."""
         resp = await toone_filter_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="sum(customers.north_spend)", alias="ns")]))
-        vals = _vals(resp, "orders.ns")
+        vals = _vals(resp, "ns")
         for status, spend in NORTH_SPEND_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(spend)
 
@@ -104,22 +104,22 @@ class TestParameterOverSourceShapes:
         weight, picked once per entity; NULL-region c4 contributes a NULL numerator
         term."""
         resp = await assoc_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
                 metric="weighted_avg(customers.regions.pop, weight=customers.spend)",
                 alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for status, expected in WAVG_POPVAL_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
     async def test_default_binds_owner_column_not_host(self, shared_default_engine):
         """The ``wsum`` weight default (bare name ``spend``) binds customers.spend
-        even though the host (orders) also declares a ``spend`` column — the
+        even though the host (orders) also declares a ``spend`` field — the
         owner-anchored default, never the host's per-order value."""
         resp = await shared_default_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum(customers.spend)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -127,9 +127,9 @@ class TestParameterOverSourceShapes:
         """An expression default (``spend * 1``) anchors on the owner (customers)
         and evaluates once per entity — SUM(spend * spend)."""
         resp = await expr_default_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum2(customers.spend)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -138,8 +138,8 @@ class TestParameterOverSourceShapes:
         owner (customers) and joins its hop, picked once per entity —
         SUM(spend * pop)."""
         resp = await toone_default_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum3(customers.spend)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for status, expected in ASSOC_WSUM3_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)

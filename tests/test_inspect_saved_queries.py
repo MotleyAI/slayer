@@ -1,4 +1,4 @@
-"""Saved queries are discoverable from the models they read (spec: queries/saved-query-refinement)."""
+"""Saved queries are discoverable from the datasets they read (spec: queries/saved-query-refinement)."""
 
 from __future__ import annotations
 
@@ -29,7 +29,10 @@ ON_ORDERS = {
     "ext_revenue": EXTRA_DESCRIPTIONS["ext_revenue"],
     "rollup": EXTRA_DESCRIPTIONS["rollup"],
 }
-REVENUE = {"metric": "sum(amount)", "alias": "revenue"}
+
+
+def _revenue(pop: str) -> dict:
+    return {"metric": f"sum({pop}.amount)", "alias": "revenue"}
 
 
 def _plain_dataset(name: str) -> SlayerDataset:
@@ -52,20 +55,20 @@ async def storage(tmp_path) -> YAMLStorage:
                 "population": "orders",
                 "extensions": [{"dataset": "orders",
                                 "metrics": [{"expression": "sum(amount * 2)", "name": "dbl"}]}],
-                "metrics": [{"metric": "dbl", "alias": "d"}],
+                "metrics": [{"metric": "orders.dbl", "alias": "d"}],
             }),
             ("rollup", [
-                {"name": "rollup", "population": "orders", "dimensions": ["region"], "metrics": [REVENUE]},
-                {"population": "rollup", "metrics": [{"metric": "sum(revenue)", "alias": "total"}]},
+                {"name": "rollup", "population": "orders", "dimensions": ["orders.region"], "metrics": [_revenue("orders")]},
+                {"population": "rollup", "metrics": [{"metric": "sum(rollup.revenue)", "alias": "total"}]},
             ]),
-            ("target_totals", {"population": "targets", "dimensions": ["region"], "metrics": [REVENUE]}),
+            ("target_totals", {"population": "targets", "dimensions": ["targets.region"], "metrics": [_revenue("targets")]}),
             ("monthly_rollup", {"population": "monthly_revenue",
-                                "metrics": [{"metric": "sum(revenue)", "alias": "total"}]}),
+                                "metrics": [{"metric": "sum(monthly_revenue.revenue)", "alias": "total"}]}),
         ):
             await engine.create_dataset_from_query(query=query, name=name, description=EXTRA_DESCRIPTIONS[name])
         await engine.save_dataset(SlayerDataset(
             name="hidden_q", data_source="test", hidden=True, description="Hidden saved query",
-            source_queries=[SlayerQuery.model_validate({"population": "orders", "metrics": [REVENUE]})],
+            source_queries=[SlayerQuery.model_validate({"population": "orders", "metrics": [_revenue("orders")]})],
         ))
     finally:
         await engine.aclose()

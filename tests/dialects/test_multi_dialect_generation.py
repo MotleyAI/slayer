@@ -12,15 +12,19 @@ a new dialect, append it to ``ALL_DIALECTS`` here.
 
 from __future__ import annotations
 
+import re
+
 import pytest
+from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
+from slayer.sql.dialects import get_dialect
 from slayer.sql.generator import SQLGenerator
 
 from tests.dialects.conftest import _generate, _norm
-
+from tests._field_builders import literal_time_orders, log_completed_orders, log_orders, public_orders
 
 # Per-alias allowlists for "natively supports single-arg log10/log2"
 # rendering. Outside these sets the current 2-arg LOG(base, x) form is kept.
@@ -37,27 +41,16 @@ _LOG2_NATIVE_DIALECTS = frozenset({
 })
 
 
+def _flat(sql: str) -> str:
+    return re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", " ".join(sql.split())))
+
+
 class TestMultiDialectGeneration:
     """Test SQL generation across all supported dialects."""
 
     @pytest.fixture
     def orders_dataset(self) -> SlayerDataset:
-        model = SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            default_time_dimension="created_at",
-            fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-                # Second numeric column so 2-arg stat aggregates
-                # (corr(other=...) / covar_*(other=...)) have a valid LHS+RHS pair.
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
-            ],
-        )
+        model = public_orders()
         return model
 
     ALL_DIALECTS = [
@@ -83,8 +76,8 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(revenue)")],
-            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="sum(orders.revenue)")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
         sql = await _generate(gen, query, orders_dataset)
         assert "COUNT(" in sql
@@ -96,8 +89,8 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)")],
-            time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
         )
         sql = await _generate(gen, query, orders_dataset)
         assert "COUNT(" in sql
@@ -126,9 +119,9 @@ class TestMultiDialectGeneration:
         def _q(grain: TimeGranularity) -> SlayerQuery:
             return SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
                 time_dimensions=[TimeDimension(
-                    field="created_at", granularity=grain
+                    field="orders.created_at", granularity=grain
                 )],
             )
 
@@ -154,17 +147,17 @@ class TestMultiDialectGeneration:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="ordered_on", sql="ordered_on", datatype=DataType.DATE),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="ordered_on", expression="ordered_on", datatype=DataType.DATE),
             ],
         )
         sql = await _generate(
             gen,
             SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
                 time_dimensions=[TimeDimension(
-                    field="ordered_on",
+                    field="orders.ordered_on",
                     granularity=TimeGranularity.WEEK_SUNDAY,
                 )],
             ),
@@ -182,27 +175,17 @@ class TestMultiDialectGeneration:
         multiple overloads keyed on the second argument's type and rejects
         ``DATE_TRUNC('month', '2025-12-01')`` with ``AmbiguousFunctionError``.
 
-        Bare column references stay unwrapped — their live DB type is known,
-        and forcing a cast could strip ``TIMESTAMPTZ`` to ``TIMESTAMP``.
+        A bare column's bucket is the dialect's typed bucket of it: a naive TIMESTAMP, never zoned.
         """
         gen = SQLGenerator(dialect=dialect)
-        model = SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="ts", sql="'2025-12-01'", datatype=DataType.DATETIME),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            ],
-        )
+        model = literal_time_orders()
         # Bare-literal time dim — must be cast.
         sql = await _generate(
             gen,
             SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)")],
-                time_dimensions=[TimeDimension(field="ts", granularity=TimeGranularity.MONTH)],
+                metrics=[QueryMetric(metric="count(orders.*)")],
+                time_dimensions=[TimeDimension(field="orders.ts", granularity=TimeGranularity.MONTH)],
             ),
             model,
         )
@@ -210,21 +193,22 @@ class TestMultiDialectGeneration:
         # so we don't assert the literal target-type spelling — only that the
         # literal is wrapped in a CAST.
         assert "CAST('2025-12-01' AS" in sql, sql
-        # Bare-column time dim — must NOT be cast.
+        # Bare-column time dim — the dialect's typed bucket.
         sql = await _generate(
             gen,
             SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)")],
-                time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+                metrics=[QueryMetric(metric="count(orders.*)")],
+                time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
             ),
             model,
         )
-        # Scoped to the TIME DIMENSION operand: a bare column keeps its live
-        # DB type and must not be cast. (A blanket "no CAST anywhere" check
-        # would now trip on the typed pipeline's result-type cast around the
-        # ``count(*)`` measure, which is unrelated to this contract.)
-        assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
+        d = get_dialect(dialect)
+        bucket = d.build_bucket(
+            col_expr=exp.column("created_at", table="orders"), granularity=TimeGranularity.MONTH,
+            operand=DataType.DATETIME,
+        ).sql(dialect=d.sqlglot_name)
+        assert _flat(bucket) in _flat(sql), sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     async def test_calendar_time_shift(self, dialect: str, orders_dataset: SlayerDataset) -> None:
@@ -232,8 +216,8 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
-            time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            metrics=[QueryMetric(metric="sum(revenue)"), QueryMetric(metric="time_shift(sum(revenue), -1, 'year')", alias="rev_prev_year")],
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            metrics=[QueryMetric(metric="sum(orders.revenue)"), QueryMetric(metric="time_shift(sum(orders.revenue), -1, 'year')", alias="rev_prev_year")],
         )
         sql = await _generate(gen, query, orders_dataset)
         assert "shifted_" in sql
@@ -264,10 +248,10 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="created_at",
+                TimeDimension(field="orders.created_at",
                               granularity=TimeGranularity.DAY),
             ],
-            metrics=[QueryMetric(metric="sum(revenue, window='1y2m3d')",
+            metrics=[QueryMetric(metric="sum(orders.revenue, window='1y2m3d')",
                                    alias="rev_w")],
         )
         sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
@@ -301,10 +285,10 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="created_at",
+                TimeDimension(field="orders.created_at",
                               granularity=TimeGranularity.DAY),
             ],
-            metrics=[QueryMetric(metric="sum(revenue, window='7d')",
+            metrics=[QueryMetric(metric="sum(orders.revenue, window='7d')",
                                    alias="rev_w")],
         )
         sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
@@ -327,10 +311,10 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="created_at",
+                TimeDimension(field="orders.created_at",
                               granularity=TimeGranularity.DAY),
             ],
-            metrics=[QueryMetric(metric="sum(revenue, window='7d')", alias="rev_w")],
+            metrics=[QueryMetric(metric="sum(orders.revenue, window='7d')", alias="rev_w")],
         )
         sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         norm = _norm(sql).upper()
@@ -345,10 +329,10 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="created_at",
+                TimeDimension(field="orders.created_at",
                               granularity=TimeGranularity.DAY),
             ],
-            metrics=[QueryMetric(metric="sum(revenue, window='1y2m3d')", alias="rev_w")],
+            metrics=[QueryMetric(metric="sum(orders.revenue, window='1y2m3d')", alias="rev_w")],
         )
         sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         norm = _norm(sql).upper()
@@ -368,10 +352,10 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "stddev_samp(revenue)",
-            "stddev_pop(revenue)",
-            "var_samp(revenue)",
-            "var_pop(revenue)",
+            "stddev_samp(orders.revenue)",
+            "stddev_pop(orders.revenue)",
+            "var_samp(orders.revenue)",
+            "var_pop(orders.revenue)",
         ],
     )
     async def test_one_arg_stat_agg_generation(
@@ -389,7 +373,7 @@ class TestMultiDialectGeneration:
         upper = sql.upper()
         assert "SELECT" in upper
         # The aggregate must wrap the resolved value column (orders.amount,
-        # since the `revenue` Column has sql="amount") in its single-arg slot.
+        # since the `revenue` field has sql="amount") in its single-arg slot.
         assert "(ORDERS.AMOUNT)" in upper, (
             f"expected single-arg call (ORDERS.AMOUNT) in SQL for {formula!r} on {dialect}:\n{sql}"
         )
@@ -403,9 +387,9 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "corr(revenue, other=quantity)",
-            "covar_samp(revenue, other=quantity)",
-            "covar_pop(revenue, other=quantity)",
+            "corr(orders.revenue, other=orders.quantity)",
+            "covar_samp(orders.revenue, other=orders.quantity)",
+            "covar_pop(orders.revenue, other=orders.quantity)",
         ],
     )
     async def test_two_arg_stat_agg_generation(
@@ -436,9 +420,9 @@ class TestMultiDialectGeneration:
     @pytest.mark.parametrize(
         "formula",
         [
-            "corr(revenue, other=quantity)",
-            "covar_samp(revenue, other=quantity)",
-            "covar_pop(revenue, other=quantity)",
+            "corr(orders.revenue, other=orders.quantity)",
+            "covar_samp(orders.revenue, other=orders.quantity)",
+            "covar_pop(orders.revenue, other=orders.quantity)",
         ],
     )
     async def test_two_arg_stat_formula_dialects_generate_valid_sql(
@@ -460,9 +444,9 @@ class TestMultiDialectGeneration:
 
     @pytest.mark.parametrize(
         "formula", [
-            "corr(revenue, other=quantity)",
-            "covar_samp(revenue, other=quantity)",
-            "covar_pop(revenue, other=quantity)",
+            "corr(orders.revenue, other=orders.quantity)",
+            "covar_samp(orders.revenue, other=orders.quantity)",
+            "covar_pop(orders.revenue, other=orders.quantity)",
         ],
     )
     async def test_two_arg_stat_agg_mysql_emits_formula_valid_sql(
@@ -486,12 +470,12 @@ class TestLogAliasPreservation:
     aliases. sqlglot's default behaviour normalises both into a generic
     ``Log(this=Literal(base), expression=arg)`` AST node and re-emits as
     ``LOG(base, x)`` for almost every dialect, which makes generated SQL
-    diverge from the recipe formula text and (on dialects that lack 2-arg
+    diverge from the recipe expression text and (on dialects that lack 2-arg
     ``LOG``) can break a previously working call.
 
     The expectations name the column ``ORDERS.AMOUNT`` rather than bare
     ``AMOUNT``: the typed pipeline anchors every reference at its scope root
-    (Law 1), so a ``Column.sql`` operand emits qualified. That is orthogonal
+    (Law 1), so a ``DatasetField.sql`` operand emits qualified. That is orthogonal
     to the alias-preservation contract under test here, and pinning the
     qualified form keeps the negative assertions meaningful — a bare
     ``LOG(10, AMOUNT)`` needle would be trivially absent whatever the
@@ -500,26 +484,7 @@ class TestLogAliasPreservation:
 
     @pytest.fixture
     def log_dataset(self) -> SlayerDataset:
-        return SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                # Scalar log expressions inside Column.sql — the primary
-                # path the issue surfaced through.
-                DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
-                DatasetField(name="log2_amount", sql="log2(amount)", datatype=DataType.FLOAT),
-                # Negative-control: a non-alias literal base. Must keep the
-                # standard 2-arg LOG(base, x) form post-fix.
-                DatasetField(name="log3_amount", sql="log(3, amount)", datatype=DataType.FLOAT),
-                # ln(...) is a separate AST node (exp.Ln); the rewrite must
-                # not touch it.
-                DatasetField(name="ln_amount", sql="ln(amount)", datatype=DataType.FLOAT),
-            ],
-        )
+        return log_orders()
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_log10_in_column_sql_is_preserved(
@@ -528,7 +493,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="max(log_amount)")],
+            metrics=[QueryMetric(metric="max(orders.log_amount)")],
         )
         sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
@@ -557,7 +522,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="max(log2_amount)")],
+            metrics=[QueryMetric(metric="max(orders.log2_amount)")],
         )
         sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
@@ -583,41 +548,26 @@ class TestLogAliasPreservation:
     async def test_log10_inside_filtered_column_survives_reparse(
         self, dialect: str,
     ) -> None:
-        """A filtered Column (``Column.filter="..."``) wraps the resolved
+        """A filtered field (``DatasetField.filter="..."``) wraps the resolved
         value in ``CASE WHEN ... THEN ... END`` and re-parses through
         sqlglot. The log-alias rewrite must survive that round-trip — a
         re-parse of ``LOG10(amount)`` would otherwise canonicalise back to
         a generic ``Log`` node and re-emit as ``LOG(10, amount)``.
         """
-        model = SlayerDataset(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(
-                    name="log_completed_amount",
-                    sql="log10(amount)",
-                    filter="status = 'completed'",
-                    datatype=DataType.FLOAT,
-                ),
-            ],
-        )
+        model = log_completed_orders(filter="status = 'completed'")
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="max(log_completed_amount)")],
+            metrics=[QueryMetric(metric="max(orders.log_completed_amount)")],
         )
         sql = await _generate(generator=gen, query=query, dataset=model)
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected literal log10(amount) inside filtered "
-            f"column wrapper, got:\n{sql}"
+            f"field wrapper, got:\n{sql}"
         )
         assert "LOG(10,ORDERS.AMOUNT)" not in upper_no_ws, (
-            f"{dialect}: filtered-column re-parse must not re-canonicalise "
+            f"{dialect}: filtered-field re-parse must not re-canonicalise "
             f"to LOG(10, amount):\n{sql}"
         )
 
@@ -625,18 +575,18 @@ class TestLogAliasPreservation:
     async def test_log10_in_arithmetic_measure_is_preserved(
         self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
-        """Arithmetic that mixes a log10 column-derived measure with COUNT(*).
+        """Arithmetic that mixes a log10 field-derived metric with COUNT(*).
         Pins that the rewrite survives the arithmetic enrichment path.
         """
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="max(log_amount) / count(*)", alias="ratio")],
+            metrics=[QueryMetric(metric="max(orders.log_amount) / count(orders.*)", alias="ratio")],
         )
         sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
-            f"{dialect}: expected log10(amount) inside arithmetic measure:\n{sql}"
+            f"{dialect}: expected log10(amount) inside arithmetic metric:\n{sql}"
         )
         assert "COUNT(" in sql.upper(), f"COUNT(*) leg missing on {dialect}:\n{sql}"
 
@@ -650,7 +600,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="max(log3_amount)")],
+            metrics=[QueryMetric(metric="max(orders.log3_amount)")],
         )
         sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
@@ -674,7 +624,7 @@ class TestLogAliasPreservation:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="max(ln_amount)")],
+            metrics=[QueryMetric(metric="max(orders.ln_amount)")],
         )
         sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         # T-SQL has no LN — sqlglot transpiles to LOG(x). Every other dialect
@@ -705,8 +655,8 @@ class TestStringHygieneDialectTranslation:
     async def test_lower(self, orders_dataset: SlayerDataset, dialect: str, expected: str) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["lower(status) = 'active'"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["lower(orders.status) = 'active'"],
         )
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
@@ -731,8 +681,8 @@ class TestStringHygieneDialectTranslation:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["instr(status, ',') > 0"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["instr(orders.status, ',') > 0"],
         )
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
@@ -756,8 +706,8 @@ class TestStringHygieneDialectTranslation:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["substr(status, 1, 5) = 'abcde'"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["substr(orders.status, 1, 5) = 'abcde'"],
         )
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
@@ -782,8 +732,8 @@ class TestStringHygieneDialectTranslation:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["status || status = 'foo'"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["orders.status || orders.status = 'foo'"],
         )
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),

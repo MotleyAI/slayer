@@ -1,4 +1,4 @@
-"""Shared builders, seeding and query helpers for the OSI importer tests."""
+"""Shared builders and seeding helpers for the OSI importer tests."""
 
 from __future__ import annotations
 
@@ -7,23 +7,20 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-import pytest
 import sqlalchemy as sa
 import yaml
 
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.importers.column_types import LiveSource
-from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.osi.converter import OsiToSlayerConverter
+from slayer.ingest_report import ConversionResult
 from slayer.osi.models import OSIDocument
 from slayer.database import engine_factory
 from slayer.database.client import SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import build_exec_engine, disposable_engine
+from tests._engine_helpers import disposable_engine
 
 FIXTURES = Path(__file__).parent / "fixtures" / "osi"
-SCHEMA_PATH = FIXTURES / "ossie-schema.json"
+SCHEMA_PATH = Path(__file__).parent / "fixtures" / "ossie_corpus" / "core-spec" / "ossie-schema.json"
 DATASOURCE = "osids"
 
 SHOP_DDL = [
@@ -61,11 +58,6 @@ def seed_db(*, directory: Path, dialect: str = "duckdb", statements: Sequence[st
     return path
 
 
-def disable_type_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make every derived-expression type probe report nothing, as on a database that cannot report one."""
-    monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
-
-
 class MetadataConverter(Protocol):
     """An importer that reads the database in ``collect_metadata`` and converts purely."""
 
@@ -95,14 +87,6 @@ def f(name: str, sql: str | None = None, **extra: Any) -> dict[str, Any]:
     return {"name": name, "expression": {"sql": sql if sql is not None else name}, **extra}
 
 
-def f_dialects(name: str, *entries: tuple[str, str], sql: str | None = None, **extra: Any) -> dict[str, Any]:
-    """A field with ``dialects`` entries ``(dialect, expression)`` and an optional top-level ``sql``."""
-    expression: dict[str, Any] = {"dialects": [{"dialect": d, "expression": e} for d, e in entries]}
-    if sql is not None:
-        expression["sql"] = sql
-    return {"name": name, "expression": expression, **extra}
-
-
 def m(name: str, sql: str, **extra: Any) -> dict[str, Any]:
     """A metric whose expression is the portable top-level ``sql``."""
     return {"name": name, "expression": {"sql": sql}, **extra}
@@ -114,10 +98,6 @@ def ds(name: str, *, source: str | None = None, fields: list[dict[str, Any]] | N
     if fields is not None:
         out["fields"] = fields
     return out
-
-
-def rel(name: str, *, src: str, to: str, from_columns: list[str], to_columns: list[str]) -> dict[str, Any]:
-    return {"name": name, "from": src, "to": to, "from_columns": from_columns, "to_columns": to_columns}
 
 
 def flat(datasets: list[dict[str, Any]], *, relationships: list[dict[str, Any]] | None = None,
@@ -146,71 +126,9 @@ def documents(*mappings: dict[str, Any]) -> list[OSIDocument]:
     return [OSIDocument.model_validate(mapping) for mapping in mappings]
 
 
-def convert(*, db: Path, docs: list[OSIDocument], db_dialect: str = "duckdb", **kwargs: Any) -> ConversionResult:
-    """Run the converter over ``docs`` against the seeded ``db`` (target defaults to its dialect)."""
-    kwargs.setdefault("target_dialect", db_dialect)
-    return run_converter(
-        OsiToSlayerConverter(documents=docs, data_source=DATASOURCE, **kwargs),
-        datasource=DatasourceConfig(name=DATASOURCE, type=db_dialect, database=str(db)),
-    )
-
-
 def by_name(result: ConversionResult) -> dict[str, SlayerDataset]:
     return {model.name: model for model in result.datasets}
 
 
 def cols(dataset: SlayerDataset) -> dict[str, DatasetField]:
     return {c.name: c for c in dataset.fields}
-
-
-def visible(dataset: SlayerDataset) -> set[str]:
-    return {c.name for c in dataset.fields if not c.hidden}
-
-
-def hidden(dataset: SlayerDataset) -> list[DatasetField]:
-    return [c for c in dataset.fields if c.hidden]
-
-
-def entries(result: ConversionResult) -> list[ConversionWarning]:
-    return [*result.unconverted_metrics, *result.warnings]
-
-
-def mentions(result: ConversionResult, name: str, *, severity: str | None = None) -> list[ConversionWarning]:
-    """Report entries about ``name`` (as their metric or in their message), optionally of one severity."""
-    return [
-        e for e in entries(result)
-        if (e.metric_name == name or name in e.message) and (severity is None or e.severity == severity)
-    ]
-
-
-def unconverted(result: ConversionResult, metric: str) -> bool:
-    """True when ``metric`` is reported as unconverted and is on no model."""
-    on_a_model = any(meas.name == metric for model in result.datasets for meas in model.metrics)
-    return not on_a_model and any(e.metric_name == metric for e in result.unconverted_metrics)
-
-
-def metric_home(result: ConversionResult, metric: str) -> SlayerDataset:
-    homes = [model for model in result.datasets if any(meas.name == metric for meas in model.metrics)]
-    assert len(homes) == 1, f"measure {metric!r} on {[h.name for h in homes]}"
-    return homes[0]
-
-
-async def query(*, result: ConversionResult, db: Path, payload: dict[str, Any],
-                dialect: str = "duckdb") -> list[dict[str, Any]]:
-    """Save the imported models over ``db`` and run one query, disposing every engine."""
-    engine = await build_exec_engine(str(db), dialect=dialect, datasets=result.datasets, datasource=DATASOURCE)
-    try:
-        response = await engine.execute(payload)
-    finally:
-        engine.close()
-        engine_factory.invalidate_engine(DatasourceConfig(name=DATASOURCE, type=dialect, database=str(db)))
-    return response.data
-
-
-async def scalar(*, result: ConversionResult, db: Path, dataset: str, expression: str,
-                 dialect: str = "duckdb") -> Any:
-    """The single value of ``formula`` over ``model``."""
-    rows = await query(result=result, db=db, dialect=dialect,
-                       payload={"population": dataset, "metrics": [{"metric": expression, "alias": "v"}]})
-    assert len(rows) == 1
-    return rows[0][f"{dataset}.v"]

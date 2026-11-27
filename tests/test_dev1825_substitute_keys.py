@@ -30,6 +30,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    WindowKey,
     substitute_value_keys,
     SqlFragmentKey,
 )
@@ -77,8 +78,8 @@ class TestDirectAndNestedHits:
         assert substitute_value_keys(ik, MAPPING).field == PLACEHOLDER
 
     def test_column_to_column_inside_time_trunc(self) -> None:
-        # TimeTruncKey.source is typed ColumnKey/ColumnSqlKey — a column-to-
-        # column mapping must reach through it.
+        # TimeTruncKey.source is typed FieldKey/FieldSqlKey — a field-to-
+        # field mapping must reach through it.
         other = FieldKey(path=(), leaf="shipped_at")
         tt = TimeTruncKey(source=FieldKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
         out = substitute_value_keys(tt, {FieldKey(path=(), leaf="ordered_at"): other})
@@ -116,6 +117,7 @@ class TestTotality:
             LiteralKey: LiteralKey(value=Decimal("1")),
             AggregateKey: AGG,
             TransformKey: TransformKey(op="cumsum", input=AGG),
+            WindowKey: WindowKey(function="sum", args=(AMOUNT,), partition=(CITY,)),
             ArithmeticKey: ArithmeticKey(op="+", operands=(CITY, AMOUNT)),
             ScalarCallKey: ScalarCallKey(name="coalesce", args=(CITY, "x")),
             TimePointCmpKey: TimePointCmpKey(op="=", operand=CITY, point="2025-Q1"),

@@ -62,11 +62,11 @@ def _seed(storage_dir: str) -> None:
                     data_source="mydb",
                     fields=[
                         DatasetField(
-                            name="id", sql="id",
+                            name="id", expression="id",
                             datatype=DataType.FLOAT, primary_key=True,
                         ),
                         DatasetField(
-                            name="amount", sql="amount", datatype=DataType.FLOAT,
+                            name="amount", expression="amount", datatype=DataType.FLOAT,
                         ),
                     ],
                 )

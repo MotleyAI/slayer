@@ -19,12 +19,13 @@ from slayer.mcp.server import create_mcp_server
 from tests._deprecated_input_helpers import deprecated_in, mcp_payload, recorded
 from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
+from tests._mcp_results import text_blocks
 
-_STRICT_BODY = {"population": "orders", "metrics": [{"metric": "count(*)"}], "strict": True}
+_STRICT_BODY = {"population": "orders", "metrics": [{"metric": "count(orders.*)"}], "strict": True}
 
 _ASSOCIATE_BODY = {
     "population": "orders",
-    "dimensions": ["status"],
+    "dimensions": ["orders.status"],
     "metrics": [{"metric": "sum(customers.spend)", "alias": "cm"}],
     "to_many_handling": "associate",
 }
@@ -52,7 +53,7 @@ class TestRestSurface:
         client = TestClient(create_app(storage=storage))
         resp = client.post("/query", json=_ASSOCIATE_BODY)
         assert resp.status_code == 200, resp.text
-        by = {r["orders.status"]: float(r["orders.cm"]) for r in resp.json()["data"]}
+        by = {r["orders.status"]: float(r["cm"]) for r in resp.json()["data"]}
         assert by["ok"] == pytest.approx(420.0)
         assert by["new"] == pytest.approx(290.0)
 
@@ -79,16 +80,16 @@ class TestRestSurface:
         with recorded():
             resp = client.post("/query", json=body)
         assert resp.status_code == 200, resp.text
-        assert len(deprecated_in(resp.json()["warnings"])) == 1
+        assert len([w for w in deprecated_in(resp.json()["warnings"]) if w["old"] == "strict"]) == 1
 
     async def test_association_slayer_error_maps_to_400(self, storage) -> None:
         """An association-eligibility ``SlayerError`` (a status-grained attached
         parameter the customer entity does not determine) is a client error
         (400), not a 500."""
         client = TestClient(create_app(storage=storage))
-        body = {"population": "orders", "dimensions": ["status"],
+        body = {"population": "orders", "dimensions": ["orders.status"],
                 "metrics": [{"metric": "weighted_avg(customers.spend, "
-                              "weight=sum(amount, partition_by=status))"}],
+                              "weight=sum(orders.amount, partition_by=orders.status))"}],
                 "to_many_handling": "associate"}
         resp = client.post("/query", json=body)
         assert resp.status_code == 400, resp.text
@@ -99,8 +100,8 @@ class TestMcpSurface:
     async def test_mode_reaches_engine(self, storage) -> None:
         """The mode rides inside the unified ``query`` object (DEV-1858 tool shape)."""
         server = create_mcp_server(storage=storage)
-        blocks, _ = await server.call_tool(name="query", arguments={
-            "query": _ASSOCIATE_BODY, "format": "json"})
+        blocks = text_blocks(await server.call_tool(name="query", arguments={
+            "query": _ASSOCIATE_BODY, "format": "json"}))
         text = blocks[0].text
         assert "420" in text
         assert "290" in text
@@ -109,6 +110,6 @@ class TestMcpSurface:
     async def test_strict_converts(self, storage) -> None:
         server = create_mcp_server(storage=storage)
         with recorded():
-            blocks, _ = await server.call_tool(name="query", arguments={"query": _STRICT_BODY, "format": "json"})
+            blocks = text_blocks(await server.call_tool(name="query", arguments={"query": _STRICT_BODY, "format": "json"}))
         [w] = deprecated_in(mcp_payload(getattr(next(iter(blocks)), "text")).get("warnings"))
         assert "to_many_handling" in w["new"]

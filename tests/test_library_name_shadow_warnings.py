@@ -51,7 +51,7 @@ async def _both(call: Awaitable[SlayerResponse]) -> tuple[list[tuple[str, str, s
 _SHADOW = [("t", "reverse", "reverse")]
 
 
-def _query(expression: str = "reverse(a)", **body: Any) -> dict:
+def _query(expression: str = "reverse(t.a)", **body: Any) -> dict:
     return {"population": "t", "metrics": [metric(expression)], **body}
 
 
@@ -81,7 +81,7 @@ class TestSaveAndLoad:
                 model = await engine.storage.get_dataset("t", data_source=DS)
                 assert model is not None
                 await engine.save_dataset(model)
-                await engine.execute(_query("sum(a)"))
+                await engine.execute(_query("sum(t.a)"))
         assert raised == []
 
 
@@ -102,16 +102,16 @@ class TestEveryResponse:
 
     async def test_no_warning_without_a_shadowing_call(self) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
-            got = await _both(engine.execute(_query("sum(a)")))
+            got = await _both(engine.execute(_query("sum(t.a)")))
         assert got == ([], [])
 
     async def test_a_pruned_stage_is_not_announced(self) -> None:
         stages = [
-            {"name": "unused", "population": "t", "metrics": [metric("reverse(a)", "r")]},
-            {"name": "s1", "population": "t", "dimensions": ["s"], "metrics": [metric("sum(a)", "total")]},
-            {"population": "s1", "metrics": [metric("sum(total)", "grand")]},
+            {"name": "unused", "population": "t", "metrics": [metric("reverse(t.a)", "r")]},
+            {"name": "s1", "population": "t", "dimensions": ["t.s"], "metrics": [metric("sum(t.a)", "total")]},
+            {"population": "s1", "metrics": [metric("sum(s1.total)", "grand")]},
         ]
-        query = {"population": "qb", "metrics": [metric("sum(grand)")]}
+        query = {"population": "qb", "metrics": [metric("sum(qb.grand)")]}
         async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -125,7 +125,7 @@ class TestEveryResponse:
         async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute({
                 "population": "t", "dimensions": [{"field": "reverse(customers.name)", "alias": "rn"}],
-                "metrics": [metric("count(*)")]}))
+                "metrics": [metric("count(t.*)")]}))
         assert got == ([], [])
 
 
@@ -133,7 +133,7 @@ class TestEveryContainer:
     async def test_a_stored_measure(self) -> None:
         doc = t_doc(aggregations=[_REVERSE], metrics=[{"name": "rev", "formula": "reverse(a)"}])
         async with stored_engine(datasets=[doc]) as engine:
-            got = await _both(engine.execute(_query("rev")))
+            got = await _both(engine.execute(_query("t.rev")))
         assert got == (_SHADOW, _SHADOW)
 
     async def test_a_saved_query(self) -> None:
@@ -155,10 +155,10 @@ class TestEverySpelling:
     @pytest.mark.parametrize("spelling", sorted(SCALAR_SPELLINGS))
     async def test_a_parser_spelling(self, spelling: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[agg(spelling)])]) as engine:
-            got = await _both(engine.execute(_query(f"{spelling}(a)")))
+            got = await _both(engine.execute(_query(f"{spelling}(t.a)")))
         assert got == ([("t", spelling, spelling)],) * 2
 
-    @pytest.mark.parametrize(("formula", "written"), [("REVERSE(a)", "REVERSE"), ("t.reverse(a)", "reverse")])
+    @pytest.mark.parametrize(("formula", "written"), [("REVERSE(t.a)", "REVERSE"), ("t.reverse(a)", "reverse")])
     async def test_the_function_as_written(self, formula: str, written: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute(_query(formula)))
@@ -185,6 +185,6 @@ class TestEverySurface:
             server: Any = create_mcp_server(storage=engine.storage)  # call_tool's annotation omits its (blocks, dict) tuple
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                blocks, _ = await server.call_tool("query", {"query": _query(), "format": "json"})
+                blocks = (await server.call_tool("query", {"query": _query(), "format": "json"})).content
         payload = json.loads(blocks[0].text)
         assert _shadow_dicts(payload["warnings"]) == _SHADOW

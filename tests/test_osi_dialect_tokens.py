@@ -2,8 +2,8 @@
 
 import pytest
 
-from slayer.osi.dialects import Candidate, ossie_token, read, reader_for, render, select_expression
-from slayer.osi.models import OSIExpression
+from slayer.sql.ossie_dialects import Candidate, ossie_token, read, reader_for, render, select_expression
+from slayer.core.ossie_expression import OSIExpression
 from slayer.sql.dialects import _BY_DS_TYPE, dialect_for_ds_type
 
 _DS_TYPES = sorted(_BY_DS_TYPE)

@@ -16,7 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import Grain
-from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, InKey, KindPolicy, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
+from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, InKey, KindPolicy, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, WindowKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.reference_closure import UnhandledValueKindError, aggregate_input_closure
@@ -86,6 +86,7 @@ SAMPLES = {
     CastKey: CastKey(source=JOINED, type_text="INT", data_type=DataType.INTEGER),
     ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
     ListSetKey: ListSetKey(source=JOINED),
+    WindowKey: WindowKey(function="row_number", order=(CITY,), descending=(False,), nulls_first=(False,)),
 }
 LEAF_KINDS = (FieldKey, FieldSqlKey, StarKey, LiteralKey)
 
@@ -289,7 +290,7 @@ class TestKindPolicyRegistry:
 
     def test_slottable_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.slottable} == {
-            FieldKey, FieldSqlKey, AggregateKey, TransformKey, TimeTruncKey,
+            FieldKey, FieldSqlKey, AggregateKey, TransformKey, TimeTruncKey, WindowKey,
         }
 
     def test_slot_composite_membership(self) -> None:
@@ -299,7 +300,7 @@ class TestKindPolicyRegistry:
 
     def test_materialised_order_membership(self) -> None:
         assert {k for k, p in KIND_POLICY.items() if p.materialised_order} == {
-            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey, InKey, CastKey, ListSetKey,
+            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey, InKey, CastKey, ListSetKey, WindowKey,
         }
 
     def test_kind_policy_is_frozen(self) -> None:
@@ -590,15 +591,15 @@ class TestTimeTruncWidening:
 
 
 # ---------------------------------------------------------------------------
-# Join-path discovery descends expression sources (task 3.5)
+# Relationship-path discovery descends expression sources (task 3.5)
 # ---------------------------------------------------------------------------
 def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -610,8 +611,8 @@ def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
         ],
     )
 
@@ -653,7 +654,7 @@ class TestJoinDiscoveryExpressionSources:
         assert ("customers",) in _paths_for(key)
 
     def test_time_trunc_inside_a_source_crosses_via_its_column(self) -> None:
-        # B1: the trunc's crossing lives on its wrapped column.
+        # B1: the trunc's crossing lives on its wrapped field.
         joined_tt = TimeTruncKey(
             source=FieldKey(path=("customers",), leaf="balance"),
             granularity=TimeGranularity.MONTH,
@@ -688,25 +689,25 @@ def _status_orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
     )
 
 
 class TestHavingValidationWiring:
     async def test_ungrouped_bare_column_beside_aggregate_splits_by_typing(self) -> None:
-        # The AND splits per conjunct — measure half → HAVING,
+        # The AND splits per conjunct — metric half → HAVING,
         # ungrouped field half → WHERE — instead of the old HAVING rejection.
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["_count > 1 and status == 'completed'"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["orders._count > 1 and orders.status == 'completed'"],
         )
         sql = await _engine_generate(query=query, dataset=_status_orders_dataset())
         assert "HAVING" in sql
@@ -717,11 +718,11 @@ class TestHavingValidationWiring:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["_count > 1 or status == 'completed'"],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["orders._count > 1 or orders.status == 'completed'"],
         )
         model = _status_orders_dataset()
         with pytest.raises(ValueError, match="neither a field nor a metric"):
@@ -730,9 +731,9 @@ class TestHavingValidationWiring:
     async def test_grouped_column_in_having_still_accepted(self) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
-            filter=["_count > 1 and status == 'completed'"],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            filter=["orders._count > 1 and orders.status == 'completed'"],
         )
         sql = await _engine_generate(query=query, dataset=_status_orders_dataset())
         assert "HAVING" in sql

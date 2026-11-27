@@ -1,4 +1,4 @@
-# Terminology
+# Glossary
 
 Key terms used throughout SLayer documentation and code.
 
@@ -6,15 +6,15 @@ Key terms used throughout SLayer documentation and code.
 
 **Dataset** — A semantic layer definition that maps a database table, SQL subquery, or saved query to queryable fields. Defined as YAML files or auto-generated via ingestion.
 
-**Field** — The unified row-level building block of a dataset (`SlayerDataset.fields`). Each field has a `name`, `sql` expression, and `datatype` (one of Ossie's datatype names — `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` — or `Array` with an `element_type`). At query time a field can be used as a group-by key (a dimension), as the input to an aggregation (a metric), or both; a list field has rules of its own, see [List fields](queries.md#list-fields). Fields can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal field is already truncated to), `format`, `label`, and `meta`. `DatasetMetric` (named expression) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
+**Field** — The unified row-level building block of a dataset (`SlayerDataset.fields`). Each field has a `name`, `sql` expression, and `datatype` (one of Ossie's datatype names — `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` — or `Array` with an `element_type`). At query time a field can be used as a group-by key (a dimension), as the input to an aggregation (a metric), or both; a list field has rules of its own, see [List fields](filters.md#list-fields). Fields can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal field is already truncated to), `format`, `label`, and `meta`. `DatasetMetric` (named expression) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
 
 **Dimension** — How a field is *used* in a query when it's a GROUP BY key. The field itself isn't a dimension or metric intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the fields to group/filter by.
 
-**Metric (in a query)** — An expression entry in `SlayerQuery.metrics`. Examples: `"sum(revenue)"`, `"count(*)"`, `{"metric": "sum(revenue) / count(*)", "alias": "aov"}`, `"cumsum(sum(revenue))"`. Each entry compiles to one output column.
+**Metric (in a query)** — An expression entry in `SlayerQuery.metrics`. Examples: `"sum(orders.revenue)"`, `"count(orders.*)"`, `{"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov"}`, `"cumsum(sum(orders.revenue))"`. Each entry compiles to one output column.
 
-**Metric (named expression)** — A saved expression stored on a dataset (`SlayerDataset.metrics: List[DatasetMetric]`). Shape `{name, expression, label, description, datatype, meta}`; a query's inline `metrics` entry is `{metric, alias, label, description, datatype, meta}`. Queries reference saved metrics by bare name in any expression context (`"aov"`).
+**Metric (named expression)** — A saved expression stored on a dataset (`SlayerDataset.metrics: List[DatasetMetric]`). Shape `{name, expression, label, description, datatype, meta}`; a query's inline `metrics` entry is `{metric, alias, label, description, datatype, meta}`. Queries reference saved metrics by their dataset-qualified name in any expression context (`"orders.aov"`).
 
-**Aggregation** — How a field is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`, `collect`. Custom aggregations can be defined at dataset level. Applied at query time as a function call: `sum(revenue)`, `count(*)`, `weighted_avg(price, weight=quantity)`, `corr(price, other=quantity)`.
+**Aggregation** — How a field is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`, `collect`. Custom aggregations can be defined at dataset level. Applied at query time as a function call: `sum(orders.revenue)`, `count(orders.*)`, `weighted_avg(orders.price, weight=orders.quantity)`, `corr(orders.price, other=orders.quantity)`.
 
 **Relationship** — A LEFT JOIN edge between two datasets. Defined by a target dataset name (`to`) and join key pairs (from the dataset's own foreign keys). Each dataset only stores direct relationships — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate dataset's own relationships.
 
@@ -30,11 +30,11 @@ Key terms used throughout SLayer documentation and code.
 
 ## Queries
 
-**Metric entry** — An expression entry in `SlayerQuery.metrics`. Defined by an expression string. Examples: aggregated field reference (`"sum(revenue)"`), `*`-count (`"count(*)"`), arithmetic on aggregated metrics (`"sum(revenue) / count(*)"`), transform function (`"cumsum(sum(revenue))"`), or bare named-expression reference (`"aov"`). Supports an optional `label` for human-readable display. See [Expressions](formulas.md).
+**Metric entry** — An expression entry in `SlayerQuery.metrics`. Defined by an expression string. Examples: aggregated field reference (`"sum(orders.revenue)"`), `*`-count (`"count(orders.*)"`), arithmetic on aggregated metrics (`"sum(orders.revenue) / count(orders.*)"`), transform function (`"cumsum(sum(orders.revenue))"`), or named-expression reference (`"orders.aov"`). Supports an optional `label` for human-readable display. See [Expressions](expressions.md).
 
-**Label** — An optional human-readable display name for a metric entry, dimension, or time dimension. Separate from the technical `alias`, which is used as the result column key. Example: `{"metric": "sum(revenue) / count(*)", "alias": "aov", "label": "Average Order Value"}`.
+**Label** — An optional human-readable display name for a metric entry, dimension, or time dimension. Separate from the technical `alias`, which is used as the result column key. Example: `{"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov", "label": "Average Order Value"}`.
 
-**Filter** — A condition that restricts which rows are included. Defined as an expression string: `"status = 'completed'"`, `"amount > 100"`. See [Filters](queries.md#filters).
+**Filter** — A condition that restricts which rows are included. Defined as an expression string: `"orders.status = 'completed'"`, `"orders.amount > 100"`. See [Filters](filters.md#filters).
 
 **Time dimension** — A dimension of type `time` or `date`, used for time-based grouping. When specified in `time_dimensions`, SLayer truncates it to the given granularity (e.g., monthly buckets). The same field can also be used as a regular dimension (without truncation).
 
@@ -52,10 +52,10 @@ Key terms used throughout SLayer documentation and code.
 
 **Self-join vs window-function transforms:**
 
-- `time_shift`, `change`, and `change_pct` use self-join CTEs — they can reach outside the current result set (no edge NULLs) and handle gaps in data correctly. The join matches on all non-time dimensions as well as the shifted time column, so grouped comparisons are partition-safe and reset per group. `time_shift(revenue, -1, 'year')` (with granularity) joins on calendar date arithmetic for comparisons like year-over-year.
-- `lag(revenue, 1)` / `lead(revenue, 1)` use SQL `LAG`/`LEAD` window functions directly — more efficient, but produce NULLs at the edges and are sensitive to gaps in data.
+- `time_shift`, `change`, and `change_pct` use self-join CTEs — they can reach outside the current result set (no edge NULLs) and handle gaps in data correctly. The join matches on all non-time dimensions as well as the shifted time column, so grouped comparisons are partition-safe and reset per group. `time_shift(orders.revenue, -1, 'year')` (with granularity) joins on calendar date arithmetic for comparisons like year-over-year.
+- `lag(orders.revenue, 1)` / `lead(orders.revenue, 1)` use SQL `LAG`/`LEAD` window functions directly — more efficient, but produce NULLs at the edges and are sensitive to gaps in data.
 
-**Nesting** — Expressions can be nested: `change(cumsum(revenue))` applies `change` to the result of `cumsum`. Each level of nesting generates an additional CTE layer in the SQL.
+**Nesting** — Expressions can be nested: `change(cumsum(orders.revenue))` applies `change` to the result of `cumsum`. Each level of nesting generates an additional CTE layer in the SQL.
 
 ## Ingestion
 

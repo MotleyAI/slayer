@@ -6,14 +6,14 @@ import re
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 ONE_ERROR = re.compile(r"\b1 validation error for\b")
-_BAD_NAME_QUERY = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "bad name"}]}
-_FIRST_STAGE = {"name": "a", "population": "orders", "metrics": ["count(*)"]}
+_BAD_NAME_QUERY = {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "bad name"}]}
+_FIRST_STAGE = {"name": "a", "population": "orders", "metrics": ["count(orders.*)"]}
 
 
 @pytest.fixture

@@ -1,0 +1,36 @@
+version: 30
+name: customers
+sql_table: customers
+source_kind: table
+query_variables: {}
+data_source: jaffle_shop
+fields:
+- name: id
+  expression: id
+  datatype: String
+  primary_key: true
+  unique: false
+  label: Customer ID
+  hidden: false
+- name: name
+  expression: name
+  datatype: String
+  primary_key: false
+  unique: false
+  description: Customer name.
+  label: Customer
+  hidden: false
+metrics:
+- expression: count_distinct(id)
+  name: customer_count
+  label: Customers
+  description: Number of distinct customers.
+  datatype: Integer
+aggregations: []
+relationships: []
+enforced_keys:
+- - id
+filters: []
+description: "Customers of the Jaffle Shop \u2014 one row per person."
+hidden: false
+access_tags: []

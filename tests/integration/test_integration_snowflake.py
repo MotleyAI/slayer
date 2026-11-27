@@ -7,7 +7,7 @@ with ``$SLAYER_SNOWFLAKE_CONNECTION``).
 The session-scoped fixture creates a uniquely-named transient schema, seeds the
 standard orders / customers / products / regions tables (with FK ``REFERENCES``
 clauses — Snowflake stores them informationally, the Inspector returns them,
-auto-ingestion discovers joins), runs the full test matrix, and drops the
+auto-ingestion discovers relationships), runs the full test matrix, and drops the
 schema on teardown. A ``SELECT 1`` warm-up runs once at fixture entry to
 absorb warehouse-suspend latency.
 """
@@ -27,6 +27,7 @@ from sqlalchemy.pool import QueuePool
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, RelationshipCardinality, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -45,7 +46,7 @@ from slayer.sql.dialects import SnowflakeDialect
 from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._cast_fixtures import check_try_cast_targets
+from tests._cast_fixtures import check_author_casts, check_try_cast_targets
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
@@ -57,9 +58,17 @@ from tests._dev2120_fixtures import (
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2018_fixtures import (
+    check_bucket_matrix,
+    check_mixed,
+    server_datasets as logical_type_datasets,
+    server_statements as logical_type_statements,
+    with_granularities as logical_type_granularities,
+)
 from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests.integration._one_request import MARKERS, PATHS, assert_one_request_each, run_three
+from tests.integration import _dev2458_matrix as dev2458
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
     keyword_universe,
@@ -286,8 +295,8 @@ def sf_engine(sf_datasource: DatasourceConfig, sf_transient_schema):
 
 @pytest.fixture
 def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
-    """YAMLStorage with the four standard models pre-saved.
-    Caller adds joins where needed."""
+    """YAMLStorage with the four standard datasets pre-saved.
+    Caller adds relationships where needed."""
     storage = YAMLStorage(base_dir=str(tmp_path))
     run_sync(storage.save_datasource(sf_datasource))
 
@@ -297,12 +306,12 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         data_source="sf_test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
-            DatasetField(name="product_id", sql="product_id", datatype=DataType.INTEGER),
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.INTEGER),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="product_id", expression="product_id", datatype=DataType.INTEGER),
+            DatasetField(name="quantity", expression="quantity", datatype=DataType.INTEGER),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -314,10 +323,10 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         sql_table="customers",
         data_source="sf_test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="email", sql="email", datatype=DataType.STRING),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="email", expression="email", datatype=DataType.STRING),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
@@ -328,10 +337,10 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         sql_table="products",
         data_source="sf_test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="category", sql="category", datatype=DataType.STRING),
-            DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="category", expression="category", datatype=DataType.STRING),
+            DatasetField(name="price", expression="price", datatype=DataType.FLOAT),
         ],
     )
     regions = SlayerDataset(
@@ -339,8 +348,8 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         sql_table="regions",
         data_source="sf_test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
         ],
     )
     for m in (orders, customers, products, regions):
@@ -358,7 +367,7 @@ def test_basic_query(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(orders.quantity)")],
     )))
     rows = result.data
     assert len(rows) == 1
@@ -371,11 +380,15 @@ def test_try_cast_integer_targets(sf_storage_with_datasets) -> None:
     run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_datasets), dataset="orders"))
 
 
+def test_author_casts(sf_storage_with_datasets) -> None:
+    run_sync(check_author_casts(SlayerQueryEngine(storage=sf_storage_with_datasets), dataset="orders"))
+
+
 def test_functional_aggregation(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     func = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(orders.quantity)")],
     )))
     assert int(next(iter(func.data[0].values()))) == 16
 
@@ -385,8 +398,8 @@ def test_query_with_dimension(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
-        metrics=[QueryMetric(metric="count(*)")],
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=[QueryMetric(metric="count(orders.*)")],
     )))
     rows = result.data
     statuses = {row.get("orders.status") for row in rows}
@@ -394,28 +407,27 @@ def test_query_with_dimension(sf_storage_with_datasets) -> None:
 
 
 def test_dev1933_regex_literal_model_column(sf_storage_with_datasets: StorageBackend) -> None:
-    """A model column holding a ``(?:...)`` regex literal and a ``%``
+    """A dataset field holding a ``(?:...)`` regex literal and a ``%``
     LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     orders = run_sync(sf_storage_with_datasets.get_dataset("orders"))
     assert orders is not None
     run_sync(sf_storage_with_datasets.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
         *orders.fields,
-        DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                              "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
+        DatasetField(name="rx", expression=ExpressionObject(dialects=[DialectEntry(dialect="SNOWFLAKE", expression="CASE WHEN status LIKE '%pend%' OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END")]),
                datatype=DataType.FLOAT),
     ]})))
     result = run_sync(engine.execute(SlayerQuery(
         population="orders_rx",
-        dimensions=[QueryDimension(field="rx")],
-        metrics=[QueryMetric(metric="count(*)")],
+        dimensions=[QueryDimension(field="orders_rx.rx")],
+        metrics=[QueryMetric(metric="count(orders_rx.*)")],
     )))
     by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
     assert by_rx == {1: 2, 0: 4}
 
 
 def test_rollup_join_via_explicit_joins(sf_storage_with_datasets) -> None:
-    """Cross-model measure: orders.customers.regions.name (multi-hop join).
+    """Cross-dataset metric: orders.customers.regions.name (multi-hop relationship path).
 
     Seed data: customers 1+3 live in US, customer 2 lives in EU, region 3
     (APAC) has no customers — and the LEFT JOIN chain starts at orders, so
@@ -425,10 +437,10 @@ def test_rollup_join_via_explicit_joins(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         dimensions=[QueryDimension(field="customers.regions.name")],
-        metrics=[QueryMetric(metric="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(orders.quantity)")],
     )))
     rows = result.data
-    region_names = {row.get("orders.customers.regions.name") for row in rows}
+    region_names = {row.get("customers.regions.name") for row in rows}
     assert region_names == {"US", "EU"}
 
 
@@ -443,8 +455,8 @@ def test_median_percentile_native(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
-            QueryMetric(metric="median(quantity)"),
-            QueryMetric(metric="percentile(quantity, p=0.5)"),
+            QueryMetric(metric="median(orders.quantity)"),
+            QueryMetric(metric="percentile(orders.quantity, p=0.5)"),
         ],
     )))
     rows = result.data
@@ -462,8 +474,8 @@ def test_stddev_var_native(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
-            QueryMetric(metric="stddev_samp(quantity)"),
-            QueryMetric(metric="var_samp(quantity)"),
+            QueryMetric(metric="stddev_samp(orders.quantity)"),
+            QueryMetric(metric="var_samp(orders.quantity)"),
         ],
     )))
     rows = result.data
@@ -479,8 +491,8 @@ def test_corr_covar_native(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
-            QueryMetric(metric="corr(quantity, other=customer_id)"),
-            QueryMetric(metric="covar_samp(quantity, other=customer_id)"),
+            QueryMetric(metric="corr(orders.quantity, other=orders.customer_id)"),
+            QueryMetric(metric="covar_samp(orders.quantity, other=orders.customer_id)"),
         ],
     )))
     rows = result.data
@@ -496,10 +508,10 @@ def test_date_trunc_quarter(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.QUARTER,
         )],
-        metrics=[QueryMetric(metric="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(orders.quantity)")],
     )))
     rows = result.data
     # All orders are in Q1 2024 → exactly one row.
@@ -512,12 +524,12 @@ def test_time_shift_dateadd(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )],
         metrics=[
-            QueryMetric(metric="sum(quantity)"),
-            QueryMetric(metric="time_shift(sum(quantity), -1, 'month')", alias="prev_month"),
+            QueryMetric(metric="sum(orders.quantity)"),
+            QueryMetric(metric="time_shift(sum(orders.quantity), -1, 'month')", alias="prev_month"),
         ],
     )))
     rows = result.data
@@ -530,17 +542,17 @@ def test_rank_transforms(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
         metrics=[
-            QueryMetric(metric="sum(quantity)"),
-            QueryMetric(metric="rank(sum(quantity), direction='desc')", alias="qty_rank"),
-            QueryMetric(metric="dense_rank(sum(quantity), direction='desc')", alias="qty_dense_rank"),
-            QueryMetric(metric="ntile(sum(quantity), n=2)", alias="qty_bucket"),
+            QueryMetric(metric="sum(orders.quantity)"),
+            QueryMetric(metric="rank(sum(orders.quantity), direction='desc')", alias="qty_rank"),
+            QueryMetric(metric="dense_rank(sum(orders.quantity), direction='desc')", alias="qty_dense_rank"),
+            QueryMetric(metric="ntile(sum(orders.quantity), n=2)", alias="qty_bucket"),
         ],
     )))
     rows = result.data
     # Three status groups → three rows with rank values 1..3
-    ranks = {int(row.get("orders.qty_rank")) for row in rows}
+    ranks = {int(row.get("qty_rank")) for row in rows}
     assert ranks == {1, 2, 3}
 
 
@@ -707,25 +719,25 @@ def test_session_overrides_apply_to_metadata_reads(sf_transient_schema) -> None:
 
 def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None:
     """Snowflake stores FK constraints declaratively and exposes them via
-    Inspector. Auto-ingestion should pick them up and produce models with
-    ``joins:`` entries. Pins the corrected behavior post-spec v2: Snowflake
+    Inspector. Auto-ingestion should pick them up and produce datasets with
+    ``relationships:`` entries. Pins the corrected behavior post-spec v2: Snowflake
     is NOT in the no-FK list.
 
     Coverage:
       - orders → customers (FK on customer_id)
       - orders → products (FK on product_id)
       - customers → regions (second-hop FK on region_id)
-      - source/target column names on each join
+      - source/target column names on each relationship
     """
     schema_to_introspect = sf_transient_schema
     models = run_sync(_ingest(sf_datasource, schema=schema_to_introspect))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name.get("orders")
     customers = by_name.get("customers")
-    assert orders is not None, f"orders model not ingested. Got: {list(by_name)}"
-    assert customers is not None, f"customers model not ingested. Got: {list(by_name)}"
+    assert orders is not None, f"orders dataset not ingested. Got: {list(by_name)}"
+    assert customers is not None, f"customers dataset not ingested. Got: {list(by_name)}"
 
-    # orders → customers / products. ModelJoin stores join_pairs as
+    # orders → customers / products. DatasetRelationship stores column_pairs as
     # [[source_col, target_col], ...]; flatten the first pair for the
     # standard single-column FK case.
     def _first_pair(j: DatasetRelationship) -> tuple[str, str]:
@@ -753,8 +765,39 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
     assert customers_joins["regions"] == ("region_id", "id")
 
 
+def test_a_declared_primary_key_is_not_enforced(sf_datasource, sf_transient_schema) -> None:
+    """Spec: models/fk-ingestion › A Snowflake primary key is not enforced."""
+    models = run_sync(_ingest(sf_datasource, schema=sf_transient_schema))
+    customers = next(m for m in models if m.name.lower() == "customers")
+    assert [f.name.lower() for f in customers.fields if f.primary_key] == ["id"]
+    assert getattr(customers, "enforced_keys") == []
+
+
+def test_an_authors_trusted_flag_survives_drift(sf_datasource, sf_transient_schema, tmp_path) -> None:
+    """Spec: models/schema-drift › An author's trusted flag is never cleared."""
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    result = _ingest_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema)
+    assert not result.errors, result.errors
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        orders = engine.run_sync(storage.get_dataset("orders", data_source=sf_datasource.name))
+        assert orders is not None
+        data = orders.model_dump()
+        for rel in data["relationships"]:
+            rel["trusted"] = True
+        engine.run_sync(storage.save_dataset(SlayerDataset.model_validate(data)))
+        entries = engine.run_sync(engine.validate_datasets(data_source=sf_datasource.name))
+        assert not [e for e in entries if e.dataset_name == "orders"], entries
+        engine.run_sync(engine.apply_drift_deletes(entries))
+        reloaded = engine.run_sync(storage.get_dataset("orders", data_source=sf_datasource.name))
+    finally:
+        engine.close()
+    assert reloaded is not None
+    assert [getattr(r, "trusted") for r in reloaded.relationships] == [True] * len(reloaded.relationships)
+
+
 def test_auto_ingest_imports_comments(sf_datasource, sf_transient_schema) -> None:
-    """Snowflake table/column comments must land on model/column descriptions."""
+    """Snowflake table/column comments must land on dataset/field descriptions."""
     models = run_sync(_ingest(sf_datasource, schema=sf_transient_schema))
     by_name = {m.name.lower(): m for m in models}
     orders = by_name["orders"]
@@ -778,7 +821,7 @@ def test_explain_query_uses_explain_using_json(sf_storage_with_datasets) -> None
     result = run_sync(engine.execute(
         query=SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(quantity)")],
+            metrics=[QueryMetric(metric="sum(orders.quantity)")],
         ),
         explain=True,
     ))
@@ -824,7 +867,7 @@ def test_quoted_lowercase_identifier_fails(sf_engine) -> None:
     '''``"orders"`` (quoted, lowercase) FAILS — quoted identifiers are
     case-sensitive on Snowflake, and the stored name is uppercase. Pins
     the documented identifier-casing caveat: users writing
-    ``"Revenue"`` in Column.sql on Snowflake must match storage exactly.
+    ``"Revenue"`` in DatasetField.sql on Snowflake must match storage exactly.
     '''
     with sf_engine.connect() as conn:
         stmt = sa.text('SELECT COUNT(*) FROM "orders"')
@@ -834,7 +877,7 @@ def test_quoted_lowercase_identifier_fails(sf_engine) -> None:
 
 def test_inspector_returns_lowercase_column_names(sf_engine, sf_transient_schema) -> None:
     """``snowflake-sqlalchemy`` Inspector lowercases by default. SLayer's
-    ingestion relies on this for round-tripping ``Column.name`` with the
+    ingestion relies on this for round-tripping ``DatasetField.name`` with the
     SQL the generator emits. Pass the schema explicitly — the Inspector
     doesn't pick up the per-connection ``USE SCHEMA`` from the listener."""
     inspector = sa.inspect(sf_engine)
@@ -848,8 +891,8 @@ def test_inspector_returns_lowercase_column_names(sf_engine, sf_transient_schema
 def test_inspector_returns_lowercase_fk_metadata(sf_engine, sf_transient_schema) -> None:
     """FK introspection casing — referred_table and referred_columns are
     lowercase, matching get_table_names / get_columns output, so the FK
-    resolution in ingestion produces models whose join targets match
-    other models' names by string equality."""
+    resolution in ingestion produces datasets whose relationship targets match
+    other datasets' names by string equality."""
     inspector = sa.inspect(sf_engine)
     fks = inspector.get_foreign_keys("orders", schema=sf_transient_schema)
     by_referred = {fk["referred_table"]: fk for fk in fks}
@@ -860,15 +903,15 @@ def test_inspector_returns_lowercase_fk_metadata(sf_engine, sf_transient_schema)
 
 
 def test_query_result_keys_use_lowercase(sf_storage_with_datasets) -> None:
-    """Result-column keys returned by SlayerQueryEngine use the model's
-    lowercase column names (not Snowflake's uppercase storage form).
+    """Result-column keys returned by SlayerQueryEngine use the dataset's
+    lowercase field names (not Snowflake's uppercase storage form).
     Pins the user-facing API: `result.rows[0]["orders.status"]` works,
     `result.rows[0]["ORDERS.STATUS"]` would silently miss."""
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
-        metrics=[QueryMetric(metric="count(*)")],
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=[QueryMetric(metric="count(orders.*)")],
     )))
     rows = result.data
     assert rows
@@ -885,7 +928,7 @@ def test_query_result_keys_use_lowercase(sf_storage_with_datasets) -> None:
 # QUOTED DDL (``"StateFlag"``) is stored with genuinely mixed case, so an
 # UNQUOTED reference (which folds to ``STATEFLAG``) fails to resolve — exactly
 # the upper-folding mirror of the Postgres bug. The fix quotes it, so the
-# model (which writes ``StateFlag`` unquoted, as an OTF agent would) executes.
+# dataset (which writes ``StateFlag`` unquoted, as an OTF agent would) executes.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -909,10 +952,10 @@ def sf_dev1645_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
             sql_table="dev1645_accounts",
             data_source="sf_test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
                 # Written UNQUOTED — the fix must emit "StateFlag".
                 DatasetField(name="is_inactive", datatype=DataType.BOOLEAN,
-                       sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
+                       expression="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
             ],
         )
         run_sync(storage.save_dataset(model))
@@ -927,16 +970,16 @@ def sf_dev1645_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
 
 
 def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
-    """Filter on a derived column referencing UNQUOTED mixed-case StateFlag —
+    """Filter on a derived field referencing UNQUOTED mixed-case StateFlag —
     must execute on Snowflake (upper-folding), proving universal quoting is
     correct there too."""
     engine = SlayerQueryEngine(storage=sf_dev1645_storage)
     result = run_sync(engine.execute(SlayerQuery(
         population="dev1645_accounts",
-        metrics=[QueryMetric(metric="count(*)", alias="cnt")],
-        filter=["is_inactive == True"],
+        metrics=[QueryMetric(metric="count(dev1645_accounts.*)", alias="cnt")],
+        filter=["dev1645_accounts.is_inactive == True"],
     )))
-    assert result.data[0]["dev1645_accounts.cnt"] == 2
+    assert result.data[0]["cnt"] == 2
 
 
 def test_every_snowflake_alias_failure_is_quoted(sf_engine) -> None:
@@ -967,7 +1010,7 @@ def sf_dev2120_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
         run_sync(storage.save_datasource(sf_datasource))
         base = lib_dataset(data_source="sf_test")
         run_sync(storage.save_dataset(base.model_copy(update={
-            "fields": [c.model_copy(update={"sql": c.name}) for c in base.fields]})))
+            "fields": [c.model_copy(update={"expression": c.name}) for c in base.fields]})))
         for model in run_sync(_ingest(sf_datasource, include_tables=["docs"])):
             run_sync(storage.save_dataset(model))
         yield storage
@@ -990,7 +1033,70 @@ def test_dev2120_variant_column(sf_dev2120_storage) -> None:
 
 
 # ---------------------------------------------------------------------------
-# List columns: untyped ARRAY element inference (spec: models/list-columns, queries/list-functions,
+# One logical bucket type; a DATE meeting a TIMESTAMP reads as midnight
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sf_logical_types_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path):
+    conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"USE SCHEMA {sf_transient_schema}")
+        for stmt in logical_type_statements("snowflake"):
+            cur.execute(stmt)
+        conn.commit()
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        run_sync(storage.save_datasource(logical_type_granularities(sf_datasource)))
+        for model in logical_type_datasets(data_source=sf_datasource.name):
+            run_sync(storage.save_dataset(model.model_copy(update={
+                "fields": [c.model_copy(update={"expression": c.name}) for c in model.fields]})))
+        yield storage
+    finally:
+        try:
+            for table in ("bk", "mx"):
+                cur.execute(f"DROP TABLE IF EXISTS {sf_transient_schema}.{table}")
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+
+def test_logical_bucket_types(sf_logical_types_storage, sf_datasource: DatasourceConfig) -> None:
+    run_sync(check_bucket_matrix(SlayerQueryEngine(storage=sf_logical_types_storage), backend="snowflake",
+                                 data_source=sf_datasource.name))
+
+
+def test_date_meets_timestamp_as_midnight(sf_logical_types_storage, sf_datasource: DatasourceConfig) -> None:
+    run_sync(check_mixed(SlayerQueryEngine(storage=sf_logical_types_storage), backend="snowflake",
+                         data_source=sf_datasource.name))
+
+
+def test_logical_types_hold_under_a_zoned_timestamp_mapping(
+    sf_logical_types_storage, sf_datasource: DatasourceConfig,
+) -> None:
+    """A bare ``TIMESTAMP`` would follow the session mapping: every cast SLayer emits stays naive."""
+    ds = run_sync(sf_logical_types_storage.get_datasource(sf_datasource.name))
+    engine_factory.invalidate_engine(ds)
+
+    def _zoned_session(dbapi_conn, _conn_record) -> None:  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        try:
+            cur.execute("ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_LTZ', TIMEZONE = 'America/Sao_Paulo'")
+        finally:
+            cur.close()
+
+    event.listen(engine_factory.get_engine(ds), "connect", _zoned_session)
+    try:
+        engine = SlayerQueryEngine(storage=sf_logical_types_storage)
+        run_sync(check_bucket_matrix(engine, backend="snowflake", data_source=sf_datasource.name))
+        run_sync(check_mixed(engine, backend="snowflake", data_source=sf_datasource.name))
+    finally:
+        engine_factory.invalidate_engine(ds)
+
+
+# ---------------------------------------------------------------------------
+# List fields: untyped ARRAY element inference (spec: models/list-columns, queries/list-functions,
 # queries/list-children, aggregations/collect)
 # ---------------------------------------------------------------------------
 
@@ -1031,12 +1137,12 @@ def sf_lists(_sf_list_tables, sf_datasource: DatasourceConfig, tmp_path):
     run_sync(storage.save_datasource(sf_datasource))
     for base in (contractors_dataset(data_source="sf_test"), assignments_dataset(data_source="sf_test")):
         run_sync(storage.save_dataset(base.model_copy(update={
-            "fields": [c.model_copy(update={"sql": c.name}) for c in base.fields]})))
+            "fields": [c.model_copy(update={"expression": c.name}) for c in base.fields]})))
     run_sync(storage.save_dataset(mixed_numbers_dataset(data_source="sf_test", explicit_sql=True)))
     return storage, _sf_list_tables
 
 
-def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataType, DataType | None]]:
+def _elements(datasource: DatasourceConfig, table: str) -> dict[str, tuple[DataType | None, DataType | None]]:
     (model,) = run_sync(_ingest(datasource, include_tables=[table]))
     return {c.name: (c.datatype, c.element_type) for c in model.fields if c.name != "id"}
 
@@ -1071,18 +1177,18 @@ def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: Data
 
 
 @pytest.mark.parametrize(("filters", "kept"), [
-    (["contains(typed, 'go')"], {1}),
-    (["contains_any(typed, ['go', 'rust'])"], {1}),
-    (["contains_all(typed, ['go', 'sql'])"], {1}),
-    (["length(typed) = 1"], {2}),
-    (["typed.value = 'sql'"], {1, 2}),
+    (["contains(structured.typed, 'go')"], {1}),
+    (["contains_any(structured.typed, ['go', 'rust'])"], {1}),
+    (["contains_all(structured.typed, ['go', 'sql'])"], {1}),
+    (["length(structured.typed) = 1"], {2}),
+    (["structured.typed.value = 'sql'"], {1, 2}),
 ])
 def test_list_functions_on_a_structured_array(sf_lists: tuple[YAMLStorage, Any], sf_datasource: DatasourceConfig, filters, kept) -> None:
     storage, _ = sf_lists
     (model,) = run_sync(_ingest(sf_datasource, include_tables=["structured"]))
     run_sync(storage.save_dataset(model))
     resp = run_sync(SlayerQueryEngine(storage=storage).execute(
-        {"population": "structured", "dimensions": ["id"], "filter": filters}))
+        {"population": "structured", "dimensions": ["structured.id"], "filter": filters}))
     assert {int(r["structured.id"]) for r in resp.data} == kept, resp.sql
 
 
@@ -1219,10 +1325,10 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         tags = model.get_field("tags")
         assert tags is not None
         assert tags.element_type is DataType.INTEGER
-        assert tags.sql == '"tags"'
+        assert tags.definition_sql == '"tags"'
         engine = SlayerQueryEngine(storage=storage)
         try:
-            rows = run_sync(engine.execute({"population": "lower_items", "dimensions": ["qty"]})).data
+            rows = run_sync(engine.execute({"population": "lower_items", "dimensions": ["lower_items.qty"]})).data
         finally:
             engine.close()
         assert [r["lower_items.qty"] for r in rows] == [7]
@@ -1241,3 +1347,35 @@ def test_join_cardinality_profiles_snowflake_keys(sf_storage_with_datasets) -> N
         engine.close()
     (finding,) = [f for f in report.findings if f.to == "customers"]
     assert finding.detected is RelationshipCardinality.MANY_TO_ONE
+
+
+# --------------------------------------------------------------------------- #
+# Spec: aggregations/distinct-and-percentiles — native PERCENTILE_DISC and APPROX_PERCENTILE.
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def _sf_dev2458_tables(sf_transient_schema: str):
+    conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"USE SCHEMA {sf_transient_schema}")
+        for stmt in dev2458.statements(dialect="snowflake"):
+            cur.execute(stmt)
+        conn.commit()
+        yield
+    finally:
+        try:
+            for table in ("pq", "pq_items"):
+                cur.execute(f"DROP TABLE IF EXISTS {table}")
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+
+@pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_types], ids=lambda c: c.__name__)
+def test_distinct_and_percentiles(_sf_dev2458_tables, sf_datasource: DatasourceConfig, tmp_path, check) -> None:
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    run_sync(storage.save_datasource(sf_datasource))
+    for model in dev2458.datasets(data_source="sf_test", explicit_sql=True):
+        run_sync(storage.save_dataset(model))
+    run_sync(dev2458.run_check(check, storage=storage))

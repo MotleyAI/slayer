@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1740 — SQL conditionals + expression dimensions
+"""Shared fixtures for SQL conditionals + expression dimensions
 (including one over an aggregate).
 
 Underscore-prefixed so pytest skips collection here. Mirrors
@@ -6,15 +6,15 @@ Underscore-prefixed so pytest skips collection here. Mirrors
 DuckDB, ``make_exec_engine`` yielding an engine per backend, ``gen`` for
 SQL-shape assertions.
 
-Model shape
------------
+Dataset shape
+-------------
 ``orders`` (host) carries the LOCAL dimensions ``region`` / ``city`` /
 ``channel`` plus ``amount`` / ``status`` / ``ordered_at``. The banding case
 groups by ``region`` and a computed ``band`` derived from each city's total
 (``sum(amount, partition_by=city)`` crossing 5000) — the aggregate lives at a
 FINER grain (city) than the query (region), which is why Part B2 needs
-DEV-1739's ``partition_by=`` and a post-aggregate regroup.
-``orders → customers → regions`` gives the cross-model / extension-join shapes.
+``partition_by=`` and a post-aggregate regroup.
+``orders → customers → regions`` gives the cross-dataset / extension-relationship shapes.
 
 Dataset (hand-computed; every executed expectation is derived here)
 -------------------------------------------------------------------
@@ -69,8 +69,8 @@ from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
 
 from tests._engine_helpers import _engine_generate
-# The customer/region models and the generic result helpers are byte-identical
-# to DEV-1739's; import them rather than restate them (DRY / Sonar duplication).
+# The customer/region datasets and the generic result helpers are byte-identical
+# to ``_dev1739_fixtures``'s; import them rather than restate them (DRY / Sonar duplication).
 from tests._dev1739_fixtures import (
     approx_sum,
     cm_cte_bodies,
@@ -83,7 +83,7 @@ from tests._dev1739_fixtures import (
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers → regions.
+# Datasets — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
 def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -98,9 +98,9 @@ def orders_dataset() -> SlayerDataset:
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
-            # Filtered column (CASE-WHEN at aggregation time) — for a filtered
+            # Filtered field (CASE-WHEN at aggregation time) — for a filtered
             # aggregate reconciliation under the computed dimension.
-            DatasetField(name="ok_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="ok_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="status = 'ok'"),
         ],
         relationships=[
@@ -222,14 +222,14 @@ def two_stage_banding() -> list:
     row-level CASE band over that total, regrouped by (region, band)."""
     stage1 = SlayerQuery(
         name="per_city", population="orders",
-        dimensions=["city", "region"],
-        metrics=[QueryMetric(metric="sum(amount)", alias="city_total")],
+        dimensions=["orders.city", "orders.region"],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="city_total")],
     )
     stage2 = SlayerQuery(
         population="per_city",
-        dimensions=[QueryDimension(field="region"),
-                    QueryDimension(field="CASE WHEN city_total > 5000 THEN 1 ELSE 0 END", alias="band")],
-        metrics=[QueryMetric(metric="sum(city_total)", alias="band_total")],
+        dimensions=[QueryDimension(field="per_city.region"),
+                    QueryDimension(field="CASE WHEN per_city.city_total > 5000 THEN 1 ELSE 0 END", alias="band")],
+        metrics=[QueryMetric(metric="sum(per_city.city_total)", alias="band_total")],
     )
     return [stage1, stage2]
 

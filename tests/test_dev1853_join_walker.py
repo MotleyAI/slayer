@@ -1,8 +1,8 @@
-"""DEV-1853 — the shared bidirectional walker (``slayer/core/join_walker.py``).
+"""The shared bidirectional walker (``slayer/core/join_walker.py``).
 
-One traversal substrate: any declared join is a symmetric edge, traversed in
+One traversal substrate: any declared relationship is a symmetric edge, traversed in
 either direction with oriented pairs and cardinality; ambiguity fails closed;
-edge names resolve before model names.
+edge names resolve before dataset names.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.enums import RelationshipCardinality, JoinType
-from slayer.core.errors import AmbiguousRelationshipPathError, CircularRelationshipPathError
+from slayer.core.errors import AmbiguousHopError, AmbiguousRelationshipPathError, CircularRelationshipPathError
 from slayer.core.relationship_walker import (
     OrientedRelationship,
     edges_between,
@@ -23,11 +23,11 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.sql.field_expansion import resolve_ref_target
 
 
-def _dataset(name: str, cols: list[str], joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _dataset(name: str, cols: list[str], relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="ds", sql_table=name,
         fields=[DatasetField(name=c) for c in cols],
-        relationships=joins or [],
+        relationships=relationships or [],
     )
 
 
@@ -176,15 +176,14 @@ class TestResolveHop:
         assert from_customers.to == "orders"
         assert from_customers.column_pairs == [("id", "billing_customer_id")]
 
-    def test_edge_name_resolves_before_model_name(self) -> None:
+    def test_an_edge_name_that_is_another_edges_target_is_ambiguous(self) -> None:
         a = _dataset("a", ["id", "b_id", "c_id"], [
             DatasetRelationship(to="b", from_columns=["b_id"], to_columns=["id"], name="c"),
             DatasetRelationship(to="c", from_columns=["c_id"], to_columns=["id"]),
         ])
         models = {"a": a, "b": _dataset("b", ["id"]), "c": _dataset("c", ["id"])}
-        edge = resolve_hop(current=models["a"], token="c", datasets_by_name=models)
-        assert edge is not None
-        assert edge.to == "b"
+        with pytest.raises(AmbiguousHopError):
+            resolve_hop(current=models["a"], token="c", datasets_by_name=models)
 
 
 class TestWalk:
@@ -223,7 +222,7 @@ class TestWalk:
                     datasets_by_name=models) is None
 
     def test_revisit_is_guarded(self) -> None:
-        # DEV-1952: a revisit is a typed circular refusal, not a silent ``None``.
+        # A revisit is a typed circular refusal, not a silent ``None``.
         models = self._chain()
         with pytest.raises(CircularRelationshipPathError):
             walk(root=models["regions"], path=("customers", "regions"),

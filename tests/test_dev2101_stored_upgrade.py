@@ -17,7 +17,7 @@ from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
     customers_v10,
-    measure_total,
+    metric_total,
     memory_v2,
     orders_v10,
     query_backed_v10,
@@ -56,7 +56,7 @@ def _model_doc(*, formula: str, version: int = 15, **extra: Any) -> dict:
 
 
 def _model_formula(text: str) -> str:
-    return SlayerDataset.model_validate(_model_doc(formula=text)).metrics[0].expression
+    return SlayerDataset.model_validate(_model_doc(formula=text)).metrics[0].text
 
 
 def _query(**fields: Any) -> SlayerQuery:
@@ -166,11 +166,11 @@ class TestStoredResultsUnchanged:
         assert model is not None
         [loaded] = model.source_queries or []
         assert isinstance(loaded, SlayerQuery)
-        assert loaded.filter == ["status = 'ok'"]
+        assert loaded.filter == ["orders.status = 'ok'"]
         assert loaded.metrics is not None
-        assert loaded.metrics[0].metric == "sum(iif(status = 'ok', amount, 0))"
-        resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev)"]})
-        assert measure_total(resp, measure="rev_sum") == 80.0
+        assert loaded.metrics[0].metric == "sum(iif(orders.status = 'ok', orders.amount, 0))"
+        resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev_q.rev)"]})
+        assert metric_total(resp, metric="rev_sum") == 80.0
 
     async def test_rewrite_precedes_the_legacy_time_literal_repair(self, tmp_path, shop_ds) -> None:
         stage = rev_query(filters=['ordered_at >= "2024-01-01T00:00:00Z"'])
@@ -178,15 +178,15 @@ class TestStoredResultsUnchanged:
         model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
         stage = (model.source_queries or [])[0]
-        assert stage.filter == ["ordered_at >= '2024-01-01T00:00:00'"]
-        resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev)"]})
-        assert measure_total(resp, measure="rev_sum") == 200.0
+        assert stage.filter == ["orders.ordered_at >= '2024-01-01T00:00:00'"]
+        resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev_q.rev)"]})
+        assert metric_total(resp, metric="rev_sum") == 200.0
 
     async def test_pipe_concatenation_returns_the_same_values(self, tmp_path, shop_ds) -> None:
         stage = {"source_model": "orders", "dimensions": [{"expression": 'status | "#"', "name": "tag"}],
                  "measures": [{"formula": "sum(amount)", "name": "rev"}]}
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", stage=stage)
-        resp = await run(storage, {"population": "rev_q", "dimensions": ["tag"], "metrics": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_q", "dimensions": ["rev_q.tag"], "metrics": ["sum(rev_q.rev)"]})
         assert {r["rev_q.tag"]: float(r["rev_q.rev_sum"]) for r in resp.data} == {
             "ok#": 80.0, "new#": 70.0, "2024/01/01#": 60.0,
         }
@@ -199,8 +199,8 @@ class TestStoredResultsUnchanged:
                                   memories=[memory_v2(memory_id="m_q", query=query)])
         mem = await storage.get_memory("m_q")
         assert mem.query is not None
-        assert mem.query.filter == ["status = 'ok'"]
-        assert measure_total(await run(storage, mem.query), measure="rev") == 80.0
+        assert mem.query.filter == ["orders.status = 'ok'"]
+        assert metric_total(await run(storage, mem.query), metric="rev") == 80.0
 
     async def test_resave_writes_the_new_spelling(self, tmp_path, shop_ds) -> None:
         stage = rev_query(filters=['status == "ok"'])
@@ -213,5 +213,5 @@ class TestStoredResultsUnchanged:
     async def test_unversioned_client_query_fails_with_the_hint(self, tmp_path, shop_ds) -> None:
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", stage=rev_query())
         with pytest.raises(UnknownReferenceError) as info:
-            await run(storage, {"population": "orders", "metrics": ["sum(amount)"], "filter": ['status = "ok"']})
+            await run(storage, {"population": "orders", "metrics": ["sum(orders.amount)"], "filter": ['orders.status = orders."ok"']})
         assert "single quote" in str(info.value).lower(), str(info.value)

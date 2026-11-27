@@ -1,4 +1,4 @@
-"""Model filters are validated per reference against the owning model, at both save doors and for every model a query reads."""
+"""Dataset filters are validated per reference against the owning dataset, at both save doors and for every dataset a query reads."""
 
 from __future__ import annotations
 
@@ -7,21 +7,23 @@ from collections.abc import AsyncIterator, Sequence
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import DatasetFilterError
+from slayer.core.errors import DatasetFilterCycleError, DatasetFilterError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2210_fixtures import seed, table_datasets
 from tests._engine_helpers import seeded_exec_engine
 
-RANKED = DatasetField(name="ranked", datatype=DataType.INTEGER, sql="rank() over (order by amount)")
+RANKED = DatasetField(name="ranked", datatype=DataType.INTEGER, expression=ExpressionObject(
+    dialects=[DialectEntry(dialect="SQLITE", expression="rank() over (order by amount)")]))
 
 
-def _orders(name: str, *, columns: Sequence[DatasetField] = (), **kw) -> SlayerDataset:
+def _orders(name: str, *, fields: Sequence[DatasetField] = (), **kw) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="test", sql_table="orders",
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="status", datatype=DataType.STRING),
-                 DatasetField(name="amount", datatype=DataType.INTEGER), *columns],
+                 DatasetField(name="amount", datatype=DataType.INTEGER), *fields],
         **kw,
     )
 
@@ -35,7 +37,7 @@ def _returns(name: str, *, target: str, **kw) -> SlayerDataset:
 
 
 def _with_total(name: str) -> SlayerDataset:
-    return _orders(name, metrics=[DatasetMetric(expression="sum(amount)", name="tot")], filters=["tot > 100"])
+    return _orders(name, metrics=[DatasetMetric(expression="sum(amount)", name="tot")], filters=[f"{name}.tot > 100"])
 
 
 @pytest.fixture
@@ -59,21 +61,21 @@ class TestSaveRefusesInvalidFilters:
         model = _with_total("orders_tot")
         with pytest.raises(DatasetFilterError) as exc:
             await _save(engine, model, door=door)
-        assert "dataset filter 'tot > 100'" in str(exc.value)
+        assert "dataset filter 'orders_tot.tot > 100'" in str(exc.value)
         assert await engine.storage.get_dataset("orders_tot", data_source="test") is None
 
     async def test_filter_on_joined_windowed_column(self, engine: SlayerQueryEngine, door):
-        await engine.storage.save_dataset(_orders("ranked_orders", columns=[RANKED]), _validate=False)
+        await engine.storage.save_dataset(_orders("ranked_orders", fields=[RANKED]), _validate=False)
         model = _returns("returns_ranked", target="ranked_orders", filters=["ranked_orders.ranked > 1"])
-        with pytest.raises(DatasetFilterError) as exc:
-            await _save(engine, model, door=door)
-        assert "window" in str(exc.value)
-        assert await engine.storage.get_dataset("returns_ranked", data_source="test") is None
+        await _save(engine, model, door=door)
+        stored = await engine.storage.get_dataset("returns_ranked", data_source="test")
+        assert stored is not None
+        assert stored.filters == ["ranked_orders.ranked > 1"]
 
     async def test_filter_on_windowed_column_through_derived_column(self, engine, door):
-        model = _orders("orders_rank_plus", columns=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INTEGER, sql="ranked + 0")],
-                        filters=["rank_plus > 1"])
-        with pytest.raises(DatasetFilterError):
+        model = _orders("orders_rank_plus", fields=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INTEGER, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="orders_rank_plus.ranked + 0")]))],
+                        filters=["orders_rank_plus.rank_plus > 1"])
+        with pytest.raises(DatasetFilterCycleError):
             await _save(engine, model, door=door)
 
 
@@ -86,18 +88,18 @@ class TestQueryReadsInvalidStoredFilter:
             _returns("returns_bad_filtered", target="bad_done", filters=["bad_done.id is not null"]), _validate=False,
         )
         derived = _returns("returns_bad_derived", target="bad_done")
-        derived.fields.append(DatasetField(name="bad_status", datatype=DataType.STRING, sql="bad_done.status"))
+        derived.fields.append(DatasetField(name="bad_status", datatype=DataType.STRING, expression="bad_done.status"))
         await engine.storage.save_dataset(derived, _validate=False)
         return engine
 
     @pytest.mark.parametrize("body", [
-        {"population": "bad_done", "dimensions": ["id"]},
-        {"population": "returns_bad", "dimensions": ["id", "bad_done.status"]},
-        {"population": "returns_bad_filtered", "dimensions": ["id"]},
-        {"population": "returns_bad_derived", "dimensions": ["id", "bad_status"]},
+        {"population": "bad_done", "dimensions": ["bad_done.id"]},
+        {"population": "returns_bad", "dimensions": ["returns_bad.id", "bad_done.status"]},
+        {"population": "returns_bad_filtered", "dimensions": ["returns_bad_filtered.id"]},
+        {"population": "returns_bad_derived", "dimensions": ["returns_bad_derived.id", "returns_bad_derived.bad_status"]},
     ], ids=["source", "join-target", "another-models-filter", "derived-column"])
     async def test_fails_with_the_targets_filter(self, stored, body):
         query = SlayerQuery.model_validate(body)
         with pytest.raises(DatasetFilterError) as exc:
             await stored.execute(query)
-        assert "dataset filter 'tot > 100'" in str(exc.value)
+        assert "dataset filter 'bad_done.tot > 100'" in str(exc.value)

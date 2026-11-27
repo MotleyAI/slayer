@@ -21,8 +21,8 @@ connectives, `IN` predicates, nested aggregates and nested transforms — and SH
 never contain an internal representation; it is identical across runs and
 independent of the evaluation clock. A decimal literal SHALL be spelled as a plain
 decimal and a null literal as `null`. A row-level column operand SHALL be spelled
-relative to the expression's home path, which the key already carries as its
-prefix; references inside a nested aggregate or transform keep their own spelling.
+relative to the expression's anchor and route (`queries/references`), which the
+key carries as its prefix, and in full, with no prefix on the key, when the operands share no anchor; references inside a nested aggregate or transform keep their own spelling.
 A date-literal comparison as the whole source SHALL be named like any other
 expression source. An explicit rename overrides the derived key. Two distinct
 expressions whose derived keys collide SHALL fail with a clear duplicate-key error
@@ -34,8 +34,8 @@ referenceable in filters, in order and from a downstream stage.
 - **THEN** its result key is `orders.amount_cost_sum` (same sanitizer as a computed dimension named from `amount - cost`)
 
 #### Scenario: Dotted leaf in the derived key
-- **WHEN** a measure on model `orders` is written `sum(amount - customers.discount)`
-- **THEN** its result key is `orders.amount_customers_discount_sum`, and `name`
+- **WHEN** a query with population `orders` measures `sum(orders.amount - customers.discount)`
+- **THEN** its result key is `orders_amount_customers_discount_sum`, its operands sharing no anchor, and `name`
   overrides it as for any measure
 
 #### Scenario: Colliding derived keys fail loudly
@@ -59,7 +59,7 @@ referenceable in filters, in order and from a downstream stage.
 #### Scenario: Date comparison inside a scalar call
 - **WHEN** a query rooted at `regions` (`customers → regions`, `orders → customers`)
   selects `sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))`
-- **THEN** its result key is `regions.customers.orders.iif_order_date_2025_01_01_1_0_sum`,
+- **THEN** its result key is `customers.orders.iif_order_date_2025_01_01_1_0_sum`,
   identical across runs, with the values unchanged
 
 #### Scenario: Date comparison forms
@@ -99,9 +99,9 @@ referenceable in filters, in order and from a downstream stage.
 #### Scenario: Home-relative operand spelling
 - **WHEN** a query rooted at `orders` selects `sum(customers.spend - 1)` and
   `sum(customers.spend - customers.regions.weight)`, both homed at `customers`
-- **THEN** their result keys are `orders.customers.spend_1_sum` and
-  `orders.customers.spend_regions_weight_sum` — the home path spelled once, as for
-  `sum(customers.spend)` → `orders.customers.spend_sum`; the same holds for a
+- **THEN** their result keys are `customers.spend_1_sum` and
+  `customers.spend_regions_weight_sum` — the home path spelled once, as for
+  `sum(customers.spend)` → `customers.spend_sum`; the same holds for a
   pathed derived column, a pathed bucketed column and a pathed `IN` operand
 
 #### Scenario: Nested constituent keeps its spelling
@@ -253,7 +253,7 @@ Non-shift transforms reject grain-refining row-level leaves. An aggregation sour
 consisting entirely of attached values is a re-aggregation and SHALL be accepted; a
 source mixing row-level references with attached values is a row-grain aggregation
 and SHALL be accepted (per `queries/semantics` › Row-grain aggregation sources),
-a collapsing (`first`/`last`) transform constituent included (per
+a `first`/`last` over an aggregate included as an attached constituent (per
 `queries/partitioned-aggregates` › Mixed sources carry the full expression-source
 surface); an
 attached (aggregate-valued) parameter on a row-level source SHALL be accepted when the
@@ -297,12 +297,12 @@ operand dataset for an attached one.
 - **THEN** the query fails with the input-safety error naming the leaf and the hop,
   never a multiplied value
 
-#### Scenario: Collapsing constituent mixed with a row leaf fails closed
+#### Scenario: Ranked second-order constituent mixed with a row leaf broadcasts per region
 - **WHEN** a query over a month time dimension selects
   `sum(amount * last(sum(amount, partition_by=[region, ordered_at])))`
-- **THEN** it executes with the collapsed value broadcast onto each row of its
-  partition (Jan 375 / Feb 825 / Mar 900 on the reference dataset), never a
-  multiplied value
+- **THEN** it executes with the `last` value — its month key dropped, one value per
+  region — broadcast onto each row of its region (Jan 375 / Feb 825 / Mar 900 on the
+  reference dataset), never a multiplied value
 
 #### Scenario: Unanalysable derived leaf fails closed
 - **WHEN** an expression leaf names a derived column whose definition no dialect can

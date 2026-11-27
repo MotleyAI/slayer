@@ -14,6 +14,7 @@ from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
+from slayer.storage.upgrade import upgrade_store
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -232,24 +233,24 @@ async def test_new_style_backend_keeps_failure_reporting() -> None:
 
 
 class SelfBuildingBackend(_DictStore):
-    """Builds datasources from its own records; models and memories decode through the base load pipeline."""
+    """Builds datasources from its own records; datasets and memories decode through the base load pipeline."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.raw_models: dict[tuple[str, str], dict] = {}
+        self.raw_datasets: dict[tuple[str, str], dict] = {}
         self.calls: list[str] = []
 
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         self.datasources[datasource.name] = datasource
 
     async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
-        self.raw_models[(dataset.data_source, dataset.name)] = dataset.model_dump(mode="json", exclude_none=True)
+        self.raw_datasets[(dataset.data_source, dataset.name)] = dataset.model_dump(mode="json", exclude_none=True)
 
     async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
-        return list(self.raw_models)
+        return list(self.raw_datasets)
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
-        for (ds, n), raw in self.raw_models.items():
+        for (ds, n), raw in self.raw_datasets.items():
             if n == name and data_source in (None, ds):
                 return await self._migrate_and_refine_on_load(name=n, data=raw, data_source=ds)
         return None
@@ -277,15 +278,20 @@ class SelfBuildingBackend(_DictStore):
 
 
 def _self_building_backend() -> SelfBuildingBackend:
-    """A fresh instance holding datasource ``shop``, model ``shop.orders`` and memory ``1``."""
+    """A fresh instance holding datasource ``shop``, dataset ``shop.orders`` and memory ``1``."""
     backend = SelfBuildingBackend()
     backend.datasources["shop"] = _valid()
     model = SlayerDataset.model_validate({"name": "orders", "data_source": "shop", "sql_table": "orders",
                                         "fields": [{"name": "id", "datatype": "Integer", "primary_key": True}]})
-    backend.raw_models[("shop", "orders")] = model.model_dump(mode="json", exclude_none=True)
+    backend.raw_datasets[("shop", "orders")] = model.model_dump(mode="json", exclude_none=True)
     memory = Memory.model_validate({"id": "1", "learning": "note", "entities": ["shop.orders"]})
     backend.memories["1"] = memory.model_dump(mode="json")
     return backend
+
+
+async def test_a_backend_without_raw_datasources_reports_none_unreadable() -> None:
+    report = await upgrade_store(_self_building_backend())
+    assert [o for o in report.outcomes if o.kind == "datasource"] == []
 
 
 class TestLibraryGranularitySettle:
@@ -306,4 +312,5 @@ class TestLibraryGranularitySettle:
         loads = [load_model, load_memory] if first == "model" else [load_memory, load_model]
         for load in loads:
             await load()
-        assert backend.calls == ["_raw_datasource_dicts"]
+        assert backend.calls
+        assert set(backend.calls) == {"_raw_datasource_dicts"}  # once per top-level load

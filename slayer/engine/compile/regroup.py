@@ -5,13 +5,14 @@ checker, ``elaborate_env``); orchestration lives in ``compile/stages``."""
 
 from __future__ import annotations
 
-from typing import AbstractSet, Callable, Dict, Mapping
+from typing import AbstractSet, Callable, Dict, Mapping, Optional
 
+from slayer.core.enums import DataType
 from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, FieldKey, ValueKey, substitute_value_keys, walk_value_keys
+from slayer.engine.key_metadata import SlotTyping
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.bound import BoundFilter
 from slayer.core.models import SlayerDataset
-from slayer.core.scope import StageSchema
 
 __all__ = [
     "REGROUP_LEAF_PREFIX",
@@ -21,7 +22,7 @@ __all__ = [
 ]
 
 
-def reserved_prefix_fields(dataset: SlayerDataset | StageSchema | None) -> list[str]:
+def reserved_prefix_fields(dataset: SlayerDataset | None) -> list[str]:
     """``dataset`` fields colliding with the reserved regroup placeholder prefix."""
     if dataset is None:
         return []
@@ -32,12 +33,17 @@ class RegroupPlaceholderRegistry:
     """Mints a distinct reserved-leaf ``FieldKey`` per structural aggregate, keyed
     by ``AggregateKey`` identity NOT canonical alias (which two distinct aggregates
     can share); a monotonic index guarantees distinct leaves, skipping ``reserved``
-    (an enclosing plan's placeholders a sub-plan may read)."""
+    (an enclosing plan's placeholders a sub-plan may read). ``types`` holds each
+    minted leaf's type under ``typing``, the minting plan's."""
 
-    def __init__(self, *, reserved: AbstractSet[ValueKey] = frozenset()) -> None:
+    def __init__(
+        self, *, reserved: AbstractSet[ValueKey] = frozenset(), typing: Optional[SlotTyping] = None,
+    ) -> None:
         self._by_key: Dict[ValueKey, FieldKey] = {}
         self._reserved = reserved
         self._next = 0
+        self._typing = typing
+        self.types: Dict[str, Callable[[], Optional[DataType]]] = {}
 
     def placeholder_for(self, key: ValueKey) -> FieldKey:
         existing = self._by_key.get(key)
@@ -54,6 +60,9 @@ class RegroupPlaceholderRegistry:
         while placeholder in self._reserved:
             placeholder = self._mint(seed)
         self._by_key[key] = placeholder
+        typing = self._typing
+        if typing is not None:
+            self.types[placeholder.leaf] = lambda: typing.value_type(key)
         return placeholder
 
     def _mint(self, seed: str) -> FieldKey:

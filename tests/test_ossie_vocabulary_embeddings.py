@@ -1,5 +1,6 @@
 """A pre-rename embeddings sidecar's row kinds become ``dataset`` / ``field`` / ``metric`` in place, in both
-backends and across reopens; only a row whose text changed (a field naming its datatype) is re-embedded.
+backends and across reopens; a row is re-embedded only when its rendered text changed, which after the rename is every
+row.
 
 The pre-2.0 spellings below are deliberate: keep this file out of the vocabulary respelling pass.
 
@@ -125,17 +126,21 @@ class TestSidecarKinds:
         await pre_rename_store(backend=backend, base=tmp_path)
         storage = reopen(backend=backend, base=tmp_path)
         retriever = EmbeddingRetriever(storage=storage, model_name=EMBEDDER)
-        for name in ("customers", "orders"):
-            dataset = await storage.get_dataset(name, data_source=DS)
-            assert dataset is not None
+        loaded = [await storage.get_dataset(name, data_source=DS) for name in ("customers", "orders")]
+        datasets = [d for d in loaded if d is not None]
+        assert len(datasets) == 2
+        for dataset in datasets:
             assert await retriever.refresh_dataset_subtree(dataset) == []
-        fields = {cid for cid, kind, _ in PRE_RENAME_ROWS if kind == "column"}
-        assert sorted(t.split("\n", 1)[0].removeprefix("Column: ") for t in counting_embed.texts) == sorted(fields)
-        assert all("\nType: " in t for t in counting_embed.texts)
+        # Every label now reads in the new vocabulary, so every row's text changed.
+        embedded = sorted(t.split("\n", 1)[0].split(": ", 1)[1] for t in counting_embed.texts)
+        assert embedded == sorted(cid for cid, _, _ in PRE_RENAME_ROWS)
         rows = raw_rows(backend=backend, base=tmp_path)
-        assert {cid: row for cid, row in rows.items() if cid not in fields} == {
-            cid: row for cid, row in expected_rows().items() if cid not in fields}
-        assert all(rows[cid][0] == "field" and rows[cid][1] != expected_rows()[cid][1] for cid in fields)
+        assert all(rows[cid][0] == NEW_KIND[kind] and rows[cid][1] != digest for cid, kind, digest in PRE_RENAME_ROWS)
+        # Unchanged text is not re-embedded.
+        counting_embed.texts.clear()
+        for dataset in datasets:
+            assert await retriever.refresh_dataset_subtree(dataset) == []
+        assert counting_embed.texts == []
 
 
 class TestEmbeddingDocument:

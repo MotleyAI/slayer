@@ -15,16 +15,22 @@ from typing import (
 )
 from urllib.parse import quote
 
+import yaml
+from pydantic import TypeAdapter
 from typing_extensions import deprecated
 
 from slayer.async_utils import run_sync
+from slayer.core.enums import Conformance
+from slayer.core.errors import OssieErrorCode, OssieQueryError
 from slayer.core.format import NumberFormat
+from slayer.core.ossie_conformance import parse_conformance
 from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import PopulationRecommendation
 from slayer.core.vocabulary import method_twin
 from slayer.core.models import SlayerDataset
-from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
+from slayer.core.warnings import AnySlayerWarning, DeprecatedInputWarning, SlayerWarning
 from slayer.engine.query_engine import (
+    REFINE_REQUIRES_NAME,
     ClientFactory,
     FieldMetadata,
     ResponseAttributes,
@@ -39,6 +45,7 @@ from slayer.memories.models import (
     SaveMemoryResponse,
 )
 from slayer.memories.service import MemoryService
+from slayer.ontology.documents import content_text, document_name
 from slayer.search.service import SearchResponse, SearchService
 from slayer.storage.base import StorageBackend
 
@@ -56,6 +63,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+_QUERY_PATH = "/query"
 
 
 # Input union for every public query entry point (mirrors ``engine.execute``):
@@ -70,6 +78,44 @@ QueryInput = (
 Refinement = QueryRefinement | Mapping[str, Any] | None
 Variables = Mapping[str, Any] | None
 
+
+def _raise_for_status(resp: Any) -> None:
+    """``raise_for_status``, a strict refusal (a 400 whose ``detail`` carries an Ossie code) raised as itself."""
+    if resp.status_code == 400:
+        try:
+            detail = resp.json().get("detail")
+        except ValueError:
+            detail = None
+        if isinstance(detail, dict) and detail.get("code") in set(OssieErrorCode):
+            raise OssieQueryError.from_detail(detail)
+    resp.raise_for_status()
+
+
+_WARNINGS = TypeAdapter(list[AnySlayerWarning])
+
+
+def _logged_notes(notes: Any) -> None:
+    """Log the search-refresh notes a call has no return channel for."""
+    for note in notes if isinstance(notes, list) else []:
+        logger.warning("%s", note)
+
+
+def _received(warnings_out: list[SlayerWarning] | None, body: Any) -> None:
+    """A REST save response's ``warnings``, typed, into ``warnings_out``."""
+    if warnings_out is not None and isinstance(body, dict):
+        warnings_out.extend(_WARNINGS.validate_python(body.get("warnings") or []))
+
+
+def _semantic_model_path(*, data_source: str, name: str) -> str:
+    return f"/semantic-models/{quote(data_source, safe='')}/{quote(name, safe='')}"
+
+
+def _ontology_path(name: str) -> str:
+    return f"/ontologies/{quote(name, safe='')}"
+
+
+def _mapping_path(*, data_source: str, name: str) -> str:
+    return f"/ontology-mappings/{quote(data_source, safe='')}/{quote(name, safe='')}"
 
 class SlayerClient:
     """Async-first client for the SLayer REST API, or direct local mode.
@@ -123,8 +169,19 @@ class SlayerClient:
             resp = await client.request(
                 method=method, url=f"{self.url}{path}", json=json, params=params
             )
-            resp.raise_for_status()
+            _raise_for_status(resp)
             return resp.json()
+
+    async def _request_or_none(self, *, method: str, path: str) -> Any | None:
+        """``_request``, ``None`` when the server answers 404."""
+        if httpx is None:
+            return await self._request(method=method, path=path)
+        try:
+            return await self._request(method=method, path=path)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
 
     def _request_sync(
         self,
@@ -139,7 +196,7 @@ class SlayerClient:
             resp = client.request(
                 method=method, url=f"{self.url}{path}", json=json, params=params
             )
-            resp.raise_for_status()
+            _raise_for_status(resp)
             return resp.json()
 
     @staticmethod
@@ -210,6 +267,48 @@ class SlayerClient:
         return body
 
     @staticmethod
+    def _strict_body(
+        query: QueryInput, *, refine: Refinement, variables: Variables, dry_run: bool, explain: bool,
+    ) -> Any:
+        """The ``POST /query?conformance=ossie-l3`` body: the query as given (the server judges it), wrapper keys
+        beside it."""
+        if not isinstance(query, (str, SlayerQuery, ABCMapping)):
+            return [SlayerClient._strict_parts(q) for q in query]
+        if isinstance(query, str):
+            body: dict[str, Any] = {"name": query, **SlayerClient._strict_refine(refine)}
+        elif refine is not None:
+            raise ValueError(REFINE_REQUIRES_NAME)
+        else:
+            body = SlayerClient._strict_parts(query)
+        body.update({k: v for k, v in (("variables", dict(variables) if variables else None),
+                                       ("dry_run", dry_run or None), ("explain", explain or None)) if v})
+        return body
+
+    @staticmethod
+    def _strict_parts(query: Any) -> Any:
+        """A query object as the server judges it: the parts it sets (``version`` is bookkeeping), an explicit ``None``
+        kept for refusal."""
+        if isinstance(query, SlayerQuery):
+            parts = query.model_dump(mode="json", exclude_unset=True, exclude={"version"})
+            parts = {**parts, **{n: None for n in query.model_fields_set if getattr(query, n) is None}}
+        elif isinstance(query, ABCMapping):
+            parts = dict(query)
+        else:
+            return query
+        if "name" in parts:
+            # On the wire a top-level ``name`` runs a saved query; in a query object it is no Ossie part.
+            raise OssieQueryError(OssieErrorCode.E_INVALID_QUERY,
+                                  "'name' is not a part of an Ossie query (dimensions, metrics, filter)")
+        return parts
+
+    @staticmethod
+    def _strict_refine(refine: Refinement) -> dict[str, Any]:
+        if refine is None:
+            return {}
+        return {"refine": dict(refine) if isinstance(refine, ABCMapping) else refine.model_dump(
+            mode="json", exclude_unset=True)}
+
+    @staticmethod
     def _normalize_for_engine(query: QueryInput) -> Any:
         """Coerce ``Mapping``/``Sequence`` inputs to concrete ``dict``/``list``
         so ``engine.execute``'s ``isinstance`` dispatch resolves them correctly."""
@@ -261,6 +360,7 @@ class SlayerClient:
             warnings=[*(result.get("warnings") or []), *(deprecations or [])],
             population=result.get("population"),
             population_inferred=bool(result.get("population_inferred", False)),
+            row_sources=list(result.get("row_sources") or []),
         )
 
     # ----- Async API -----
@@ -273,10 +373,11 @@ class SlayerClient:
         variables: Variables = None,
         dry_run: bool = False,
         explain: bool = False,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Execute a query. Accepts ``SlayerQuery`` / ``dict`` / list-DAG /
         ``str`` (run-by-name, optionally ``refine``-d) — the same union as ``engine.execute``;
-        ``variables`` are runtime placeholder values."""
+        ``variables`` are runtime placeholder values; ``conformance="ossie-l3"`` runs the strict Ossie binding."""
         if self._engine is not None:
             return await self._engine.execute(
                 query=self._normalize_for_engine(query),
@@ -284,28 +385,36 @@ class SlayerClient:
                 dry_run=dry_run,
                 explain=explain,
                 refine=self._normalize_refine(refine),
+                conformance=conformance,
             )
+        if parse_conformance(conformance) is Conformance.OSSIE_L3:
+            body = self._strict_body(query, refine=refine, variables=variables, dry_run=dry_run, explain=explain)
+            return self._parse_response(await self._request(method="POST", path=_QUERY_PATH, json=body,
+                                                            params={"conformance": Conformance.OSSIE_L3.value}))
         deprecations: list[DeprecatedInputWarning] = []
         body = self._build_query_body(
             query, refine=refine, variables=variables, dry_run=dry_run, explain=explain,
             deprecations_out=deprecations,
         )
-        result = await self._request(method="POST", path="/query", json=body)
+        result = await self._request(method="POST", path=_QUERY_PATH, json=body)
         return self._parse_response(result, deprecations=deprecations)
 
     async def sql(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> str:
         """Generate SQL for a query without executing it (same input union)."""
-        sql = (await self.query(query=query, refine=refine, variables=variables, dry_run=True)).sql
+        sql = (await self.query(query=query, refine=refine, variables=variables, dry_run=True,
+                                conformance=conformance)).sql
         assert sql is not None  # a dry run always renders SQL
         return sql
 
     async def explain(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Run the database's EXPLAIN on a query (same input union)."""
-        return await self.query(query=query, refine=refine, variables=variables, explain=True)
+        return await self.query(query=query, refine=refine, variables=variables, explain=True, conformance=conformance)
 
     async def list_datasets(self, data_source: str | None = None) -> list[str]:
         if self._storage is not None:
@@ -353,6 +462,215 @@ class SlayerClient:
             path="/datasources/priority",
             json={"priority": list(priority)},
         )
+
+    # ----- Semantic models -----
+
+    async def list_semantic_models(self, data_source: str | None = None) -> list[dict[str, str]]:
+        """Every stored semantic model as ``{data_source, name}``."""
+        if self._storage is not None:
+            return [{"data_source": ds, "name": n}
+                    for ds, n in await self._storage.list_semantic_models(data_source=data_source)]
+        params = {"data_source": data_source} if data_source else None
+        return await self._request(method="GET", path="/semantic-models", params=params)
+
+    async def get_semantic_model(self, name: str, *, data_source: str) -> str | None:
+        """A semantic model's text as stored; ``None`` when absent."""
+        if self._storage is not None:
+            return await self._storage.get_semantic_model_text(name, data_source=data_source)
+        found = await self._request_or_none(method="GET", path=_semantic_model_path(data_source=data_source, name=name))
+        return found["text"] if found is not None else None
+
+    async def create_semantic_model(
+        self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
+        datasets: list[str] | None = None, warnings_out: list[SlayerWarning] | None = None,
+    ) -> None:
+        """Create a semantic model from Ossie ``content``, or from standalone ``datasets`` moved into it; its ontology
+        mismatches go to ``warnings_out``."""
+        if self._storage is not None:
+            await self._storage.create_semantic_model(data_source=data_source, name=name, content=content,
+                                                      datasets=datasets, warnings_out=warnings_out)
+            return
+        _received(warnings_out, await self._request(method="POST", path="/semantic-models", json={
+            "data_source": data_source, "name": name, "content": content, "datasets": datasets}))
+
+    async def replace_semantic_model(self, name: str, *, data_source: str, content: str | dict[str, Any],
+                                     warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Replace a semantic model's text; its ontology mismatches go to ``warnings_out``."""
+        if self._storage is not None:
+            text = content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False)
+            await self._storage.save_semantic_model_text(data_source=data_source, name=name, text=text,
+                                                         warnings_out=warnings_out)
+            return
+        _received(warnings_out, await self._request(
+            method="PUT", path=_semantic_model_path(data_source=data_source, name=name), json={"content": content}))
+
+    async def delete_semantic_model(self, name: str, *, data_source: str) -> bool:
+        """Delete a semantic model and its datasets; ``False`` when absent."""
+        if self._storage is not None:
+            return await self._storage.delete_semantic_model(name, data_source=data_source)
+        return await self._request_or_none(method="DELETE", path=_semantic_model_path(data_source=data_source, name=name)) is not None
+
+    def list_semantic_models_sync(self, data_source: str | None = None) -> list[dict[str, str]]:
+        return self._run_sync(self.list_semantic_models(data_source=data_source))
+
+    def get_semantic_model_sync(self, name: str, *, data_source: str) -> str | None:
+        return self._run_sync(self.get_semantic_model(name, data_source=data_source))
+
+    def create_semantic_model_sync(
+        self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
+        datasets: list[str] | None = None, warnings_out: list[SlayerWarning] | None = None,
+    ) -> None:
+        self._run_sync(self.create_semantic_model(data_source=data_source, name=name, content=content,
+                                                  datasets=datasets, warnings_out=warnings_out))
+
+    def replace_semantic_model_sync(self, name: str, *, data_source: str, content: str | dict[str, Any],
+                                    warnings_out: list[SlayerWarning] | None = None) -> None:
+        self._run_sync(self.replace_semantic_model(name, data_source=data_source, content=content,
+                                                   warnings_out=warnings_out))
+
+    def delete_semantic_model_sync(self, name: str, *, data_source: str) -> bool:
+        return self._run_sync(self.delete_semantic_model(name, data_source=data_source))
+
+    # ----- Ontologies and mappings -----
+
+    async def _refresh_concepts(self, data_source: str | None = None) -> list[str]:
+        """The local search refresh after a mapping or ontology change; its warnings."""
+        assert self._storage is not None
+        return await SearchService(storage=self._storage).refresh_after_concept_change(data_source)
+
+    async def list_ontologies(self) -> list[dict[str, str]]:
+        """Every stored ontology as ``{name}``."""
+        if self._storage is not None:
+            return [{"name": n} for n in await self._storage.list_ontologies()]
+        return await self._request(method="GET", path="/ontologies")
+
+    async def get_ontology(self, name: str) -> str | None:
+        """An ontology's text as stored; ``None`` when absent."""
+        if self._storage is not None:
+            return await self._storage.get_ontology_text(name)
+        found = await self._request_or_none(method="GET", path=_ontology_path(name))
+        return found["text"] if found is not None else None
+
+    async def create_ontology(self, *, content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> str:
+        """Store an ontology under its own ``name``; that name. Its mappings' mismatches go to ``warnings_out``."""
+        if self._storage is not None:
+            text = content_text(content)
+            name = document_name(text)
+            await self._storage.save_ontology_text(name=name, text=text, warnings_out=warnings_out)
+            _logged_notes(await self._refresh_concepts())
+            return name
+        found = await self._request(method="POST", path="/ontologies", json={"content": content})
+        _logged_notes(found.get("notes"))
+        _received(warnings_out, found)
+        return found["name"]
+
+    async def replace_ontology(self, name: str, *, content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Replace ontology ``name``'s text; its mappings' mismatches go to ``warnings_out``."""
+        if self._storage is not None:
+            await self._storage.save_ontology_text(name=name, text=content_text(content), warnings_out=warnings_out)
+            _logged_notes(await self._refresh_concepts())
+            return
+        found = await self._request(method="PUT", path=_ontology_path(name), json={"content": content})
+        _received(warnings_out, found)
+        _logged_notes(found.get("notes"))
+
+    async def delete_ontology(self, name: str) -> bool:
+        """Delete an ontology; ``False`` when absent."""
+        if self._storage is not None:
+            deleted = await self._storage.delete_ontology(name)
+            if deleted:
+                _logged_notes(await self._refresh_concepts())
+            return deleted
+        found = await self._request_or_none(method="DELETE", path=_ontology_path(name))
+        _logged_notes(found.get("notes") if isinstance(found, dict) else None)
+        return found is not None
+
+    async def list_ontology_mappings(self, data_source: str | None = None) -> list[dict[str, str]]:
+        """Every stored mapping as ``{data_source, name}``."""
+        if self._storage is not None:
+            return [{"data_source": ds, "name": n} for ds, n in await self._storage.list_ontology_mappings(data_source)]
+        params = {"data_source": data_source} if data_source else None
+        return await self._request(method="GET", path="/ontology-mappings", params=params)
+
+    async def get_ontology_mapping(self, name: str, *, data_source: str) -> str | None:
+        """A mapping's text as stored; ``None`` when absent."""
+        if self._storage is not None:
+            return await self._storage.get_ontology_mapping_text(name, data_source)
+        found = await self._request_or_none(method="GET", path=_mapping_path(data_source=data_source, name=name))
+        return found["text"] if found is not None else None
+
+    async def create_ontology_mapping(self, *, data_source: str, content: str | dict[str, Any],
+                                      warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        """Store a mapping of ``data_source`` under its own ``name``; the save's informational notes. Its ontology
+        mismatches go to ``warnings_out``."""
+        if self._storage is not None:
+            text = content_text(content)
+            notes = await self._storage.save_ontology_mapping_text(data_source=data_source, name=document_name(text),
+                                                                   text=text, warnings_out=warnings_out)
+            return notes + await self._refresh_concepts(data_source)
+        found = await self._request(method="POST", path="/ontology-mappings",
+                                    json={"data_source": data_source, "content": content})
+        _received(warnings_out, found)
+        return found["notes"]
+
+    async def replace_ontology_mapping(self, name: str, *, data_source: str, content: str | dict[str, Any],
+                                       warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        """Replace mapping ``name`` of ``data_source``; the save's informational notes. Its ontology mismatches go
+        to ``warnings_out``."""
+        if self._storage is not None:
+            notes = await self._storage.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                                   text=content_text(content),
+                                                                   warnings_out=warnings_out)
+            return notes + await self._refresh_concepts(data_source)
+        found = await self._request(method="PUT", path=_mapping_path(data_source=data_source, name=name),
+                                    json={"content": content})
+        _received(warnings_out, found)
+        return found["notes"]
+
+    async def delete_ontology_mapping(self, name: str, *, data_source: str) -> bool:
+        """Delete a mapping; ``False`` when absent."""
+        if self._storage is not None:
+            deleted = await self._storage.delete_ontology_mapping(name, data_source)
+            if deleted:
+                _logged_notes(await self._refresh_concepts(data_source))
+            return deleted
+        found = await self._request_or_none(method="DELETE", path=_mapping_path(data_source=data_source, name=name))
+        _logged_notes(found.get("notes") if isinstance(found, dict) else None)
+        return found is not None
+
+    def list_ontologies_sync(self) -> list[dict[str, str]]:
+        return self._run_sync(self.list_ontologies())
+
+    def get_ontology_sync(self, name: str) -> str | None:
+        return self._run_sync(self.get_ontology(name))
+
+    def create_ontology_sync(self, *, content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> str:
+        return self._run_sync(self.create_ontology(content=content, warnings_out=warnings_out))
+
+    def replace_ontology_sync(self, name: str, *, content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> None:
+        self._run_sync(self.replace_ontology(name, content=content, warnings_out=warnings_out))
+
+    def delete_ontology_sync(self, name: str) -> bool:
+        return self._run_sync(self.delete_ontology(name))
+
+    def list_ontology_mappings_sync(self, data_source: str | None = None) -> list[dict[str, str]]:
+        return self._run_sync(self.list_ontology_mappings(data_source=data_source))
+
+    def get_ontology_mapping_sync(self, name: str, *, data_source: str) -> str | None:
+        return self._run_sync(self.get_ontology_mapping(name, data_source=data_source))
+
+    def create_ontology_mapping_sync(self, *, data_source: str, content: str | dict[str, Any],
+                                     warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        return self._run_sync(self.create_ontology_mapping(data_source=data_source, content=content,
+                                                           warnings_out=warnings_out))
+
+    def replace_ontology_mapping_sync(self, name: str, *, data_source: str,
+                                      content: str | dict[str, Any], warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        return self._run_sync(self.replace_ontology_mapping(name, data_source=data_source, content=content,
+                                                            warnings_out=warnings_out))
+
+    def delete_ontology_mapping_sync(self, name: str, *, data_source: str) -> bool:
+        return self._run_sync(self.delete_ontology_mapping(name, data_source=data_source))
 
     # ----- Memory API -----
 
@@ -545,6 +863,7 @@ class SlayerClient:
         variables: Variables = None,
         dry_run: bool = False,
         explain: bool = False,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Execute a query synchronously (same arguments as ``query``)."""
         if self._engine is not None:
@@ -554,28 +873,36 @@ class SlayerClient:
                 dry_run=dry_run,
                 explain=explain,
                 refine=self._normalize_refine(refine),
+                conformance=conformance,
             )
+        if parse_conformance(conformance) is Conformance.OSSIE_L3:
+            body = self._strict_body(query, refine=refine, variables=variables, dry_run=dry_run, explain=explain)
+            return self._parse_response(self._request_sync(method="POST", path=_QUERY_PATH, json=body,
+                                                           params={"conformance": Conformance.OSSIE_L3.value}))
         deprecations: list[DeprecatedInputWarning] = []
         body = self._build_query_body(
             query, refine=refine, variables=variables, dry_run=dry_run, explain=explain,
             deprecations_out=deprecations,
         )
-        result = self._request_sync(method="POST", path="/query", json=body)
+        result = self._request_sync(method="POST", path=_QUERY_PATH, json=body)
         return self._parse_response(result, deprecations=deprecations)
 
     def sql_sync(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> str:
         """Generate SQL synchronously (same input union)."""
-        sql = self.query_sync(query=query, refine=refine, variables=variables, dry_run=True).sql
+        sql = self.query_sync(query=query, refine=refine, variables=variables, dry_run=True,
+                              conformance=conformance).sql
         assert sql is not None  # a dry run always renders SQL
         return sql
 
     def explain_sync(
         self, query: QueryInput, *, refine: Refinement = None, variables: Variables = None,
+        conformance: Conformance | str = Conformance.SLAYER,
     ) -> SlayerResponse:
         """Run the database's EXPLAIN synchronously (same input union)."""
-        return self.query_sync(query=query, refine=refine, variables=variables, explain=True)
+        return self.query_sync(query=query, refine=refine, variables=variables, explain=True, conformance=conformance)
 
     def inspect_sync(
         self,

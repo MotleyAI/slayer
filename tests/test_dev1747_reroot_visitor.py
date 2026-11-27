@@ -1,6 +1,6 @@
 """The total reroot visitor over the ValueKey union.
 
-Rerooting was once done by SERIALIZING typed keys back to formula text and
+Rerooting was once done by SERIALIZING typed keys back to expression text and
 re-parsing them into a nested ``SlayerQuery``. That was replaced with typed
 re-rooting via ``reroot_value_key(key, *, target_path)`` — a visitor that is:
 
@@ -38,6 +38,8 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     SqlFragmentKey,
+    WindowKey,
+    prepend_value_key,
 )
 from slayer.core.keys import Grain
 
@@ -97,7 +99,7 @@ class TestLeafKinds:
         assert reroot_value_key(key, target_path=TARGET) == key
 
     def test_time_trunc_key_reroots_its_column(self) -> None:
-        """``TimeTruncKey`` carries its path on the WRAPPED column, which is
+        """``TimeTruncKey`` carries its path on the WRAPPED field, which is
         why ``walk_value_keys`` needs a special case for it — the visitor must
         not inherit that blind spot."""
         out = reroot_value_key(
@@ -355,6 +357,10 @@ class TestTotalityAndFailClosed:
             ),
             ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
             ListSetKey: ListSetKey(source=FieldKey(path=("customers",), leaf="tags")),
+            WindowKey: WindowKey(
+                function="row_number", order=(FieldKey(path=("customers",), leaf="spend"),),
+                descending=(False,), nulls_first=(False,), anchor=("customers",),
+            ),
         }
         members = set(get_args(ValueKey))
         missing = members - set(samples)
@@ -364,6 +370,14 @@ class TestTotalityAndFailClosed:
         )
         for member in members:
             reroot_value_key(samples[member], target_path=TARGET)
+
+    def test_a_row_level_window_anchor_moves_with_its_references(self) -> None:
+        spend = FieldKey(path=("customers",), leaf="spend")
+        window = WindowKey(function="row_number", order=(spend,), descending=(False,), nulls_first=(False,),
+                           anchor=("customers",))
+        local = reroot_value_key(window, target_path=TARGET)
+        assert local.anchor == ()
+        assert prepend_value_key(local, host_path=TARGET) == window
 
     def test_unknown_kind_raises(self) -> None:
         """Fail closed. Returning an unhandled kind unchanged is what lets a

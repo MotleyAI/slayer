@@ -28,7 +28,7 @@ from tests._dev2015_fixtures import GRANULARITIES, GRANULARITY_NAMES, returns_da
 
 
 async def _call(server, *, name: str, arguments: dict[str, Any]) -> str:
-    blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return blocks[0].text
 
 
@@ -41,11 +41,11 @@ async def _spine_storage(base_dir: str) -> YAMLStorage:
 
 
 def _granularity_dump(cfg: DatasourceConfig) -> list[dict[str, Any]]:
-    return [g.model_dump(mode="json") for g in cfg.granularities]  # type: ignore[attr-defined]
+    return [g.model_dump(mode="json", exclude_none=True) for g in cfg.granularities]  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
-# The spine is a built-in model on every listing surface
+# The spine is a built-in dataset on every listing surface
 # ---------------------------------------------------------------------------
 
 class TestSpineListedWithItsWiredModels:
@@ -112,7 +112,7 @@ class TestSpineListedWithItsWiredModels:
 
 
 # ---------------------------------------------------------------------------
-# A declared default_time_dimension must name a date or time column; the reserved name
+# A declared default_time_dimension must name a date or time field; the reserved name
 # fails the same way on every save surface
 # ---------------------------------------------------------------------------
 
@@ -296,14 +296,14 @@ class TestDbtImporter:
         result = DbtToSlayerConverter(project=_dbt_project("fill_nulls_with", 0), data_source="test").convert()
         measure = _converted_metric(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.expression.replace(" ", "") == "coalesce(sum(amount),0)"
+        assert measure.text.replace(" ", "") == "coalesce(sum(amount),0)"
         assert not any(e.metric_name == "gap_filled_rev" for e in result.unconverted_metrics)
 
     def test_join_to_timespine_is_accepted_with_a_note(self) -> None:
         result = DbtToSlayerConverter(project=_dbt_project("join_to_timespine", True), data_source="test").convert()
         measure = _converted_metric(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.expression.replace(" ", "") == "sum(amount)"
+        assert measure.text.replace(" ", "") == "sum(amount)"
         notes = [e for e in (*result.unconverted_metrics, *result.warnings) if e.metric_name == "gap_filled_rev"]
         assert notes
         assert all(e.severity == "info" for e in notes)

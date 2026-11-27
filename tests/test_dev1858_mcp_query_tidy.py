@@ -1,4 +1,4 @@
-"""DEV-1858 — the MCP ``query`` tool is a thin ``engine.execute`` wrapper.
+"""The MCP ``query`` tool is a thin ``engine.execute`` wrapper.
 
 Spec: openspec/changes/dev-1858-tidy-up-mcp-query-tools/specs/mcp/query-tool.
 One polymorphic ``query`` argument (string / object / list) mirroring the
@@ -10,7 +10,7 @@ import json
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
@@ -27,7 +27,7 @@ RETIRED_ARGS = {
     "order", "limit", "offset", "whole_periods_only", "strict",
     "distinct_dimension_values",
 }
-UNIFIED_ARGS = {"query", "variables", "refine", "show_sql", "dry_run", "explain", "format"}
+UNIFIED_ARGS = {"query", "variables", "refine", "show_sql", "dry_run", "explain", "format", "conformance"}
 
 
 def _is_object_shaped(schema: dict) -> bool:
@@ -63,8 +63,8 @@ def _seed_orders_db(db_path: str) -> None:
 
 @pytest.fixture
 async def orders_server(tmp_path):
-    """MCP server over a live SQLite ``orders`` model plus a query-backed
-    ``qb_by_status`` model. ``status`` carries a label so the run-by-name
+    """MCP server over a live SQLite ``orders`` dataset plus a query-backed
+    ``qb_by_status`` dataset. ``status`` carries a label so the run-by-name
     result exposes dimension attribute metadata."""
     db_path = str(tmp_path / "orders.db")
     _seed_orders_db(db_path)
@@ -75,31 +75,31 @@ async def orders_server(tmp_path):
     await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING, label="Order Status"),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING, label="Order Status"),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
         name="qb_by_status", data_source="ds",
         source_queries=[SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })],
     ))
     return create_mcp_server(storage=storage)
 
 
 async def _call(server, *, name: str = "query", **arguments: Any) -> str:
-    content_blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 
 def _rows(out: str) -> list:
-    """Extract the data rows from strict json output. Since DEV-1858 folded
-    attributes/warnings into the payload, json output is a single
+    """Extract the data rows from strict json output. With
+    attributes/warnings folded into the payload, json output is a single
     ``json.loads``-able value: a bare array, or a ``{"data", "warnings"?,
     "attributes"?}`` envelope once either is present."""
     decoded = json.loads(out)
@@ -114,7 +114,7 @@ def _rows(out: str) -> list:
 class TestQueryToolSchema:
     async def test_exposes_only_the_unified_arguments(self, orders_server) -> None:
         tools = {t.name: t for t in await orders_server.list_tools()}
-        schema = tools["query"].inputSchema
+        schema = tools["query"].input_schema
         assert set(schema.get("properties", {})) == UNIFIED_ARGS
         # Only `query` is required — the wrappers must all carry defaults.
         assert set(schema.get("required", [])) == {"query"}
@@ -129,7 +129,7 @@ class TestQueryToolSchema:
         array-of-objects branch — so it fails if any input form regresses (e.g.
         the list narrowing to ``list[str]``)."""
         tools = {t.name: t for t in await orders_server.list_tools()}
-        q_schema = tools["query"].inputSchema["properties"]["query"]
+        q_schema = tools["query"].input_schema["properties"]["query"]
         branches = q_schema.get("anyOf") or q_schema.get("oneOf") or [q_schema]
         assert any(b.get("type") == "string" for b in branches), q_schema
         assert any(_is_object_shaped(b) for b in branches), q_schema
@@ -157,8 +157,8 @@ class TestQueryDispatch:
             orders_server,
             query={
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": ["orders.status"],
             },
             format="json",
         )
@@ -173,12 +173,12 @@ class TestQueryDispatch:
                 {
                     "name": "monthly",
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                     "time_dimensions": [
-                        {"field": "created_at", "granularity": "month"},
+                        {"field": "orders.created_at", "granularity": "month"},
                     ],
                 },
-                {"population": "monthly", "metrics": [{"metric": "count(*)"}]},
+                {"population": "monthly", "metrics": [{"metric": "count(monthly.*)"}]},
             ],
             dry_run=True,
         )
@@ -190,13 +190,13 @@ class TestQueryDispatch:
         rows = _rows(out)
         assert isinstance(rows, list)
         assert len(rows) == 3  # grouped by the three distinct statuses
-        # Result keys keep the underlying model prefix; totals sum to 750.0.
+        # Result keys keep the underlying dataset prefix; totals sum to 750.0.
         assert sum(float(r["orders.amount_sum"]) for r in rows) == pytest.approx(750.0)
 
     async def test_non_query_backed_string_raises_not_query_backed(
         self, orders_server,
     ) -> None:
-        """A bare table-backed model name is exact engine string semantics:
+        """A bare table-backed dataset name is exact engine string semantics:
         it raises the engine's 'not query-backed' error (which names the
         ``source_model=`` remedy), not a silent wrap."""
         with pytest.raises(ToolError) as ei:
@@ -216,9 +216,9 @@ class TestQueryDispatch:
             orders_server,
             query={
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "count(*)"}],
-                "order": [{"field": "count(*)", "direction": "desc"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "order": [{"field": "count(orders.*)", "direction": "desc"}],
                 "limit": 1,
             },
             format="json",
@@ -242,7 +242,7 @@ class TestInQueryControlFields:
             orders_server,
             query={
                 "population": "orders",
-                "dimensions": ["status"],
+                "dimensions": ["orders.status"],
                 "distinct_dimension_values": False,
             },
             format="json",
@@ -254,7 +254,7 @@ class TestInQueryControlFields:
 
 @pytest.fixture
 async def broadcast_server(tmp_path):
-    """MCP server over the DEV-1836 cross-model fixture, where an implicit-grain
+    """MCP server over the cross-dataset fixture, where an implicit-grain
     broadcast warns in the default mode and errors under in-query
     ``to_many_handling='error'``."""
     db_path = str(tmp_path / "data.sqlite")
@@ -266,9 +266,9 @@ async def broadcast_server(tmp_path):
 
 _BROADCAST_QUERY = {
     "population": "orders",
-    "dimensions": ["status"],
+    "dimensions": ["orders.status"],
     "metrics": [
-        {"metric": "sum(amount)", "alias": "m"},
+        {"metric": "sum(orders.amount)", "alias": "m"},
         {"metric": "sum(customers.spend)", "alias": "cm"},
     ],
 }
@@ -310,8 +310,8 @@ class TestExecutionWrappers:
             orders_server,
             query={
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "filter": ["status == '{s}'"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "filter": ["orders.status == '{s}'"],
                 "variables": {"s": "pending"},
             },
             variables={"s": "completed"},
@@ -326,8 +326,8 @@ class TestExecutionWrappers:
             orders_server,
             query={
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "count(*)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "count(orders.*)"}],
             },
             dry_run=True,
         )
@@ -340,7 +340,7 @@ class TestExecutionWrappers:
     async def test_explain_returns_sql_and_plan(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
             explain=True,
         )
         assert "SQL:" in out
@@ -349,7 +349,7 @@ class TestExecutionWrappers:
     async def test_show_sql_prefixes_results(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
             show_sql=True,
         )
         assert out.startswith("SQL:")
@@ -361,7 +361,7 @@ class TestExecutionWrappers:
         with pytest.raises(ToolError) as ei:
             await _call(
                 orders_server,
-                query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
+                query={"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
                 format="xml",
             )
         message = str(ei.value)
@@ -374,8 +374,8 @@ class TestExecutionWrappers:
             orders_server,
             query={
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "count(*)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "count(orders.*)"}],
             },
             format="JSON",
         )
@@ -405,35 +405,35 @@ class TestRunByNameRefine:
 
     async def test_refine_schema_is_object_shaped(self, refine_server) -> None:
         tools = {t.name: t for t in await refine_server.list_tools()}
-        assert _is_object_shaped(tools["query"].inputSchema["properties"]["refine"])
+        assert _is_object_shaped(tools["query"].input_schema["properties"]["refine"])
         assert "refine" in (tools["query"].description or "")
 
     async def test_refined_run(self, refine_server) -> None:
-        out = await _call(refine_server, query="monthly_revenue", refine={"dimensions": ["region"]}, format="json")
-        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in _rows(out)} == (
+        out = await _call(refine_server, query="monthly_revenue", refine={"dimensions": ["orders.region"]}, format="json")
+        assert {(r["orders.region"], month(r["orders.ordered_at"])): r["revenue"] for r in _rows(out)} == (
             BY_REGION_MONTH
         )
 
     async def test_refine_with_variables(self, refine_server) -> None:
         out = await _call(
-            refine_server, query="revenue_by_status", refine={"metrics": ["count(*)"]},
+            refine_server, query="revenue_by_status", refine={"metrics": ["count(orders.*)"]},
             variables={"status": "refunded"}, format="json",
         )
-        assert _rows(out) == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+        assert _rows(out) == [{"orders.region": "US", "revenue": 40.0, "orders._count": 1}]
 
     @pytest.mark.parametrize("query", [
-        {"population": "orders", "metrics": ["count(*)"]},
-        [{"name": "a", "population": "orders", "dimensions": ["region"]}, {"population": "a", "dimensions": ["region"]}],
+        {"population": "orders", "metrics": ["count(orders.*)"]},
+        [{"name": "a", "population": "orders", "dimensions": ["orders.region"]}, {"population": "a", "dimensions": ["orders.region"]}],
     ], ids=["object", "list"])
     async def test_refine_with_non_name_errors(self, refine_server, query: Any) -> None:
         with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
-            await _call(refine_server, query=query, refine={"dimensions": ["region"]})
+            await _call(refine_server, query=query, refine={"dimensions": ["orders.region"]})
 
     async def test_empty_refine_with_non_name_errors(self, refine_server) -> None:
         with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
-            await _call(refine_server, query={"population": "orders", "metrics": ["count(*)"]}, refine={})
+            await _call(refine_server, query={"population": "orders", "metrics": ["count(orders.*)"]}, refine={})
 
     async def test_conflict_surfaces_as_error(self, refine_server) -> None:
         with pytest.raises(ToolError, match="revenue"):
             await _call(refine_server, query="monthly_revenue",
-                        refine={"metrics": [{"metric": "count(*)", "alias": "revenue"}]})
+                        refine={"metrics": [{"metric": "count(orders.*)", "alias": "revenue"}]})

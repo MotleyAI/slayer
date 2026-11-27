@@ -1,7 +1,7 @@
-"""DEV-1840 task 1.1 — the fixture graph is healthy on today's engine.
+"""The fixture graph is healthy on today's engine.
 
-Pins only shapes whose behavior DEV-1840 does not change: unfiltered
-cross-model aggregates, a provably-safe inline filter, and the planner entry
+Pins only shapes whose behavior the implementation does not change: unfiltered
+cross-dataset aggregates, a provably-safe inline filter, and the planner entry
 point. Everything here must pass before AND after the implementation.
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.engine.plan import plan_query
 
 from slayer.core.query import QueryMetric
@@ -38,7 +37,7 @@ async def exec_backend_amb(request):
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
@@ -47,13 +46,13 @@ class TestGraphExecutes:
         _, engine = exec_backend
         resp = await engine.execute(q(dimensions=["customers.tier"],
                                       metrics=[M, CM]))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",), ("silver",), ("bronze",), (None,)}
         for tier, spend in SPEND_ALL_BY_TIER.items():
-            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend)
-        assert by[(None,)]["orders.cm"] is None
-        assert float(by[("gold",)]["orders.m"]) == pytest.approx(50.0)
-        assert float(by[("silver",)]["orders.m"]) == pytest.approx(70.0)
+            assert float(by[(tier,)]["cm"]) == pytest.approx(spend)
+        assert by[(None,)]["cm"] is None
+        assert float(by[("gold",)]["m"]) == pytest.approx(50.0)
+        assert float(by[("silver",)]["m"]) == pytest.approx(70.0)
 
     async def test_provably_safe_filter_inlines_today(self, exec_backend):
         """strong plans: the m:1 hop is proven, the filter applies inline."""
@@ -62,31 +61,27 @@ class TestGraphExecutes:
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.plans.level = 'basic'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",), ("silver",)}
         for tier, spend in SPEND_BASIC_BY_TIER.items():
-            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend)
+            assert float(by[(tier,)]["cm"]) == pytest.approx(spend)
         assert resp.warnings in (None, [])
 
     async def test_ambiguity_graph_executes(self, exec_backend_amb):
-        """The healthy leg (tickets→reviews) executes; the ambiguous pair
-        fails closed. DEV-1853 divergences.md class (d)."""
+        """Both legs execute: ``sum(agents.score)`` binds from ``agents``, never routed over the ambiguous pair."""
         _, engine = exec_backend_amb
         resp = await engine.execute(
             tq(metrics=[QueryMetric(metric="sum(reviews.stars)", alias="rv")]),
         )
-        assert float(resp.data[0]["tickets.rv"]) == pytest.approx(11.0)
-        ambiguous = tq(
-            metrics=[QueryMetric(metric="sum(agents.score)", alias="sm")],
-        )
-        with pytest.raises(AmbiguousRelationshipPathError):
-            await engine.execute(ambiguous)
+        assert float(resp.data[0]["rv"]) == pytest.approx(11.0)
+        own_anchor = await engine.execute(tq(metrics=[QueryMetric(metric="sum(agents.score)", alias="sm")]))
+        assert float(own_anchor.data[0]["sm"]) == pytest.approx(60.0)
 
 
 def test_planner_entry_point_builds_the_producer() -> None:
     planned = plan_query(
         query=q(dimensions=["customers.tier"], metrics=[CM],
-                filter=["channel = 'app'"]),
+                filter=["orders.channel = 'app'"]),
         bundle=bundle(),
     )
     assert len(planned.regroup_attach_plans) == 1

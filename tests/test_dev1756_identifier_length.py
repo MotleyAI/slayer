@@ -2,7 +2,7 @@
 
 Postgres caps identifiers at 63 bytes and silently truncates past it, so long
 projection aliases collide. Fixed here: projection aliases (quoted), CTE names
-(unquoted), virtual-model shorts. Table aliases are surface 2.
+(unquoted), virtual-dataset shorts. Table aliases are surface 2.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from typing import Any, Protocol
 # how the "no churn for the common case" tests prove the write pass was identity.
 _FIT_MARKER_RE = re.compile(r"_[0-9a-f]{8}_")
 
-# Virtual-model shorts are not ported to the typed pipeline (query-backed shorts flow
+# Virtual-dataset shorts are not ported to the typed pipeline (query-backed shorts flow
 # through ``source_bundle``), so TestVirtualModelShorts exercises removed internals.
 _UNPORTED_SURFACE = (
     "Virtual-model-short fitting not ported to the typed pipeline "
@@ -50,7 +50,7 @@ class _VirtualDatasetEngine(Protocol):
     async def execute(self, query: list[SlayerQuery], *, dry_run: bool = False) -> SlayerResponse: ...
 
 DS = "sandbox"
-DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
+DEEP = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer"
 
 LONG_NAME = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.name"
 LONG_EMAIL = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
@@ -123,30 +123,30 @@ GOLDEN_SQLITE_REPRO_ORDER = (
 
 def _chain_datasets(
     *,
-    case_colliding_columns: bool = False,
-    decoy_root_column: str | None = None,
+    case_colliding_fields: bool = False,
+    decoy_root_field: str | None = None,
 ) -> list[SlayerDataset]:
     consumer_columns = [
-        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.STRING),
-        DatasetField(name="email", sql="email", datatype=DataType.STRING),
-        DatasetField(name="lifetimeValue", sql="lifetime_value", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", expression="name", datatype=DataType.STRING),
+        DatasetField(name="email", expression="email", datatype=DataType.STRING),
+        DatasetField(name="lifetimeValue", expression="lifetime_value", datatype=DataType.FLOAT),
     ]
-    if case_colliding_columns:
+    if case_colliding_fields:
         # Differs from ``email`` only by case; Postgres case-folds the namespace.
-        consumer_columns.append(DatasetField(name="Email", sql="email", datatype=DataType.STRING))
+        consumer_columns.append(DatasetField(name="Email", expression="email", datatype=DataType.STRING))
     return [
         SlayerDataset(
             name="SandboxInvoiceV2", sql_table="invoices", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="totalAmount", sql="total_amount", datatype=DataType.FLOAT),
-                DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="totalAmount", expression="total_amount", datatype=DataType.FLOAT),
+                DatasetField(name="subscription_id", expression="subscription_id", datatype=DataType.INTEGER),
                 *([
-                    # Root column named what a deep join path flattens to; names permit ``__``.
-                    DatasetField(name=decoy_root_column, sql="decoy", datatype=DataType.STRING),
-                ] if decoy_root_column else []),
+                    # Root field named what a deep relationship path flattens to; names permit ``__``.
+                    DatasetField(name=decoy_root_field, expression="decoy", datatype=DataType.STRING),
+                ] if decoy_root_field else []),
             ],
             relationships=[DatasetRelationship(
                 to="SandboxSubscription", from_columns=["subscription_id"], to_columns=["id"],
@@ -155,16 +155,16 @@ def _chain_datasets(
         SlayerDataset(
             name="SandboxSubscription", sql_table="subscriptions", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="SandboxCustomer", from_columns=["customer_id"], to_columns=["id"])],
         ),
         SlayerDataset(
             name="SandboxCustomer", sql_table="customers", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="consumer_id", sql="consumer_id", datatype=DataType.INTEGER),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="consumer_id", expression="consumer_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="SandboxConsumer", from_columns=["consumer_id"], to_columns=["id"])],
         ),
@@ -189,7 +189,7 @@ async def _build_engine(tmp_path, *, validate: bool = True, **kw) -> tuple[Slaye
 
 @pytest.fixture
 async def chain(tmp_path) -> tuple[SlayerQueryEngine, SlayerDataset]:
-    """Engine + root model for the 3-hop chain, with a postgres datasource."""
+    """Engine + root dataset for the 3-hop chain, with a postgres datasource."""
     return await _build_engine(tmp_path)
 
 
@@ -197,24 +197,24 @@ def _repro_query(*, with_order: bool = False) -> SlayerQuery:
     """The exact query from the original identifier-length report."""
     kwargs = {}
     if with_order:
-        kwargs["order"] = [OrderItem.model_validate({"field": "avg(totalAmount)", "direction": "desc"})]
+        kwargs["order"] = [OrderItem.model_validate({"field": "avg(SandboxInvoiceV2.totalAmount)", "direction": "desc"})]
         kwargs["limit"] = 10
     return SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
             QueryDimension(field=f"{DEEP}.name"),
             QueryDimension(field=f"{DEEP}.email"),
-            QueryDimension(field="status"),
-        ], "metrics": [{"metric": "sum(totalAmount)"}, {"metric": "count(*)"}], **kwargs})
+            QueryDimension(field="SandboxInvoiceV2.status"),
+        ], "metrics": [{"metric": "sum(SandboxInvoiceV2.totalAmount)"}, {"metric": "count(SandboxInvoiceV2.*)"}], **kwargs})
 
 
 SHORT_QUERY = SlayerQuery.model_validate({
     "population": "SandboxInvoiceV2",
-    "dimensions": [QueryDimension(field="status")],
-    "metrics": [{"metric": "sum(totalAmount)"}],
+    "dimensions": [QueryDimension(field="SandboxInvoiceV2.status")],
+    "metrics": [{"metric": "sum(SandboxInvoiceV2.totalAmount)"}],
 })
 
 
 # Identifier-inspection helpers — only the namespaces this issue owns (aliases,
-# ORDER BY refs, CTE names). Join-path table aliases are surface 2.
+# ORDER BY refs, CTE names). Relationship-path table aliases are surface 2.
 
 
 def _nbytes(s: str) -> int:
@@ -317,7 +317,7 @@ def _assert_order_by_refs_resolve(sql: str, dialect: str = "postgres") -> None:
 async def _sql(engine: SlayerQueryEngine, dataset, query, *, dialect: str = "postgres", mode: str = "outer") -> str:
     """Emit SQL for ``query`` on ``dialect`` via the branch's dry-run pipeline.
 
-    Rebuilds a fresh engine on ``dialect`` from the models the passed engine
+    Rebuilds a fresh engine on ``dialect`` from the datasets the passed engine
     holds (the branch ties dialect to the datasource, so a per-dialect store is
     the way to re-emit the same query on another backend). ``mode`` is accepted
     for call-site compatibility — the branch's generator always emits the
@@ -613,7 +613,7 @@ def _deep_cross_dataset_query(*, two_metrics: bool = False) -> SlayerQuery:
         measures.append(QueryMetric(metric=f"avg({DEEP}.lifetimeValue)"))
     return SlayerQuery(
         population="SandboxInvoiceV2",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="SandboxInvoiceV2.status")],
         metrics=measures,
     )
 
@@ -631,7 +631,7 @@ class TestCteNames:
     async def test_cross_model_cte_name_within_limit(self, chain) -> None:
         engine, model = chain
         sql = await _sql(engine, model, _deep_cross_dataset_query())
-        assert "_cm_" in sql, "no cross-model CTE was generated; test is vacuous"
+        assert "_cm_" in sql, "no cross-dataset CTE was generated; test is vacuous"
         _assert_within_limit(sql, 63)
 
     async def test_cte_definition_and_references_agree(self, chain) -> None:
@@ -647,12 +647,12 @@ class TestCteNames:
             assert name in referenced, f"CTE {name!r} defined but never referenced\n{sql}"
 
     async def test_two_deep_cross_model_ctes_stay_distinct(self, chain) -> None:
-        """Two over-limit cross-model CTE names must fit and stay distinct after truncation."""
+        """Two over-limit cross-dataset CTE names must fit and stay distinct after truncation."""
         engine, model = chain
         sql = await _sql(engine, model, _deep_cross_dataset_query(two_metrics=True))
         tree = sqlglot.parse_one(sql, dialect="postgres")
         names = [n for n, _ in _cte_names(tree)]
-        assert len(names) >= 2, f"expected two cross-model CTEs\n{sql}"
+        assert len(names) >= 2, f"expected two cross-dataset CTEs\n{sql}"
         effective = [_pg_effective(n, quoted=False) for n in names]
         assert len(set(effective)) == len(effective), effective
         _assert_within_limit(sql, 63)
@@ -712,19 +712,19 @@ class TestCteNames:
             name="ShiftOrders", sql_table="orders", data_source=DS,
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
         prepared = await engine._prepare_pipeline(
             query=SlayerQuery.model_validate({
                 "population": "ShiftOrders",
-                "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+                "time_dimensions": [{"field": "ShiftOrders.created_at", "granularity": "month"}],
                 "metrics": [
-                    {"metric": "sum(revenue)"},
-                    {"metric": "time_shift(sum(revenue), -1)", "alias": long_transform_name},
+                    {"metric": "sum(ShiftOrders.revenue)"},
+                    {"metric": "time_shift(sum(ShiftOrders.revenue), -1)", "alias": long_transform_name},
                 ],
             }),
             named_queries={}, runtime_kwarg={},
@@ -739,7 +739,7 @@ class TestCteNames:
 
 
 def _wrapper_select(vm_sql: str) -> exp.Select:
-    """The outermost SELECT of a virtual model's SQL — the rename wrapper."""
+    """The outermost SELECT of a virtual dataset's SQL — the rename wrapper."""
     return next(iter(sqlglot.parse_one(vm_sql, dialect="postgres").find_all(exp.Select)))
 
 
@@ -754,7 +754,7 @@ class TestVirtualModelShorts:
         for col in vm.fields:
             assert _nbytes(col.name) <= 63, col.name
             assert col.name in emitted, (
-                f"virtual-model column {col.name!r} is not an alias the wrapper "
+                f"virtual-dataset field {col.name!r} is not an alias the wrapper "
                 f"emits\n{vm.sql}"
             )
 
@@ -780,8 +780,8 @@ class TestVirtualModelShorts:
             ident = proj.args.get("alias")
             assert isinstance(ident, exp.Identifier), f"{ident} is not an Identifier"
             short = ident.this
-            assert short in by_short, f"{short!r} is not a virtual-model column\n{vm.sql}"
-            # How the generator will emit a downstream reference to this column.
+            assert short in by_short, f"{short!r} is not a virtual-dataset field\n{vm.sql}"
+            # How the generator will emit a downstream reference to this field.
             short_sql = by_short[short].sql
             assert short_sql is not None
             ref = gen._parse(short_sql).find(exp.Column)
@@ -871,11 +871,11 @@ class TestVirtualModelShorts:
 
     async def test_case_colliding_result_names_are_refused(self, tmp_path) -> None:
         """``email`` and ``Email`` (grandfathered) as two result names: refused before SQL generation."""
-        engine, _ = await _build_engine(tmp_path, validate=False, case_colliding_columns=True)
+        engine, _ = await _build_engine(tmp_path, validate=False, case_colliding_fields=True)
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
                 QueryDimension(field=f"{DEEP}.email"),
                 QueryDimension(field=f"{DEEP}.Email"),
-            ], "metrics": [{"metric": "count(*)"}]})
+            ], "metrics": [{"metric": "count(SandboxInvoiceV2.*)"}]})
         with pytest.raises(SlayerError) as exc:
             await engine._query_as_model(inner_query=query)
         assert not isinstance(exc.value, IdentifierCollisionError), exc.value
@@ -885,11 +885,11 @@ class TestVirtualModelShorts:
     async def test_two_dimensions_landing_on_one_short_raise(self, tmp_path) -> None:
         """Two dimensions whose shorts are exactly equal must be caught at the emission boundary."""
         flat = "SandboxSubscription__SandboxCustomer__SandboxConsumer__name"
-        engine, _ = await _build_engine(tmp_path, decoy_root_column=flat)
+        engine, _ = await _build_engine(tmp_path, decoy_root_field=flat)
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [QueryDimension(field=f"{DEEP}.name"), QueryDimension(field=flat)],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(SandboxInvoiceV2.*)"}],
         })
         with pytest.raises(IdentifierCollisionError) as exc:
             await engine._query_as_model(inner_query=query)
@@ -897,17 +897,17 @@ class TestVirtualModelShorts:
         assert flat in str(exc.value)
 
     async def test_caller_supplied_measure_names_are_fitted(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
-        """A caller-supplied measure ``name`` bypasses ``_alias_to_short`` and needs its own fitting."""
+        """A caller-supplied metric ``name`` bypasses ``_alias_to_short`` and needs its own fitting."""
         engine, _ = chain
         long_a = "z" * 63 + "b"   # 64 bytes
         long_b = "z" * 63 + "c"   # 64 bytes, identical first 63
         assert long_a[:63] == long_b[:63]
         query = SlayerQuery(
             population="SandboxInvoiceV2",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="SandboxInvoiceV2.status")],
             metrics=[
-                {"metric": "sum(totalAmount)", "alias": long_a},
-                {"metric": "avg(totalAmount)", "alias": long_b},
+                {"metric": "sum(SandboxInvoiceV2.totalAmount)", "alias": long_a},
+                {"metric": "avg(SandboxInvoiceV2.totalAmount)", "alias": long_b},
             ],
         )
         vm = await engine._query_as_dataset(inner_query=query)
@@ -924,7 +924,7 @@ class TestVirtualModelShorts:
         assert long_b not in vm.sql, vm.sql
 
     async def test_nested_dag_two_levels_agree(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
-        """Two stages: stage 2 references stage 1's virtual-model columns."""
+        """Two stages: stage 2 references stage 1's virtual-dataset fields."""
         engine, _ = chain
         stage1 = _repro_query().model_copy(update={"name": "stage1"})
         vm = await engine._query_as_dataset(inner_query=stage1, override_name="stage1")
@@ -932,7 +932,7 @@ class TestVirtualModelShorts:
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": [QueryDimension(field=short)],
-            "metrics": [{"metric": "sum(totalAmount_sum)"}],
+            "metrics": [{"metric": "sum(stage1.totalAmount_sum)"}],
         })
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         assert resp.sql is not None
@@ -969,7 +969,7 @@ class TestEngineContract:
     ) -> None:
         """``get_result_column_types`` probe keys are fitted aliases and must decode back to canonical."""
         engine, _ = chain
-        over_limit = "totalAmount_" + "x" * 60   # 72-char measure name
+        over_limit = "totalAmount_" + "x" * 60   # 72-char metric name
 
         captured: dict[str, ResultColumnType] = {}
 
@@ -988,8 +988,8 @@ class TestEngineContract:
         model = SlayerDataset(
             name="TypeProbe", sql_table="invoices", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name=over_limit, sql="total_amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name=over_limit, expression="total_amount", datatype=DataType.FLOAT),
             ],
         )
         await engine.storage.save_dataset(model)
@@ -1005,7 +1005,7 @@ class TestEngineContract:
         emitted = [k for k in captured if _nbytes(k) > 63]
         assert not emitted, f"probe SQL should carry fitted aliases, got {emitted}"
         assert over_limit in types, (
-            f"over-limit measure dropped from the type map; probe keys were "
+            f"over-limit metric dropped from the type map; probe keys were "
             f"{sorted(captured)}"
         )
 
@@ -1019,21 +1019,21 @@ class TestSweep:
     @pytest.fixture
     def queries(self) -> list[SlayerQuery]:
         return [
-            _repro_query(),                                   # plain dims + measures
+            _repro_query(),                                   # plain dims + metrics
             _repro_query(with_order=True),                    # ORDER BY hoist + outer wrap
-            _deep_cross_dataset_query(),                        # cross-model CTE (_cm_ + WITH)
+            _deep_cross_dataset_query(),                        # cross-dataset CTE (_cm_ + WITH)
             SlayerQuery(                                      # arithmetic expression
                 population="SandboxInvoiceV2",
                 dimensions=[QueryDimension(field=f"{DEEP}.email")],
                 metrics=[
-                    {"metric": "sum(totalAmount)"},
-                    {"metric": "sum(totalAmount) / count(*)", "alias": "avg_ticket"},
+                    {"metric": "sum(SandboxInvoiceV2.totalAmount)"},
+                    {"metric": "sum(SandboxInvoiceV2.totalAmount) / count(SandboxInvoiceV2.*)", "alias": "avg_ticket"},
                 ],
             ),
             SlayerQuery.model_validate({
                 "population": "SandboxInvoiceV2",
                 "dimensions": [QueryDimension(field=f"{DEEP}.name")],
-                "metrics": [{"metric": "count(*)"}],
+                "metrics": [{"metric": "count(SandboxInvoiceV2.*)"}],
                 "filter": [f"{DEEP}.email IS NOT NULL"],
             }),
         ]

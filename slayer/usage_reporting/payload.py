@@ -18,13 +18,17 @@ UsageKey = Literal[
     # CLI leaf commands
     "cli:serve", "cli:flight-serve", "cli:pg-serve", "cli:mcp", "cli:query", "cli:ingest",
     "cli:validate-datasets", "cli:recommend-population",
-    "cli:import-dbt", "cli:import-cube", "cli:import-osi", "cli:export-osi",
+    "cli:import-dbt", "cli:import-cube", "cli:import-osi", "cli:export-osi", "cli:ossie-roundtrip",
+    "cli:semantic-models.list", "cli:semantic-models.show", "cli:semantic-models.delete",
     "cli:datasets.list", "cli:datasets.show", "cli:datasets.create", "cli:datasets.delete",
     "cli:datasources.list", "cli:datasources.show", "cli:datasources.create",
     "cli:datasources.delete", "cli:datasources.test",
-    "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types",
+    "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types", "cli:storage.upgrade",
     "cli:datasources.refresh-samples", "cli:inspect", "cli:search",
     "cli:otel.status", "cli:otel.test",
+    "cli:ontologies.list", "cli:ontologies.show", "cli:ontologies.create", "cli:ontologies.replace",
+    "cli:ontologies.delete", "cli:ontology-mappings.list", "cli:ontology-mappings.show",
+    "cli:ontology-mappings.create", "cli:ontology-mappings.replace", "cli:ontology-mappings.delete",
     "cli:other",
     # MCP tools
     "mcp:create_datasource", "mcp:create_dataset", "mcp:delete_datasource", "mcp:delete_dataset",
@@ -32,12 +36,17 @@ UsageKey = Literal[
     "mcp:get_datasource_priority", "mcp:ingest_datasource", "mcp:inspect",
     "mcp:list_datasources", "mcp:datasets_summary", "mcp:query",
     "mcp:recommend_population", "mcp:save_memory", "mcp:search", "mcp:set_datasource_priority",
-    "mcp:validate_datasets", "mcp:other",
+    "mcp:validate_datasets", "mcp:create_semantic_model", "mcp:edit_semantic_model", "mcp:delete_semantic_model",
+    "mcp:create_ontology", "mcp:edit_ontology", "mcp:delete_ontology", "mcp:create_ontology_mapping",
+    "mcp:edit_ontology_mapping", "mcp:delete_ontology_mapping",
+    "mcp:other",
     # REST route templates
     "rest:/datasources", "rest:/datasources/priority", "rest:/datasources/{name}", "rest:/health",
     "rest:/ingest", "rest:/inspect", "rest:/memories", "rest:/memories/{memory_id}", "rest:/datasets",
     "rest:/datasets/{name}", "rest:/query", "rest:/recommend-population", "rest:/search",
-    "rest:/validate-datasets", "rest:other",
+    "rest:/validate-datasets", "rest:/semantic-models", "rest:/semantic-models/{data_source}/{name}",
+    "rest:/ontologies", "rest:/ontologies/{name}", "rest:/ontology-mappings",
+    "rest:/ontology-mappings/{data_source}/{name}", "rest:other",
     # wire protocols
     "flight:query", "flight:probe", "pg:query", "pg:probe",
 ]
@@ -63,19 +72,21 @@ TransformToken = Literal[
 ]
 
 AggregationToken = Literal[
-    "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
-    "first", "last", "weighted_avg", "median", "percentile", "stddev_samp", "stddev_pop",
+    "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx", "sum_distinct", "avg_distinct",
+    "first", "last", "weighted_avg", "median", "percentile", "percentile_disc", "percentile_approx",
+    "stddev_samp", "stddev_pop",
     "var_samp", "var_pop", "corr", "covar_samp", "covar_pop", "collect", "custom",
 ]
 
 FunctionToken = Literal[
     "abs", "acos", "ascii", "asin", "atan", "atan2", "cbrt", "ceil", "ceiling", "chr", "coalesce", "concat",
-    "concat_ws", "contains", "contains_all", "contains_any", "cos", "current_date", "date_add", "date_diff",
-    "date_part", "div", "ends_with", "exp", "floor", "greatest", "ifnull", "iif", "ilike", "instr", "interval",
-    "json_value", "least", "left", "length", "like", "ln", "log", "log10", "log2", "lower", "lpad", "ltrim", "mod",
-    "now", "nullif", "pi", "pow", "power", "regexp_extract", "regexp_like", "regexp_replace", "repeat", "replace",
+    "concat_ws", "contains", "contains_all", "contains_any", "cos", "current_date", "current_time", "date_add", "date_diff",
+    "date_part", "degrees", "div", "ends_with", "exp", "floor", "greatest", "ifnull", "iif", "ilike", "instr",
+    "interval", "json_value", "least", "left", "length", "like", "ln", "log", "log10", "log2", "lower", "lpad", "ltrim",
+    "mod", "now", "nullif", "nullifzero", "pi", "pow", "power", "radians", "regexp_count", "regexp_extract",
+    "regexp_like", "regexp_replace", "repeat", "replace",
     "reverse", "right", "round", "rpad", "rtrim", "sign", "sin", "split_part", "sqrt", "starts_with", "substr",
-    "substring", "tan", "trim", "trunc", "upper",
+    "substring", "tan", "trim", "trunc", "upper", "zeroifnull",
 ]
 
 DialectToken = Literal[

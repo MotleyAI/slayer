@@ -10,6 +10,8 @@ import datetime as dt
 import re
 from collections.abc import Iterable, Sequence
 from decimal import Decimal
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, ClassVar, Literal, Optional
 
 from sqlglot import exp
@@ -17,10 +19,17 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind
+from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
-from slayer.core.keys import ScalarCallKey
+from slayer.core.keys import (
+    ArithmeticKey, LiteralKey, ScalarCallKey, StarKey, ValueKey, WindowFrameSpec, WindowKey,
+)
+from slayer.core.refs import key_display
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.errors import TimeZoneError, WindowFunctionError
+from slayer.sql.dialects._windows_zones import WINDOWS_ZONES
 from slayer.sql.dialects.base import (
+    AngleFn,
     PORTABLE_LIBRARY,
     NativeFn,
     TransactionMode,
@@ -43,6 +52,15 @@ from slayer.sql.dialects.base import (
     StatAgg1Name,
     StatAgg2Name,
     _build_covar_decomposition,
+    iso_text,
+)
+from slayer.sql.dialects._ordered_set_split import (
+    Columns,
+    PercentileColumns,
+    complement_fraction,
+    marked_ranked,
+    ranked_unless_numeric,
+    split_percentile_selects,
 )
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import ResultColumnType, info_schema_type, result_column_type_of_name
@@ -193,10 +211,140 @@ def _bit_value(predicate: Expr) -> Expression:
     return exp.Cast(this=case, to=exp.DataType.build("BIT", dialect="tsql"))
 
 
+def _windowed(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
+    """``F(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs are skipped,
+    so they sort natively (one ORDER BY key is all it takes). A descending ``PERCENTILE_CONT`` reads ``1 − p``
+    ascending; a descending ``PERCENTILE_DISC`` keeps its direction (no ascending fraction picks its value)."""
+
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+        flip = descending and function is exp.PercentileCont
+        reversed_key = descending and not flip
+        key = exp.Ordered(this=value.copy(), nulls_first=not reversed_key)  # T-SQL's own NULL placement either way
+        if reversed_key:
+            key.set("desc", True)
+        fraction = complement_fraction(p) if flip else p.copy()
+        window = exp.Window(this=exp.WithinGroup(this=function(this=fraction), expression=exp.Order(expressions=[key])),
+                            partition_by=[k.copy() for k in partition])
+        return [window], lambda reads: exp.Max(this=reads[0])
+
+    return columns
+
+
+def _percentile_columns(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    """The native windowed percentiles; a ``PERCENTILE_DISC`` over a non-numeric value from ranks."""
+    if isinstance(node.this, exp.PercentileCont):
+        return _windowed(exp.PercentileCont)
+    if isinstance(node.this, exp.PercentileDisc):
+        return marked_ranked(node) or _windowed(exp.PercentileDisc)
+    return None
+
+
+#: Column-free yet per-row: such a GROUP BY key still splits groups.
+_VOLATILE = frozenset({"NEWID", "NEWSEQUENTIALID", "RAND", "CRYPT_GEN_RANDOM"})
+
+
+def _reads_no_column(node: Expr) -> bool:
+    """Constant per statement: reads no column, aggregate, window, subquery or volatile function."""
+    if any(node.find_all(exp.Column, exp.Subquery, exp.Select, exp.AggFunc, exp.Window, exp.Rand, exp.Uuid)):
+        return False
+    return not any(f.name.upper() in _VOLATILE for f in node.find_all(exp.Anonymous))
+
+
+def _group_by_columns_only(select: exp.Select) -> None:
+    """SQL Server rejects a GROUP BY key reading no column (error 164): such a key is constant, so it is dropped; with
+    none left, ``HAVING COUNT(*) > 0`` keeps the one group a non-empty input has and none on an empty one."""
+    group = select.args.get("group")
+    if group is None or group.args.get("rollup") or group.args.get("cube") or group.args.get("grouping_sets"):
+        return
+    keys = [k for k in group.expressions if not _reads_no_column(k)]
+    if len(keys) == len(group.expressions):
+        return
+    if keys:
+        group.set("expressions", keys)
+        return
+    select.set("group", None)
+    nonempty = exp.GT(this=exp.Count(this=exp.Star()), expression=exp.Literal.number(0))
+    having = select.args.get("having")
+    select.set("having", exp.Having(this=exp.and_(having.this, nonempty) if having is not None else nonempty))
+
+
+_DATETIME2 = exp.DataType.build("datetime2", dialect="tsql")
+
+
+def _windows_zone(zone: ZoneInfo) -> exp.Literal:
+    """``zone``'s Windows zone id, the one ``AT TIME ZONE`` reads; an IANA zone without one is refused."""
+    windows = WINDOWS_ZONES.get(zone.key)
+    if windows is None:
+        raise TimeZoneError(f"Time zone {zone.key!r} has no SQL Server (Windows) equivalent; choose another IANA "
+                            f"zone.", zone=zone.key)
+    return exp.Literal.string(windows)
+
+
+_RUNNING = ("unbounded preceding", None), ("current row", None)
+
+
+class _NthValueParts:
+    """The window calls ``_nth_value`` composes over ``key``'s partition: those reading row positions all order by one
+    ``ROW_NUMBER()`` of ``key``'s order, so tied rows sit in the same order in each (SQL Server orders ties freely)."""
+
+    def __init__(self, key: WindowKey) -> None:
+        self.x = key.args[0]
+        self.bare = key.model_copy(update={"frame": None, "args": ()})
+        self.rn = self.bare.model_copy(update={"function": "row_number"})
+        # ASC with NULLS FIRST is SQL Server's own placement, so no NULL key is added; ``rn`` is never NULL.
+        self.by_rn = self.bare.model_copy(update={"order": (self.rn,), "descending": (False,), "nulls_first": (True,)})
+
+    def window(self, function: str, *args: ValueKey, frame: WindowFrameSpec | None = None,
+               by_position: bool = True) -> WindowKey:
+        base = self.by_rn if by_position else self.bare
+        return base.model_copy(update={"function": function, "args": args, "frame": frame})
+
+    def lead(self, offset: int) -> ValueKey:
+        return self.x if offset == 0 else self.window("lead", self.x, LiteralKey(value=Decimal(offset)))
+
+    def later(self, position: int) -> ValueKey:
+        """The ``position``-th row of a one-row-each-side frame, past the partition's first row."""
+        if position == 1:
+            return self.window("lag", self.x, LiteralKey(value=Decimal(1)))
+        return self.lead(position - 2) if position <= 3 else LiteralKey(value=None)
+
+
+def _nth_value(key: WindowKey) -> ValueKey:
+    """``NTH_VALUE(x, n)``: the partition's ``n``-th row, read once the frame holds ``n`` rows (running frames); within a
+    one-row-each-side frame, the ``n``-th row of the rows around the current one."""
+    n = key.args[1]
+    position = int(n.value) if isinstance(n, LiteralKey) and isinstance(n.value, Decimal) else 0
+    parts = _NthValueParts(key)
+    frame = key.frame
+    if frame is None or (frame.start, frame.end) == _RUNNING:
+        unit = "range" if frame is None else frame.unit
+        # A RANGE count holds whole peer groups, whatever their inner order.
+        held = parts.window("count", StarKey(), frame=WindowFrameSpec(unit=unit, start=_RUNNING[0], end=_RUNNING[1]),
+                            by_position=unit == "rows")
+        nth = parts.window("first_value", parts.lead(position - 1),
+                           frame=WindowFrameSpec(unit="rows", start=_RUNNING[0], end=_RUNNING[1]))
+        return ScalarCallKey(name="iif", args=(
+            ArithmeticKey(op=">=", operands=(held, LiteralKey(value=Decimal(position)))), nth, LiteralKey(value=None)))
+    if frame.unit == "rows" and frame.start == ("preceding", Decimal(1)) and frame.end == ("following", Decimal(1)):
+        at_start = parts.lead(position - 1) if position <= 2 else LiteralKey(value=None)
+        return ScalarCallKey(name="iif", args=(
+            ArithmeticKey(op="=", operands=(parts.rn, LiteralKey(value=Decimal(1)))),
+            at_start, parts.later(position)))
+    raise WindowFunctionError(
+        summary=f"`{key_display(key)}` cannot run on SQL Server: it lacks NTH_VALUE, which SLayer rewrites only over "
+        f"the default frame, ROWS or RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, and ROWS BETWEEN 1 PRECEDING "
+        f"AND 1 FOLLOWING.",
+        suggestion="Use one of those frames, or run the query on another database.",
+    )
+
+
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "tsql"
+    decimal_text_exponent: ClassVar[bool] = False
     native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "SQL Server"
+    nulls_clause: bool = False
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({
@@ -220,7 +368,41 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     json_db_types: ClassVar[frozenset[str]] = frozenset()
     like_brackets: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
+    # A bare ``TIME`` is ``TIME(7)`` here.
+    time_of_day_precision: ClassVar[Optional[int]] = 6
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """Trailing zeros leave through spaces: ``TRIM(TRAILING …)`` needs SQL Server 2022."""
+        text = exp.Cast(this=exp.Cast(this=value, to=self.time_of_day_type()), to=exp.DataType.build("VARCHAR(15)"))
+        spaced = anon("RTRIM", anon("REPLACE", text, lit("0"), lit(" ")))
+        kept = anon("REPLACE", spaced, lit(" "), lit("0"))
+        whole = anon("LEFT", kept, exp.Sub(this=anon("LEN", kept), expression=lit(1)))
+        return case((exp.EQ(this=anon("RIGHT", kept, lit(1)), expression=lit(".")), whole), default=kept.copy())
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"CONCAT_WS", "PI", "GREATEST", "LEAST"})
+
+    def rewrite_window_key(self, key: WindowKey) -> ValueKey:
+        """``NTH_VALUE``, which SQL Server lacks, over Ossie's frame forms."""
+        if key.function != "nth_value":
+            return key
+        return _nth_value(key)
+
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:
+        """NTH_VALUE over aggregates, which SQL Server lacks, is refused."""
+        if key.function == "nth_value":
+            raise WindowFunctionError(summary="NTH_VALUE over aggregates cannot run on SQL Server, which lacks it.",
+                                      suggestion="Read it from a row-level window, or run on another database.")
+        return window
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``CAST((v AT TIME ZONE S) AT TIME ZONE Q AS datetime2)`` in Windows zone ids; an instant (a
+        ``datetimeoffset``): ``CAST(v AT TIME ZONE Q AS datetime2)``."""
+        instant = value if source is None else exp.AtTimeZone(this=value, zone=_windows_zone(source))
+        return exp.Cast(this=exp.AtTimeZone(this=instant, zone=_windows_zone(target)), to=_DATETIME2.copy())
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"),
+                        to=exp.DataType.build("DATETIMEOFFSET", dialect="tsql"))
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
         """Regex needs SQL Server 2025, ``greatest`` / ``least`` and the strict ``json_value`` read 2022: the
@@ -232,6 +414,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+        time_row: Sequence[Any] | None = None,
     ) -> ServerProfile:
         major = base_row[0] if base_row else None
         try:
@@ -247,6 +430,13 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def _require_regex(self, fn: str) -> None:
         self.require_version(minimum=_SQL_SERVER_2025, what=f"{fn}()", release="SQL Server 2025")
+
+    def build_varchar_cast(self, value: Expression, length: int) -> Expression:
+        """``NVARCHAR`` throughout: ``VARCHAR`` holds only the collation's code page and is sized in bytes under a
+        UTF-8 one; the first ``length`` code points are counted under ``_CODE_POINTS``."""
+        text = _collated(exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()), _CODE_POINTS)
+        first = anon("SUBSTRING", text, lit(1), lit(length))
+        return self.build_cast(first, _NVARCHAR_MAX.copy())
 
     def text_repeat(self, value: Expression, count: Expression) -> Expression:
         return anon("REPLICATE", value, count)
@@ -284,16 +474,23 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     def build_try_cast(self, value: Expression, to: exp.DataType) -> Expression:
         return text_try_cast(value, to)
 
-    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
-        """``TRY_CAST`` reads integer text in range, except a blank or a lone sign (as 0)."""
+    def integer_text(self, text: Expression) -> Expression:
+        """``LIKE`` (regex needs SQL Server 2025): neither blank nor a lone sign."""
         trimmed = exp.Trim(this=text.copy())
         signed = exp.In(this=anon("LEFT", trimmed, lit(1)), expressions=[lit("+"), lit("-")])
         digits = case((signed, anon("SUBSTRING", trimmed.copy(), lit(2), lit(8000))), default=trimmed.copy())
-        valid = exp.And(
+        return exp.And(
             this=exp.NEQ(this=digits, expression=lit("")),
             expression=exp.Not(this=exp.Like(this=digits.copy(), expression=lit("%[^0-9]%"))),
         )
-        return case((valid, self.build_try_cast(trimmed.copy(), to)))
+
+    def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
+        """``TRY_CAST`` reads integer text in range, except a blank or a lone sign (as 0)."""
+        return case((self.integer_text(text), self.build_try_cast(exp.Trim(this=text.copy()), to)))
+
+    def cast_type_supported(self, data_type: exp.DataType) -> bool:
+        """T-SQL's own ``TIMESTAMP`` is a row version, never a cast's time type."""
+        return data_type.this != exp.DataType.Type.ROWVERSION and super().cast_type_supported(data_type)
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
         """T-SQL's own ``TIMESTAMP`` is ``ROWVERSION``; the portable one is ``DATETIME2``."""
@@ -374,6 +571,15 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement), lit(1), lit(0), lit("c"))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        self._require_regex("regexp_count")
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern, case_insensitive=case_insensitive), lit(1),
+                    lit("c"))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """``RADIANS`` / ``DEGREES`` keep an integer argument's type: read it as a FLOAT."""
+        return super().angle(fn, exp.Cast(this=value.copy(), to=exp.DataType.build("FLOAT")))
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """On 2022+ (and an unknown version) a scalar the lax read leaves NULL is re-read strictly, so one over
         4,000 characters raises instead of reading NULL; ``ISJSON(…, VALUE)`` takes a scalar document, which
@@ -388,6 +594,20 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                          expression=is_null(anon("JSON_QUERY", document, lit(text))))
         read = case((is_not_null(lax), lax.copy()), (scalar, anon("JSON_VALUE", document, lit(f"strict {text}"))))
         return case((exp.EQ(this=anon("ISJSON", value, exp.var("VALUE")), expression=lit(1)), read))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        """``JSON_MODIFY`` writes the scalar back as a string and keeps the rest of the text: a number gains exactly
+        its two quotes, a number-like string (escaped or not) never grows (a subquery, ``OPENJSON``, is refused
+        inside an aggregate). Read as ``[document]``."""
+        document = anon("CONCAT", lit("["), exp.Cast(this=value.copy(), to=_NVARCHAR_MAX.copy()), lit("]"))
+        text = lit(json_path_text((0, *path.steps)))
+        read = anon("JSON_VALUE", document, text)
+        grown = exp.Sub(this=anon("DATALENGTH", anon("JSON_MODIFY", document, text, read)),
+                        expression=anon("DATALENGTH", document.copy()))
+        not_string = exp.EQ(this=grown, expression=lit(4))  # two NVARCHAR quotes
+        valid = exp.EQ(this=anon("ISJSON", document), expression=lit(1))
+        return case((exp.And(this=valid, expression=not_string),
+                     exp.TryCast(this=read.copy(), to=exp.DataType.build("FLOAT"))))
 
     def describe_result_statement(self, probe: exp.National) -> Expression:
         """``EXEC sp_describe_first_result_set @tsql = N'…'`` (sqlglot's ``exp.Execute`` spells it ``EXECUTE``)."""
@@ -476,18 +696,19 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         ]
 
     def build_date_trunc(
-        self,
-        col_expr: Expression,
-        granularity: TimeGranularity,
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``DATETRUNC`` (2022+); ``iso_week`` keeps weeks ``@@DATEFIRST``-independent."""
+        """``DATETRUNC`` (2022+), which keeps its input's type: the input is cast to the bucket's type;
+        ``iso_week`` keeps weeks ``@@DATEFIRST``-independent."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity,
-            )
+            return super().build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
         gran_str = granularity.value
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
+        result = bucket_type(operand, granularity)
+        if result is DataType.DATETIME and (result is not operand or not isinstance(col_expr, (exp.Column, exp.Cast))):
+            # ``DATETIME2``: a legacy ``DATETIME`` rounds to 1/300 s, which can carry a value into the next bucket.
+            col_expr = self.promote_to_timestamp(col_expr)
+        elif not isinstance(col_expr, (exp.Column, exp.Cast)):
+            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("DATE"))
         tsql_gran = "iso_week" if gran_str == "week" else gran_str
         return exp.Anonymous(
             this="DATETRUNC",
@@ -501,7 +722,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if isinstance(node, exp.Substring) and node.args.get("length") is None:
                 node.set("length", exp.Anonymous(this="DATALENGTH", expressions=[node.this.copy()]))
             if isinstance(node, exp.Length):
-                text = exp.Cast(this=node.this.copy(), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
+                # ``transform`` skips a replaced node's children, so they are rewritten here.
+                text = exp.Cast(this=node.this.transform(_fix), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
                 padded = exp.Add(this=text, expression=exp.Literal.string("x"))
                 return exp.Paren(this=exp.Sub(
                     this=exp.Anonymous(this="LEN", expressions=[padded]), expression=exp.Literal.number(1),
@@ -523,17 +745,39 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if isinstance(node, exp.Round) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
             if isinstance(node, exp.Pow):
-                return anon("POWER", exp.Cast(this=node.this.copy(), to=exp.DataType.build("FLOAT")),
-                            node.expression.copy())
+                return anon("POWER", exp.Cast(this=node.this.transform(_fix), to=exp.DataType.build("FLOAT")),
+                            node.expression.transform(_fix))
             return node
         return tree.transform(_fix)
 
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """Native over a number; ranked otherwise (SQL Server's ``PERCENTILE_DISC`` orders numbers only)."""
+        node = super().build_percentile_disc(p=p, col_expr=col_expr, input_type=input_type)
+        return ranked_unless_numeric(node, input_type=input_type) if isinstance(node, exp.WithinGroup) else node
+
+    def build_percentile_approx(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType] = None,
+    ) -> Expression:
+        """``APPROX_PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` (SQL Server 2022)."""
+        key = exp.Ordered(this=col_expr.copy(), nulls_first=True)
+        return exp.WithinGroup(this=exp.Anonymous(this="APPROX_PERCENTILE_CONT", expressions=[p.copy()]),
+                               expression=exp.Order(expressions=[key]))
+
     def rewrite_statement(self, statement: Expression) -> Expression:
-        """T-SQL predicates are conditions only: one in a value position becomes its BIT value."""
-        statement = statement.copy()
+        """T-SQL predicates are conditions only (one in a value position becomes its BIT value); ``PERCENTILE_CONT``
+        is a window function only; GROUP BY keys read a column."""
+        statement = split_percentile_selects(statement.copy(), columns=_percentile_columns)
         for node in reversed(list(statement.dfs())):
-            if _is_predicate(node) and not _in_condition_position(node):
+            if _in_condition_position(node):
+                continue
+            if _is_predicate(node):
                 node.replace(_bit_value(node.copy()))
+            elif isinstance(node, exp.Boolean):  # sqlglot spells it ``(1 = 1)`` under a CAST
+                node.replace(exp.Literal.number(1 if node.this else 0))
+        for select in list(statement.find_all(exp.Select)):  # NOSONAR(S7504) — each call edits the tree being walked
+            _group_by_columns_only(select)
         return statement
 
     def row_number(self) -> Expression:
@@ -565,6 +809,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                 this=exp.Literal.number(3), expression=exp.Paren(this=_days_since_monday(expr)),
             ), expr.copy())
             return _datepart("YEAR", thursday)
+        if part is DatePart.MILLISECOND:
+            return exp.Floor(this=exp.Div(this=_datepart("MICROSECOND", expr), expression=lit(1000)))
         return _datepart(_DATEPART_UNITS[part], expr)
 
     def build_date_diff(
@@ -590,24 +836,6 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if unit in SUB_DAY_GRANULARITIES and operand is DataType.DATE else expr.copy()
         )
         return _dateadd(_DATEADD_UNITS[unit], count.copy(), base)
-
-    def build_median(self, inner: Expression) -> Expression:
-        raise NotImplementedError(
-            "Aggregation 'median' is not supported on T-SQL (SQL Server): "
-            "PERCENTILE_CONT in T-SQL is a window function (requires OVER clause) "
-            "and cannot be used as a GROUP BY aggregate. "
-            "Use a window subquery or compute the value client-side."
-        )
-
-    def build_percentile(
-        self, p: Expression, col_expr: Expression,
-    ) -> Expression:
-        raise NotImplementedError(
-            "Aggregation 'percentile' is not supported on T-SQL (SQL Server): "
-            "PERCENTILE_CONT requires a window function OVER clause in T-SQL "
-            "and is not valid as a GROUP BY aggregate. "
-            "Compute the value client-side or restructure as a window query."
-        )
 
     def build_stat_agg_1arg(
         self, agg_name: StatAgg1Name, col_expr: Expression,

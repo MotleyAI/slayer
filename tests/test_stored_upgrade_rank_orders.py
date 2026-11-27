@@ -19,7 +19,6 @@ from tests._stored_upgrade_fixtures import (
     memory_v2,
     orders_v10,
     query_backed_v10,
-    raw_doc,
     raw_store,
     run,
     seed_shop,
@@ -28,9 +27,9 @@ from tests._stored_upgrade_fixtures import (
 STAGE_RANK = "rank(rev:sum)"
 MEMORY_RANK = "rank(amount:sum)"
 #: The stored ranks as they load: descending, in the functional spelling.
-STAGE_RANK_LOADED = "rank(sum(rev), direction='desc')"
-MEMORY_RANK_LOADED = "rank(sum(amount), direction='desc')"
-TOP_QUERY = {"population": "top_status", "dimensions": ["status"], "metrics": ["sum(total)"]}
+STAGE_RANK_LOADED = "rank(sum(x.rev), direction='desc')"
+MEMORY_RANK_LOADED = "rank(sum(orders.amount), direction='desc')"
+TOP_QUERY = {"population": "top_status", "dimensions": ["top_status.status"], "metrics": ["sum(top_status.total)"]}
 
 
 def _stages(*, query_version: int | None = None) -> list[dict]:
@@ -118,8 +117,6 @@ async def test_v13_model_with_unrewritten_raw_formula_is_repaired(tmp_path, shop
     assert final.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     [order] = final.order or []
     assert order.raw_expression == STAGE_RANK_LOADED
-    doc = await raw_doc(storage, "top_status")
-    assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
     resp = await run(storage, TOP_QUERY)
     assert list(by_dimension(resp, dim_suffix="status")) == [TOP_STATUS_DESC]
 

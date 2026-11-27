@@ -3,7 +3,7 @@
 import logging
 import sys
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, TextIO, TypeVar
 
 from pydantic import BaseModel, Field, model_validator
@@ -30,14 +30,13 @@ from slayer.core.models import (
     DatasourceConfig,
     DatasetRelationship,
     SlayerDataset,
-    is_base_field_sql,
     is_key_set_unique,
-    physical_column_sql,
     sanitize_dataset_name,
 )
 from slayer.core.relationship_edges import edge_reference
 from slayer.core.names import name_taken
 from slayer.core.query import extract_variable_refs
+from slayer.core.time_spine import default_time_field
 from slayer.core.vocabulary import name_twins
 from slayer.live_schema import schema_drift
 from slayer.live_schema import broken_dependents as dependents  # module import: in an import cycle
@@ -75,6 +74,7 @@ from slayer.memories.resolver import (
     extract_entities_from_query,
 )
 from slayer.storage.base import StorageBackend
+from slayer.storage.dependents import database_driven
 from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:
@@ -448,19 +448,19 @@ async def sql_result_types(*, sql: str, client: SqlClient) -> SqlResultTypes:
     return SqlResultTypes(columns=columns, lists=lists, db_types=db_types)
 
 
-def retyped_sql_columns(dataset: SlayerDataset, *, lists: dict[str, ResultList]) -> tuple[SlayerDataset, list[str]]:
+def retyped_sql_fields(dataset: SlayerDataset, *, lists: dict[str, ResultList]) -> tuple[SlayerDataset, list[str]]:
     """``dataset`` with each stale non-list base field whose result column is a list re-typed to it, and the
     re-typed field names."""
     fields: list[DatasetField] = []
     retyped: list[str] = []
-    for column in dataset.fields:
-        found = lists.get(physical_column_sql(sql=column.sql, name=column.name)) if is_base_field_sql(column.sql) else None
+    for field in dataset.fields:
+        found = lists.get(field.physical_name) if field.is_base else None
         fresh = None if found is None else DatasetField(
-            name=column.name, datatype=DataType.ARRAY, element_type=found.element_type, db_type=found.db_type)
-        new = _retyped_list(persisted=column, fresh=fresh) if fresh is not None else None
-        fields.append(new or column)
+            name=field.name, datatype=DataType.ARRAY, element_type=found.element_type, db_type=found.db_type)
+        new = _retyped_list(persisted=field, fresh=fresh) if fresh is not None else None
+        fields.append(new or field)
         if new is not None:
-            retyped.append(column.name)
+            retyped.append(field.name)
     return (dataset.model_copy(update={"fields": fields}) if retyped else dataset), retyped
 
 
@@ -492,13 +492,15 @@ class RenamedField(BaseModel):
 def _renamed_fields(datasets: list[SlayerDataset]) -> list[RenamedField]:
     out: list[RenamedField] = []
     for dataset in datasets:
-        for column in dataset.fields:
-            physical = (column.sql or "").strip('"')
-            if column.sql and is_base_field_sql(column.sql) and _logical_field_name(physical) != column.name:
-                out.append(RenamedField(dataset=dataset.name, field=column.name, physical=physical))
+        for field in dataset.fields:
+            if field.expression is None or not field.is_base:
+                continue
+            physical = field.physical_name
+            if _logical_field_name(physical) != field.name:
+                out.append(RenamedField(dataset=dataset.name, field=field.name, physical=physical))
                 logger.warning(
                     "dataset %r: physical column %r differs from another only in case; ingested as %r",
-                    dataset.name, physical, column.name,
+                    dataset.name, physical, field.name,
                 )
     return out
 
@@ -514,15 +516,19 @@ def _fields_to_dataset(
     hidden: bool = False,
     meta: dict[str, Any] | None = None,
     description: str | None = None,
+    enforces_keys: bool = False,
+    primary_key: Sequence[str] = (),
 ) -> SlayerDataset:
-    """Generate a SlayerDataset with one field per introspected column."""
+    """Generate a SlayerDataset with one field per introspected column; ``enforces_keys``: the database enforces its
+    declared keys, recorded as ``enforced_keys`` (the primary key only when every member of the reflected
+    ``primary_key`` is a field)."""
     cols: list[DatasetField] = []
     unique_set = unique_fields or set()
 
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
-    for col, column_name in zip(fields, case_distinct_names([_logical_field_name(c.name) for c in fields])):
+    for col, field_name in zip(fields, case_distinct_names([_logical_field_name(c.name) for c in fields])):
         if col.is_float:
             fmt = _FLOAT_FORMAT
         elif col.type in _NUMERIC_TYPES:
@@ -532,9 +538,9 @@ def _fields_to_dataset(
 
         cols.append(
             DatasetField(
-                name=column_name,
+                name=field_name,
                 # A quoted lower-case Snowflake / Oracle column names itself exactly.
-                sql=exp.to_identifier(col.name, quoted=True).sql() if col.quoted else col.name,
+                expression=exp.to_identifier(col.name, quoted=True).sql() if col.quoted else col.name,
                 datatype=col.type,
                 element_type=(col.element_type or DataType.OPAQUE) if col.type is DataType.ARRAY else None,
                 db_type=col.db_type,
@@ -550,6 +556,8 @@ def _fields_to_dataset(
         sql_table=sql_table,
         data_source=data_source,
         fields=cols,
+        enforced_keys=_declared_keys(cols, primary=set(primary_key) <= {c.name for c in fields}) if enforces_keys
+        else [],
         relationships=relationships or [],
         source_kind=source_kind,
         hidden=hidden,
@@ -644,6 +652,8 @@ async def introspect_table_to_dataset(
         unique_fields=_solo_unique_fields(keys),
         source_kind=source_kind,
         description=await _safe_get_table_comment(client, table_name, ref),
+        enforces_keys=dialect_of(client).enforces_unique_keys,
+        primary_key=keys.primary_key,
     )
 
 
@@ -888,6 +898,8 @@ async def _build_one_dataset(
         hidden=internal_tool is not None,
         meta=meta,
         description=await _safe_get_table_comment(client, table, ref),
+        enforces_keys=dialect_of(client).enforces_unique_keys,
+        primary_key=keys.primary_key,
     )
 
 
@@ -1201,20 +1213,22 @@ def _merge_persisted_field_with_probe(
         sqlite_widen_enabled
         and fresh_col is not None
         and persisted_col.datatype is DataType.INTEGER
+        and fresh_col.datatype is not None
         and fresh_col.datatype.kind in (TypeKind.DOUBLE, TypeKind.TEXT)
     ):
         return persisted_col, False
+    widened = fresh_col.datatype
 
-    updates: dict[str, Any] = {"datatype": fresh_col.datatype}
+    updates: dict[str, Any] = {"datatype": widened}
     if _is_auto_default_integer_format(persisted_col.format):
-        updates["format"] = _format_for_widened_type(fresh_col.datatype)
+        updates["format"] = _format_for_widened_type(widened)
     else:
         logger.info(
             "Custom format on %s.%s preserved on SQLite probe widening "
             "(persisted INT -> %s). Review whether the format still applies.",
             dataset_name,
             persisted_col.name,
-            fresh_col.datatype.value,
+            widened.value,
         )
     return persisted_col.model_copy(update=updates), True
 
@@ -1304,7 +1318,7 @@ def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetFie
         return persisted.model_copy(update={
             "datatype": DataType.ARRAY, "element_type": fresh.element_type, "db_type": fresh.db_type,
             # Scalar-only settings; a temporal granularity would fail the list's validation.
-            "granularity": None, "format": None,
+            "granularity": None, "format": None, "time_zone": None,
             "allowed_aggregations": [
                 a for a in persisted.allowed_aggregations or () if a in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY]
             ] or None,
@@ -1316,14 +1330,37 @@ def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetFie
     return None
 
 
+def _retyped_instant(*, persisted: DatasetField, fresh: DatasetField) -> DatasetField | None:
+    """A stored ``DateTime`` field whose live column holds instants, re-typed ``DateTimeTz`` (live_schema P1's
+    exception); a source zone does not apply to an instant. ``None`` when nothing changes."""
+    if persisted.datatype is not DataType.DATETIME or fresh.datatype is not DataType.DATETIME_TZ:
+        return None
+    return persisted.model_copy(update={"datatype": DataType.DATETIME_TZ, "time_zone": None})
+
+
+def _retyped_time_of_day(*, persisted: DatasetField, fresh: DatasetField) -> DatasetField | None:
+    """A stored field of another type whose live column is a time of day, re-typed ``Time`` (live_schema P1's
+    exception); a setting only its old type takes is dropped. ``None`` when nothing changes."""
+    if fresh.datatype is not DataType.TIME or persisted.datatype in (DataType.TIME, DataType.ARRAY):
+        return None
+    return persisted.model_copy(update={
+        "datatype": DataType.TIME, "granularity": None, "time_zone": None,
+        "allowed_aggregations": [
+            a for a in persisted.allowed_aggregations or () if a in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.TIME]
+        ] or None,
+    })
+
+
 def _merge_one_field(
     *,
     persisted_col: DatasetField,
     fresh_col: DatasetField | None,
     dataset_name: str,
     sqlite_widen_enabled: bool,
+    time_axis: bool = False,
 ) -> tuple[DatasetField, bool, bool, bool]:
-    """Merge one persisted field against its fresh one → ``(merged, did_widen, unique_filled, described)``."""
+    """Merge one persisted field against its fresh one → ``(merged, did_widen, unique_filled, described)``;
+    ``time_axis``: the field is its dataset's default time dimension, never re-typed to a time of day."""
     merged_col, did_widen = _merge_persisted_field_with_probe(
         persisted_col=persisted_col,
         fresh_col=fresh_col,
@@ -1333,7 +1370,11 @@ def _merge_one_field(
     unique_filled = False
     described = False
     if fresh_col is not None:
-        retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) if _reads(persisted_col, fresh_col) else None
+        retyped = None
+        if _reads(persisted_col, fresh_col):
+            retyped = (_retyped_list(persisted=merged_col, fresh=fresh_col)
+                       or _retyped_instant(persisted=merged_col, fresh=fresh_col)
+                       or (None if time_axis else _retyped_time_of_day(persisted=merged_col, fresh=fresh_col)))
         if retyped is not None:
             merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):
@@ -1383,6 +1424,7 @@ def _merge_persisted_fields(
 ) -> _FieldsMerge:
     """Each persisted field merged with the live column of its spelling."""
     fresh_by_spelling = {_spelling(c): c for c in fresh.fields}
+    axis = default_time_field(persisted)
     out = _FieldsMerge(fields=[])
     for persisted_col in persisted.fields:
         fresh_col = fresh_by_spelling.get(live_name[persisted_col.name])
@@ -1391,6 +1433,7 @@ def _merge_persisted_fields(
             fresh_col=fresh_col,
             dataset_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
+            time_axis=axis is not None and axis.name == persisted_col.name,
         )
         key_filled = fill_key and fresh_col is not None and fresh_col.primary_key and _reads(persisted_col, fresh_col)
         if key_filled:
@@ -1407,16 +1450,16 @@ def _merge_persisted_fields(
 def _case_free_new_fields(fields: list[DatasetField], *, taken: list[str], dataset: str) -> list[DatasetField]:
     """``fields``, each whose name a dataset name takes in another case renamed ``<name>_<n>`` (smallest free n)."""
     out: list[DatasetField] = []
-    for column in fields:
-        name, n = column.name, 2
+    for field in fields:
+        name, n = field.name, 2
         while name_taken(name, taken):
-            name, n = f"{column.name}_{n}", n + 1
-        if name != column.name:
+            name, n = f"{field.name}_{n}", n + 1
+        if name != field.name:
             logger.warning("dataset %r: live column %r differs from a dataset name only in case; ingested as %r",
-                           dataset, column.name, name)
-            column = column.model_copy(update={"name": name, "sql": column.sql or column.name})
+                           dataset, field.name, name)
+            field = field.model_copy(update={"name": name, "expression": field.expression or field.name})
         taken.append(name)
-        out.append(column)
+        out.append(field)
     return out
 
 
@@ -1460,7 +1503,9 @@ def _additive_merge_existing(
     merged_relationships, relationships_metadata_changed = _merge_stored_relationships(
         persisted=persisted, fresh=fresh
     )
-    metadata_changed = field_merge.metadata_changed or relationships_metadata_changed
+    enforced_keys = _merged_enforced_keys(persisted=persisted, fresh=fresh, merged_fields=merged_fields)
+    metadata_changed = (field_merge.metadata_changed or relationships_metadata_changed
+                        or enforced_keys != persisted.enforced_keys)
 
     kind_changed = (
         fresh.source_kind is not None
@@ -1479,7 +1524,8 @@ def _additive_merge_existing(
     ):
         return AdditiveMergeResult(merged=persisted)
 
-    update: dict[str, Any] = {"fields": merged_fields, "relationships": merged_relationships}
+    update: dict[str, Any] = {"fields": merged_fields, "relationships": merged_relationships,
+                              "enforced_keys": enforced_keys}
     if kind_changed:
         update["source_kind"] = fresh.source_kind
     if dataset_described:
@@ -1494,6 +1540,30 @@ def _additive_merge_existing(
         described_fields=field_merge.described,
         dataset_described=dataset_described,
     )
+
+
+def _declared_keys(fields: list[DatasetField], *, primary: bool = True) -> list[list[str]]:
+    """The primary key (when declared and ``primary``) and each single-field unique key of ``fields``."""
+    primary_fields = [c.name for c in fields if c.primary_key] if primary else []
+    return ([primary_fields] if primary_fields else []) + [[c.name] for c in fields if c.unique]
+
+
+def _merged_enforced_keys(
+    *, persisted: SlayerDataset, fresh: SlayerDataset, merged_fields: list[DatasetField],
+) -> list[list[str]]:
+    """``persisted``'s enforced keys plus each fresh one that names a declared key of the merged fields; none removed."""
+    by_spelling = {c.physical_name: c.name for c in merged_fields if c.is_base}
+    fresh_names = {c.name: by_spelling.get(_spelling(c)) for c in fresh.fields}
+    declared = [sorted(k) for k in _declared_keys(merged_fields)]
+    out =[list(k) for k in persisted.enforced_keys]
+    for key in fresh.enforced_keys:
+        mapped = [fresh_names.get(n) for n in key]
+        if any(m is None for m in mapped):
+            continue
+        names = sorted(m for m in mapped if m is not None)
+        if names in declared and all(sorted(k) != names for k in out):
+            out.append(names)
+    return out
 
 
 class _TableMerge(BaseModel):
@@ -1723,10 +1793,10 @@ async def _retype_sql_datasets(
             current = await storage.get_dataset(dataset.name, data_source=datasource.name)
             if current is None or current.sql != dataset.sql:
                 continue
-            updated, columns = retyped_sql_columns(current, lists=types.lists)
-            if columns:
+            updated, fields = retyped_sql_fields(current, lists=types.lists)
+            if fields:
                 await storage.save_dataset(updated)
-                retyped[dataset.name] = columns
+                retyped[dataset.name] = fields
         except Exception as exc:  # noqa: BLE001 — one dataset's failure must not abort the pass
             errors[dataset.name] = f"sql-mode re-type: {exc}"
     return retyped, errors
@@ -1796,18 +1866,6 @@ def _schema_hint_message(other_schemas: list[str]) -> str | None:
     )
 
 
-def _edge_name_collision(*, table_name: str, fresh: SlayerDataset, edge_owner: dict[str, str],
-                         dialect: SqlDialect) -> SkippedTable:
-    return SkippedTable(
-        table_name=_bare_table_name(fresh.sql_table, dialect=dialect) if fresh.sql_table else table_name,
-        kind=fresh.source_kind,
-        reason=(
-            f"dataset name '{table_name}' collides with the edge '{table_name}' declared on "
-            f"dataset '{edge_owner[table_name]}'"
-        ),
-    )
-
-
 def _merge_fresh_tables(
     *,
     fresh_by_name: dict[str, SlayerDataset],
@@ -1817,16 +1875,11 @@ def _merge_fresh_tables(
     default_schema_name: str | None,
     default_objects: set[str] | None,
 ) -> tuple[dict[str, _TableMerge], list[SkippedTable]]:
-    """Merge every fresh dataset into storage's view; a table named like a stored edge is skipped."""
-    edge_owner = {j.name: m.name for m in stored.values() for j in m.relationships if j.name}
+    """Merge every fresh dataset into storage's view."""
     merges: dict[str, _TableMerge] = {}
     skipped: list[SkippedTable] = []
     for table_name, fresh in fresh_by_name.items():
         if table_name in unloadable:
-            continue
-        if table_name not in stored and table_name in edge_owner:
-            skipped.append(_edge_name_collision(table_name=table_name, fresh=fresh, edge_owner=edge_owner,
-                                                dialect=dialect_for_ds_type(datasource.type)))
             continue
         outcome = _merge_one_table(
             table_name=table_name, fresh=fresh, persisted=stored.get(table_name), datasource=datasource,
@@ -1937,11 +1990,32 @@ async def ingest_datasource_idempotent(
     include_views: bool = True,
     surface_internals: bool = False,
 ) -> "schema_drift.IdempotentIngestResult":
-    """Idempotent re-ingestion: create missing datasets, additively merge existing ones.
+    """Idempotent re-ingestion: create missing datasets, additively merge existing ones; a database-driven change.
 
     User-authored sql/query-backed datasets are skipped. Then validates the same
     scope so drift and dropped tables show up in ``to_delete``.
     """
+    with database_driven():
+        return await _ingest_datasource_idempotent(
+            datasource=datasource, storage=storage, client=client, include_tables=include_tables,
+            exclude_tables=exclude_tables, schema=schema, schemas=schemas, all_schemas=all_schemas,
+            include_views=include_views, surface_internals=surface_internals,
+        )
+
+
+async def _ingest_datasource_idempotent(
+    *,
+    datasource: DatasourceConfig,
+    storage: StorageBackend,
+    client: SqlClient,
+    include_tables: list[str] | None,
+    exclude_tables: list[str] | None,
+    schema: str | None,
+    schemas: list[str] | None,
+    all_schemas: bool,
+    include_views: bool,
+    surface_internals: bool,
+) -> "schema_drift.IdempotentIngestResult":
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
 
     scan = await ingest_datasource_report_async(
@@ -1993,8 +2067,8 @@ async def ingest_datasource_idempotent(
         datasource=datasource, storage=storage, client=client, failures=failures,
     )
     additions.extend(
-        schema_drift.DatasetAddition(dataset_name=name, data_source=datasource.name, widened_fields=columns)
-        for name, columns in sql_retyped.items()
+        schema_drift.DatasetAddition(dataset_name=name, data_source=datasource.name, widened_fields=fields)
+        for name, fields in sql_retyped.items()
     )
     errors.extend(
         schema_drift.IngestionError(dataset_name=name, data_source=datasource.name, error=error)
@@ -2120,6 +2194,22 @@ async def _empty_ingest_message(
         if retry_hint:
             lines.append(retry_hint)
     return "\n".join(lines)
+
+
+def _ingest_result_is_empty(result: "schema_drift.IdempotentIngestResult") -> bool:
+    """True when an ingest reports nothing at all, live objects and failed key reads included."""
+    return not (
+        result.objects
+        or result.additions
+        or result.to_delete
+        or result.skipped
+        or result.skipped_schemas
+        or result.hidden_internals
+        or result.broken_dependents
+        or result.errors
+        or result.datasource_described
+        or result.key_read_failures
+    )
 
 
 _KIND_LABELS = {"view": " [view]", "materialized_view": " [materialized view]"}
@@ -2283,6 +2373,13 @@ def _print_ingest_drift_and_errors(
     )
 
 
+def print_ingest_result(result, *, file: TextIO | None = None, data_source: str | None = None) -> None:
+    """The one renderer of an ingest result: ``Created:`` / ``Updated:`` lines, then every report section."""
+    for addition in result.additions:
+        _print_ingest_addition(addition, file=file)
+    _print_ingest_drift_and_errors(result, file=file, data_source=data_source)
+
+
 # --- Boot-time orchestrator ---
 
 
@@ -2362,9 +2459,7 @@ async def ingest_all_datasources_idempotent(
             print(f"Datasource '{name}': failed — {friendly}", file=out)
             continue
 
-        for addition in result.additions:
-            _print_ingest_addition(addition, file=out)
-        _print_ingest_drift_and_errors(result, file=out, data_source=name)
+        print_ingest_result(result, file=out, data_source=name)
         summary.succeeded.append(name)
         summary.drift_pending.extend(result.to_delete)
         print(f"Datasource '{name}': ingested", file=out)

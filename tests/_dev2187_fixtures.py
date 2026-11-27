@@ -1,4 +1,4 @@
-"""Seed, models and comparison helpers for the root-qualifier and one-reader tests."""
+"""Seed, datasets and comparison helpers for the root-qualifier and one-reader tests."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ CUSTOMERS = TableSpec(
 )
 
 
-def orders_columns() -> list[DatasetField]:
+def orders_fields() -> list[DatasetField]:
     return [
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="customer_id", datatype=DataType.INTEGER),
@@ -47,10 +47,10 @@ def orders_columns() -> list[DatasetField]:
 
 
 def orders_dataset(*, edge_name: Optional[str] = None) -> SlayerDataset:
-    """``orders`` → ``customers`` (the edge optionally named), saved measure ``revenue``."""
+    """``orders`` → ``customers`` (the edge optionally named), saved metric ``revenue``."""
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
-        fields=orders_columns(),
+        fields=orders_fields(),
         relationships=[DatasetRelationship(to="customers", name=edge_name, from_columns=["customer_id"], to_columns=["id"])],
         metrics=[DatasetMetric(name="revenue", expression="sum(amount)")],
     )
@@ -71,7 +71,7 @@ def customers_dataset() -> SlayerDataset:
 def qb_dataset() -> SlayerDataset:
     """Query-backed: ``tot`` per ``status``."""
     return SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": "tot"}],
+        "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "sum(orders.amount)", "alias": "tot"}],
     })])
 
 

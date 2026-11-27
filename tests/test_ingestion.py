@@ -400,7 +400,7 @@ def _fk(column: str) -> ReflectedForeignKey:
 
 
 class TestGenerateJoinsDedup:
-    """FK deduplication when joins are generated from the reflected keys."""
+    """FK deduplication when relationships are generated from the reflected keys."""
 
     @staticmethod
     async def _ingest(tmp_path, monkeypatch: pytest.MonkeyPatch, fks: list[ReflectedForeignKey]):
@@ -424,7 +424,7 @@ class TestGenerateJoinsDedup:
         return next(m for m in report.datasets if m.name == "orders").relationships
 
     async def test_multiple_fks_to_same_target_preserved(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
-        """Two distinct FKs to the same target table should both produce joins."""
+        """Two distinct FKs to the same target table should both produce relationships."""
         joins = await self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("seller_id")])
         assert len(joins) == 2
         pairs = [[list(p) for p in j.column_pairs] for j in joins]
@@ -556,7 +556,7 @@ class TestSqliteKeyReads:
 
 class TestSaTypeToDataTypeIntDouble:
     """``_sa_type_to_data_type`` distinguishes INT from DOUBLE so the ingested
-    ``Column.datatype`` carries the precise type instead of a coarse ``NUMBER``."""
+    ``DatasetField.datatype`` carries the precise type instead of a coarse ``NUMBER``."""
 
     @pytest.mark.parametrize("sa_type", [
         sa.Integer(),
@@ -680,7 +680,7 @@ class TestSaTypeToDataTypeUuidJsonb:
 class TestUnmappedTypeBecomesOpaque:
     """DB types with no equality operator map to the explicit opaque
     ``UNKNOWN`` type, and the raw type string is retained on
-    ``Column.db_type``. Comparable types — including unmapped ones — keep
+    ``DatasetField.db_type``. Comparable types — including unmapped ones — keep
     working as TEXT."""
 
     def test_non_comparable_sa_type_maps_to_unknown(self) -> None:
@@ -696,7 +696,7 @@ class TestUnmappedTypeBecomesOpaque:
     )
     def test_comparable_unmapped_types_stay_text(self, sa_type) -> None:
         """Regression: these are groupable/joinable and must not be marked
-        opaque — doing so would tell an agent a usable column is unusable."""
+        opaque — doing so would tell an agent a usable field is unusable."""
         mapped = _sa_type_to_data_type(sa_type)
         assert mapped is DataType.STRING
         assert mapped.is_opaque is False
@@ -932,8 +932,8 @@ class TestSqliteIngestionProbe:
 
     async def test_dotted_alias_not_passed_to_probe(self) -> None:
         """``_sqlite_probe_integer_columns`` must skip aliases containing
-        '.' — dotted aliases are joined-column references that belong to
-        the target model's own probe pass, not the source table's."""
+        '.' — dotted aliases are joined-field references that belong to
+        the target dataset's own probe pass, not the source table's."""
         # A real SQLite client, so the integer-affinity gate lets the probe run.
         async with _client(DatasourceConfig(name="mem", type="sqlite", database=":memory:")) as client:
             await client.execute("CREATE TABLE t (qty INTEGER)")
@@ -965,9 +965,9 @@ class TestSqliteIngestionProbe:
 
     async def test_joined_column_probed_via_owning_model(self) -> None:
         """Each table's columns are probed
-        when that table is ingested as its own model. Joined references to
+        when that table is ingested as its own dataset. Joined references to
         another table's column inherit the probed type via the FK target's
-        persisted column — they aren't re-probed on the source side."""
+        persisted field — they aren't re-probed on the source side."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = _create_sqlite_db_with_typed_data(
                 tmpdir,
@@ -994,12 +994,12 @@ class TestSqliteIngestionProbe:
             models = await _ingest(ds)
             measurements = next(m for m in models if m.name == "measurements")
             weight_col = next(c for c in measurements.fields if c.name == "weight")
-            # FK target's own model carries the probed type.
+            # FK target's own dataset carries the probed type.
             assert weight_col.datatype is DataType.FLOAT
 
 
 class TestCountColumnRenameInJoinKeys:
-    """Ingestion's ``_count`` → ``count_col`` rename applies to join keys too."""
+    """Ingestion's ``_count`` → ``count_col`` rename applies to relationship keys too."""
 
     async def _ingest(self, ddl: list[str]) -> dict[str, SlayerDataset]:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1021,7 +1021,7 @@ class TestCountColumnRenameInJoinKeys:
         children = models["children"]
         col = children.get_field("count_col")
         assert col is not None
-        assert col.sql == "_count"
+        assert col.expression == "_count"
         (join,) = children.relationships
         assert join.column_pairs == [("count_col", "id")]
 

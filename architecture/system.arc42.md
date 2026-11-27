@@ -24,6 +24,7 @@ flowchart TD
   live_schema["Live schema"]
   ir["Intermediate representation"]
   storage["Storage backends"]
+  ontology["Ontologies and mappings"]
   importers("Importers")
   search("Search & embeddings")
   memories("Agent memories")
@@ -91,6 +92,13 @@ flowchart TD
   protocols --> otel
   surfaces --> otel
   otel --> core
+  ontology --> core
+  storage --> ontology
+  importers --> ontology
+  surfaces --> ontology
+  engine --> ontology
+  live_schema --> ontology
+  search --> ontology
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:landscape -->
@@ -135,6 +143,7 @@ All code, old and new, MUST obey these.
 10. **One typing**: a value's type is derived from its key in one place; every
     check, coercion and metadata lift reads that derivation. [target: DEV-2180]
 11. **Fail at save time**: a stored definition guaranteed to fail every query that reads it is refused when saved, wherever the check is affordable; query time keeps the same check as a fail-closed backstop for definitions stored without it. [review]
+12. **Zoned reads**: under a query zone, every read of a timestamp from a dataset — a derived field's reads included — yields the query zone's wall clock, converted once at the read; the predicates defining the dataset (its filters, field filters, row-level security) see stored values, and the query's "now" is one clock reading taken in its zone. [enforced: test:tests/test_law_zoned_reads.py]
 
 ## 4. Enforcement
 

@@ -1,4 +1,4 @@
-"""DEV-1854 — ``consecutive_periods`` over null-test predicates (``is None`` /
+"""``consecutive_periods`` over null-test predicates (``is None`` /
 ``is not None``), executed on SQLite + DuckDB against
 ``tests/_dev1846_fixtures.py``. Store B's March ``sum(hi_rev)`` is NULL (no row
 clears the >15 filter); store A's never is.
@@ -46,75 +46,75 @@ class TestNullTestExecution:
         """``sum(hi_rev) is not None`` drives the streak: A never NULL → 1,2,3;
         B NULL in March → 1, 2, 0."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
-                metric="consecutive_periods(sum(hi_rev) is not None)",
+                metric="consecutive_periods(sum(sales.hi_rev) is not None)",
                 alias="streak")],
         ))
         by = _by_store_month(resp)
-        assert int(by[("A", "2024-01")]["sales.streak"]) == 1
-        assert int(by[("A", "2024-02")]["sales.streak"]) == 2
-        assert int(by[("A", "2024-03")]["sales.streak"]) == 3
-        assert int(by[("B", "2024-01")]["sales.streak"]) == 1
-        assert int(by[("B", "2024-02")]["sales.streak"]) == 2
-        assert int(by[("B", "2024-03")]["sales.streak"]) == 0
+        assert int(by[("A", "2024-01")]["streak"]) == 1
+        assert int(by[("A", "2024-02")]["streak"]) == 2
+        assert int(by[("A", "2024-03")]["streak"]) == 3
+        assert int(by[("B", "2024-01")]["streak"]) == 1
+        assert int(by[("B", "2024-02")]["streak"]) == 2
+        assert int(by[("B", "2024-03")]["streak"]) == 0
 
     async def test_top_level_is_null_by_store(self, exec_engine) -> None:
         """The complementary ``is None`` form: A → 0,0,0; B → 0,0,1."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
-                metric="consecutive_periods(sum(hi_rev) is None)",
+                metric="consecutive_periods(sum(sales.hi_rev) is None)",
                 alias="streak")],
         ))
         by = _by_store_month(resp)
-        assert int(by[("A", "2024-01")]["sales.streak"]) == 0
-        assert int(by[("A", "2024-02")]["sales.streak"]) == 0
-        assert int(by[("A", "2024-03")]["sales.streak"]) == 0
-        assert int(by[("B", "2024-01")]["sales.streak"]) == 0
-        assert int(by[("B", "2024-02")]["sales.streak"]) == 0
-        assert int(by[("B", "2024-03")]["sales.streak"]) == 1
+        assert int(by[("A", "2024-01")]["streak"]) == 0
+        assert int(by[("A", "2024-02")]["streak"]) == 0
+        assert int(by[("A", "2024-03")]["streak"]) == 0
+        assert int(by[("B", "2024-01")]["streak"]) == 0
+        assert int(by[("B", "2024-02")]["streak"]) == 0
+        assert int(by[("B", "2024-03")]["streak"]) == 1
 
     async def test_is_not_null_under_and(self, exec_engine) -> None:
         """A null test under ``and`` (rejected by the gate pre-fix): cost:sum is
         always positive, so the conjunction equals the null test → A 1,2,3 /
         B 1,2,0."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
-                metric="consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
+                metric="consecutive_periods(sum(sales.hi_rev) is not None and sum(sales.cost) > 0)",
                 alias="streak")],
         ))
         by = _by_store_month(resp)
-        assert int(by[("A", "2024-01")]["sales.streak"]) == 1
-        assert int(by[("A", "2024-02")]["sales.streak"]) == 2
-        assert int(by[("A", "2024-03")]["sales.streak"]) == 3
-        assert int(by[("B", "2024-01")]["sales.streak"]) == 1
-        assert int(by[("B", "2024-02")]["sales.streak"]) == 2
-        assert int(by[("B", "2024-03")]["sales.streak"]) == 0
+        assert int(by[("A", "2024-01")]["streak"]) == 1
+        assert int(by[("A", "2024-02")]["streak"]) == 2
+        assert int(by[("A", "2024-03")]["streak"]) == 3
+        assert int(by[("B", "2024-01")]["streak"]) == 1
+        assert int(by[("B", "2024-02")]["streak"]) == 2
+        assert int(by[("B", "2024-03")]["streak"]) == 0
 
     async def test_dimension_is_not_null(self, exec_engine) -> None:
-        """A null test over a grouped dimension column: store is never NULL →
+        """A null test over a grouped dimension field: store is never NULL →
         both streaks 1, 2, 3."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
+            dimensions=["sales.store"],
             metrics=[QueryMetric(
-                metric="consecutive_periods(store is not None)", alias="streak")],
+                metric="consecutive_periods(sales.store is not None)", alias="streak")],
         ))
         by = _by_store_month(resp)
         for store in ("A", "B"):
-            assert int(by[(store, "2024-01")]["sales.streak"]) == 1
-            assert int(by[(store, "2024-02")]["sales.streak"]) == 2
-            assert int(by[(store, "2024-03")]["sales.streak"]) == 3
+            assert int(by[(store, "2024-01")]["streak"]) == 1
+            assert int(by[(store, "2024-02")]["streak"]) == 2
+            assert int(by[(store, "2024-03")]["streak"]) == 3
 
 
 class TestNullTestTypingContract:
     async def test_null_test_in_value_position_is_its_integer(self, exec_engine) -> None:
         """``(… is None) + 1`` is 1 or 2, never 0: B's NULL March keeps the run going."""
         resp = await exec_engine.execute(_q(
-            dimensions=["store"],
-            metrics=[QueryMetric(metric="consecutive_periods((sum(hi_rev) is None) + 1)", alias="streak")],
+            dimensions=["sales.store"],
+            metrics=[QueryMetric(metric="consecutive_periods((sum(sales.hi_rev) is None) + 1)", alias="streak")],
         ))
         by = _by_store_month(resp)
         for store in ("A", "B"):
-            assert [int(by[(store, m)]["sales.streak"]) for m in ("2024-01", "2024-02", "2024-03")] == [1, 2, 3]
+            assert [int(by[(store, m)]["streak"]) for m in ("2024-01", "2024-02", "2024-03")] == [1, 2, 3]

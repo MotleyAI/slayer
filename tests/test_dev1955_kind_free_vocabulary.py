@@ -1,5 +1,5 @@
-"""The derived-column error vocabulary carries no ``sql``/``filter`` kind and one
-declaring-model field, so the storage and engine save doors cannot disagree."""
+"""The derived-field error vocabulary carries no ``sql``/``filter`` kind and one
+declaring-dataset field, so the storage and engine save doors cannot disagree."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def _customers(*, cols: tuple[DatasetField, ...] = ()) -> SlayerDataset:
     )
 
 
-def _orders(*, cols: tuple[DatasetField, ...] = (), joins: tuple[DatasetRelationship, ...] = ()) -> SlayerDataset:
+def _orders(*, cols: tuple[DatasetField, ...] = (), relationships: tuple[DatasetRelationship, ...] = ()) -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
@@ -64,7 +64,7 @@ def _orders(*, cols: tuple[DatasetField, ...] = (), joins: tuple[DatasetRelation
             DatasetField(name="amount", datatype=DataType.FLOAT),
             *cols,
         ],
-        relationships=list(joins),
+        relationships=list(relationships),
     )
 
 
@@ -79,7 +79,7 @@ def _line_items() -> SlayerDataset:
     )
 
 
-def _li_join(*, cardinality: RelationshipCardinality | None = None) -> DatasetRelationship:
+def _li_relationship(*, cardinality: RelationshipCardinality | None = None) -> DatasetRelationship:
     return DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"],
                      cardinality=cardinality)
 
@@ -144,8 +144,8 @@ class TestUnprovenWarning:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),),
-            joins=(_li_join(),),
+            cols=(DatasetField(name="li_qty", expression="line_items.qty", datatype=DataType.FLOAT),),
+            relationships=(_li_relationship(),),
         )
         with warnings.catch_warnings(record=True) as rec:
             warnings.simplefilter("always")
@@ -162,9 +162,9 @@ class TestUnprovenWarning:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="big_qty", sql="line_items.qty", datatype=DataType.FLOAT,
+            cols=(DatasetField(name="big_qty", expression="line_items.qty", datatype=DataType.FLOAT,
                          filter="line_items.qty >= 2"),),
-            joins=(_li_join(),),
+            relationships=(_li_relationship(),),
         )
         with warnings.catch_warnings(record=True) as rec:
             warnings.simplefilter("always")
@@ -180,8 +180,8 @@ class TestFanningReferenceSpelling:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="li_qty", sql="orders.line_items.qty", datatype=DataType.FLOAT),),
-            joins=(_li_join(cardinality=RelationshipCardinality.ONE_TO_MANY),),
+            cols=(DatasetField(name="li_qty", expression="orders.line_items.qty", datatype=DataType.FLOAT),),
+            relationships=(_li_relationship(cardinality=RelationshipCardinality.ONE_TO_MANY),),
         )
         with pytest.raises(DerivedFieldFanningError) as ei:
             await storage.save_dataset(orders)
@@ -195,9 +195,9 @@ class TestFanningReferenceSpelling:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="big_item", sql="amount", datatype=DataType.FLOAT,
+            cols=(DatasetField(name="big_item", expression="amount", datatype=DataType.FLOAT,
                          filter="line_items.qty >= 2"),),
-            joins=(_li_join(cardinality=RelationshipCardinality.ONE_TO_MANY),),
+            relationships=(_li_relationship(cardinality=RelationshipCardinality.ONE_TO_MANY),),
         )
         with pytest.raises(DerivedFieldFanningError) as ei:
             await storage.save_dataset(orders)
@@ -213,13 +213,13 @@ class TestEngineDoorCrossModelAttribution:
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
         await storage.save_dataset(
-            _customers(cols=(DatasetField(name="bad", datatype=DataType.FLOAT, sql="spend",
+            _customers(cols=(DatasetField(name="bad", datatype=DataType.FLOAT, expression="spend",
                                     filter="regions.customers.spend > 0"),)),
             _validate=False,
         )
         orders = _orders(
-            cols=(DatasetField(name="outer", datatype=DataType.FLOAT, sql="customers.bad * 2"),),
-            joins=(DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
+            cols=(DatasetField(name="outer", datatype=DataType.FLOAT, expression="customers.bad * 2"),),
+            relationships=(DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                              cardinality=RelationshipCardinality.MANY_TO_ONE),),
         )
         engine = SlayerQueryEngine(storage=storage)

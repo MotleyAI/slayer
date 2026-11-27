@@ -1,4 +1,4 @@
-"""DEV-1840 task 1.5 — metadata silence for pushed filters, strict narrowing
+"""Metadata silence for pushed filters, strict narrowing
 (design D8).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Strict mode" and the
@@ -14,7 +14,7 @@ import warnings as _warnings
 import pytest
 
 from slayer.core.errors import (
-    AmbiguousRelationshipPathError,
+    UnresolvableDimensionRelationshipError,
     AssociatedGrainWarning,
     BroadcastGrainWarning,
 )
@@ -53,7 +53,7 @@ async def exec_backend_amb(request):
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 SM = QueryMetric(metric="sum(agents.score)", alias="sm")
 RV = QueryMetric(metric="sum(reviews.stars)", alias="rv")
@@ -67,7 +67,7 @@ class TestPushedFiltersAreSilent:
             _warnings.simplefilter("always")
             await engine.execute(q(
                 dimensions=["customers.tier"], metrics=[M, CM],
-                filter=["channel = 'app'"],
+                filter=["orders.channel = 'app'"],
             ))
         hits = [c for c in caught
                 if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
@@ -94,11 +94,11 @@ class TestStrictNarrows:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
-            filter=["channel = 'app'"],
+            filter=["orders.channel = 'app'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         for tier, spend in SPEND_APP_BY_TIER.items():
-            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
+            assert float(by[(tier,)]["cm"]) == pytest.approx(spend), tier
 
     async def test_strict_passes_on_a_pushable_forward_hop(
         self, exec_backend_weak,
@@ -108,29 +108,29 @@ class TestStrictNarrows:
             to_many_handling="error", dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.plans.level = 'basic'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         for tier, spend in SPEND_BASIC_BY_TIER.items():
-            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
+            assert float(by[(tier,)]["cm"]) == pytest.approx(spend), tier
 
     async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
-        """DEV-1935: a mixed disjunction no longer errors in error mode — the
+        """A mixed disjunction no longer errors in error mode — the
         producer is restricted by a boolean-total semi-join (gold cm = 160)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="error", dimensions=["customers.tier"], metrics=[CM],
-            filter=["customers.tier = 'bronze' OR channel = 'app'"],
+            filter=["customers.tier = 'bronze' OR orders.channel = 'app'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
+        by = rows_by(resp, "customers.tier")
+        assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
 
     async def test_strict_still_errors_on_an_ambiguous_path(
         self, exec_backend_amb,
     ):
-        """Ambiguous hop errors under strict — same failure as lenient.
-        DEV-1853 divergences.md class (d)."""
+        """Ambiguous hop errors under strict — same failure as lenient
+        (divergences.md class (d))."""
         _, engine = exec_backend_amb
-        query = tq(to_many_handling="error", metrics=[SM], filter=["effort > 2"])
-        with pytest.raises(AmbiguousRelationshipPathError) as ei:
+        query = tq(to_many_handling="error", metrics=[SM], filter=["tickets.effort > 2"])
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
         assert "closed_by" in str(ei.value)
@@ -138,12 +138,12 @@ class TestStrictNarrows:
     async def test_strict_ambiguous_filter_hop_errors(
         self, exec_backend_amb,
     ):
-        """A clean measure path with a filter crossing the ambiguous pair
-        errors under strict — never dropped. DEV-1853 divergences.md
-        class (d)."""
+        """A clean metric path with a filter crossing the ambiguous pair
+        errors under strict — never dropped (divergences.md
+        class (d))."""
         _, engine = exec_backend_amb
         query = tq(to_many_handling="error", metrics=[RV], filter=["agents.name = 'Ann'"])
-        with pytest.raises(AmbiguousRelationshipPathError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
         assert "closed_by" in str(ei.value)
@@ -151,44 +151,44 @@ class TestStrictNarrows:
 
 class TestBooleanTotalPushdownReplacesTheWarning:
     async def test_mixed_disjunction_pushes_without_warning(self, exec_backend):
-        """DEV-1935: a mixed disjunction is pushed by semi-join (gold cm = 160),
+        """A mixed disjunction is pushed by semi-join (gold cm = 160),
         never dropped-and-warned; no Python-level warning is emitted."""
         _, engine = exec_backend
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
                 dimensions=["customers.tier"], metrics=[CM],
-                filter=["customers.tier = 'bronze' OR channel = 'app'"],
+                filter=["customers.tier = 'bronze' OR orders.channel = 'app'"],
             ))
-        by = rows_by(resp, "orders.customers.tier")
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
+        by = rows_by(resp, "customers.tier")
+        assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
         hits = [c for c in caught
                 if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
         assert hits == []
 
     async def test_cross_branch_atomic_pushes_without_warning(self, exec_backend_weak):
-        """DEV-1935: a cross-branch atom is pushed, not dropped-and-warned."""
+        """A cross-branch atom is pushed, not dropped-and-warned."""
         _, engine = exec_backend_weak
         resp = await engine.execute(q(
             dimensions=["customers.tier"], metrics=[CM],
-            filter=["channel = customers.plans.level"],
+            filter=["orders.channel = customers.plans.level"],
         ))
         assert pushed_filter_infos(resp)
 
     async def test_ambiguous_path_errors_in_lenient_mode(self, exec_backend_amb):
         """Ambiguous hop errors in BOTH modes — the drop+warn handling is
-        retired. DEV-1853 divergences.md class (d)."""
+        retired (divergences.md class (d))."""
         _, engine = exec_backend_amb
-        query = tq(metrics=[SM], filter=["effort > 2"])
-        with pytest.raises(AmbiguousRelationshipPathError):
+        query = tq(metrics=[SM], filter=["tickets.effort > 2"])
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await engine.execute(query)
 
     async def test_ambiguous_filter_hop_errors_in_lenient_mode(
         self, exec_backend_amb,
     ):
         """A filter whose only route crosses the ambiguous pair errors in
-        lenient mode too — never dropped. DEV-1853 divergences.md class (d)."""
+        lenient mode too — never dropped (divergences.md class (d))."""
         _, engine = exec_backend_amb
         query = tq(metrics=[RV], filter=["agents.name = 'Ann'"])
-        with pytest.raises(AmbiguousRelationshipPathError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await engine.execute(query)

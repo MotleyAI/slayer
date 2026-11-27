@@ -80,3 +80,37 @@ A relation name dbt renders — a semantic model's `model` that has no SQL file,
 #### Scenario: Undeclared source
 - **WHEN** a model's SQL reads `{{ source('legacy', 'events') }}` and no source `legacy` is declared
 - **THEN** the report holds an entry naming `legacy.events`, and the model reads `legacy.events`
+
+### Requirement: dbt entity keys read physical columns
+
+An entity whose `expr` is a bare column (or which has no `expr`) SHALL key its semantic model's joins and primary key on a physical reader of that column (importers/meaning-preservation › One hidden reader per physical column), whichever dimensions the semantic model declares; when a dimension holds the column's name with a different definition, the dimension SHALL keep its name and definition, the key SHALL be a hidden field reading the physical column, and no report SHALL be raised.
+
+#### Scenario: A target key named by a derived dimension
+- **WHEN** semantic model `customers` has primary entity `id` and declares dimension `id` with `expr: LOWER(id)`, and `orders` has foreign entity `customer` joining it
+- **THEN** `orders` imports with a relationship to `customers` keyed on a hidden field `id_raw` that reads the physical `id` and carries the primary key, `customers.id` keeps `LOWER(id)` and is not the primary key, and no warning is raised
+
+#### Scenario: A source key named by a derived dimension
+- **WHEN** semantic model `orders` has foreign entity `customer` with `expr: customer_id` and declares dimension `customer_id` with `expr: UPPER(customer_id)`
+- **THEN** the relationship is keyed on a hidden field reading the physical `customer_id`, and grouping orders by `customers.name` returns each customer's order count
+
+### Requirement: dbt percentile flags import with their meaning
+A dbt `percentile` measure, and a metric whose aggregation is a percentile, SHALL import with its `agg_params`: no flag
+as `percentile(x, p=…)`, `use_discrete_percentile` as `percentile_disc(x, p=…)`, `use_approximate_percentile` as
+`percentile_approx(x, p=…)`, and both flags as `percentile_disc(x, p=…)` — the exact discrete value being within any
+approximation of it. A percentile with no `percentile` value SHALL still be dropped with a report.
+
+#### Scenario: Discrete percentile measure
+- **WHEN** a dbt measure is `agg: percentile` with `agg_params: {percentile: 0.9, use_discrete_percentile: true}` over `amount`
+- **THEN** it imports as `percentile_disc(amount, p=0.9)`
+
+#### Scenario: Approximate percentile measure
+- **WHEN** a dbt measure is `agg: percentile` with `agg_params: {percentile: 0.9, use_approximate_percentile: true}` over `amount`
+- **THEN** it imports as `percentile_approx(amount, p=0.9)`
+
+#### Scenario: Both flags
+- **WHEN** a dbt measure, and a metric over a filtered percentile, set both `use_discrete_percentile` and `use_approximate_percentile` with `percentile: 0.5`
+- **THEN** each imports as `percentile_disc` with `p=0.5`, with no drop reported
+
+#### Scenario: Missing percentile value
+- **WHEN** a dbt measure is `agg: percentile` with `agg_params: {use_discrete_percentile: true}`
+- **THEN** it is dropped with a report naming the measure

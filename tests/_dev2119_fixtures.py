@@ -1,4 +1,4 @@
-"""Shared fixtures for row-level expressions in every column position.
+"""Shared fixtures for row-level expressions in every field position.
 
 Underscore-prefixed so pytest skips collection. ``orders → customers`` is proven
 many-to-one (``customers.id`` is a primary key); ``accounts`` (the customers table)
@@ -22,7 +22,7 @@ balances (id customer_id balance updated_at created_at):
    4 2  50 2025-01-15  2025-01-10 | 5 2  70 NULL        2025-01-20 | 6 2  80 2025-01-18  2025-01-05
 regions (id code manager): 1 EU Ann | 2 US Bob | 3 EU Cy
 
-``EFF`` = ``coalesce(shipped_at, created_at)``; the derived column ``orders.eff`` holds it.
+``EFF`` = ``coalesce(shipped_at, created_at)``; the derived field ``orders.eff`` holds it.
 """
 
 from __future__ import annotations
@@ -40,12 +40,12 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev1737_fixtures import TableSpec, seed_backend
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
 from tests._time_points_fixtures import PinnedClock
+from tests._ossie_gate import TIER1 as TIER1  # re-exported: the one Tier-1 list
 
 BACKENDS = ["sqlite", "duckdb"]
-TIER1 = ["sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "trino", "snowflake", "bigquery"]
 NOW = datetime(2026, 9, 29, 12, 0, 0)
 
-EFF = "coalesce(shipped_at, created_at)"
+EFF = "coalesce(orders.shipped_at, orders.created_at)"
 EFF_NAME = "coalesce_shipped_at_created_at"
 
 # --------------------------------------------------------------------------- #
@@ -122,7 +122,7 @@ CREATED_MONTH_COUNT = {"2024-12": 1, "2025-01": 2, "2025-02": 2, "2025-03": 1}
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -141,7 +141,7 @@ def orders_dataset() -> SlayerDataset:
             DatasetField(name="shipped_at", datatype=DataType.DATETIME),
             DatasetField(name="refunded_at", datatype=DataType.DATETIME),
             DatasetField(name="created_txt", datatype=DataType.STRING),
-            DatasetField(name="eff", datatype=DataType.DATETIME, sql="COALESCE(shipped_at, created_at)"),
+            DatasetField(name="eff", datatype=DataType.DATETIME, expression="COALESCE(shipped_at, created_at)"),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -210,9 +210,9 @@ def monthly_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="monthly", data_source="test",
         source_queries=[SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["refunded_at"],
-            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "population": "orders", "dimensions": ["orders.refunded_at"],
+            "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })],
     )
 
@@ -240,7 +240,7 @@ async def engine_for(
 
 async def emit(query: SlayerQuery | list[SlayerQuery | dict], *, dialect: str,
                datasets: Optional[Iterable[SlayerDataset]] = None) -> str:
-    """Dry-run SQL over the dev2119 models on ``dialect`` (asserts it parses there)."""
+    """Dry-run SQL over the dev2119 datasets on ``dialect`` (asserts it parses there)."""
     first, *rest = list(datasets) if datasets is not None else dev2119_datasets()
     return await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect)
 
@@ -297,7 +297,7 @@ def by_bucket(resp: SlayerResponse, key: str, value: str = "v", *, width: int = 
     return out
 
 
-def by_dims(resp: SlayerResponse, keys: Iterable[str], value: str = "orders.v") -> dict[tuple, Optional[float]]:
+def by_dims(resp: SlayerResponse, keys: Iterable[str], value: str = "v") -> dict[tuple, Optional[float]]:
     keys = list(keys)
     out = {tuple(r[k] for k in keys): num(r[value]) for r in resp.data}
     assert len(out) == len(resp.data), resp.data

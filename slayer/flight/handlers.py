@@ -198,8 +198,8 @@ class FlightHandlers:
     # ----- helpers ----------------------------------------------------------
 
     def _build_catalog(self) -> FlightCatalog:
-        models_by_ds = self._fetch_datasets_by_datasource()
-        return build_catalog(datasets_by_datasource=models_by_ds)
+        datasets_by_ds = self._fetch_datasets_by_datasource()
+        return build_catalog(datasets_by_datasource=datasets_by_ds)
 
     def _fetch_datasets_by_datasource(self) -> dict[str, list[SlayerDataset]]:
         async def fetch() -> dict[str, list[SlayerDataset]]:
@@ -207,8 +207,8 @@ class FlightHandlers:
             out: dict[str, list[SlayerDataset]] = {}
             storage = self._engine.storage  # the engine's view refines stored datasets through its clients
             for ds in await storage.list_datasources():
-                if models := failures.skip(await storage.load_datasets(data_source=ds)):
-                    out[ds] = models
+                if datasets := failures.skip(await storage.load_datasets(data_source=ds)):
+                    out[ds] = datasets
             return out
 
         return self._run(fetch())

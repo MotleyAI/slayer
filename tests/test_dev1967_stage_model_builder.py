@@ -1,4 +1,4 @@
-"""``model_from_stage_schema``: the one stage→model builder and its grain stamping."""
+"""``dataset_from_stage_schema``: the one stage→dataset builder and its grain stamping."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _schema(grain: Optional[List[str]]) -> StageSchema:
         fields=[
             StageField(name="id", sql_alias="id", public_alias="id", datatype=DataType.INTEGER),
             StageField(name="tier", sql_alias="tier", public_alias="tier", datatype=DataType.STRING),
-            StageField(name="rev", sql_alias="rev", public_alias="rev"),
+            StageField(name="rev", sql_alias="rev", public_alias="rev", datatype=DataType.FLOAT),
         ],
         grain=grain,
     )
@@ -80,7 +80,7 @@ class TestInputs:
 
     def test_column_sql_applied(self) -> None:
         model = _build(["id"], sql="SELECT 1 AS id", field_sql={"tier": "tier_fit"})
-        assert _col(model, "tier").sql == "tier_fit"
+        assert _col(model, "tier").physical_name == "tier_fit"
 
     def test_default_time_dimension_passed_through(self) -> None:
         schema = StageSchema(
@@ -120,6 +120,3 @@ class TestColumnFacts:
         assert (rev.datatype, rev.granularity, rev.label, rev.format, rev.description) == (
             DataType.FLOAT, None, "Revenue", MONEY, "Total revenue",
         )
-
-    def test_untyped_column_defaults_to_double(self) -> None:
-        assert _col(_build(None), "rev").datatype == DataType.FLOAT

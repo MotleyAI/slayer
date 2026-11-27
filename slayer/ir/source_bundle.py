@@ -5,7 +5,7 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +15,7 @@ from slayer.core.relationship_edges import EdgeMerge
 from slayer.core.relationship_walker import with_list_children
 from slayer.core.models import (
     DatasetField,
+    DatasetRelationship,
     SlayerDataset,
     _check_field_metric_namespace,
     _check_relationship_keys,
@@ -24,6 +25,7 @@ from slayer.core.scope import DatasetScope, StageDisplay, StageSchema
 
 __all__ = [
     "InnerRestriction",
+    "absorb_inherited",
     "resolve_scope",
     "ResolvedSourceBundle",
     "apply_extension_overlay",
@@ -32,6 +34,7 @@ __all__ = [
     "overlay_metrics",
     "source_name_if_sibling",
     "stage_bundle_with_siblings",
+    "without_inherited",
 ]
 
 
@@ -46,6 +49,41 @@ class InnerRestriction(BaseModel):
     # How messages name the declaration.
     label: str
 
+    @property
+    def parts(self) -> Tuple[str, str, str]:
+        """The filter's reference, anchored at the declaring dataset."""
+        return (self.dataset, self.token, self.key)
+
+
+class RowSupplyBranch(BaseModel):
+    """A row source's cells, kept where they agree with every ``restrict`` query's cells (semantics 12.3)."""
+
+    cells: SlayerQuery
+    restrict: Tuple[SlayerQuery, ...] = ()
+
+
+class RowSupply(BaseModel):
+    """An inferred stage's rows (semantics 12.4): the union of ``branches``' cells, else its population's."""
+
+    branches: Tuple[RowSupplyBranch, ...] = ()
+    #: No dimensions: exactly one row.
+    unit: bool = False
+    #: The population is one group of a product anchor; the other groups' dimensions read across ``×``.
+    product: bool = False
+    #: The dimension anchor when it is one dataset: the stage's column names drop its name, whatever hosts the stage.
+    anchor: Optional[str] = None
+
+
+#: ``ResolvedSourceBundle.row_supplies`` key of an unnamed stage.
+ROOT_STAGE = ""
+
+
+class SplicedRows(BaseModel):
+    """A stored inferred stage's host and row supply, planned from its pinned anchor."""
+
+    population: str
+    supply: RowSupply
+
 
 class ResolvedSourceBundle(BaseModel):
     """Eagerly resolved inputs to one query execution (P11)."""
@@ -59,22 +97,38 @@ class ResolvedSourceBundle(BaseModel):
     query: Optional[SlayerQuery] = None
     # Per-named-stage source dataset (sibling-sourced stages omitted).
     stage_source_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
+    # Per-named-stage variable layers (outer, stage, runtime) every dataset the stage reads binds under.
+    stage_variable_layers: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     query_variables: Dict[str, Any] = Field(default_factory=dict)
+    # The query's own variable layers (outer, stage, runtime), without any dataset's defaults.
+    variable_layers: Dict[str, Any] = Field(default_factory=dict)
+    # Each dataset as stored, before its Mode-A surfaces were bound; a spliced stage rebinds under its own layers.
+    unbound_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
+    # Once the datasets are resolved for the datasource: each one's live source-column types and its bound form
+    # before resolution, so a dataset rebound from its stored definition resolves the same way, among bound peers.
+    live_source_types: Optional[Dict[str, Dict[str, DataType]]] = None
+    unresolved_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
     dialect: str  # sqlglot dialect the query renders in
     # The datasource's type: picks its own dialect where several share a sqlglot name (MariaDB / MySQL).
     datasource_type: Optional[str] = None
     # Minted stage identity → its user-facing spelling.
     stage_displays: Dict[str, StageDisplay] = Field(default_factory=dict)
-    # Stored query-backed datasets the statement may splice, including result joins.
+    # Stored query-backed datasets the statement may splice, including relationships to query results.
     query_backed: Dict[str, SlayerDataset] = Field(default_factory=dict)
     # Query-backed datasets whose stages are being planned, outermost first.
     splice_chain: Tuple[str, ...] = ()
     runtime_variables: Dict[str, Any] = Field(default_factory=dict)
     # Query-backed datasets this stage reads that could not be spliced, with the cause.
     splice_failures: Dict[str, Exception] = Field(default_factory=dict)
-    # The one clock reading every time point in this execution resolves against.
+    # The one clock reading every time point in this execution resolves against, as this stage's wall clock.
     now: datetime = Field(default_factory=datetime.now)
+    # That reading as taken (aware, or naive host-local): each stage's ``now`` derives from it.
+    clock_reading: Optional[datetime] = None
+    # The stage's effective time zone (its own, else the query's); ``None``: no conversion.
+    time_zone: Optional[str] = None
+    # The datasource's default source zone of its ``DateTime`` fields.
+    datasource_time_zone: Optional[str] = None
     # The datasource's custom granularities, keyed by ``granularity_key``.
     granularities: Dict[str, CustomGranularity] = Field(default_factory=dict)
     # A stored dataset shadows the built-in ``time_spine``.
@@ -84,6 +138,12 @@ class ResolvedSourceBundle(BaseModel):
     datasource_edge_names: FrozenSet[str] = frozenset()
     # The stage's query-declared INNER joins, read as population filters.
     inner_restrictions: Tuple[InnerRestriction, ...] = ()
+    # Each inferred stage's row supply, keyed by stage name (``ROOT_STAGE`` when unnamed).
+    row_supplies: Dict[str, RowSupply] = Field(default_factory=dict)
+    # Each stored inferred stage of a query-backed dataset, keyed by (dataset, stage name or ``ROOT_STAGE``).
+    spliced_rows: Dict[Tuple[str, str], "SplicedRows"] = Field(default_factory=dict)
+    # The row supply of the stage being planned (its producers inherit it).
+    row_supply: Optional[RowSupply] = None
 
     def definition_view(self) -> "ResolvedSourceBundle":
         """This bundle as stored definitions see it: without anything a query extension added."""
@@ -109,18 +169,24 @@ class ResolvedSourceBundle(BaseModel):
             dataset = dataset.with_unrelated(frozenset())
         return dataset.as_population_factor(False) if dataset.population_spine else dataset
 
-    def rerooted(self, new_source: SlayerDataset) -> "ResolvedSourceBundle":
+    def rerooted(self, new_source: SlayerDataset, *, replacing: Sequence[SlayerDataset] = ()) -> "ResolvedSourceBundle":
         """Re-root at ``new_source``, keeping the former source in the universe
         (a reverse hop can target it — the map must not shrink); a producer never
-        sees a spine population's product hop."""
+        sees a spine population's product hop. ``replacing`` swaps same-named datasets in."""
         new_source = self.factor_free(new_source)
         refs = self.referenced_datasets
         old = self.population
         if old is not None and self.get_referenced_dataset(old.name) is None:
             refs = [*refs, old]
+        swaps = {d.name: d for d in replacing}
+        refs = [swaps.get(m.name, m) for m in refs]
         return self.model_copy(
             update={"population": new_source, "referenced_datasets": refs},
         )
+
+    def unbound_dataset(self, name: str) -> Optional[SlayerDataset]:
+        """``name`` as stored, before the statement bound its variables."""
+        return self.unbound_datasets.get(name) or self.datasets_by_name.get(name)
 
     @property
     def datasets_by_name(self) -> Dict[str, SlayerDataset]:
@@ -182,6 +248,75 @@ def follow_sibling_chain(
         spec = named_queries[sib].population
 
 
+def _stage_field(field: DatasetField, *, native: Optional[str]) -> DatasetField:
+    """A stage output field; ``native`` is the output column it reads when that is not its name."""
+    return field if native is None else field.with_native(native)
+
+
+def without_inherited(dataset: SlayerDataset) -> Tuple[SlayerDataset, List[DatasetRelationship]]:
+    """``dataset`` without its inherited edges, and those edges."""
+    inherited = [j for j in dataset.relationships if j.inherited_from is not None]
+    if not inherited:
+        return dataset, []
+    return dataset.model_copy(update={
+        "relationships": [j for j in dataset.relationships if j.inherited_from is None]}), inherited
+
+
+def _absorbs(declared: DatasetRelationship, inherited: DatasetRelationship, *, reverse: bool) -> bool:
+    pairs = _pair_set(declared.column_pairs)
+    if reverse:
+        pairs = frozenset((t, s) for s, t in pairs)
+    return pairs == _pair_set(inherited.column_pairs) and (
+        declared.name == inherited.name or None in (declared.name, inherited.name))
+
+
+def absorb_inherited(datasets: Mapping[str, SlayerDataset]) -> Dict[str, SlayerDataset]:
+    """Declared edges win: an identical one absorbs an inherited edge (an inherited name it lacks becomes its alias), a
+    same-named one on other keys replaces it; differently named edges on the same keys stay parallel."""
+    out = dict(datasets)
+    for name, dataset in datasets.items():
+        absorbed = _absorb_into(name=name, dataset=dataset, datasets=datasets)
+        if absorbed is not None:
+            out[name] = absorbed
+    return out
+
+
+def _absorb_into(
+    *, name: str, dataset: SlayerDataset, datasets: Mapping[str, SlayerDataset],
+) -> Optional[SlayerDataset]:
+    """``dataset`` with its absorbed inherited edges dropped; ``None`` when none is."""
+    declared = [j for j in dataset.relationships if j.inherited_from is None]
+    aliases: Dict[int, List[str]] = {}
+    dropped: set = set()
+    for j in dataset.relationships:
+        if j.inherited_from is None:
+            continue
+        hit = next((d for d in declared if d.to == j.to and _absorbs(d, j, reverse=False)), None)
+        if hit is not None and j.name is not None and hit.name is None:
+            aliases.setdefault(id(hit), []).append(j.name)
+        if hit is not None or _declared_back(j, name=name, datasets=datasets) or (
+                j.name is not None and any(d.name == j.name for d in declared)):
+            dropped.add(id(j))
+    if not dropped:
+        return None
+    return dataset.model_copy(update={"relationships": [
+        j.with_aliases(tuple(dict.fromkeys((*j.aliases, *aliases[id(j)])))) if id(j) in aliases else j
+        for j in dataset.relationships if id(j) not in dropped
+    ]})
+
+
+def _declared_back(inherited: DatasetRelationship, *, name: str, datasets: Mapping[str, SlayerDataset]) -> bool:
+    """Whether ``inherited``'s target declares the identical edge back to ``name``."""
+    target = datasets.get(inherited.to)
+    return target is not None and any(
+        d.to == name and d.inherited_from is None and _absorbs(d, inherited, reverse=True)
+        for d in target.relationships)
+
+
+def _pair_set(pairs: Iterable[Sequence[str]]) -> FrozenSet[Tuple[str, str]]:
+    return frozenset((p[0], p[1]) for p in pairs)
+
+
 def dataset_from_stage_schema(
     *,
     name: str,
@@ -192,8 +327,8 @@ def dataset_from_stage_schema(
     default_time_dimension: Optional[str] = None,
     saved: Optional[SlayerDataset] = None,
 ) -> SlayerDataset:
-    """The dataset a stage's output is read as: over its CTE (``sql=None``) or over ``sql``,
-    with the relationships and filters of ``saved``, the stored query-backed dataset it reads as.
+    """The dataset a stage's output is read as: over its CTE (``sql=None``) or over ``sql``, with its inherited edges
+    and the relationships and filters of ``saved``, the stored query-backed dataset it reads as (declared edges win).
 
     A single-field grain is stamped ``unique``; a composite grain ``primary_key`` on each member.
     """
@@ -206,10 +341,10 @@ def dataset_from_stage_schema(
         sql_table="_stage" if sql is None else None,
         sql=sql,
         fields=[
-            DatasetField(
+            _stage_field(DatasetField(
                 name=c.name,
-                sql=field_sql.get(c.name),
-                datatype=c.datatype or DataType.FLOAT,
+                datatype=c.datatype,
+                time_zone=c.time_zone if c.datatype is DataType.DATETIME else None,
                 element_type=(c.element_type or DataType.OPAQUE) if c.datatype is DataType.ARRAY else None,
                 granularity=c.granularity.name if isinstance(c.granularity, CustomGranularity) else c.granularity,
                 label=c.label,
@@ -217,20 +352,22 @@ def dataset_from_stage_schema(
                 description=c.description,
                 primary_key=composite and c.name in grain,
                 unique=not composite and c.name in grain,
-            ).with_respellings(c.respellings)
+            ).with_respellings(c.respellings), native=field_sql.get(c.name))
             for c in schema.fields
         ],
     )
-    relationships = list(saved.relationships) if saved is not None else []
+    declared = list(saved.relationships) if saved is not None else []
     # Relationships attach after the rename (validators skip model_copy), so check their keys here.
-    _check_relationship_keys(dataset_name=name, fields=dataset.fields, relationships=relationships)
+    _check_relationship_keys(dataset_name=name, fields=dataset.fields, relationships=declared)
     # A minted stage identity carries the reserved prefix the name validator rejects.
-    return dataset.model_copy(update={
+    out = dataset.model_copy(update={
         "name": name, "sql_table": name if sql is None else None,
         "default_time_dimension": default_time_dimension or schema.default_time_dimension,
-        "relationships": relationships,
+        "relationships": [*declared, *(e.as_relationship() for e in schema.inherited_edges)],
         "filters": list(saved.filters) if saved is not None else [],
-    }).with_spelling(schema.display_name if schema.display_name != name else None)
+    }).with_spelling(schema.display_name if schema.display_name != name else None).with_restricted_rows(
+        schema.restricted).with_constructed_keys([grain])
+    return absorb_inherited({name: out})[name] if schema.inherited_edges else out
 
 
 def stage_bundle_with_siblings(
@@ -265,21 +402,14 @@ def stage_bundle_with_siblings(
         + synths
         + [m for m in bundle.referenced_datasets if m.name != source_dataset.name]
     )
+    # A stage's inherited edge yields to an identical edge its target declares back.
+    absorbed = absorb_inherited({m.name: m for m in referenced})
+    referenced = [absorbed.get(m.name, m) for m in referenced]
     return bundle.model_copy(
-        update={"population": source_dataset, "referenced_datasets": referenced}
+        update={"population": referenced[0], "referenced_datasets": referenced}
     )
 
 
-
-
-def resolve_scope(
-    *,
-    query: SlayerQuery,
-    bundle: "ResolvedSourceBundle",
-    stage_schemas: Optional[Dict[str, "StageSchema"]],
-):
-    """The scope a query binds against: its named sibling stage's schema, else the bundle's dataset."""
-    source = query.population
-    if isinstance(source, str) and source in (stage_schemas or {}):
-        return (stage_schemas or {})[source]
-    return DatasetScope(population=bundle.population)
+def resolve_scope(*, bundle: "ResolvedSourceBundle") -> DatasetScope:
+    """The anchored scope a query binds against: the bundle's population, a sibling stage's dataset included."""
+    return DatasetScope(population=bundle.population, anchored=True)

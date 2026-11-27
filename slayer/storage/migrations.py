@@ -22,10 +22,10 @@ from slayer.core.vocabulary import extension_dataset, is_extension_object
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 26,
-    "SlayerQuery": 16,
-    "DatasourceConfig": 3,
-    "Memory": 12,
+    "SlayerModel": 32,
+    "SlayerQuery": 20,
+    "DatasourceConfig": 4,
+    "Memory": 15,
     "Embedding": 2,
 }
 
@@ -133,6 +133,12 @@ def _datasource_v2_to_v3(data: dict) -> dict:
     return data
 
 
+@register_migration(entity="DatasourceConfig", source_version=3)
+def _datasource_v3_to_v4(data: dict) -> dict:
+    """v4: per-doc no-op; a renamed granularity records ``renamed_from``, set in the storage load path."""
+    return data
+
+
 def _blank(v: Any) -> bool:
     return isinstance(v, str) and not v.strip()
 
@@ -196,6 +202,12 @@ def with_root_extension(data: dict, *, extension: Any, base: Any, key: str = "so
 
 
 register_migration(entity="SlayerQuery", source_version=12, stored_only=True)(hoist_root_extension)
+
+
+@register_migration(entity="SlayerQuery", source_version=17, stored_only=True)
+def _query_v17_to_v18(data: dict) -> dict:
+    """v18: ``population_inferred`` (default ``false``), stamp only."""
+    return data
 
 
 _OSI_OLD, _OSI_NEW = "osi_custom_extensions", "osi_nonportable_extensions"
@@ -298,3 +310,9 @@ from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(
 from slayer.storage import extension_columns_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import date_only_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import ossie_vocabulary_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import field_expression_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import qualified_references_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import trusted_relationships_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import agg_field_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import instant_field_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import ossie_functions_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

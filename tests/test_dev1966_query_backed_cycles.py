@@ -1,4 +1,4 @@
-"""A self- or transitively-referencing query-backed model raises one cycle error everywhere.
+"""A self- or transitively-referencing query-backed dataset raises one cycle error everywhere.
 
 Spec: openspec …/specs/queries/query-backed-inline — "Query-backed cycles are rejected";
 …/specs/models/save-validation — "Self-referencing query-backed models are rejected at save time".
@@ -22,10 +22,10 @@ from tests._dev1966_fixtures import customers_dataset, m, orders_dataset, query,
 
 def _qb(name: str, source: str) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="test", source_queries=[
-        query(population=source, metrics=[m("sum(amount)", "amount")])])
+        query(population=source, metrics=[m(f"sum({source}.amount)", "amount")])])
 
 
-#: shape → (stored models, the model the surface starts from, the expected ordered path).
+#: shape → (stored datasets, the dataset the surface starts from, the expected ordered path).
 _SHAPES = {
     "direct": ([_qb("cyc_s", "cyc_s")], "cyc_s", "cyc_s -> cyc_s"),
     "transitive": ([_qb("cyc_a", "cyc_b"), _qb("cyc_b", "cyc_a")], "cyc_a", "cyc_a -> cyc_b -> cyc_a"),
@@ -35,7 +35,7 @@ _SHAPES = {
 async def _raise_via(surface: str, engine: SlayerQueryEngine, datasets: List[SlayerDataset],
                      start: str) -> BaseException:
     calls: dict[str, Callable[[], Awaitable[object]]] = {
-        "consumer": lambda: engine.execute(query(population=start, metrics=[m("sum(amount)", "t")])),
+        "consumer": lambda: engine.execute(query(population=start, metrics=[m(f"sum({start}.amount)", "t")])),
         "run_by_name": lambda: engine.execute(start),
         "save_model": lambda: engine.save_dataset(next(x for x in datasets if x.name == start)),
     }
@@ -61,7 +61,7 @@ async def _engine(tmp: str, datasets: List[SlayerDataset], *, omit: str = "") ->
 async def test_cycle_raises_naming_the_ordered_path(surface, shape) -> None:
     models, start, path = _SHAPES[shape]
     with tempfile.TemporaryDirectory() as tmp:
-        # save_model starts from an unsaved model; the rest find it in storage.
+        # save_model starts from an unsaved dataset; the rest find it in storage.
         engine, storage = await _engine(tmp, models, omit=start if surface == "save_model" else "")
         exc = await _raise_via(surface, engine, models, start)
         assert type(exc) is not SlayerError

@@ -31,6 +31,8 @@ from tests._stored_upgrade_fixtures import (
     query_backed_v10,
     raw_doc,
     raw_store,
+    region_join,
+    regions_v10,
     run,
     seed_shop,
     stored_bytes,
@@ -114,22 +116,23 @@ class TestDimension:
         assert QueryDimension(field="upper(customers.region)", alias="customers__tier_label") in (
             stage.dimensions or [])
         assert len(_conversion_warnings(caught, document="rev_by_tier", column="tier_label")) == 1
-        resp = await run(storage, {"population": "rev_by_tier", "dimensions": ["customers__tier_label"],
-                                   "metrics": [{"metric": "sum(rev)", "alias": "t"}]})
-        assert _rows(resp, "rev_by_tier.customers__tier_label", "rev_by_tier.t") == [("NORTH", 120.0), ("SOUTH", 90.0)]
+        resp = await run(storage, {"population": "rev_by_tier", "dimensions": ["rev_by_tier.customers__tier_label"],
+                                   "metrics": [{"metric": "sum(rev_by_tier.rev)", "alias": "t"}]})
+        assert _rows(resp, "rev_by_tier.customers__tier_label", "t") == [("NORTH", 120.0), ("SOUTH", 90.0)]
 
     @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_a_converted_model_is_written_back(self, tmp_path, shop_ds, backend: str) -> None:
+    async def test_a_converted_model_is_persisted_by_a_save(self, tmp_path, shop_ds, backend: str) -> None:
         storage = await _store(tmp_path, shop_ds, backend, _qb("rev_by_tier", _TIER))
         model, _ = await _load(storage, "rev_by_tier")
+        again, caught = await _load(storage, "rev_by_tier")
+        assert again == model
+        assert _conversion_warnings(caught, document="rev_by_tier", column="tier_label") != []
+        await storage.save_dataset(model)
         doc = await raw_doc(storage, "rev_by_tier")
         assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
         [stage] = doc["source_queries"]
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
         assert all("columns" not in e for e in stage.get("extensions") or [])
-        again, caught = await _load(storage, "rev_by_tier")
-        assert again == model
-        assert _conversion_warnings(caught, document="rev_by_tier", column="tier_label") == []
         async with owned_query_engine(storage=storage) as engine:
             by_name = await engine.execute("rev_by_tier")
         key = next(k for k in by_name.columns if k.endswith("tier_label"))
@@ -141,10 +144,10 @@ class TestDimension:
                        dimensions=["status_label"], measures=[_REV])
         storage = await _store(tmp_path, shop_ds, "yaml", _qb("by_status", stage))
         model, _ = await _load(storage, "by_status")
-        assert QueryDimension(field="upper(status)", alias="status_label") in (_stage_of(model).dimensions or [])
-        resp = await run(storage, {"population": "by_status", "dimensions": ["status_label"],
-                                   "metrics": [{"metric": "sum(rev)", "alias": "t"}]})
-        assert _rows(resp, "by_status.status_label", "by_status.t") == [("2024/01/01", 60.0), ("NEW", 70.0), ("OK", 80.0)]
+        assert QueryDimension(field="upper(orders.status)", alias="status_label") in (_stage_of(model).dimensions or [])
+        resp = await run(storage, {"population": "by_status", "dimensions": ["by_status.status_label"],
+                                   "metrics": [{"metric": "sum(by_status.rev)", "alias": "t"}]})
+        assert _rows(resp, "by_status.status_label", "t") == [("2024/01/01", 60.0), ("NEW", 70.0), ("OK", 80.0)]
 
 
 class TestMeasure:
@@ -155,10 +158,10 @@ class TestMeasure:
         storage = await _store(tmp_path, shop_ds, backend, _qb("dbl", stage))
         model, caught = await _load(storage, "dbl")
         loaded = _stage_of(model)
-        assert QueryMetric(metric="sum(CAST(amount * 2 AS DOUBLE))", alias="double_amount_sum") in (loaded.metrics or [])
+        assert QueryMetric(metric="sum(CAST(orders.amount * 2 AS DOUBLE))", alias="double_amount_sum") in (loaded.metrics or [])
         assert len(_conversion_warnings(caught, document="dbl", column="double_amount")) == 1
-        resp = await run(storage, {"population": "dbl", "metrics": [{"metric": "sum(double_amount_sum)", "alias": "t"}]})
-        assert resp.data[0]["dbl.t"] == pytest.approx(420.0)
+        resp = await run(storage, {"population": "dbl", "metrics": [{"metric": "sum(dbl.double_amount_sum)", "alias": "t"}]})
+        assert resp.data[0]["t"] == pytest.approx(420.0)
 
     async def test_a_joined_measure_takes_the_flattened_name(self, tmp_path, shop_ds) -> None:
         stage = _stage(extensions=[_ext("customers", {"name": "cid", "sql": "id * 10", "type": "INT"})],
@@ -167,9 +170,9 @@ class TestMeasure:
         model, _ = await _load(storage, "cids")
         assert QueryMetric(metric="sum(CAST(customers.id * 10 AS INT))", alias="customers__cid_sum") in (
             _stage_of(model).metrics or [])
-        resp = await run(storage, {"population": "cids", "dimensions": ["status"],
-                                   "metrics": [{"metric": "sum(customers__cid_sum)", "alias": "t"}]})
-        assert _rows(resp, "cids.status", "cids.t") == [("2024/01/01", 20.0), ("new", 40.0), ("ok", 60.0)]
+        resp = await run(storage, {"population": "cids", "dimensions": ["cids.status"],
+                                   "metrics": [{"metric": "sum(cids.customers__cid_sum)", "alias": "t"}]})
+        assert _rows(resp, "cids.status", "t") == [("2024/01/01", 20.0), ("new", 40.0), ("ok", 60.0)]
 
 
 class TestQualification:
@@ -180,11 +183,11 @@ class TestQualification:
                        dimensions=["buyer.region_label"], measures=[_REV])
         storage = await _store(tmp_path, shop_ds, "yaml", _qb("by_buyer", stage), orders=orders_v10(joins=[buyer]))
         model, _ = await _load(storage, "by_buyer")
-        assert QueryDimension(field="lower(buyer.region)", alias="buyer__region_label") in (
+        assert QueryDimension(field="lower(orders.buyer.region)", alias="buyer__region_label") in (
             _stage_of(model).dimensions or [])
-        resp = await run(storage, {"population": "by_buyer", "dimensions": ["buyer__region_label"],
-                                   "metrics": [{"metric": "sum(rev)", "alias": "t"}]})
-        assert _rows(resp, "by_buyer.buyer__region_label", "by_buyer.t") == [("north", 120.0), ("south", 90.0)]
+        resp = await run(storage, {"population": "by_buyer", "dimensions": ["by_buyer.buyer__region_label"],
+                                   "metrics": [{"metric": "sum(by_buyer.rev)", "alias": "t"}]})
+        assert _rows(resp, "by_buyer.buyer__region_label", "t") == [("north", 120.0), ("south", 90.0)]
 
     async def test_an_inferred_population_qualifies_the_expression(self, tmp_path, shop_ds) -> None:
         stage = {"version": _QUERY_V, "extensions": [_ext("customers", {"name": "tier_label", "sql": "upper(region)"})],
@@ -195,7 +198,7 @@ class TestQualification:
         assert QueryDimension(field="upper(customers.region)", alias="customers__tier_label") in (
             loaded.dimensions or [])
         resp = await run(storage, loaded)
-        assert _rows(resp, "orders.status", "orders.customers__tier_label", "orders.n") == [
+        assert _rows(resp, "orders.status", "customers__tier_label", "n") == [
             ("2024/01/01", "SOUTH", 1), ("new", "NORTH", 2), ("ok", "NORTH", 2), ("ok", "SOUTH", 1)]
 
     async def test_an_alias_qualifies_the_expression(self, tmp_path, shop_ds) -> None:
@@ -205,11 +208,11 @@ class TestQualification:
                        dimensions=["cust.region_label"], measures=[_REV])
         storage = await _store(tmp_path, shop_ds, "yaml", _qb("by_alias", stage))
         model, _ = await _load(storage, "by_alias")
-        assert QueryDimension(field="lower(cust.region)", alias="cust__region_label") in (
+        assert QueryDimension(field="lower(orders.customers.region)", alias="cust__region_label") in (
             _stage_of(model).dimensions or [])
-        resp = await run(storage, {"population": "by_alias", "dimensions": ["cust__region_label"],
-                                   "metrics": [{"metric": "sum(rev)", "alias": "t"}]})
-        assert _rows(resp, "by_alias.cust__region_label", "by_alias.t") == [("north", 120.0), ("south", 90.0)]
+        resp = await run(storage, {"population": "by_alias", "dimensions": ["by_alias.cust__region_label"],
+                                   "metrics": [{"metric": "sum(by_alias.rev)", "alias": "t"}]})
+        assert _rows(resp, "by_alias.cust__region_label", "t") == [("north", 120.0), ("south", 90.0)]
 
     async def test_an_owner_qualified_reference_reads_the_owners_column(self, tmp_path, shop_ds) -> None:
         stage = _stage(extensions=[_ext("customers", {"name": "tier_label", "sql": "upper(customers.region)"})],
@@ -231,10 +234,46 @@ class TestQualification:
             "upper(customers.region)"]
         assert [f.casefold() for f in loaded.filter or []] == ["upper(customers.region) = 'north'"]
         resp = await run(storage, loaded)
-        assert [r["orders.rev"] for r in resp.data] == [120.0]
+        assert [r["rev"] for r in resp.data] == [120.0]
+
+    async def test_a_quoted_hop_in_its_exact_spelling_is_inlined(self, tmp_path, shop_ds) -> None:
+        storage = await _quoted_hop_store(tmp_path, shop_ds, written='customers."Regions".lbl')
+        model, _ = await _load(storage, "quoted_hop")
+        assert [d.field for d in _stage_of(model).dimensions or []] == ["upper(customers.Regions.label)"]
+
+    async def test_a_quoted_hop_in_another_case_does_not_resolve(self, tmp_path, shop_ds) -> None:
+        storage = await _quoted_hop_store(tmp_path, shop_ds, written='customers."REGIONS".lbl')
+        with pytest.raises(StoredDocumentLoadError, match="does not resolve"):
+            await storage.get_dataset("quoted_hop", data_source=DS)
+
+    async def test_an_extension_column_reading_a_quoted_hop_in_its_exact_spelling_is_inlined(
+            self, tmp_path, shop_ds) -> None:
+        storage = await _quoted_hop_store(tmp_path, shop_ds, written="customers.cl",
+                                          columns=({"name": "cl", "sql": 'lower("Regions".lbl)'},))
+        model, _ = await _load(storage, "quoted_hop")
+        [field] = [d.field for d in _stage_of(model).dimensions or []]
+        assert field.replace('"', "") == "lower(upper(customers.Regions.label))"
+
+    async def test_an_extension_column_reading_a_quoted_hop_in_another_case_does_not_resolve(
+            self, tmp_path, shop_ds) -> None:
+        storage = await _quoted_hop_store(tmp_path, shop_ds, written="customers.cl",
+                                          columns=({"name": "cl", "sql": 'lower("REGIONS".lbl)'},))
+        with pytest.raises(StoredDocumentLoadError, match="does not resolve"):
+            await storage.get_dataset("quoted_hop", data_source=DS)
 
 
-_Q_AMOUNT = "iif(status = 'ok', amount, NULL)"
+async def _quoted_hop_store(tmp_path, ds: DatasourceConfig, *, written: str,
+                            columns: tuple[dict, ...] = ()) -> StorageBackend:
+    extensions = [_ext("Regions", {"name": "lbl", "sql": "upper(label)"})]
+    if columns:
+        extensions.append(_ext("customers", *columns))
+    stage = _stage(extensions=extensions, dimensions=[written], measures=[_REV])
+    return await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=ds, models=[
+        orders_v10(), customers_v10(joins=[region_join("Regions")]), regions_v10(name="Regions"),
+        _qb("quoted_hop", stage)])
+
+
+_Q_AMOUNT = "iif(orders.status = 'ok', orders.amount, NULL)"
 _SHAPES = _stage(
     extensions=[_ext("orders",
                      {"name": "q_amount", "sql": "amount", "filter": "status = 'ok'"},
@@ -258,24 +297,24 @@ class TestColumnShapes:
         _no_extension_columns(stage)
         formulas = {m.alias: m.metric for m in stage.metrics or []}
         assert formulas == {"q_amount_sum": f"sum({_Q_AMOUNT})", "q_double_sum": f"sum({_Q_AMOUNT} * 2)",
-                            "status_count": "count(status)"}
+                            "status_count": "count(orders.status)"}
         assert f"{_Q_AMOUNT} * 2" in (stage.filter or [])[0]
-        assert (stage.filter or [])[1] == "status = 'ok'"
+        assert (stage.filter or [])[1] == "orders.status = 'ok'"
         assert _Q_AMOUNT in ((stage.order or [])[0].raw_expression or "")
         for column in ("q_amount", "q_double", "status"):
             assert len(_conversion_warnings(caught, document="shapes", column=column)) == 1
         resp = await run(storage, stage)
-        keys = ("orders.order_id", "orders.q_amount_sum", "orders.q_double_sum", "orders.status_count")
+        keys = ("orders.order_id", "q_amount_sum", "q_double_sum", "status_count")
         assert [tuple(r[k] for k in keys) for r in resp.data] == _SHAPES_ROWS
 
     @pytest.mark.parametrize(("type_", "sql", "expected"), [
-        ("INT", "amount", "CAST(amount AS INT)"),
-        ("DOUBLE", "amount", "CAST(amount AS DOUBLE)"),
-        ("DATE", "ordered_at", "CAST(ordered_at AS DATE)"),
-        ("TIMESTAMP", "ordered_at", "CAST(ordered_at AS TIMESTAMP)"),
-        ("BOOLEAN", "amount > 25", "CAST(amount > 25 AS BOOLEAN)"),
-        ("TEXT", "status", "status"),
-        ("UNKNOWN", "status", "status"),
+        ("INT", "amount", "CAST(orders.amount AS INT)"),
+        ("DOUBLE", "amount", "CAST(orders.amount AS DOUBLE)"),
+        ("DATE", "ordered_at", "CAST(orders.ordered_at AS DATE)"),
+        ("TIMESTAMP", "ordered_at", "CAST(orders.ordered_at AS TIMESTAMP)"),
+        ("BOOLEAN", "amount > 25", "CAST(orders.amount > 25 AS BOOLEAN)"),
+        ("TEXT", "status", "orders.status"),
+        ("UNKNOWN", "status", "orders.status"),
     ])
     async def test_a_declared_type_is_kept_as_a_cast(self, tmp_path, shop_ds, type_: str, sql: str, expected: str) -> None:
         stage = _stage(extensions=[_ext("orders", {"name": "c", "sql": sql, "type": type_})],
@@ -307,10 +346,10 @@ class TestEveryPosition:
         model, _ = await _load(storage, "by_year")
         loaded = _stage_of(model)
         _no_extension_columns(loaded)
-        assert "CAST(ordered_at AS TIMESTAMP)" in str(loaded.main_time_dimension)
-        assert "CAST(ordered_at AS TIMESTAMP)" in str((loaded.time_dimensions or [])[0].field)
+        assert "CAST(orders.ordered_at AS TIMESTAMP)" in str(loaded.main_time_dimension)
+        assert "CAST(orders.ordered_at AS TIMESTAMP)" in str((loaded.time_dimensions or [])[0].field)
         resp = await run(storage, loaded)
-        assert sorted(float(r["orders.rev"]) for r in resp.data) == [10.0, 50.0, 150.0]
+        assert sorted(float(r["rev"]) for r in resp.data) == [10.0, 50.0, 150.0]
 
     async def test_partition_and_ranking_keys_and_extension_measures(self, tmp_path, shop_ds) -> None:
         stage = _stage(
@@ -325,12 +364,12 @@ class TestEveryPosition:
         loaded = _stage_of(model)
         _no_extension_columns(loaded)
         formulas = {m.alias: m.metric for m in loaded.metrics or []}
-        assert "iif(amount > 25, 'big', 'small')" in formulas["per_bucket"]
-        assert "CAST(ordered_at AS TIMESTAMP)" in formulas["latest"]
-        [big_total] = [m.expression for e in loaded.extensions or [] for m in e.metrics or [] if m.name == "big_total"]
+        assert "iif(orders.amount > 25, 'big', 'small')" in formulas["per_bucket"]
+        assert "CAST(orders.ordered_at AS TIMESTAMP)" in formulas["latest"]
+        [big_total] = [m.text for e in loaded.extensions or [] for m in e.metrics or [] if m.name == "big_total"]
         assert "iif(amount > 25, 'big', 'small')" in big_total
         resp = await run(storage, loaded)
-        keys = ("orders.status", "orders.bucket", "orders.per_bucket", "orders.latest", "orders.big_total")
+        keys = ("orders.status", "bucket", "per_bucket", "latest", "orders.big_total")
         assert _rows(resp, *keys) == [
             ("2024/01/01", "big", 180.0, 60.0, 60.0), ("new", "big", 180.0, 50.0, 50.0),
             ("new", "small", 30.0, 20.0, 0.0), ("ok", "big", 180.0, 40.0, 70.0), ("ok", "small", 30.0, 10.0, 0.0),
@@ -422,7 +461,7 @@ class TestMemories:
         query = (await storage.get_memory("m_tier")).query
         assert query is not None
         resp = await run(storage, query)
-        assert _rows(resp, "orders.customers__tier_label", "orders.rev") == [("NORTH", 120.0), ("SOUTH", 90.0)]
+        assert _rows(resp, "customers__tier_label", "rev") == [("NORTH", 120.0), ("SOUTH", 90.0)]
 
     async def test_an_unconvertible_memory_fails_to_load(self, tmp_path, shop_ds) -> None:
         memory = memory_v2(memory_id="m_bad", query=_UNCONVERTIBLE["not-mode-b"], version=_MEMORY_V)
@@ -464,7 +503,7 @@ class TestMemories:
 
     @staticmethod
     async def _two_datasources(tmp_path, shop_ds: DatasourceConfig, *, backend: str, clash: bool) -> StorageBackend:
-        """``m_tier`` over ``shop`` and a copy datasource sorting first; ``clash`` makes ``tier_label`` a column there."""
+        """``m_tier`` over ``shop`` and a copy datasource sorting first; ``clash`` makes ``tier_label`` a field there."""
         storage = await _store(tmp_path, shop_ds, backend,
                                memories=(memory_v2(memory_id="m_tier", query=_TIER, version=_MEMORY_V),))
         await storage.save_datasource(shop_ds.model_copy(update={"name": _OTHER_DS}))
@@ -472,7 +511,7 @@ class TestMemories:
         customers = await storage.get_dataset("customers", data_source=DS)
         assert orders is not None
         assert customers is not None
-        extra = [DatasetField(name="tier_label", sql="region", datatype=DataType.STRING)] if clash else []
+        extra = [DatasetField(name="tier_label", expression="region", datatype=DataType.STRING)] if clash else []
         await storage.save_dataset(orders.model_copy(update={"data_source": _OTHER_DS}))
         await storage.save_dataset(customers.model_copy(update={
             "data_source": _OTHER_DS, "fields": [*customers.fields, *extra]}))

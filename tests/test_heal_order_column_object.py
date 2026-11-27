@@ -26,7 +26,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 def by_region(order: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"population": "orders", "dimensions": ["region"], "metrics": ["count(*)"], "order": order}
+    return {"population": "orders", "dimensions": ["orders.region"], "metrics": ["count(orders.*)"], "order": order}
 
 
 class TestOrderItemCoercion:
@@ -52,7 +52,8 @@ class TestOrderItemCoercion:
 
 class TestExecuted:
     async def test_expression_in_object_form(self, engine: SlayerQueryEngine) -> None:
-        resp = await assert_equivalent(engine, by_region([SUM_DESC_OBJECT]), by_region([SUM_DESC_STRING]), ordered=True,
+        canonical = by_region([{"field": "sum(orders.amount)", "direction": "desc"}])
+        resp = await assert_equivalent(engine, by_region([SUM_DESC_OBJECT]), canonical, ordered=True,
                                        deprecated=True)
         assert [r["orders.region"] for r in resp.data] == ["EU", "US", None]
 
@@ -79,7 +80,7 @@ class TestAdvertisedSchema:
     async def order_item_schema(self, tmp_path) -> dict[str, Any]:
         server = create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path)), _seed_help=False)
         tools = {t.name: t for t in await server.list_tools()}
-        return tools["query"].inputSchema["$defs"]["OrderItem"]
+        return tools["query"].input_schema["$defs"]["OrderItem"]
 
     def test_field_is_advertised_as_text(self, order_item_schema: dict[str, Any]) -> None:
         field = order_item_schema["properties"]["field"]

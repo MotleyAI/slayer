@@ -35,7 +35,7 @@ On load, a stored model below schema version 8 SHALL have its DOUBLE and SQLite 
 
 #### Scenario: A v10 model loads with no datasource entry
 - **WHEN** a raw v10 model with a DOUBLE base column is loaded and its datasource has no stored entry
-- **THEN** it loads with the column still DOUBLE and is written back at the current version
+- **THEN** it loads with the column still DOUBLE, the stored document is unchanged, and a later `slayer storage upgrade` persists it at the current version
 
 #### Scenario: A v10 model loads with an unreachable datasource
 - **WHEN** a raw v10 model with a DOUBLE base column is loaded and its datasource is a Postgres server that refuses connections
@@ -130,11 +130,11 @@ A query sent by a client SHALL keep being rejected for these shapes.
 
 ### Requirement: Stored legacy filter literals are repaired on load
 
-On load of a stored query, a string literal in a stored `filters` entry SHALL be repaired with the same offset and slash rules when both of these hold:
-- It is a direct comparison operand (`=`, `!=`, `<`, `<=`, `>`, `>=`, either operand order, or any element of an all-literal `IN` list).
-- The other side is a column reference that resolves, through the stored models and their joins, to a DATE or TIMESTAMP column.
+On load of a stored query, a string literal in a stored filter SHALL be repaired with the same offset and slash rules, before its whole-day upgrade and its qualified-reference upgrade, when both of these hold:
+- It is a direct comparison operand (`=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, either operand order, or any element of an all-literal `IN` or `NOT IN` list).
+- The other side is a column reference that the binder reads, from the query's population by the reading its qualified-reference upgrade keeps, as a DATE or TIMESTAMP column: its own qualifier dropped, each hop over a join declared on either model, a lone unmatched hop routed by a unique short-form route, the query's extensions applied, a column an extension declares typed by its declared type, and a double-quoted segment matched only by its exact spelling. A memory's query is read in the datasource its qualified-reference upgrade reads (the datasource priority applied); a population naming an earlier stage reads only the columns that stage's extension joins name, untyped.
 
-A literal whose column cannot be resolved, or that compares a non-temporal column, SHALL be left unchanged.
+A literal whose column cannot be typed, or that compares a non-temporal column, SHALL be left unchanged; the qualified-reference upgrade then keeps or refuses the document.
 
 #### Scenario: An offset literal against a timestamp runs
 
@@ -151,6 +151,51 @@ A literal whose column cannot be resolved, or that compares a non-temporal colum
 - **WHEN** stored filters read `status = '2024/01/01'` (a TEXT column) and `ordered_at IN ('2024/01/01', status)`
 - **THEN** both are left unchanged
 
+#### Scenario: A short-form reference routed over two hops is repaired
+
+- **WHEN** a stored query on `orders` filters `regions.opened_on >= '2024/01/01'`, where `opened_on` is a DATE column of `regions`, reached only by the route `orders → customers → regions`
+- **THEN** it loads as `orders.customers.regions.opened_on >= '2024-01-01'` and runs, returning the rows of that route
+
+#### Scenario: A hop over a join declared on the peer is repaired
+
+- **WHEN** a stored query on `orders` filters `customers.signed_up_at >= '2024-01-01T00:00:00Z'`, where the only join between them is declared on `customers`
+- **THEN** the literal is repaired and the query runs
+
+#### Scenario: A column a query extension declares on a routed model is repaired
+
+- **WHEN** a stored query on `orders` extends `regions` with a DATE column `founded_on` reading `opened_on`, and filters `regions.founded_on >= '2024/01/01'`, `regions` reached by short-form routing
+- **THEN** it loads with the column inlined as a DATE cast compared with `'2024-01-01'`, and runs
+
+#### Scenario: A routed non-temporal column stays verbatim
+
+- **WHEN** a stored query on `orders` filters `regions.label = '2024/01/01'`, where `label` is a TEXT column of `regions` reached by short-form routing
+- **THEN** its literal is left unchanged and the query keeps its rows
+
+#### Scenario: Quoted segments are matched by their exact spelling
+
+- **WHEN** a stored query on `orders` filters `"Regions"."Opened_On" >= '2024/01/01'`, where `Regions` holds the DATE column `Opened_On`, and other stored queries spell the hop `"REGIONS"` or the leaf `"OPENED_ON"`
+- **THEN** the first loads repaired and runs, and neither of the others has its literal repaired
+
+#### Scenario: A stage population types only its extension joins
+
+- **WHEN** a stored query-backed model's second stage reads the first stage, extends it with a join to `customers`, and filters `ordered_at >= '2024/01/01'` and `customers.signed_up_at >= '2024-01-01T00:00:00Z'`
+- **THEN** the first literal is left unchanged and the second is repaired
+
+#### Scenario: A population inferred for a root-less query types its references
+
+- **WHEN** a stored query with no population, whose references the qualified-reference upgrade reads from `orders`, filters `regions.opened_on >= '2024/01/01'` reached by short-form routing
+- **THEN** the literal is repaired as from `orders`
+
+#### Scenario: An unloadable model does not block an unrelated repair
+
+- **WHEN** the datasource also stores a model that fails to load, and a stored query's routed DATE comparison does not touch it
+- **THEN** the literal is repaired and the query runs
+
+#### Scenario: A memory's query is repaired against its priority datasource
+
+- **WHEN** a stored memory's query names a model that two datasources hold, only one of which routes to the filtered DATE column, and the datasource priority puts that one first
+- **THEN** the literal is repaired and the query runs there; with the other datasource first, it is left unchanged
+
 ### Requirement: Stored query-backed models drop their cached backing SQL
 
 A model SHALL NOT store the rendered SQL of its backing query. On load, a stored model below schema version 15 SHALL drop its `backing_query_sql` field. Inspect and REST SHALL NOT return backing SQL; a query-backed model's SQL SHALL be obtained by a `dry_run` query against it.
@@ -158,7 +203,7 @@ A model SHALL NOT store the rendered SQL of its backing query. On load, a stored
 #### Scenario: A v14 query-backed model loads without backing SQL
 
 - **WHEN** a stored v14 query-backed model holding `backing_query_sql` is loaded
-- **THEN** it loads without the field, and is written back at version 15 without it
+- **THEN** it loads without the field, the stored document is unchanged, and a save or `slayer storage upgrade` persists it at the current version without it
 
 #### Scenario: Inspect shows no backing SQL
 
@@ -167,7 +212,7 @@ A model SHALL NOT store the rendered SQL of its backing query. On load, a stored
 
 ### Requirement: Stored Mode-B text is upgraded to the SQL string and identifier rules
 
-On load, every Mode-B surface of a stored model, saved query or memory written before this change — `DatasetMetric.expression`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL be rewritten so that it means under the current grammar what it meant when stored: a double-quoted string literal becomes the equivalent single-quoted literal, a string literal using backslash escapes is re-encoded with its decoded value, a `|` concatenation becomes `||`, two minus signs written with nothing between them are separated by a space, so a double negation never becomes a comment, and a Python `#` comment becomes a `--` comment. The rewrite SHALL be token-exact: text inside string literals is never otherwise touched, and stored text that cannot be tokenised is left unchanged. Stored text that the grammar of the time it claims to be from could not have held SHALL be left unchanged, with a warning naming the document and the field. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
+On load, every Mode-B surface of a stored model, saved query or memory written before this change — `DatasetMetric.expression`, and a stored query's measures, dimensions, computed-dimension expressions, time-dimension columns, order columns and expressions, `main_time_dimension` and filters, recursively through stored `source_queries`, saved queries and extension measures — SHALL be rewritten so that it means under the current grammar what it meant when stored: a double-quoted string literal becomes the equivalent single-quoted literal, a string literal using backslash escapes is re-encoded with its decoded value, a `|` concatenation becomes `||`, two minus signs written with nothing between them are separated by a space, so a double negation never becomes a comment, and a Python `#` comment becomes a `--` comment. The rewrite SHALL be token-exact: text inside string literals is never otherwise touched, and stored text that cannot be tokenised is left unchanged. Stored text that the grammar of the time it claims to be from could not have held SHALL be left unchanged, with a warning naming the document and the field. The grammar of the time SHALL be every spelling the release that wrote the text accepted on that surface: on a query filter also `=`, `<>`, `NULL`, the keywords `AND` / `OR` / `NOT` / `IS` / `IN` in any case, `[NOT] LIKE` with a single-quoted pattern and `||`; on every surface also `CASE … END` (its `WHEN` conditions with the filter spellings), `extract(<part> from x)`, `count(distinct x)`, colon aggregations, `*` arguments and `{var}` placeholders. A text is held when that release's reader parsed it; a text it refused only for what the parse means (an unknown function, a chained comparison) counts as held. Held text SHALL be upgraded with no warning. Mode-A surfaces SHALL NOT be rewritten, and a client query without a version SHALL NOT be rewritten.
 
 #### Scenario: Double-quoted strings in a stored query
 
@@ -189,6 +234,21 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 - **WHEN** a stored measure formula is `sum(amount) --sum(refund)`, another `sum(a--b)`, and a third `sum(a- -b)`
 - **THEN** they load as `sum(amount) - -sum(refund)`, `sum(a- -b)` and `sum(a- -b)` unchanged, and return the values they returned before
 
+#### Scenario: Single equals sign in a stored filter
+
+- **WHEN** a stored memory query and a stored saved query written before this change each filter `status = "ok"`, and another stored saved query filters `status = 'ok'`
+- **THEN** the first two load as `status = 'ok'` (qualified by the later upgrades), the third loads unchanged, all three return the rows they returned before, and no warning about the grammar is logged
+
+#### Scenario: SQL filter spellings in a stored filter
+
+- **WHEN** stored filters written before this change are `status <> "ok"`, `status = "ok" AND NOT region = "EU"`, `region IS NULL OR status = "ok"`, `status IN ("ok", "paid")`, `name LIKE 'A%' AND status = "ok"` and `status || region = "okEU"`
+- **THEN** each loads with its double-quoted literals single-quoted and the rest byte-identical, returns the rows it returned before, and no warning about the grammar is logged
+
+#### Scenario: 1.x expression spellings in a stored measure
+
+- **WHEN** stored measures written before this change are `sum(CASE WHEN status = "ok" THEN amount ELSE 0 END)`, `count(distinct iif(status == "ok", id, None))` and `sum(iif(extract(year from created_at) == 2024 and status == "ok", amount, 0))`
+- **THEN** each loads with its double-quoted literals single-quoted and the rest byte-identical, returns the value it returned before, and no warning about the grammar is logged
+
 #### Scenario: Mode-A text untouched
 
 - **WHEN** a stored model has `DatasetField.sql` `"Order Total" * 2` and a model filter `status = "x"`
@@ -209,9 +269,14 @@ On load, every Mode-B surface of a stored model, saved query or memory written b
 - **WHEN** a stored model still marked with a version before this rewrite has the measures `sum(x::int)`, `sum(a || b)`, `sum(CAST(x AS INT))` and `sum(x) FILTER (WHERE y > 1)`, and a stored query of the same era filters `x BETWEEN 1 AND 2`
 - **THEN** each loads byte-for-byte unchanged and a warning names the document and each such field
 
+#### Scenario: Spellings the old release refused stay unchanged
+
+- **WHEN** a stored query written before this change filters `name LIKE "A%"` and another filters `status = "ok" {? AND region = {r} ?}`
+- **THEN** each loads byte-for-byte unchanged and a warning names the document and the field
+
 ### Requirement: Stored time dimensions are upgraded to expression text
 
-On load, every time dimension of a stored model's `source_queries`, a saved query or a memory's bundled query written before this change, whose `dimension` (or `column`) is stored as a column-reference object `{"name": …, "model": …}`, SHALL be rewritten to the dotted text `model.name` (`name` when `model` is absent), recursively through nested stored queries, and re-saved in that form; the query SHALL return the rows it returned before. A time dimension already stored as text, and a client query without a version, SHALL NOT be rewritten.
+On load, every time dimension of a stored model's `source_queries`, a saved query or a memory's bundled query written before this change, whose `dimension` (or `column`) is stored as a column-reference object `{"name": …, "model": …}`, SHALL be rewritten to the dotted text `model.name` (`name` when `model` is absent), recursively through nested stored queries, and persisted in that form only by a save or `slayer storage upgrade`; the query SHALL return the rows it returned before. A time dimension already stored as text, and a client query without a version, SHALL NOT be rewritten.
 
 #### Scenario: Stored object form becomes text
 
@@ -232,6 +297,8 @@ On load, every time dimension of a stored model's `source_queries`, a saved quer
 
 Every name the Mode-B library reserves — scalar and list functions, function spellings, date-part aliases, transforms, built-in granularities, built-in aggregations, and names reserved with no meaning (`agg`) — SHALL be pinned, so a newly reserved name is only accepted when it is a function or function spelling (which a model's own definition shadows) or when a stored-upgrade migration covers stored documents already using it. A stored model whose custom aggregation takes any reserved function or spelling name SHALL load and answer its aggregation, and a stored datasource whose custom granularity takes any reserved name SHALL load after migration and answer through the renamed granularity.
 
+Every name a custom granularity may not take SHALL have a rename gate: the dataset, query and memory versions current when the library reserved it. Every name reserved when the gates were introduced SHALL have the gate dataset 30, query 19, memory 14. A gate added later SHALL be strictly higher, for each of the three, than every earlier gate, so the release that reserves a name also steps the versions its dependents are written at.
+
 #### Scenario: Every reserved function name as a stored aggregation
 
 - **WHEN** for each reserved function and spelling name a stored model defines a custom aggregation of that name with formula `SUM({value})`
@@ -239,7 +306,7 @@ Every name the Mode-B library reserves — scalar and list functions, function s
 
 #### Scenario: Every reserved name as a stored granularity
 
-- **WHEN** for each reserved name other than a built-in granularity (never storable as a custom one) a stored datasource defines a custom granularity of that name used by a stored model's time dimension
+- **WHEN** for each reserved name other than a built-in granularity (never storable as a custom one) a stored datasource defines a custom granularity of that name used by a stored model's time dimension written below its gate
 - **THEN** the datasource and model load and the time dimension buckets by the renamed granularity
 
 #### Scenario: An unpinned reservation is caught
@@ -247,38 +314,67 @@ Every name the Mode-B library reserves — scalar and list functions, function s
 - **WHEN** the library reserves a name outside the pinned set that is neither a function nor a function spelling and no migration covers it
 - **THEN** the library-growth check fails, naming the unpinned name
 
+#### Scenario: A reservation without a rename gate is caught
+
+- **WHEN** the library reserves a name, a function included, that has no rename gate
+- **THEN** the library-growth check fails, naming the name
+
+#### Scenario: A later gate that does not step the versions is caught
+
+- **WHEN** a newly reserved name's gate is not higher than every earlier gate for the dataset, query and memory versions
+- **THEN** the library-growth check fails, naming the name
+
 ### Requirement: Stored granularities colliding with a library name are renamed
 
-On every load, whatever the document's version, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and every reference to it in that datasource's stored models, saved queries, query-backed models and memories SHALL be rewritten to the new name in every position a granularity name is accepted. Each rename SHALL be logged as a warning naming the datasource and both names. The rename SHALL be a function of the stored datasource alone, and dependent documents SHALL be persisted before the datasource, so a load interrupted at any point completes on the next load. This SHALL hold on both the YAML and the SQLite store. A client saving a custom granularity with a reserved name SHALL still be refused.
+On every load, whatever the datasource's version, a stored datasource custom granularity whose name case-insensitively matches any reserved library name SHALL be renamed to `<name>_granularity`, or `<name>_granularity_<n>` with the smallest `n` ≥ 2 that is free, and the renamed granularity SHALL record its former name as `renamed_from`. A stored granularity carrying `renamed_from` SHALL keep that record. The datasource's renames SHALL be its pending renames together with its recorded ones; a record SHALL decide the new name of its former name, and when two granularities record one former name, the first in list order SHALL decide it.
+
+A reference to a former name SHALL be rewritten to the new name, in every position a granularity name is accepted, only in a document of that datasource written below that former name's rename gate: a dataset, a saved query, a query-backed dataset's stages, or a memory. A nested stored query SHALL be judged by its own version, and a document without a version SHALL count as old. A document at or above the gate SHALL be read as written.
+
+Each pending rename SHALL be logged as a warning naming the datasource and both names; a recorded rename SHALL log nothing. Every rename SHALL apply in memory on every load, which writes nothing. This SHALL hold on both the YAML and the SQLite store. A client saving a custom granularity with a reserved name SHALL still be refused.
 
 #### Scenario: Granularity named left
 
-- **WHEN** a stored datasource defines the granularity `left` and a stored model's query-backed source and a memory's query both bucket `created_at` by it
-- **THEN** after load the granularity is `left_granularity`, both documents reference `left_granularity`, a warning names the rename, and both queries return the rows they returned before
+- **WHEN** a stored datasource defines the granularity `left` and a stored model's query-backed source and a memory's query, both written below the gate, bucket `created_at` by it
+- **THEN** after load the granularity is `left_granularity` with `renamed_from: left`, both documents reference `left_granularity`, a warning names the rename, both queries return the rows they returned before, and no stored document changes
 
 #### Scenario: Granularity named collect
 
 - **WHEN** a stored datasource defines the granularity `collect`
-- **THEN** it loads as `collect_granularity`
+- **THEN** it loads as `collect_granularity`, recording `renamed_from: collect`
 
 #### Scenario: The new name is taken
 
 - **WHEN** a stored datasource defines the granularities `left` and `left_granularity`
 - **THEN** `left` is renamed to `left_granularity_2` and references to `left_granularity` are untouched
 
+#### Scenario: A recorded rename renames an old document that arrives later
+
+- **WHEN** a store whose datasource was upgraded to `left_granularity` with `renamed_from: left` receives a dataset written below the gate that buckets by `left(created_at)`
+- **THEN** the dataset loads reading `left_granularity(created_at)`, returns the rows it returned before, and no rename warning is logged
+
+#### Scenario: A current document is read as written
+
+- **WHEN** a stored datasource defines `left_granularity` with `renamed_from: left`, or still defines the pending `left`, and a dataset at version 30 calls the library function `left(name, 2)`
+- **THEN** the dataset loads with `left(name, 2)` unchanged
+
+#### Scenario: A nested stage is judged by its own version
+
+- **WHEN** a dataset at version 30 holds a stored stage at query version 18 that buckets by `left(created_at)`, and its datasource records `renamed_from: left`
+- **THEN** the stage loads reading `left_granularity(created_at)`
+
 #### Scenario: An interrupted load completes
 
-- **WHEN** a load is interrupted after some dependent documents were persisted with the new name and before the datasource was
-- **THEN** the next load renames the datasource's granularity to the same name and rewrites the remaining documents, leaving one consistent store
+- **WHEN** `slayer storage upgrade` is interrupted after storing the datasource with its record but before storing some dependents, or after storing some dependents but before the datasource
+- **THEN** a load in between reads every document with the new name, and the next run stores the rest, leaving one consistent store
 
 #### Scenario: A rename converges
 
-- **WHEN** a store whose granularity `contains` was renamed is loaded again, on the YAML and on the SQLite store
+- **WHEN** a store whose granularity `contains` was renamed by `slayer storage upgrade` is loaded and upgraded again, on the YAML and on the SQLite store
 - **THEN** no document changes and no rename warning is logged
 
 #### Scenario: A granularity colliding with a later library addition
 
-- **WHEN** a datasource stored at the current version defines the granularity `left`, which a later library release reserves, and a stored query buckets by `left(created_at)`
+- **WHEN** a later library release reserves `left` with a gate above the current versions, a datasource stored at the current version defines the granularity `left`, and a stored query written at the current query version buckets by `left(created_at)`
 - **THEN** on load the granularity is `left_granularity`, the query reads `left_granularity(created_at)`, and it returns the rows it returned before
 
 #### Scenario: A new reserved-name granularity is refused
@@ -451,7 +547,7 @@ A stored query SHALL be unconvertible, and the document holding it SHALL fail to
 - an extension join whose `join_pairs` names an extension column on either side;
 - a reference to an extension column in a position that holds no expression, or one the binder cannot attribute.
 
-A converted query-backed model or saved query SHALL be written back at the current version; a memory SHALL be converted on every load and SHALL NOT be written back.
+A converted document SHALL be converted on every load, which writes nothing; a save or `slayer storage upgrade` SHALL persist a converted query-backed model, saved query or memory at the current version.
 
 #### Scenario: A dimension keeps its result key
 - **WHEN** a stored query-backed model's stage rooted at `orders` extends `customers` with the column `tier_label` (`sql` `upper(tier)`) and selects the dimension `customers.tier_label` and `sum(amount)`
@@ -483,7 +579,7 @@ A converted query-backed model or saved query SHALL be written back at the curre
 
 ### Requirement: Stored date-only comparisons keep their whole-day meaning
 
-On load, a stored model, saved query or memory written before this change — judged by each nested document's own stored version, so a current document holding an older nested query, extension or memory query is upgraded where it nests — SHALL have every Mode-B comparison of a temporal operand with a date-only literal `D` rewritten to the comparison it meant before: `x <= 'D'` → `x < '<D+1>'`; `x > 'D'` → `x >= '<D+1>'`; `x = 'D'` → `x in 'D'`; `x != 'D'` → `x not in 'D'`; `x BETWEEN 'A' AND 'B'` → `(x >= 'A' and x < '<B+1>')` and `x NOT BETWEEN 'A' AND 'B'` → `(x < 'A' or x >= '<B+1>')`, each with only date-only bounds rewritten; a literal on the left mirrored. On the last representable day `9999-12-31`, `< '<D+1>'` SHALL be `<= 'D 23:59:59.999999'` and `>= '<D+1>'` SHALL be `> 'D 23:59:59.999999'`. `x >= 'D'` and `x < 'D'` SHALL be untouched. This covers query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, saved-measure formulas, Mode-B column filters, and every nested saved query, model extension, query-backed model and memory query, with the rest of the text byte-identical and no warning on the response. Whether an operand is temporal SHALL be decided with the models of the document's datasource, the built-in time spine included, where a memory that names no datasource SHALL use the datasource of the stored model its source names, else the store's only datasource: an unquoted model name spelt `time_spine` in any case SHALL name the spine unless a stored model has exactly that spelling, and SHALL be untypable when it also reaches a stored model in another case; a path SHALL reach the spine from any model, a query or extension on the spine SHALL reach the datasource's models, and a path that continues past the spine SHALL be untypable. A comparison with a non-temporal operand, an operand whose type cannot be decided (an untyped column, a missing or unloadable model), a `BETWEEN` whose tested expression is the literal, and a comparison with a variable SHALL be left unchanged, each untypable one with a logged warning naming the document and the text. Mode-A text and `date_range` SHALL be untouched. The upgrade SHALL be idempotent and SHALL complete on the next load when a load is interrupted. Every upgraded query SHALL return the rows it returned before.
+On load, a stored model, saved query or memory written before this change — judged by each nested document's own stored version, so a current document holding an older nested query, extension or memory query is upgraded where it nests — SHALL have every Mode-B comparison of a temporal operand with a date-only literal `D` rewritten to the comparison it meant before: `x <= 'D'` → `x < '<D+1>'`; `x > 'D'` → `x >= '<D+1>'`; `x = 'D'` → `x in 'D'`; `x != 'D'` → `x not in 'D'`; `x BETWEEN 'A' AND 'B'` → `(x >= 'A' and x < '<B+1>')` and `x NOT BETWEEN 'A' AND 'B'` → `(x < 'A' or x >= '<B+1>')`, each with only date-only bounds rewritten; a literal on the left mirrored. On the last representable day `9999-12-31`, `< '<D+1>'` SHALL be `<= 'D 23:59:59.999999'` and `>= '<D+1>'` SHALL be `> 'D 23:59:59.999999'`. `x >= 'D'` and `x < 'D'` SHALL be untouched. This covers query measures, filters, dimensions, time dimensions, order keys and `main_time_dimension`, saved-measure formulas, Mode-B column filters, and every nested saved query, model extension, query-backed model and memory query, with the rest of the text byte-identical and no warning on the response. Whether an operand is temporal SHALL be decided as the binder reads it, with the models of the datasource the document runs in, the built-in time spine included: a query's operand from the query's population by the reading its qualified-reference upgrade keeps (its own qualifier dropped, each hop over a join declared on either model, a lone unmatched hop routed by a unique short-form route, the query's extensions applied, a column an extension declares typed by its declared type, and a double-quoted segment matched only by its exact spelling), and a saved-measure formula or column filter from its own model; a memory's query SHALL use the datasource its qualified-reference upgrade reads (the datasource priority applied): an unquoted model name spelt `time_spine` in any case SHALL name the spine unless a stored model has exactly that spelling, and SHALL be untypable when it also reaches a stored model in another case; a path SHALL reach the spine from any model, a query or extension on the spine SHALL reach the datasource's models, and a path that continues past the spine SHALL be untypable. A comparison with a non-temporal operand, an operand whose type cannot be decided (an undeclared column, a missing or unloadable model), a `BETWEEN` whose tested expression is the literal, and a comparison with a variable SHALL be left unchanged, each untypable one with a logged warning naming the document and the text. Mode-A text and `date_range` SHALL be untouched. The upgrade SHALL be idempotent and SHALL complete on the next load when a load is interrupted. Every upgraded query SHALL return the rows it returned before.
 
 #### Scenario: Saved query with an inclusive upper bound
 
@@ -507,7 +603,7 @@ On load, a stored model, saved query or memory written before this change — ju
 
 #### Scenario: Untypable operand is left and logged
 
-- **WHEN** a stored query compares a column with no recorded type, or a column of a model that no longer exists, with `<= '2024-12-31'`
+- **WHEN** a stored query compares a column its model does not declare, or a column of a model that no longer exists, with `<= '2024-12-31'`
 - **THEN** it loads byte-identical and a warning naming the document and the comparison is logged
 
 #### Scenario: Current document with an older nested query
@@ -548,7 +644,7 @@ On load, a stored model, saved query or memory written before this change — ju
 #### Scenario: Memory on the spine in a store with one datasource
 
 - **WHEN** a store holds one datasource and a stored memory that names no datasource, rooted at `time_spine`, has the filter `orders.ordered_at <= '2024-01-31'`
-- **THEN** after load it reads `orders.ordered_at < '2024-02-01'`; with a second datasource in the store it loads byte-identical, with a warning naming the memory and the comparison logged
+- **THEN** after load it reads `orders.ordered_at < '2024-02-01'`; with a second datasource in the store also holding `orders`, it is typed in the datasource the datasource priority picks
 
 #### Scenario: Spine reached through an extension's join
 
@@ -563,9 +659,364 @@ On load, a stored model, saved query or memory written before this change — ju
 #### Scenario: Stored names shadow the spine
 
 - **WHEN** a stored query on `orders` filters `time_spine.code <= '2024-01-31'` where `orders` has a stored join named `time_spine` to a model whose `code` is TEXT; a stored model's source query on `orders` filters `time_spine.timestamp <= '2024-01-31'` while a sibling source query is named `time_spine`; and a datasource stores a model named exactly `time_spine` whose `timestamp` column is TEXT, read by a stored query filtering `time_spine.timestamp <= '2024-01-31'`
-- **THEN** the first and third load byte-identical without a warning, and the second loads byte-identical with a warning naming the document and the comparison
+- **THEN** the third loads byte-identical without a warning, and the first and second load byte-identical with a warning naming the document and the comparison
 
 #### Scenario: Legacy time literal on the spine
 
 - **WHEN** a stored query written before legacy time literals were repaired, rooted at `time_spine`, compares `timestamp` with a legacy date literal for `2024-01-31` using `<=`
 - **THEN** after load the literal is repaired and the comparison reads `timestamp < '2024-02-01'`
+
+#### Scenario: A routed operand keeps its whole-day meaning
+
+- **WHEN** a stored query on `orders` written before this upgrade filters `regions.opened_at = '2024-01-01'`, where `opened_at` is a TIMESTAMP column of `regions`, reached only by the route `orders → customers → regions`
+- **THEN** after load the comparison reads `in '2024-01-01'` on the qualified route and the query returns the rows it returned before
+
+#### Scenario: A quoted operand is typed by its exact spelling
+
+- **WHEN** stored queries on `orders` filter `"Regions"."Opened_At" <= '2024-01-31'` and `"Regions"."OPENED_AT" <= '2024-01-31'`, where `Regions` has the TIMESTAMP column `Opened_At` and no column spelt `OPENED_AT`
+- **THEN** the first reads `< '2024-02-01'` after load and the second keeps its comparison as written
+
+### Requirement: Stored field sql converts to its expression
+
+A stored dataset written before this version SHALL load with each field's `sql` converted to its `expression` by the rules of `models/field-expressions` › A field's sql converts to its expression, with no deprecation warning, and every query SHALL return the values it returned before. The conversion SHALL run in two phases: a context-free version step that turns a bare or double-quoted identifier into its shorthand (into its path when it reads a sibling field) and leaves any other `sql` in place, then a load step with the store's datasource and its datasets that writes each sibling reference as its path and tags the text with the datasource's own dialect. A dataset whose store holds no config for its datasource SHALL load with that `sql` unconverted (`models/field-expressions` › A field's sql waits for its dialect) and SHALL be converted on a later load that has it. A converted dataset SHALL be persisted as every other upgraded document is, by a save or `slayer storage upgrade`; `slayer storage upgrade` SHALL leave a dataset with unconverted `sql` untouched and report it.
+
+#### Scenario: A stored dataset of every shape loads
+- **WHEN** a store holding a DuckDB datasource config and a dataset `orders` written with fields `amount` (`sql: amount`), `label` (`sql: '"Label"'`), `doubled` (`sql: "amount * 2"`) and `ratio` (`sql: "doubled / qty"`) is opened
+- **THEN** the fields load as `expression: amount`, `expression: '"Label"'`, `{dialects: [{dialect: DUCKDB, expression: "amount * 2"}]}` and `{dialects: [{dialect: DUCKDB, expression: "orders.doubled / qty"}]}`, no `FutureWarning` is emitted, the stored document is unchanged until `slayer storage upgrade` persists it at the current version, and every field returns its former values
+
+#### Scenario: A stored dataset without its datasource config
+- **WHEN** the same dataset is opened from a store that holds no datasource config
+- **THEN** `amount` and `label` load converted, `doubled` and `ratio` keep their `sql`, `slayer storage upgrade` reports the dataset and leaves it untouched, and after the datasource config is added the upgrade converts and persists it
+
+#### Scenario: Direct validation of a stored document
+- **WHEN** a stored dataset document of the previous version is validated directly, with no store
+- **THEN** its bare-identifier fields carry the shorthand and its other fields keep `sql`
+
+### Requirement: Stored filters keep their sibling references
+
+In a stored dataset written before this version, each bare name in a field's `filter` or a dataset's `filters` that today reads a sibling field SHALL be rewritten on load to that field's path from the dataset (`<dataset>.<field>`), so every query returns the values it returned before. The rewrite SHALL run in the context-free version step. Documents of this version or later SHALL never be rewritten this way.
+
+#### Scenario: A filter reading a renamed field
+- **WHEN** a stored `orders` written before this version declares fields `status` (`sql: state`) and `paid_amount` (`sql: amount`, `filter: "status = 'paid'"`) and the dataset filter `status <> 'x'`
+- **THEN** it loads with `filter: "orders.status = 'paid'"` and the dataset filter `orders.status <> 'x'`, and `paid_amount` returns NULL and 20 for ids 1 and 2
+
+### Requirement: Stored source-qualified paths keep their meaning
+
+In a stored dataset written before this version, a field's `expression`, a field's `filter`, a dataset's `filters` or a metric's `expression` that reads `source.<name>` through a relationship or a dataset named `source` SHALL be rewritten on load to the same path spelled by the target dataset's name, when that spelling resolves to the same hop. When it does not, the document SHALL fail to load through the stored-document boundary, untouched on disk, with a warning naming the dataset and the definition. Documents of this version or later SHALL never be rewritten this way.
+
+#### Scenario: A relationship named source
+- **WHEN** a stored `orders` written before this version relates to `leads` through relationship `source` and declares metric `sum(source.amount)`
+- **THEN** it loads with metric `sum(leads.amount)`, which returns the sum of `leads.amount` as before
+
+#### Scenario: No unique spelling
+- **WHEN** a stored `orders` written before this version relates to `leads` through relationships `source` and `referrer`, and a field reads `source.name`
+- **THEN** `orders` fails to load with a warning naming `orders` and that field, and the other datasets load
+
+#### Scenario: A current document is not rewritten
+- **WHEN** a dataset saved at this version relates to `leads` through relationship `source` and its metric is `sum(source.amount)`
+- **THEN** the metric sums the dataset's own source column `amount`
+
+### Requirement: Stored queries are upgraded to qualified references
+A stored query written before this change — a saved query, a query-backed model's `source_queries` stage, or a memory's query, nested or not, with or without a version of its own — SHALL load in the qualified syntax of `queries/references`, with no deprecation warning, by a conversion that reads the stored datasets:
+- each reference SHALL be rewritten to the qualified spelling that has the meaning it had before this change, reading the stage's own population;
+- a bare name SHALL read what it read before this change, in this order: inside a metric, dimension or time-dimension entry, or the main time dimension, the population's field, then the population's metric, then an alias of the stage other than the entry's own; in a filter or order, the population's field, then an alias of the stage, then the population's metric; a population that is a stage or a query-backed dataset SHALL offer its output columns as fields;
+- a reference the new routing would send along a different path SHALL be rewritten to the explicit route from the population that keeps its old path;
+- a reference whose anchor was reached by a route longer than its written path SHALL be rewritten to its explicit route from the population, so its column name is kept;
+- a rewritten path SHALL be kept only if it resolves back to the same oriented sequence of relationships;
+- an unaliased entry whose references share no anchor SHALL get an alias equal to its column name before this change, so every later stage, query-backed model consumer and `DatasetField.sql` reading that column keeps working;
+- `count(*)` SHALL become `count(<population>.*)`.
+- a double-quoted segment SHALL match only its exact spelling, and a rewritten reference SHALL keep each double-quoted segment of its leaf double-quoted.
+
+A stored query that cannot be converted this way (a dataset it reads is missing, or an old path has no unique explicit spelling) SHALL fail to load through the existing unloadable-document boundary, untouched on disk, with a warning naming the document and the reference. Every stored query SHALL convert on each load, which writes nothing, and SHALL be persisted only by a save or `slayer storage upgrade`, as other migrated documents are.
+
+#### Scenario: A saved query loads qualified with its results
+- **WHEN** a store holds a saved query with `population: orders`, the dimension `status`, the metric `sum(amount)` and the filter `customers.region = 'EAST'`
+- **THEN** it loads as `orders.status`, `sum(orders.amount)` and `customers.region = 'EAST'`, with no `FutureWarning`, and returns the rows it returned before
+
+#### Scenario: A stored cycle reference keeps its path
+- **WHEN** a stored query with `population: x` over the cycle `x → y → z → x` measures `sum(z.amount)`
+- **THEN** it loads as `sum(x.z.amount)` and returns the value it returned before
+
+#### Scenario: A stored stage chain keeps its column names
+- **WHEN** a stored query-backed model's first stage measures `sum(amount) / count(customers.*)` unaliased and its second stage reads that column by its old name
+- **THEN** the first stage's entry gets that name as its alias and the model returns the rows it returned before
+
+#### Scenario: An unspellable old path makes the document unloadable
+- **WHEN** a stored query's reference reads a dataset that its population reaches only across two unnamed parallel relationships, so its old path has no explicit spelling
+- **THEN** the document fails to load, stays untouched on disk, and the warning names the document and the reference
+
+#### Scenario: A memory's query converts on every load
+- **WHEN** a stored memory holds a query with `population: orders` measuring `count(*)`
+- **THEN** each load reads it as `count(orders.*)`, with no `FutureWarning`, and the stored memory is not rewritten
+
+#### Scenario: A quoted leaf keeps its exact spelling
+- **WHEN** a stored query on `orders` filters `"Regions"."Opened_At" >= '2024-01-01'`, `Regions` reached by the route `orders → customers → Regions`
+- **THEN** it loads with the leaf still spelt `"Opened_At"` on its explicit route
+
+#### Scenario: A metric alias equal to a population column reads the column
+- **WHEN** a stored query-backed model's stage over the query-backed model `rev_f`, which outputs the metric column `rev`, measures `sum(rev)` aliased `rev` and filters `rev >= 0`
+- **THEN** it loads as `sum(rev_f.rev)` aliased `rev` with the filter `rev_f.rev >= 0`, and returns the sum of `rev_f.rev` over the `rev_f` rows with `rev >= 0`
+
+#### Scenario: A metric reads the population metric a sibling alias shares
+- **WHEN** a stored query on `orders`, whose metric `revenue` is `sum(amount)`, has the dimension `status`, measures `count(*)` aliased `revenue` and `revenue * 10` aliased `r10`, and filters `revenue > 1`
+- **THEN** it loads as `count(orders.*)` aliased `revenue`, `orders.revenue * 10` aliased `r10` and the filter `revenue > 1`, and returns, for each `status` with more than one order, `r10` equal to ten times its sum of `amount`
+
+#### Scenario: A stage over an earlier stage reads the earlier stage's column
+- **WHEN** a stored query-backed model's first stage `s1` outputs `rev`, and its second stage over `s1` measures `sum(rev)` aliased `rev` and filters `rev > 25`
+- **THEN** the second stage loads as `sum(s1.rev)` aliased `rev` with the filter `s1.rev > 25`, and the model returns the sum of the `s1` rows with `rev > 25`
+
+#### Scenario: A partition key naming a computed dimension stays bare
+- **WHEN** a stored query on `orders` has the dimension `status` and the computed dimension `upper(status)` named `su`, and measures `sum(amount, partition_by=su)`
+- **THEN** it loads with `partition_by=su` unchanged and returns the rows it returned before
+
+#### Scenario: A quoted alias matches only its exact spelling
+- **WHEN** a stored query on `orders`, which has the field `amount`, has the dimension `status`, measures `count(*)` aliased `"Amount"` and filters `"Amount" > 1`
+- **THEN** the filter stays `"Amount" > 1`, reading the metric, and returns each `status` with more than one order
+
+### Requirement: A stored memory whose population names no stored dataset reads one datasource
+
+When a stored memory's query is pinned to no datasource and either names no population or names a population spelling the time spine that no stored dataset spells exactly, its datasource SHALL be the one datasource its dataset-level entities (`<datasource>.<dataset>` or `<datasource>.<dataset>.<leaf>`, naming a stored dataset) name, else the only datasource holding a stored dataset. Every load-time upgrade of it — its qualified-reference upgrade, the typing of its literals, the rewrite of its custom-granularity buckets, and the rename of a library-colliding granularity it references — SHALL read that datasource; a root-less memory SHALL infer its population there as a pinned query does and SHALL fail to load when no single dataset there reaches what it reads; no other datasource is tried. With no such datasource, its custom-granularity buckets SHALL NOT be rewritten, no granularity it references SHALL be renamed, and, when its qualified-reference upgrade is pending, it SHALL fail to load with a warning naming it and saying that its datasource cannot be determined. A stored memory whose explicit population names no stored dataset in any other spelling SHALL NOT use this datasource and SHALL fail to load naming the population. A memory's conversion SHALL run on each load and never be written back; only the rename of a library-colliding granularity SHALL be persisted, as for every stored document.
+
+#### Scenario: A root-less memory loads on a single-datasource store
+
+- **WHEN** the one datasource holds `orders` and `customers`, and a stored v4 memory query with no entities has the dimension `status`, the measure `sum(amount)` named `rev` and the filter `status = 'ok'`, with no population
+- **THEN** it loads as `orders.status`, `sum(orders.amount)` and `orders.status = 'ok'`, returns its earlier rows (`ok`: 80), and the stored memory is unchanged
+
+#### Scenario: Its entities pin a root-less memory's datasource over the priority
+
+- **WHEN** datasources `shop` and `shop2` both hold `orders` and `customers`, `status` and `amount` are fields of `orders` in `shop` and of `customers` in `shop2`, `shop` is first in the priority, and the root-less memory above is stored with the entities `shop2.customers`, `shop2.customers.status` and `shop2.customers.amount`
+- **THEN** it loads as `customers.status` and `sum(customers.amount)` and returns its rows when run in `shop2`
+
+#### Scenario: A root-less memory's legacy literal is repaired
+
+- **WHEN** the root-less memory filters `ordered_at >= '2024/01/01'` on a single-datasource store
+- **THEN** it loads as `orders.ordered_at >= '2024-01-01'` and returns its earlier total (200)
+
+#### Scenario: A root-less memory's literal is typed in the datasource it is read in
+
+- **WHEN** datasources `shop` and `shop2` both hold `orders`, `ordered_at` is a TIMESTAMP in `shop` and TEXT in `shop2`, and the root-less memory filters `ordered_at >= '2024/01/01'`
+- **THEN** with the entity `shop.orders` the literal is repaired to `'2024-01-01'`; with the entity `shop2.orders` it is left unchanged
+
+#### Scenario: An entity-pinned memory is read only in its datasource
+
+- **WHEN** the root-less memory reads `status`, its entity `shop.customers` names `shop`, which holds no dataset reaching `status`, and `shop2` holds one
+- **THEN** the memory fails to load with a warning naming it and `status`
+
+#### Scenario: An entity-less memory on a multi-datasource store fails to load
+
+- **WHEN** datasources `shop` and `shop2` both hold `orders` and `customers`, and the root-less memory is stored with no entities, or with entities naming no stored dataset or naming both datasources
+- **THEN** the memory fails to load with a warning naming it and saying that its datasource cannot be determined
+
+#### Scenario: A root-less memory's custom-granularity bucket is rewritten
+
+- **WHEN** the datasource defines the granularity `mid_month`, and a stored pre-v9 root-less memory buckets `created_at` by `mid_month` and filters `created_at:mid_month >= '2025-02-01'`
+- **THEN** it loads with the filter `date_trunc('mid_month', events.created_at) >= '2025-02-01'` and returns its earlier rows
+
+#### Scenario: A root-less memory's library-colliding granularity is renamed
+
+- **WHEN** the datasource defines the granularity `left` and a stored root-less memory buckets `created_at` by `left`
+- **THEN** it loads bucketing by `left_granularity` and returns its earlier rows
+
+#### Scenario: An entity-pinned memory's custom granularities follow its datasource
+
+- **WHEN** datasources `g1` and `g2` both hold `events`, only `g2` defines the granularities `left` and `mid_month`, and a stored pre-v9 root-less memory with the entity `g2.events` buckets `created_at` by `left` and filters `created_at:mid_month >= '2025-02-01'`
+- **THEN** it loads bucketing by `left_granularity` with the filter `date_trunc('mid_month', events.created_at) >= '2025-02-01'`, and returns its earlier rows when run in `g2`
+
+#### Scenario: A time-spine memory's custom granularities are upgraded
+
+- **WHEN** a stored memory with population `time_spine` buckets `time_spine.timestamp` by the datasource's granularity `left`, or filters `events.created_at:mid_month >= '2025-02-01'` with `mid_month` defined
+- **THEN** it loads bucketing by `left_granularity`, or with the filter `date_trunc('mid_month', events.created_at) >= '2025-02-01'`, and returns its earlier rows
+
+#### Scenario: A missing explicit population gets no fallback
+
+- **WHEN** a stored memory names the population `ordrs`, which no datasource stores, and buckets by the datasource's granularity `left`
+- **THEN** no datasource is read for it, its granularity is not renamed, and it fails to load naming `ordrs`
+
+### Requirement: Relationships stored before trust upgrade as trusted
+Loading a stored model, saved query or memory written before relationships carried
+`trusted` SHALL set `trusted: true` on every relationship it stores, its query-extension
+relationships and those of its backing queries included, so its results and SQL are
+unchanged. Stored semantic-model documents are not upgraded.
+
+#### Scenario: A stored model keeps its inline join
+- **WHEN** a model stored at the previous version declares `orders → customers` as
+  `many_to_one`, and the data holds customer C1 twice
+- **THEN** after loading, the relationship is trusted and `orders.total_revenue` by
+  `customers.region` returns EAST 650 as before
+
+#### Scenario: A stored query's extension relationship is trusted
+- **WHEN** a saved query stored at the previous version declares a join in its query extension
+- **THEN** after loading, that relationship is trusted
+
+#### Scenario: A stored memory's query is upgraded
+- **WHEN** a memory stored at the previous version carries a query declaring a join in its
+  query extension
+- **THEN** after loading, that relationship is trusted
+
+### Requirement: Stored AGG calls in field expressions are unwrapped
+On load, a stored model written before this change whose field's Mode-B `expression` calls `AGG(x)` in any case SHALL have each such call replaced by its argument `x`, with one logged warning naming the model and the field. A query reading the field SHALL return what it returned before the change. A call the earlier `agg` upgrade (`Stored agg aggregations are renamed`) already rewrote to `agg_aggregation(` SHALL be left unchanged, and Mode-A text SHALL be left unchanged.
+
+#### Scenario: A stored AGG field keeps its value
+- **WHEN** a stored model written by the previous release has the field `a` with expression `AGG(amount) + 1` and a query reads `orders.a`
+- **THEN** after load the field's expression is `amount + 1`, a warning names the model and `a`, and the query returns `amount + 1` for each row as before
+
+#### Scenario: A model written before the agg upgrade
+- **WHEN** a stored model written before the `agg` upgrade has the metric `m` with formula `agg(amount)`
+- **THEN** after load the metric's expression is `agg_aggregation(amount)`, as that upgrade defines, and this upgrade leaves it unchanged
+
+### Requirement: A load never writes
+
+Loading a stored dataset, semantic-model document, saved query, memory or datasource SHALL NOT write to the store, on the YAML and the SQLite store alike. Every migration, repair and conversion a stored document needs SHALL apply in memory on each load. This includes schema migrations, join-key and join-target repairs, legacy alias rewrites, field `sql` conversion, query upgrades and the library-granularity settle. The upgraded form SHALL be persisted only by a save of that document or by `slayer storage upgrade`. Datasource priority and embeddings SHALL be neither read as documents to upgrade nor rewritten. Opening a store SHALL keep its one-time layout and schema moves (the YAML pre-v4 flat-layout move, the legacy memory-file split, the SQLite table rebuilds, the embedding sidecar's kind rename), which change no document's content, except that the flat-layout move fills an empty `data_source` when exactly one datasource is registered; they are the only writes opening a store performs.
+
+#### Scenario: Loading an old store leaves it unchanged
+- **WHEN** the committed 0.10.2 and 1.8.2 stores, as YAML and as SQLite, are opened and every dataset, saved query, memory and datasource is loaded twice
+- **THEN** every document loads with its upgraded content both times, the logical content of every stored document is unchanged, and no storage write hook is called
+
+#### Scenario: A save persists the upgraded form
+- **WHEN** a dataset stored below the current version is loaded and then saved
+- **THEN** the stored document is at the current version with the upgraded content
+
+#### Scenario: Opening a pre-v4 flat-layout YAML store
+- **WHEN** a YAML store in the pre-v4 flat layout is opened
+- **THEN** its files move into the per-datasource layout, an empty `data_source` is filled when exactly one datasource is registered, and no other content changes
+
+### Requirement: A load warns when a document needs upgrading
+
+Loading a stored document that the upgrade would change SHALL emit one structured warning per document per storage instance. The warning SHALL name the entity kind, the document's identity and `slayer storage upgrade`. It is emitted whether the change comes from the document's own version, from a nested stage, removed form or repair, or from a rewrite of stored input that the document's model applies while validating (at any nesting depth). Filling a default for an omitted key SHALL NOT count as a change. A document the upgrade would not change SHALL load without that warning.
+
+#### Scenario: An old dataset warns once
+- **WHEN** a dataset stored at version 15 is loaded three times through one storage instance
+- **THEN** exactly one warning names the dataset, its datasource and `slayer storage upgrade`
+
+#### Scenario: A current document with an old nested stage warns
+- **WHEN** a query-backed dataset stored at the current version holds a stage written in a form the upgrade converts
+- **THEN** loading it warns naming the dataset
+
+#### Scenario: A validator-level rewrite warns and is persisted
+- **WHEN** a datasource stored at the current version spells its user as `user`
+- **THEN** loading it warns naming the datasource, and `slayer storage upgrade` stores it with `username`
+
+#### Scenario: A defaulted key does not warn
+- **WHEN** a datasource stored at the current version defines a custom granularity without an `origin`
+- **THEN** loading it emits no upgrade warning
+
+#### Scenario: An upgraded store is quiet
+- **WHEN** a store that `slayer storage upgrade` has upgraded is loaded
+- **THEN** no upgrade warning is emitted
+
+### Requirement: slayer storage upgrade persists the current format
+
+`slayer storage upgrade` SHALL bring every stored document that needs it to the current format, through the same upgrade a load applies. The documents are datasets, semantic-model documents, saved queries, memories and datasources, optionally limited by `--data-source`. Each changed document SHALL be written with its upgraded content and without the semantic checks of a client save, so a legacy document that loads (for instance one holding a cycle or a fanning reference) is upgraded rather than refused. A document SHALL be written only if its stored form is unchanged since the upgrade read it. Otherwise it SHALL be reported as a conflict and left as it is. Documents SHALL be written in no particular order, and no document SHALL be held back because another was refused, conflicted or unreadable. `--dry-run` SHALL print, per document, the difference the upgrade would make and SHALL write no document; opening the store still performs its one-time layout moves.
+
+A document the upgrade cannot complete SHALL be reported with its identity and the reason, and SHALL be left untouched, while every other document is upgraded. The command SHALL then exit 1. Such documents include:
+- one that fails to load, including a memory file that is not UTF-8 text;
+- one with field `sql` waiting for a datasource dialect that neither the store nor `--datasource-type NAME=TYPE` supplies;
+- one below version 8 whose datasource cannot be reached for type refinement.
+
+`--datasource-type NAME=TYPE`, repeatable, SHALL supply the dialect of a datasource the store holds no config for.
+
+#### Scenario: An old store upgrades
+- **WHEN** `slayer storage upgrade` runs on a store holding v15 datasets, a v15 memory and a datasource
+- **THEN** every document is stored at the current version, loading the store afterwards emits no upgrade warning, every query returns what it returned before, and the command exits 0
+
+#### Scenario: A dry run shows the change and writes nothing
+- **WHEN** `slayer storage upgrade --dry-run` runs on the same store
+- **THEN** it prints each document's difference, every stored document's content is unchanged, and the command exits 0
+
+#### Scenario: A legacy cycle is upgraded, not refused
+- **WHEN** the store holds a dataset written before the current version whose derived fields form a cycle that a client save would refuse
+- **THEN** the upgrade stores it at the current version
+
+#### Scenario: A dataset waiting for its dialect
+- **WHEN** the store holds a v15 dataset with field `sql` `UPPER(status)` and no config for its datasource
+- **THEN** the upgrade reports the dataset and leaves it untouched, upgrades every other document and exits 1; run again with `--datasource-type warehouse=duckdb`, it upgrades the dataset and exits 0
+
+#### Scenario: A corrupt document does not stop the others
+- **WHEN** one stored dataset is corrupt and the others are valid
+- **THEN** the valid ones are upgraded, the corrupt one is reported and untouched, embeddings are preserved, and the command exits 1
+
+#### Scenario: An undecodable memory file does not stop the others
+- **WHEN** a YAML store holds one memory file that is not UTF-8 text beside a valid v15 memory and a v15 dataset
+- **THEN** a whole-store run reports that memory by its id and leaves it untouched, upgrades the others and exits 1; a `--data-source` run upgrades the dataset without failing on the memory
+
+#### Scenario: A concurrent edit is not overwritten
+- **WHEN** a document is changed in the store after the upgrade read it and before it would write it
+- **THEN** the upgrade reports a conflict for it, leaves the newer content in place and exits 1
+
+#### Scenario: An interrupted settle converges
+- **WHEN** an upgrade that renames a datasource's library-colliding granularity is interrupted after writing some documents, whichever they are
+- **THEN** a second run completes the rename and leaves one consistent store
+
+#### Scenario: A refused dependent holds its datasource's rename
+- **WHEN** a datasource defines the granularity `left`, one dependent dataset upgrades and another conflicts
+- **THEN** the datasource is not held back: it is stored with `left_granularity` and `renamed_from: left`, which keeps the rename for the conflicted dataset; the command exits 1, the conflicted dataset still loads with `left_granularity`, and a later run that can complete it leaves one consistent store
+
+### Requirement: Documents SLayer does not own upgrade without a store
+
+A public entry point SHALL take one datasource's stored dataset documents, an optional datasource type and an optional datasource config, and return each document in the current format. It SHALL apply the same upgrade a load applies, open no store and write nothing. The result of each document SHALL be the same as `slayer storage upgrade` would store. A document the entry point cannot complete SHALL be reported with its identity and the reason that `slayer storage upgrade` gives for it, and SHALL not be returned upgraded, while every other document is returned. Such documents include one that fails to validate, one waiting for a dialect, and one below version 8 that needs live type refinement.
+
+#### Scenario: A v15 model set upgrades in memory
+- **WHEN** two v15 dataset documents of one datasource, one with field `sql` `UPPER(status)`, are passed with the datasource type `duckdb`
+- **THEN** both come back at the current version, every key is one the dataset model declares at its level, they validate to the same datasets a store would load, and nothing is written
+
+#### Scenario: A pre-v8 document is refused
+- **WHEN** a v5 dataset document with a refineable DOUBLE field is passed
+- **THEN** it is reported as needing live type refinement through `slayer storage upgrade`
+
+#### Scenario: An invalid document is refused on its own
+- **WHEN** a valid document and one whose field has an unknown data type are passed together
+- **THEN** the valid one comes back upgraded and the invalid one is reported with its name and the validation reason
+
+#### Scenario: The same refusal as the store upgrade
+- **WHEN** the same pre-v8 or dialect-waiting document is upgraded through the entry point and through `slayer storage upgrade`
+- **THEN** both report it with the same reason
+
+### Requirement: A datasource save keeps its granularity rename records
+
+Saving a datasource SHALL keep every rename the stored datasource of that name holds, pending or recorded. When no granularity of the saved config records that former name and the saved config defines its new name, the stored result SHALL carry `renamed_from` with the former name if that granularity has none; if it records another former name, the save SHALL be refused with an error naming the granularity, and nothing SHALL be written. A save SHALL NOT be refused because a rename is pending. A saved `renamed_from` SHALL name a reserved library name and SHALL be unique, case-insensitively, among the datasource's granularities; otherwise the save SHALL be refused with an error naming the granularity, and nothing SHALL be written. This SHALL hold on both the YAML and the SQLite store, through every save path.
+
+#### Scenario: Saving a loaded datasource whose rename is pending
+
+- **WHEN** a stored datasource defines the granularity `left`, a stored dataset written below the gate buckets by it, and the datasource as loaded (with `left_granularity`) is saved
+- **THEN** the save succeeds, the stored datasource defines `left_granularity` with `renamed_from: left`, and after reopening the store the dataset still loads and buckets by `left_granularity`
+
+#### Scenario: A config built without the record keeps it
+
+- **WHEN** the stored datasource defines `left_granularity` with `renamed_from: left`, and a config defining `left_granularity` without `renamed_from` is saved under its name
+- **THEN** the stored datasource defines `left_granularity` with `renamed_from: left`
+
+#### Scenario: A record replaced by another former name is refused
+
+- **WHEN** the stored datasource defines `left_granularity` with `renamed_from: left`, and a config defining `left_granularity` with `renamed_from: collect` is saved under its name
+- **THEN** the save fails naming `left_granularity`, and nothing is written
+
+#### Scenario: A record moved to another granularity is kept
+
+- **WHEN** the stored datasource defines `left_granularity` with `renamed_from: left`, and a config defining `left_granularity` without `renamed_from` and `left_g` with `renamed_from: left` is saved under its name
+- **THEN** the save succeeds and the stored datasource records `renamed_from: left` on `left_g` only
+
+#### Scenario: A record naming no reserved name is refused
+
+- **WHEN** a client saves a datasource whose granularity `fw` records `renamed_from: fiscal_week`
+- **THEN** the save fails naming `fw`, and nothing is written
+
+#### Scenario: Two records of one former name are refused
+
+- **WHEN** a client saves a datasource whose granularities `left_granularity` and `left_g` both record `renamed_from: left`
+- **THEN** the save fails naming the second, and nothing is written
+
+### Requirement: Stored BigQuery instant fields load as DateTimeTz
+
+On load, a stored dataset below schema version 31 whose datasource is BigQuery SHALL type each `DateTime` field whose `db_type` is `TIMESTAMP` as `DateTimeTz`; a load SHALL not write it back. Queries without a time zone SHALL return the same values and emit the same SQL before and after the upgrade.
+
+#### Scenario: A stored BigQuery TIMESTAMP field
+- **WHEN** a raw v30 BigQuery dataset with a `DateTime` field of `db_type` `TIMESTAMP` and a `DateTime` field with no `db_type` is loaded
+- **THEN** the first is `DateTimeTz`, the second `DateTime`, and the stored document is unchanged
+
+#### Scenario: No change without a zone
+- **WHEN** a query without a time zone filters and buckets the upgraded field
+- **THEN** its SQL and result equal those before the upgrade
+
+#### Scenario: Other datasources untouched
+- **WHEN** a raw v30 Postgres dataset with a `DateTime` field of `db_type` `TIMESTAMP` is loaded
+- **THEN** the field stays `DateTime`

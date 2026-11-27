@@ -1,7 +1,7 @@
-"""DEV-1450 follow-up #5 — cross-model parametric aggregate result keys.
+"""Cross-dataset parametric aggregate result keys.
 
-Cross-model parametric aggregates carry their kwarg-signature suffix in
-the result key, so two variants on the same target column do NOT collide
+Cross-dataset parametric aggregates carry their kwarg-signature suffix in
+the result key, so two variants on the same target field do NOT collide
 (legacy dropped the suffix and the two columns clobbered each other).
 
 This pins the (already-correct) behavior end-to-end:
@@ -89,7 +89,7 @@ async def test_single_cross_model_parametric_key(engine: SlayerQueryEngine):
             "metrics": [{"metric": "percentile(customers.revenue, p=0.5)"}],
         })
     )
-    assert "orders.customers.revenue_percentile_p_0_5" in resp.columns
+    assert "customers.revenue_percentile_p_0_5" in resp.columns
 
 
 async def test_two_parametric_variants_distinct_keys(engine: SlayerQueryEngine):
@@ -103,11 +103,11 @@ async def test_two_parametric_variants_distinct_keys(engine: SlayerQueryEngine):
             ],
         )
     )
-    assert "orders.customers.revenue_percentile_p_0_5" in resp.columns
-    assert "orders.customers.revenue_percentile_p_0_95" in resp.columns
+    assert "customers.revenue_percentile_p_0_5" in resp.columns
+    assert "customers.revenue_percentile_p_0_95" in resp.columns
     # Distinct keys — no collision.
     assert (
-        "orders.customers.revenue_percentile_p_0_5"
-        != "orders.customers.revenue_percentile_p_0_95"
+        "customers.revenue_percentile_p_0_5"
+        != "customers.revenue_percentile_p_0_95"
     )
     assert len([c for c in resp.columns if "revenue_percentile" in c]) == 2

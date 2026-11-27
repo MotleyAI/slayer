@@ -7,11 +7,11 @@ SLayer's names in Ossie's vocabulary (dataset, field, metric, relationship, expr
 
 ### Requirement: Datasets are written in Ossie's vocabulary
 
-A dataset SHALL hold its fields under `fields`, its metrics under `metrics` and its relationships under `relationships`. A field and a metric SHALL carry their type under `datatype`, a metric and a custom aggregation their definition under `expression`, and a relationship its target dataset under `to` and its keys under `from_columns` and `to_columns`. A dataset's `filters`, `aggregations`, `sql`, `sql_table`, `source_queries`, and a field's `sql` SHALL keep their names.
+A dataset SHALL hold its fields under `fields`, its metrics under `metrics` and its relationships under `relationships`. A field and a metric SHALL carry their type under `datatype`, a field, a metric and a custom aggregation their definition under `expression`, and a relationship its target dataset under `to` and its keys under `from_columns` and `to_columns`. A dataset's `filters`, `aggregations`, `sql`, `sql_table` and `source_queries` SHALL keep their names; a field's `sql` is a deprecated spelling of its `expression` (`models/field-expressions` › A field's sql converts to its expression).
 
 #### Scenario: A dataset is dumped
 - **WHEN** a dataset with a field, a metric, a custom aggregation and a relationship is serialized
-- **THEN** it carries `fields`, `metrics`, `relationships`, `datatype`, `expression`, `to`, `from_columns` and `to_columns`, and none of `columns`, `measures`, `joins`, `type`, `formula`, `target_model` or `join_pairs`
+- **THEN** it carries `fields`, `metrics`, `relationships`, `datatype`, `expression` (on the field and on the metric), `to`, `from_columns` and `to_columns`, and none of `columns`, `measures`, `joins`, `type`, `formula`, `target_model`, `join_pairs` or a field-level `sql`
 
 #### Scenario: Kept keys are unchanged
 - **WHEN** a dataset with row filters is serialized
@@ -31,15 +31,15 @@ A query SHALL name its population `population`, its metrics `metrics` and its ro
 
 ### Requirement: The rename changes no result
 
-A query SHALL return the same rows, values, result keys and column order whether it is written in the pre-2.0 or the Ossie vocabulary, and the same as before this change.
+A query SHALL return the same rows, values, result keys and column order whether it is written in the pre-2.0 or the Ossie vocabulary.
 
 #### Scenario: Old and new spellings give the same result
 - **WHEN** a query is run once in the pre-2.0 spelling and once in the new spelling
-- **THEN** both responses carry identical rows, values and result keys, equal to those recorded before the rename
+- **THEN** both responses carry identical rows, values and result keys
 
 #### Scenario: A multi-stage query keeps its keys
 - **WHEN** a multi-stage query with metric entries, field references and an order item is run in both spellings
-- **THEN** both responses carry identical result keys, equal to those recorded before the rename
+- **THEN** both responses carry identical result keys
 
 #### Scenario: A refinement matches the same entries
 - **WHEN** a saved query is run by name with a refinement written in the pre-2.0 spelling and with one written in the new spelling
@@ -241,15 +241,19 @@ Every structured warning's payload fields and `kind` value SHALL use the new wor
 
 ### Requirement: The Ossie export payload carries the vocabulary
 
-The `SLAYER` vendor payload of an exported Ossie document SHALL be written at payload version 2, in the Ossie vocabulary and shapes. The importer SHALL read payload versions 1 and 2 with the same result: a version-1 payload's fingerprint SHALL be checked against its content as written, and its pre-2.0 keys and shapes SHALL then convert with no deprecation warning.
+The `SLAYER` vendor payload of an exported Ossie document SHALL be written at payload version 3, in the Ossie vocabulary and shapes, with a field's definition carried under `expression`. The importer SHALL read payload versions 1, 2 and 3 with the same result: a version-1 payload's fingerprint SHALL be checked against its content as written, and its pre-2.0 keys and shapes SHALL then convert with no deprecation warning; a field `sql` in a version-1 or version-2 payload SHALL convert as a stored field `sql` does (`models/field-expressions` › A field's sql converts to its expression), with the import's datasource dialect.
 
 #### Scenario: An export uses the new keys
 - **WHEN** a dataset with a relationship, a SLayer-only field and a SLayer-only metric is exported to Ossie
-- **THEN** every `SLAYER` payload is version 2 and carries no pre-2.0 key or shape, and every relationship carries `from_columns` and `to_columns`
+- **THEN** every `SLAYER` payload is version 3 and carries no pre-2.0 key or shape and no field-level `sql`, and every relationship carries `from_columns` and `to_columns`
 
 #### Scenario: A pre-2.0 export still imports
 - **WHEN** an Ossie document exported before this change (payload version 1) is imported
-- **THEN** every payload's fingerprint matches, no `FutureWarning` is emitted, and the imported datasets equal those imported from the same datasets exported at version 2
+- **THEN** every payload's fingerprint matches, no `FutureWarning` is emitted, and the imported datasets equal those imported from the same datasets exported at version 3
+
+#### Scenario: A version-2 export still imports
+- **WHEN** an Ossie document exported at payload version 2, whose SLayer-only field `amount_x2` carries `sql: amount * 2`, is imported into a DuckDB datasource
+- **THEN** `amount_x2` carries the DuckDB dialect entry `amount * 2`, no `FutureWarning` is emitted, and it returns twice each order's `amount`
 
 ### Requirement: Query entries take Ossie's form
 
@@ -361,15 +365,15 @@ A fresh dataset carrying a key that SLayer does not read, on the dataset or on a
 
 ### Requirement: Datatype values are Ossie's names
 
-A `datatype` or list element type SHALL be one of `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` and `Array` (a list), matched by exact case, and SHALL be stored, dumped, exported and displayed as written. Each value SHALL behave in queries as the type it corresponds to before this change: `Decimal` and `Float` as the double type, `DateTime` and `DateTimeTz` as the timestamp type, `Time` and `Opaque` as the opaque type. A pre-2.0 value SHALL convert: `TEXT`, `INT`, `BOOLEAN`, `DATE`, `UNKNOWN` and `ARRAY` (and their lowercase legacy spellings) to `String`, `Integer`, `Boolean`, `Date`, `Opaque` and `Array`; `DOUBLE` and `number` to `Decimal` when the field's database type is exact numeric, else `Float`; `TIMESTAMP` and lowercase `time` to `DateTimeTz` when the field's database type carries a time zone, else `DateTime`. Ingestion and drift SHALL assign the finer value from the database type by the same rule, and the Ossie importer SHALL keep an Ossie datatype as written.
+A `datatype` or list element type SHALL be one of `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` and `Array` (a list), matched by exact case, and SHALL be stored, dumped, exported and displayed as written. `Decimal` and `Float` SHALL behave in queries as the double type, `DateTime` and `DateTimeTz` as the timestamp type (without a time zone, `queries/time-zones`), `Time` as the time of day (`queries/time-of-day`) and `Opaque` as the opaque type. A pre-2.0 value SHALL convert: `TEXT`, `INT`, `BOOLEAN`, `DATE`, `UNKNOWN` and `ARRAY` (and their lowercase legacy spellings) to `String`, `Integer`, `Boolean`, `Date`, `Opaque` and `Array`; `DOUBLE` and `number` to `Decimal` when the field's database type is exact numeric, else `Float`; `TIMESTAMP` and lowercase `time` to `DateTimeTz` when the field's database type carries a time zone, else `DateTime`. Ingestion and drift SHALL assign the finer value from the database type by the same rule, SHALL also assign `DateTimeTz` to BigQuery `TIMESTAMP`, ClickHouse `DateTime(tz)` / `DateTime64(p, tz)` and MySQL `TIMESTAMP` columns, which hold instants, and SHALL assign `Time` to a time-of-day column without a time zone. A re-ingest SHALL re-type a stored `DateTime` field whose live column holds instants to `DateTimeTz`, SHALL re-type a stored field whose live column is a time of day to `Time`, and SHALL leave every other stored type as it is. The Ossie importer SHALL keep an Ossie datatype as written.
 
 #### Scenario: Ossie's types are kept as written
 - **WHEN** a dataset with fields typed `Decimal`, `DateTimeTz` and `Time` is saved, loaded, dumped and exported to Ossie
 - **THEN** each field still carries its type as written
 
 #### Scenario: Behaviour follows the old kind
-- **WHEN** a query aggregates a `Decimal` field, filters a `DateTimeTz` field by a date range and selects a `Time` field
-- **THEN** the results equal those of the same dataset typed `DOUBLE`, `TIMESTAMP` and `UNKNOWN` before this change
+- **WHEN** a query aggregates a `Decimal` field and filters a `DateTimeTz` field by a date range
+- **THEN** the results equal those of the same dataset typed `DOUBLE` and `TIMESTAMP` before this change
 
 #### Scenario: A pre-2.0 type converts by database type
 - **WHEN** a fresh dataset has a field typed `DOUBLE` with database type `NUMERIC(18, 2)`, a field typed `TIMESTAMP` with database type `TIMESTAMPTZ`, a field typed `DOUBLE` with no database type and a metric typed `TIMESTAMP`
@@ -382,3 +386,99 @@ A `datatype` or list element type SHALL be one of `String`, `Integer`, `Decimal`
 #### Scenario: A list type shows its element
 - **WHEN** a list field of strings is inspected
 - **THEN** its type is shown as `Array<String>`
+
+#### Scenario: Instant columns ingest as DateTimeTz
+- **WHEN** a BigQuery `TIMESTAMP`, a ClickHouse `DateTime('UTC')`, a ClickHouse `DateTime64(3, 'Asia/Tokyo')` and a MySQL `TIMESTAMP` column are ingested, beside a BigQuery `DATETIME`, a ClickHouse `DateTime` and a MySQL `DATETIME`
+- **THEN** the first four are `DateTimeTz` and the last three `DateTime`
+
+#### Scenario: Re-ingest re-types an instant column
+- **WHEN** a stored MySQL dataset has a `DateTime` field over a `TIMESTAMP` column and a `DateTime` field over a `DATETIME` column, and the datasource is re-ingested
+- **THEN** the first becomes `DateTimeTz` and loses any `time_zone`, the second stays `DateTime`, and every other attribute of both is unchanged
+
+#### Scenario: A Time field is a time of day
+- **WHEN** a query groups by a `Time` field and takes its `min`
+- **THEN** it runs and returns times of day
+
+### Requirement: Queries refuse unknown keys
+
+A query, a query refinement, and every dimension, metric, time dimension, order and extension entry of either SHALL treat a key it does not read as follows. A key whose camelCase-to-snake_case form is a key the object accepts — canonical or a pre-2.0 spelling — SHALL be read as that key, silently, before any pre-2.0 spelling converts, so a camelCase pre-2.0 spelling converts on to its canonical key with that spelling's deprecation warning. Two keys of one object that resolve to the same canonical key SHALL be refused as a spelling conflict naming both. Any other key SHALL be refused with a typed error naming the key, giving its location in the input, and listing the keys the object takes; keys the object reads internally SHALL stay accepted but SHALL NOT be listed. This SHALL hold on every query surface (REST answering 422, MCP, Python client) and for objects built as Python values. A stored query SHALL follow the same rules on load: a camelCase key SHALL convert and the query SHALL serialize with the canonical key; any other unknown key SHALL make that stored document fail to load with the typed error while every other document of the store loads. Dataset-side objects nested in a query (an extension's metrics and relationships, an inline dataset) SHALL keep the dataset rules.
+
+#### Scenario: A camelCase key converts silently
+- **WHEN** a query is run with `timeDimensions`, `mainTimeDimension` and `wholePeriodsOnly`, a saved query is run with a refinement carrying `timeDimensions`, and both are run again in snake_case
+- **THEN** each pair returns the same rows and SQL, the camelCase run carries no warning, and the camelCase query serializes with the snake_case keys
+
+#### Scenario: A camelCase pre-2.0 spelling converts on to its canonical key
+- **WHEN** a query is given `sourceModel: "orders"`
+- **THEN** it runs as `population: "orders"` with the one deprecation warning `source_model` raises
+
+#### Scenario: Two spellings of one key conflict
+- **WHEN** a query carries both `sourceModel` and `population`, and a time dimension carries both `dateRange` and `date_range`
+- **THEN** each is refused with a spelling-conflict error naming both keys
+
+#### Scenario: A null setting reads as its default
+- **WHEN** a query (not a refinement) gives a setting that cannot be null, such as `whole_periods_only` or `distinct_dimension_values`, the value null, through REST, MCP, the Python client or as a Python value
+- **THEN** the setting takes its default, and a key given as null still counts for spelling conflicts, so `"time_dimensions": null` beside `"timeDimensions"` is refused as a spelling conflict on every surface
+
+#### Scenario: An unknown key is refused with what the object takes
+- **WHEN** queries are given an unknown key at the root, on a dimension entry, a metric entry, a time dimension, an order entry, an extension and a refinement, through REST, MCP and the Python client
+- **THEN** each is refused with a typed error naming the key and its location and listing the object's keys, REST answers 422, and no internal key is listed
+
+#### Scenario: An unrelated camelCase key stays unknown
+- **WHEN** a time dimension carries `sortOrder`
+- **THEN** it is refused with the typed unknown-key error
+
+#### Scenario: Internal keys still round-trip
+- **WHEN** a query ordering by an expression is saved, loaded and dumped
+- **THEN** it loads and dumps unchanged, including the order entry's internal keys
+
+#### Scenario: Stored queries follow the same rules
+- **WHEN** a store holds one saved query whose time dimension carries `dateRange`, one whose dimension entry carries an unknown key, and others, each at the current version and at an older version that migrates
+- **THEN** the `dateRange` queries load, apply the range and dump with `date_range`; the unknown-key queries fail to load with the typed error naming the key; every other document loads
+
+### Requirement: Query objects validate assignments
+
+A query, a query refinement, and every dimension, metric, time dimension, order and extension entry SHALL validate a value assigned to one of their attributes after construction with the checks construction applies. A failed assignment SHALL raise and SHALL leave the object exactly as it was before the assignment.
+
+#### Scenario: An invalid assignment is refused and leaves the object unchanged
+- **WHEN** a time dimension with a valid `date_range` is assigned `date_range = ["2024-01-01", 5]`, then `date_range = ["bogus"]`, and a query is assigned `limit = "abc"`
+- **THEN** each assignment raises, and the time dimension and query keep their previous values
+
+#### Scenario: A valid assignment still applies
+- **WHEN** a time dimension is assigned a valid granularity and a one-sided `date_range`
+- **THEN** both apply and the time dimension runs with them
+
+### Requirement: Dataset objects validate assignments
+
+A dataset, a datasource, and every field, metric, relationship, aggregation, aggregation parameter, source-dataset origin, extension note, number format and expression object reachable from them SHALL validate a value assigned to one of their attributes after construction with the checks construction applies, the object's cross-attribute checks included. A refused assignment SHALL raise and SHALL leave the object exactly as it was, including any list it holds. Each such object SHALL offer `assign(**changes)`, which applies several attribute changes together, validates the final state once, and on refusal leaves every attribute unchanged. Normalizations construction applies SHALL keep their results, and placing a prebuilt object in a dataset SHALL NOT modify that object.
+
+#### Scenario: An invalid assignment is refused and leaves the object unchanged
+- **WHEN** a field is assigned `label = 5`, a relationship with one `to_columns` entry is assigned `from_columns = ["a", "b"]`, a dataset is assigned two fields of the same name, and a datasource is assigned `port = "abc"`
+- **THEN** each assignment raises, and each object keeps every attribute value it had before
+
+#### Scenario: A valid assignment applies
+- **WHEN** a field is assigned a new label and a dataset a new description
+- **THEN** both apply and a query over the dataset runs with them
+
+#### Scenario: Linked attributes change together
+- **WHEN** a table-backed dataset calls `assign(sql="SELECT ...", sql_table=None)` and a relationship calls `assign(from_columns=["a", "b"], to_columns=["c", "d"])`
+- **THEN** both apply, although each attribute alone would leave the object invalid
+
+#### Scenario: A refused multi-attribute change leaves every attribute unchanged
+- **WHEN** a dataset calls `assign` with one valid and one invalid change
+- **THEN** it raises and neither attribute has changed
+
+#### Scenario: The deprecated key-pairs attribute writes both key lists
+- **WHEN** a relationship's deprecated `join_pairs` attribute is assigned two pairs, in place of one
+- **THEN** both key lists hold the two pairs' sides, with the deprecation warning
+
+#### Scenario: Editing a dataset's source switches it in every direction
+- **WHEN** the MCP `edit_dataset` tool switches a dataset from `sql_table` to `sql`, from `sql` to `sql_table`, from `sql_table` to `source_queries`, and from `source_queries` to `sql_table`
+- **THEN** each edit applies, and an edit the final state refuses leaves the dataset unchanged
+
+#### Scenario: Construction normalizations keep their results
+- **WHEN** a field is built with the deprecated `sql` naming one column, a currency number format is built without a symbol, and an sql-mode dataset is built with a list field that has no element type from a prebuilt field object
+- **THEN** the field reads that column as its expression and is marked as written with `sql`, the format carries the default currency symbol, the dataset's list field has element type `Opaque`, and the prebuilt field object is unchanged
+
+#### Scenario: Assigning a deprecated sql after construction stays as written
+- **WHEN** a built field is assigned `sql = "amount"`
+- **THEN** the field holds `sql` as written, as before this change

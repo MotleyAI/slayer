@@ -1,4 +1,4 @@
-"""Numeric and temporal profiling reads the model's own columns with plain ``min`` / ``max``, no extension.
+"""Numeric and temporal profiling reads the dataset's own fields with plain ``min`` / ``max``, no extension.
 
 Spec: queries/extensions (profiling is no longer an extension producer); usage-reporting/collection.
 """
@@ -12,6 +12,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
@@ -47,9 +48,9 @@ def _dataset(*, arrays: bool) -> SlayerDataset:
     columns = [
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="amount", datatype=DataType.FLOAT),
-        DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.FLOAT),
-        DatasetField(name="qty", sql="quantity", datatype=DataType.INTEGER),
-        DatasetField(name="order_total", sql='"Order Total"', datatype=DataType.FLOAT),
+        DatasetField(name="double_amount", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * 2"), DialectEntry(dialect="SQLITE", expression="amount * 2")]), datatype=DataType.FLOAT),
+        DatasetField(name="qty", expression="quantity", datatype=DataType.INTEGER),
+        DatasetField(name="order_total", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression='"Order Total"'), DialectEntry(dialect="SQLITE", expression='"Order Total"')]), datatype=DataType.FLOAT),
         DatasetField(name="ordered_at", datatype=DataType.DATE),
         DatasetField(name="ordered_ts", datatype=DataType.DATETIME),
     ]
@@ -120,7 +121,7 @@ async def test_profiling_sends_no_extension(run: _Run, monkeypatch: pytest.Monke
 
 
 def _restricted_dataset() -> SlayerDataset:
-    """``_model`` with most range columns' ``allowed_aggregations`` excluding ``min`` / ``max``."""
+    """``_dataset`` with most range fields' ``allowed_aggregations`` excluding ``min`` / ``max``."""
     whitelist = {"amount": ["sum"], "double_amount": ["sum"], "qty": ["sum"], "ordered_at": ["count"]}
     model = _dataset(arrays=False)
     return model.model_copy(update={"fields": [
@@ -133,6 +134,6 @@ async def test_a_column_whitelist_does_not_stop_its_range(dialect: str, monkeypa
     async with seeded_exec_engine(dialect=dialect, seed=_seed, datasets=[_restricted_dataset()]) as (engine, _db):
         sampled, _ = await _profile(_Run(engine=engine, dialect=dialect), monkeypatch)
         assert {k: sampled[k] for k in _EXPECTED} == _EXPECTED
-        authored = SlayerQuery.model_validate({"population": "t", "metrics": ["min(amount)"]})
+        authored = SlayerQuery.model_validate({"population": "t", "metrics": ["min(t.amount)"]})
         with pytest.raises(AggregationNotAllowedError):
             await engine.execute(query=authored)

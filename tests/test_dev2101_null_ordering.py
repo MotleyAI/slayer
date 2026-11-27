@@ -43,8 +43,8 @@ class TestOrderItemField:
 
     def test_invalid_policy_names_the_allowed_values(self) -> None:
         with pytest.raises(ValidationError) as info:
-            SlayerQuery.model_validate({"population": "orders", "dimensions": ["id"],
-                                        "order": [{"field": "discount", "nulls": "middle"}]})
+            SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.id"],
+                                        "order": [{"field": "orders.discount", "nulls": "middle"}]})
         msg = str(info.value)
         assert "first" in msg, msg
         assert "last" in msg, msg
@@ -67,14 +67,14 @@ class TestExecutedPlacement:
 
     @pytest.mark.parametrize(("direction", "nulls"), sorted(DISCOUNT_ORDER))
     async def test_projected_measure(self, engine: SlayerQueryEngine, direction: str, nulls: str) -> None:
-        resp = await engine.execute(q(dimensions=["city"], metrics=[m("max(discount)")], order=[
-            {"field": "v", "direction": direction, "nulls": nulls}, {"field": "city"}]))
+        resp = await engine.execute(q(dimensions=["orders.city"], metrics=[m("max(orders.discount)")], order=[
+            {"field": "v", "direction": direction, "nulls": nulls}, {"field": "orders.city"}]))
         assert [r["orders.city"] for r in resp.data] == CITY_ORDER[(direction, nulls)]
 
     @pytest.mark.parametrize(("direction", "nulls"), sorted(DISCOUNT_ORDER))
     async def test_expression_target(self, engine: SlayerQueryEngine, direction: str, nulls: str) -> None:
-        resp = await engine.execute(q(dimensions=["id"], distinct_dimension_values=False, order=[
-            {"field": "discount * 2", "direction": direction, "nulls": nulls}, {"field": "id"}]))
+        resp = await engine.execute(q(dimensions=["orders.id"], distinct_dimension_values=False, order=[
+            {"field": "orders.discount * 2", "direction": direction, "nulls": nulls}, {"field": "orders.id"}]))
         assert ordered_ids(resp) == DISCOUNT_ORDER[(direction, nulls)]
 
     async def test_hidden_value_is_not_returned(self, engine: SlayerQueryEngine) -> None:
@@ -82,19 +82,19 @@ class TestExecutedPlacement:
         assert resp.columns == ["orders.city"]
 
     async def test_stage_rewrite_keeps_the_policy(self, engine: SlayerQueryEngine) -> None:
-        inner = SlayerQuery.model_validate({"name": "by_city", "population": "orders", "dimensions": ["city"],
-                                            "metrics": [{"metric": "max(discount)", "alias": "md"}]})
-        outer = SlayerQuery.model_validate({"population": "by_city", "dimensions": ["city"],
-                                            "metrics": [{"metric": "max(md)", "alias": "v"}],
+        inner = SlayerQuery.model_validate({"name": "by_city", "population": "orders", "dimensions": ["orders.city"],
+                                            "metrics": [{"metric": "max(orders.discount)", "alias": "md"}]})
+        outer = SlayerQuery.model_validate({"population": "by_city", "dimensions": ["by_city.city"],
+                                            "metrics": [{"metric": "max(by_city.md)", "alias": "v"}],
                                             "order": [{"field": "v", "direction": "asc", "nulls": "first"},
-                                                      {"field": "city"}]})
+                                                      {"field": "by_city.city"}]})
         resp = await engine.execute([inner, outer])
         assert [r["by_city.city"] for r in resp.data] == CITY_ORDER[("asc", "first")]
 
     async def test_refinement_keeps_the_policy(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(query=discount_rows_query(direction="desc", nulls="first"),
                                              name="discount_rows")
-        resp = await engine.execute("discount_rows", refine={"filter": ["id <> 2"]})
+        resp = await engine.execute("discount_rows", refine={"filter": ["orders.id <> 2"]})
         id_key = next(c for c in resp.columns if c.endswith(".id"))
         assert [int(r[id_key]) for r in resp.data] == [1, 4, 5, 3]
 
@@ -126,7 +126,7 @@ class TestEmission:
         keys = [t.this.find(exp.Is) for t in tree.args["order"].expressions if t.this.find(exp.Is) is not None]
         assert keys, sql
         assert all(isinstance(k.this, exp.Column) and k.this.name in inner for k in keys), sql
-        same_level = await emit(q(dimensions=["city"], metrics=[{"metric": "max(discount)", "alias": "d"}],
+        same_level = await emit(q(dimensions=["orders.city"], metrics=[{"metric": "max(orders.discount)", "alias": "d"}],
                                   order=[{"field": "d", "direction": "asc", "nulls": "last"}]), dialect="tsql")
         keys = [t.this.find(exp.Is) for t in _null_policy_terms(same_level, dialect="tsql")
                 if t.this.find(exp.Is) is not None]
@@ -135,6 +135,6 @@ class TestEmission:
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite"])
     async def test_no_policy_keeps_nulls_last(self, dialect: str) -> None:
-        sql = await emit(q(dimensions=["id"], distinct_dimension_values=False,
-                           order=[{"field": "discount", "direction": "desc"}]), dialect=dialect)
+        sql = await emit(q(dimensions=["orders.id"], distinct_dimension_values=False,
+                           order=[{"field": "orders.discount", "direction": "desc"}]), dialect=dialect)
         assert "NULLS FIRST" not in sql.upper(), sql

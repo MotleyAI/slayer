@@ -1,6 +1,6 @@
-"""Shared fixtures for DEV-1935 — boolean-total semi-join pushdown: the DEV-1900
+"""Shared fixtures for boolean-total semi-join pushdown: the ``_dev1900_fixtures``
 graph and dual-engine dataset (rows documented in ``tests/_dev1840_fixtures.py``)
-plus three model variants (named reverse edge, unproven plans hop, event-less
+plus three dataset variants (named reverse edge, unproven plans hop, event-less
 region mini-graph)."""
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import AsyncIterator, List
 import pytest
 
 from slayer.core.enums import DataType, RelationshipCardinality, JoinType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -36,31 +37,31 @@ from tests._dev1900_fixtures import (
 # Filter predicates (spelled once).
 # --------------------------------------------------------------------------- #
 #: A root-local ref (tier) mixed with a cross-path ref (orders.status) under OR.
-OR_MIX_LOCAL = "tier = 'bronze' or orders.status = 'ok'"
+OR_MIX_LOCAL = "customers.tier = 'bronze' or orders.status = 'ok'"
 #: Same shape, but the local leg keeps a gold customer with no orders (c7) alive.
-GOLD_OR_OK = "tier = 'gold' or orders.status = 'ok'"
+GOLD_OR_OK = "customers.tier = 'gold' or orders.status = 'ok'"
 #: Negation over a local-and-crosspath conjunction — existential reading.
-NOT_GOLD_AND_OK = "not (tier = 'gold' and orders.status = 'ok')"
-#: A null-test on a related column reads as absence (no orders).
+NOT_GOLD_AND_OK = "not (customers.tier = 'gold' and orders.status = 'ok')"
+#: A null-test on a related field reads as absence (no orders).
 NO_ORDERS = "orders.id is null"
 #: Two independent fanning branches under OR (orders, regions.region_events).
 NEW_OR_EVENT = "orders.status = 'new' or regions.region_events.value >= 50"
-#: A single atom comparing columns of two branches -> judged on their product.
+#: A single atom comparing fields of two branches -> judged on their product.
 ATOM_TWO_BRANCH = "orders.amount < regions.region_events.value"
 #: A materialised branch (orders.id dimension) OR a to-one branch (regions.name).
 MATERIALISED_OR = "orders.status = 'ok' or regions.name = 'South'"
 #: A materialised fanning branch (orders.id dimension) OR an unmaterialised one.
 REDUCED_PUSH_OR = "orders.status = 'ok' or regions.region_events.value >= 50"
 #: Two spellings of the customers->orders edge sharing one related row.
-TWO_SPELLINGS = ["purchases.status = 'ok'", "orders.channel = 'app'"]
+TWO_SPELLINGS = ["customers.purchases.status = 'ok'", "orders.channel = 'app'"]
 #: Producer-side (orders-rooted) mixed OR that stays dropped-and-warned today.
-OR_MIX_PRODUCER = "customers.tier = 'bronze' OR channel = 'app'"
+OR_MIX_PRODUCER = "customers.tier = 'bronze' OR orders.channel = 'app'"
 #: Association-arm mixed OR (orders-rooted, associate mode).
-ASSOC_OR = "customers.tier = 'gold' OR channel = 'app'"
+ASSOC_OR = "customers.tier = 'gold' OR orders.channel = 'app'"
 #: Association-arm mixed OR whose second leg crosses an unproven plans hop.
 ASSOC_OR_ABSENT = "customers.tier = 'gold' OR customers.plans.level = 'basic'"
 
-# Oracles — hand-computed from the DEV-1840/1900 dataset.
+# Oracles — hand-computed from the ``_dev1840``/``_dev1900`` fixtures' dataset.
 #: bronze {c4} OR >=1 ok order {c1,c2,c3,c5,c6} = {c1..c6} spend 460 (never 560).
 OR_MIX_SPEND = 460.0
 OR_MIX_SPEND_FAN_DEFECT = 560.0
@@ -111,12 +112,12 @@ EVENTLESS_COALESCE_LT40 = 170.0
 
 
 # --------------------------------------------------------------------------- #
-# Model variants.
+# Dataset variants.
 # --------------------------------------------------------------------------- #
 def two_spellings_datasets() -> List[SlayerDataset]:
-    """DEV-1840 graph with the single ``customers -> orders`` edge NAMED
+    """``_dev1840_fixtures`` graph with the single ``customers -> orders`` edge NAMED
     ``purchases`` (1:N). ``purchases.status`` (edge name) and ``orders.channel``
-    (target model) then name one physical edge two ways."""
+    (target dataset) then name one physical edge two ways."""
     models = dev1840_datasets(declare_reverse=True)
     cust = next(m for m in models if m.name == "customers")
     for join in cust.relationships:
@@ -126,14 +127,14 @@ def two_spellings_datasets() -> List[SlayerDataset]:
 
 
 def unproven_plans_datasets() -> List[SlayerDataset]:
-    """DEV-1900 graph with the ``customers -> plans`` hop unproven (plans.code not
+    """``_dev1900_fixtures`` graph with the ``customers -> plans`` hop unproven (plans.code not
     a PK), so a ``customers.plans.level`` filter must restrict by semi-join."""
     models = dev1900_datasets()
     return [plans_dataset(strong=False) if m.name == "plans" else m for m in models]
 
 
 def disconnected_dataset_datasets() -> List[SlayerDataset]:
-    """DEV-1900 graph plus a standalone ``promos`` model with no join path from any
+    """``_dev1900_fixtures`` graph plus a standalone ``promos`` dataset with no relationship path from any
     root — a genuinely unreachable filter reference (``promos.discount``) is
     refused at resolution with a typed error in every mode (D12)."""
     models = dev1900_datasets()
@@ -152,7 +153,7 @@ def event_less_datasets(
     """A self-contained ``customers -> regions -> region_events`` graph. The
     fanning ``regions -> region_events`` hop is LEFT by default; ``inner_events``
     declares it INNER, so an event-less region contributes no product row;
-    ``derived_events`` adds one derived event column per Mode-A fragment shape."""
+    ``derived_events`` adds one derived event field per Mode-A fragment shape."""
     events_join = DatasetRelationship(
         to="region_events", from_columns=["id"], to_columns=["region_id"],
         cardinality=RelationshipCardinality.ONE_TO_MANY,
@@ -175,7 +176,7 @@ def event_less_datasets(
     event_joins: List[DatasetRelationship] = []
     extra_models: List[SlayerDataset] = []
     if derived_events:
-        # A to-one LEFT hop for a Column.filter to cross: the filter's OR leg
+        # A to-one LEFT hop for a DatasetField.filter to cross: the filter's OR leg
         # holds when event_kinds is absent, so the masked value stays non-NULL.
         event_columns.append(DatasetField(name="kind_id", datatype=DataType.INTEGER))
         event_joins.append(
@@ -188,25 +189,25 @@ def event_less_datasets(
             ],
         ))
         event_columns.append(DatasetField(
-            name="value_if_kind", datatype=DataType.FLOAT, sql="value",
+            name="value_if_kind", datatype=DataType.FLOAT, expression="value",
             filter="event_kinds.label = 'x' OR value >= 0"))
     if derived_events:
         event_columns += [
-            DatasetField(name="value_bare", datatype=DataType.FLOAT, sql="value"),
-            DatasetField(name="value_x2", datatype=DataType.FLOAT, sql="value * 2"),
-            DatasetField(name="value_x2_x2", datatype=DataType.FLOAT, sql="value_x2 * 2"),
+            DatasetField(name="value_bare", datatype=DataType.FLOAT, expression="value"),
+            DatasetField(name="value_x2", datatype=DataType.FLOAT, expression="value * 2"),
+            DatasetField(name="value_x2_x2", datatype=DataType.FLOAT, expression="region_events.value_x2 * 2"),
             DatasetField(name="value_or_zero", datatype=DataType.FLOAT,
-                   sql="COALESCE(value, 0)"),
+                   expression="COALESCE(value, 0)"),
             DatasetField(name="value_or_zero_x2", datatype=DataType.FLOAT,
-                   sql="value_or_zero * 2"),
-            DatasetField(name="one", datatype=DataType.INTEGER, sql="1"),
-            DatasetField(name="in_empty", datatype=DataType.BOOLEAN, sql="value IN ()"),
+                   expression="region_events.value_or_zero * 2"),
+            DatasetField(name="one", datatype=DataType.INTEGER, expression="1"),
+            DatasetField(name="in_empty", datatype=DataType.BOOLEAN, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="value IN ()") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])),
             DatasetField(name="col_in_list", datatype=DataType.BOOLEAN,
-                   sql="value IN (30, 50)"),
+                   expression="value IN (30, 50)"),
             DatasetField(name="lit_in_list", datatype=DataType.BOOLEAN,
-                   sql="1 IN (value, 1)"),
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="1 IN (value, 1)") for d in ("BIGQUERY", "DUCKDB", "MYSQL", "POSTGRES", "SNOWFLAKE", "SQLITE", "TSQL")])),
             DatasetField(name="lit_between", datatype=DataType.BOOLEAN,
-                   sql="1 BETWEEN value AND 0"),
+                   expression="1 BETWEEN value AND 0"),
         ]
     region_events = SlayerDataset(
         name="region_events", data_source="test", sql_table="region_events",

@@ -1,10 +1,13 @@
 # Relationships and the population
 
-Never write joins. Reference a joined dataset's field by dotted path
-(`customers.regions.name`) in any expression position; the engine finds the route
-over the declared relationships, in either direction. A short path (`regions.name`) works when
-exactly one route exists; an ambiguous route errors naming the candidates, so write
-the longer path. Result keys carry the full routed path.
+Never write joins. Every reference starts at a dataset (`regions.name`,
+`customers.regions.name`) in any expression position; the engine reaches that dataset
+from the dataset reading it (an aggregation's own dataset for its dimensions and filters,
+else the population) over the declared relationships, in either direction: by its only
+to-one path, else its only route. Two to-one paths, or several routes and none to-one,
+error naming each explicit path (`orders.customers.regions.name`): write one of them.
+A relationship name never starts a reference; a role is a route from its dataset
+(`orders.buyer.name`). Result keys are the reference as written, never the population.
 
 ## Choosing the root
 
@@ -12,8 +15,12 @@ the longer path. Result keys carry the full routed path.
 condition removes it. Rooted at `orders` and enriched from `customers`, customers
 without orders are absent; rooted at `customers` they appear with counts of 0 and
 other aggregates NULL. When the question lists entities ("every region", "all
-customers"), root the query at that dataset. Omit `population` to let the engine pick
-the smallest dataset determining the dimensions (the choice is reported).
+customers"), root the query at that dataset. Omit `population` and the rows are every
+dimension combination some metric's rows reach — the dimension values alone with no
+metrics, one row with no dimensions (reported back). A metric that cannot reach every
+dimension adds the combinations of the smallest dataset determining them all; dimensions
+with no join path between them combine as a product, and a tie between two such datasets
+is refused (name `population`).
 `recommend_population` proposes a root for a list of `dataset.field` items.
 
 ## Aggregating joined fields
@@ -24,13 +31,13 @@ Each aggregation runs over its own dataset's rows exactly once, whatever the roo
 a dimension it cannot be attributed to (an order's status for customer credit),
 `to_many_handling` decides:
 
-- omitted (default): each row gets the aggregate over the entities associated with
-  it (the credit of the customers having orders in that status), with an
-  `associated` warning; `window=` and `first`/`last` repeat the total instead, with
-  a `broadcast` warning naming why;
-- `associate`: the same, but refuses `window=` and `first`/`last`;
-- `broadcast`: the total repeats on every row, with a warning;
+- omitted (default) or `associate`: each row gets the aggregate over the entities
+  associated with it (the credit of the customers having orders in that status), with
+  an `associated` warning;
 - `error`: the query is refused.
+
+To repeat the total on every row instead, give the aggregate a coarser grain:
+`sum(customers.credit, partition_by=[])`.
 
 ## Patterns
 
@@ -40,13 +47,13 @@ a dimension it cannot be attributed to (an order's status for customer credit),
   `{"metric": "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))",
   "alias": "orders_2025"}`; NULL where a region has no orders, so add a `count(...)`
   beside it when a 0 matters.
-- A list field `tags` is a child with one row per element, `tags.value`: the condition
-  `tags.value = 'x'` keeps the rows having element x; `tags.value` as a dimension with
-  `associate` counts the rows per element. Every `tags.value` condition reads the same
-  element, so `tags.value = 'x'` with `tags.value = 'y'` matches nothing: write
-  `contains_all(tags, ['x', 'y'])`; `not contains(tags, 'x')` keeps the rows without x.
+- A list field `orders.tags` is a child with one row per element, `orders.tags.value`: the
+  condition `orders.tags.value = 'x'` keeps the rows having element x; it as a dimension with
+  `associate` counts the rows per element. Every `orders.tags.value` condition reads the same
+  element, so `= 'x'` with `= 'y'` matches nothing: write
+  `contains_all(orders.tags, ['x', 'y'])`; `not contains(orders.tags, 'x')` keeps the rows without x.
 - A per-query field: an expression where it is used, e.g. the computed dimension
-  `{"field": "amount > 100", "alias": "is_big"}`. A per-query relationship, on any dataset the
+  `{"field": "orders.amount > 100", "alias": "is_big"}`. A per-query relationship, on any dataset the
   query reads: `extensions: [{"dataset": "orders", "relationships": [...]}]`; repeating a stored
   relationship's `from_columns` / `to_columns` reuses that edge, and `"join_type": "inner"` keeps only the rows with
   a match.

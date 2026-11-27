@@ -30,44 +30,44 @@ WORKING_PREFIXES = ("local/", "cross_model/")
 def _cases() -> dict:
     return {
         "local/single_key": _q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
-                {"metric": "sum(amount)", "alias": "city_rev"},
-                {"metric": "sum(amount, partition_by=region)", "alias": "region_rev"},
+                {"metric": "sum(orders.amount)", "alias": "city_rev"},
+                {"metric": "sum(orders.amount, partition_by=orders.region)", "alias": "region_rev"},
             ],
         ),
         "local/grand_total": _q(
-            dimensions=["region", "city"],
-            metrics=[{"metric": "sum(amount, partition_by=[])", "alias": "g"}],
+            dimensions=["orders.region", "orders.city"],
+            metrics=[{"metric": "sum(orders.amount, partition_by=[])", "alias": "g"}],
         ),
         "local/multi_key": _q(
-            dimensions=["region", "channel", "city"],
+            dimensions=["orders.region", "orders.channel", "orders.city"],
             metrics=[
-                {"metric": "sum(amount, partition_by=[region, channel])", "alias": "rc"},
+                {"metric": "sum(orders.amount, partition_by=[orders.region, orders.channel])", "alias": "rc"},
             ],
         ),
         "local/share_composite": _q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
-                {"metric": "sum(amount) / sum(amount, partition_by=region)", "alias": "sh"},
+                {"metric": "sum(orders.amount) / sum(orders.amount, partition_by=orders.region)", "alias": "sh"},
             ],
         ),
         "local/filtered": _q(
-            dimensions=["region", "city"],
-            metrics=[{"metric": "sum(ok_amount, partition_by=region)", "alias": "o"}],
+            dimensions=["orders.region", "orders.city"],
+            metrics=[{"metric": "sum(orders.ok_amount, partition_by=orders.region)", "alias": "o"}],
         ),
         "local/star_count": _q(
-            dimensions=["region", "city"],
-            metrics=[{"metric": "count(*, partition_by=region)", "alias": "n"}],
+            dimensions=["orders.region", "orders.city"],
+            metrics=[{"metric": "count(orders.*, partition_by=orders.region)", "alias": "n"}],
         ),
         "local/time_dim": _q(
-            dimensions=["region"], time_dimensions=month_td(),
-            metrics=[{"metric": "sum(amount, partition_by=ordered_at)", "alias": "m"}],
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            metrics=[{"metric": "sum(orders.amount, partition_by=orders.ordered_at)", "alias": "m"}],
         ),
         "local/full_grain_degenerate": _q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
-                {"metric": "sum(amount, partition_by=[region, city])", "alias": "d"},
+                {"metric": "sum(orders.amount, partition_by=[orders.region, orders.city])", "alias": "d"},
             ],
         ),
         "cross_model/grand_total": _q(
@@ -90,8 +90,8 @@ def _cases() -> dict:
             ],
         ),
         "guard/non_dimension": _q(
-            dimensions=["region"],
-            metrics=[{"metric": "sum(amount, partition_by=city)", "alias": "x"}],
+            dimensions=["orders.region"],
+            metrics=[{"metric": "sum(orders.amount, partition_by=orders.city)", "alias": "x"}],
         ),
         # guard/first, guard/last, guard/nested_transform, guard/in_filter,
         # guard/window_plus_partition removed — these LOCAL shapes are lifted;
@@ -100,9 +100,9 @@ def _cases() -> dict:
         # lift/cumsum_partitioned, lift/filter_partitioned, lift/window_partition).
         "guard/cross_model_outside_grain": _q(
             to_many_handling="broadcast",
-            dimensions=["region", "customers.tier"],
+            dimensions=["orders.region", "customers.tier"],
             metrics=[
-                {"metric": "sum(customers.spend, partition_by=region)", "alias": "x"},
+                {"metric": "sum(customers.spend, partition_by=orders.region)", "alias": "x"},
             ],
         ),
     }

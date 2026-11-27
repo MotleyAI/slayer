@@ -1,13 +1,13 @@
-"""Stage 2 (DEV-1450) — typed scope and stage-schema types (P5, P6).
+"""Typed scope and stage-schema types (P5, P6).
 
-``ModelScope`` is the scope kind used while binding refs against a model
-with joins; dotted refs walk the join graph. ``StageSchema`` is the
+``DatasetScope`` is the scope kind used while binding refs against a dataset
+with relationships; dotted refs walk the relationship graph. ``StageSchema`` is the
 typed projection of a query stage — downstream stages bind against it
-as a *flat* namespace (P5: no join syntax through StageSchema).
+as a *flat* namespace (P5: no relationship syntax through StageSchema).
 
-Per I2, ``ModelScope.population`` is ``Optional`` from day one so a
-future anchor-less mode is a type-additive change. DEV-1450's binder
-will assert ``source_model is not None`` at use sites.
+Per I2, ``DatasetScope.population`` is ``Optional`` from day one so a
+future anchor-less mode is a type-additive change. The binder asserts
+``source_model is not None`` at use sites.
 """
 
 from __future__ import annotations
@@ -39,12 +39,12 @@ def _orders_dataset() -> SlayerDataset:
 
 class TestStageColumn:
     def test_minimal(self):
-        c = StageField(name="rev", sql_alias="rev")
+        c = StageField(name="rev", sql_alias="rev", datatype=DataType.FLOAT)
         assert c.name == "rev"
         assert c.sql_alias == "rev"
         assert c.public_alias is None
         assert c.hidden is False
-        assert c.datatype is None
+        assert c.datatype is DataType.FLOAT
 
     def test_full_fields(self):
         c = StageField(
@@ -65,18 +65,18 @@ class TestStageColumn:
         assert c.meta == {"source": "fk"}
 
     def test_hidden_slot(self):
-        c = StageField(name="_h_revenue_sum", sql_alias="_h_revenue_sum", hidden=True)
+        c = StageField(name="_h_revenue_sum", sql_alias="_h_revenue_sum", hidden=True, datatype=DataType.FLOAT)
         assert c.hidden is True
         assert c.public_alias is None
 
     def test_frozen(self):
-        c = StageField(name="x", sql_alias="x")
+        c = StageField(name="x", sql_alias="x", datatype=DataType.FLOAT)
         with pytest.raises((TypeError, ValueError)):
             c.name = "y"  # type: ignore[misc]
 
     def test_value_equality(self):
-        a = StageField(name="x", sql_alias="x", public_alias="x")
-        b = StageField(name="x", sql_alias="x", public_alias="x")
+        a = StageField(name="x", sql_alias="x", public_alias="x", datatype=DataType.FLOAT)
+        b = StageField(name="x", sql_alias="x", public_alias="x", datatype=DataType.FLOAT)
         assert a == b
 
 
@@ -90,8 +90,8 @@ class TestStageSchema:
         s = StageSchema(
             relation_name="stage_1",
             fields=[
-                StageField(name="rev", sql_alias="rev"),
-                StageField(name="region", sql_alias="region"),
+                StageField(name="rev", sql_alias="rev", datatype=DataType.FLOAT),
+                StageField(name="region", sql_alias="region", datatype=DataType.STRING),
             ],
         )
         assert s["rev"].sql_alias == "rev"
@@ -105,7 +105,7 @@ class TestStageSchema:
     def test_contains(self):
         s = StageSchema(
             relation_name="s",
-            fields=[StageField(name="rev", sql_alias="rev")],
+            fields=[StageField(name="rev", sql_alias="rev", datatype=DataType.FLOAT)],
         )
         assert "rev" in s
         assert "absent" not in s
@@ -113,7 +113,7 @@ class TestStageSchema:
     def test_get_returns_none(self):
         s = StageSchema(
             relation_name="s",
-            fields=[StageField(name="rev", sql_alias="rev")],
+            fields=[StageField(name="rev", sql_alias="rev", datatype=DataType.FLOAT)],
         )
         assert s.get("rev") is not None
         assert s.get("absent") is None
@@ -122,8 +122,8 @@ class TestStageSchema:
         s = StageSchema(
             relation_name="s",
             fields=[
-                StageField(name="rev", sql_alias="rev", public_alias="rev"),
-                StageField(name="_h_extra", sql_alias="_h_extra", hidden=True),
+                StageField(name="rev", sql_alias="rev", public_alias="rev", datatype=DataType.FLOAT),
+                StageField(name="_h_extra", sql_alias="_h_extra", hidden=True, datatype=DataType.FLOAT),
             ],
         )
         # Hidden slot is bindable (still in the schema), but has no public_alias.
@@ -133,13 +133,14 @@ class TestStageSchema:
 
     def test_flat_namespace_dunder_names_ok(self):
         # P5: __-bearing identifiers are FLAT names in StageSchema scope —
-        # they're not interpreted as join-path aliases here.
+        # they're not interpreted as relationship-path aliases here.
         s = StageSchema(
             relation_name="s",
             fields=[StageField(
                 name="robot_details__modelseriesval",
                 sql_alias="robot_details__modelseriesval",
                 public_alias="robot_details__modelseriesval",
+                datatype=DataType.STRING,
             )],
         )
         assert "robot_details__modelseriesval" in s
@@ -147,7 +148,7 @@ class TestStageSchema:
 
 
 # ---------------------------------------------------------------------------
-# ModelScope
+# DatasetScope
 # ---------------------------------------------------------------------------
 
 

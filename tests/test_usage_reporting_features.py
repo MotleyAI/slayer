@@ -28,7 +28,7 @@ from tests._usage_reporting_helpers import (
     usage,
 )
 
-_PLAIN = {"population": "orders", "metrics": ["sum(amount)"]}
+_PLAIN = {"population": "orders", "metrics": ["sum(orders.amount)"]}
 _FLAGS = (
     "multistage", "inline_source", "time_dimensions", "filters",
     "computed_dimensions", "saved_query", "to_many_handling",
@@ -59,16 +59,16 @@ def test_plain_query_sets_no_flag(store: str) -> None:
     (AVG_CUSTOMER_REVENUE, "multistage"),
     ({"population": "orders",
       "extensions": [{"dataset": "orders", "metrics": [{"name": "double_total", "expression": "sum(amount * 2)"}]}],
-      "metrics": ["double_total"]}, "inline_source"),
+      "metrics": ["orders.double_total"]}, "inline_source"),
     ({"population": "orders",
       "extensions": [{"dataset": "orders",
                       "relationships": [{"to": "revenue_by_status", "from_columns": ["region"], "to_columns": ["region"]}]}],
-      "dimensions": ["revenue_by_status.revenue"], "metrics": ["sum(amount)"]}, "inline_source"),
+      "dimensions": ["revenue_by_status.revenue"], "metrics": ["sum(orders.amount)"]}, "inline_source"),
     ({**_PLAIN, "time_dimensions": [MONTH_TD]}, "time_dimensions"),
-    ({**_PLAIN, "filter": ["status = 'paid'"]}, "filters"),
-    ({**_PLAIN, "dimensions": [{"field": "amount > 50", "alias": "big"}]}, "computed_dimensions"),
+    ({**_PLAIN, "filter": ["orders.status = 'paid'"]}, "filters"),
+    ({**_PLAIN, "dimensions": [{"field": "orders.amount > 50", "alias": "big"}]}, "computed_dimensions"),
     ("monthly_revenue", "saved_query"),
-    ({**_PLAIN, "dimensions": ["region"], "to_many_handling": "associate"}, "to_many_handling"),
+    ({**_PLAIN, "dimensions": ["orders.region"], "to_many_handling": "associate"}, "to_many_handling"),
 ])
 def test_structural_flag_counted_once(store: str, query: Any, flag: str) -> None:
     assert _run_query(store, query)["features"]["flags"][flag] == 1
@@ -76,9 +76,9 @@ def test_structural_flag_counted_once(store: str, query: Any, flag: str) -> None
 
 def test_three_stage_list_counts_multistage_once(store: str) -> None:
     stages = [
-        {"name": "s1", "population": "orders", "dimensions": ["customer_id"], "metrics": [{"metric": "sum(amount)", "alias": "rev"}]},
-        {"name": "s2", "population": "s1", "dimensions": ["customer_id"], "metrics": [{"metric": "max(rev)", "alias": "top"}]},
-        {"population": "s2", "metrics": ["avg(top)"]},
+        {"name": "s1", "population": "orders", "dimensions": ["orders.customer_id"], "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]},
+        {"name": "s2", "population": "s1", "dimensions": ["s1.customer_id"], "metrics": [{"metric": "max(s1.rev)", "alias": "top"}]},
+        {"population": "s2", "metrics": ["avg(s2.top)"]},
     ]
     features = _run_query(store, stages)["features"]
     assert features["flags"]["multistage"] == 1
@@ -94,7 +94,7 @@ def test_builtin_names_counted_by_name_and_custom_as_custom(store: str) -> None:
     features = _run_query(store, {
         "population": "orders",
         "time_dimensions": [MONTH_TD],
-        "metrics": ["time_shift(sum(amount), -1)", "dsum(amount)"],
+        "metrics": ["time_shift(sum(orders.amount), -1)", "dsum(orders.amount)"],
     })["features"]
     assert features["transforms"]["time_shift"] == 1
     assert features["aggregations"]["sum"] == 1
@@ -103,7 +103,7 @@ def test_builtin_names_counted_by_name_and_custom_as_custom(store: str) -> None:
 
 
 def test_features_counted_per_attempt_even_on_failure(store: str) -> None:
-    report = _run_query(store, {"population": "orders", "metrics": ["sum(no_such_column)"]})
+    report = _run_query(store, {"population": "orders", "metrics": ["sum(orders.no_such_field)"]})
     assert report["features"]["aggregations"]["sum"] == 1
     assert usage(report, "cli:query")["ok"] == 0
 
@@ -157,7 +157,7 @@ def test_demo_datasource_in_use(usage_reporting_env) -> None:
     cli(["datasources", "--storage", store, "list"])
     assert show()["context"]["demo"] == 0
     cli(["datasources", "--storage", store, "create", "demo", "--years", "1", "--ingest", "-y"])
-    cli(["query", json.dumps({"population": "orders", "metrics": ["count(*)"]}), "--storage", store])
+    cli(["query", json.dumps({"population": "orders", "metrics": ["count(orders.*)"]}), "--storage", store])
     assert show()["context"]["demo"] >= 1
 
 

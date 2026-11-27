@@ -1,0 +1,10 @@
+document:
+  ontology:
+  - concept: SocialSecurityNr
+    type: ValueType
+    extends:
+    - Integer
+    requires:
+    - 0 < SocialSecurityNr
+    - SocialSecurityNr <= 999999999
+files: {}

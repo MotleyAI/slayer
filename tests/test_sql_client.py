@@ -624,7 +624,7 @@ class TestClassifyModelSql:
     @pytest.mark.parametrize("sql", ["SELECT (((", "totally not sql", ""])
     def test_unparseable(self, sql: str) -> None:
         # Unparseable SQL is rejected without a DB call — the generator can't
-        # parse it either, so the model would be non-functional anyway.
+        # parse it either, so the dataset would be non-functional anyway.
         assert classify_dataset_sql(sql, dialect="postgres") == "unparseable"
 
 

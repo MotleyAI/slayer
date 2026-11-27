@@ -17,7 +17,7 @@ already-encoded quantities by name rather than re-deriving them. Pin explicitly 
 than guessing: which aggregation ("typical" is not automatically avg vs median), the
 grouping field and raw vs standardized labels, each aggregate's scope (all rows vs a
 filtered subset), sort field + direction + tie-break, NULL handling, units and
-rounding, exact numeric constants. "How many" is a scalar `count(*)`; "which / list /
+rounding, exact numeric constants. "How many" is a scalar `count(<dataset>.*)`; "which / list /
 show" is the rows.
 
 ## Filter literals
@@ -27,7 +27,7 @@ sampled values (inspect it with `compact=false`), never a guessed spelling; samp
 so verify a needed literal that is absent (e.g. a distinct-values query) rather than
 assume.
 Compare case- and whitespace-insensitively (`trim(name) ILIKE 'al%'`) in the condition only, never on a projected,
-grouped or join-key field. Apply only the transformations (TRIM / ROUND / CAST /
+grouped or relationship-key field. Apply only the transformations (TRIM / ROUND / CAST /
 dedup) the question or a governing definition requires.
 
 ## Building and verifying
@@ -51,11 +51,12 @@ it rather than editing the stored dataset; persist reusable shapes with `create_
 | Fragment | Check |
 |---|---|
 | "not found" on a metric/field | `inspect` the dataset — spelling, or on a joined dataset? |
+| "unknown metric" on a bare name | start it at its dataset: `orders.amount` |
 | "not allowed on" | the field's `allowed_aggregations` whitelist |
 | "Unresolvable" / "ambiguous" path | missing relationship, or write the full path |
 | "Time dimension required" | add `time_dimensions` or set `main_time_dimension` |
 | "matches a source field" | rename the metric as the suggestion says |
-| "is a list" | group, compare or aggregate its elements (`tags.value`), or test `contains(tags, x)` |
+| "is a list" | group, compare or aggregate its elements (`orders.tags.value`), or test `contains(orders.tags, x)` |
 | database connection errors | `describe_datasource(name=...)` runs a live check |
 
 ## Connecting a database

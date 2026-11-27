@@ -1,0 +1,170 @@
+version: 30
+name: orders
+sql_table: orders
+source_kind: table
+query_variables: {}
+data_source: jaffle_shop
+fields:
+- name: id
+  expression: id
+  datatype: String
+  primary_key: true
+  unique: false
+  label: Order ID
+  hidden: false
+- name: customer_id
+  expression: customer_id
+  datatype: String
+  primary_key: false
+  unique: false
+  description: Customer who placed the order.
+  label: Customer ID
+  hidden: false
+- name: ordered_at
+  expression: ordered_at
+  datatype: Date
+  primary_key: false
+  unique: false
+  description: When the order was placed.
+  label: Order Date
+  hidden: false
+- name: store_id
+  expression: store_id
+  datatype: String
+  primary_key: false
+  unique: false
+  description: Store where the order was placed.
+  label: Store ID
+  hidden: false
+- name: subtotal
+  expression: subtotal
+  datatype: Decimal
+  db_type: DECIMAL(12,2)
+  primary_key: false
+  unique: false
+  description: Pre-tax order amount, in dollars.
+  label: Net Sales
+  hidden: false
+  format:
+    type: currency
+    precision: 2
+    symbol: $
+- name: tax_paid
+  expression: tax_paid
+  datatype: Decimal
+  db_type: DECIMAL(12,2)
+  primary_key: false
+  unique: false
+  description: Tax charged on the order, in dollars.
+  label: Tax Paid
+  hidden: false
+  format:
+    type: currency
+    precision: 2
+    symbol: $
+- name: order_total
+  expression: order_total
+  datatype: Decimal
+  db_type: DECIMAL(12,2)
+  primary_key: false
+  unique: false
+  description: Final order amount including tax, in dollars.
+  label: Order Total
+  hidden: false
+  format:
+    type: currency
+    precision: 2
+    symbol: $
+- name: status
+  expression: status
+  datatype: String
+  primary_key: false
+  unique: false
+  description: 'Order status: completed, refunded or cancelled. Refunded and cancelled
+    orders keep their order_total.'
+  label: Status
+  hidden: false
+- name: item_skus
+  expression: item_skus
+  datatype: Array
+  element_type: String
+  db_type: VARCHAR[]
+  primary_key: false
+  unique: false
+  description: The SKU of each item on the order, one entry per unit (repeats kept).
+  label: Item SKUs
+  hidden: false
+metrics:
+- expression: sum(order_total)
+  name: total_revenue
+  label: Total Revenue
+  description: Gross sales including tax, in dollars.
+  datatype: Float
+- expression: sum(subtotal)
+  name: net_sales
+  label: Net Sales (pre-tax)
+  description: Sales before tax, in dollars.
+  datatype: Float
+- expression: sum(tax_paid)
+  name: tax_collected
+  label: Tax Collected
+  description: Total tax collected, in dollars.
+  datatype: Float
+- expression: count(id)
+  name: order_count
+  label: Orders
+  description: Number of orders.
+  datatype: Integer
+- expression: count_distinct(customer_id)
+  name: unique_customers
+  label: Unique Customers
+  description: Distinct customers who ordered.
+  datatype: Integer
+- expression: sum(order_total) / nullif(count(id), 0)
+  name: avg_order_value
+  label: Average Order Value
+  description: Revenue per order, in dollars.
+  datatype: Float
+- expression: sum(tax_paid) / nullif(sum(subtotal), 0)
+  name: effective_tax_rate
+  label: Effective Tax Rate
+  description: Tax collected as a share of net sales.
+  datatype: Float
+- expression: weighted_avg(order_total)
+  name: sales_weighted_aov
+  label: Sales-Weighted Avg Order
+  description: Average order total weighted by subtotal (larger orders weigh more),
+    in dollars.
+  datatype: Float
+aggregations:
+- name: weighted_avg
+  params:
+  - name: weight
+    sql: subtotal
+  description: Weighted average defaulting the weight to order subtotal.
+relationships:
+- to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - id
+  join_type: left
+  cardinality: many_to_one
+  trusted: true
+- to: stores
+  from_columns:
+  - store_id
+  to_columns:
+  - id
+  join_type: left
+  cardinality: many_to_one
+  trusted: true
+enforced_keys:
+- - id
+filters: []
+default_time_dimension: ordered_at
+description: "Customer orders \u2014 one row per order. Monetary amounts are in dollars.\
+  \ The fact table at the center of the demo: has relationships to customers and stores,\
+  \ and is referenced by items."
+hidden: false
+access_tags: []

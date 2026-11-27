@@ -10,33 +10,33 @@ async def exec_engine(tmp_path):
     return await fx.build_exec_engine(tmp_path)
 
 
-def _month_query(order_column: str, direction: str = "desc") -> SlayerQuery:
+def _month_query(order_field: str, direction: str = "desc") -> SlayerQuery:
     return fx.q(
         population="orders",
-        time_dimensions=[{"field": "created_at", "granularity": "month"}],
-        metrics=[{"metric": "sum(amount)"}],
-        order=[{"field": order_column, "direction": direction}],
+        time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
+        metrics=[{"metric": "sum(orders.amount)"}],
+        order=[{"field": order_field, "direction": direction}],
     )
 
 
 class TestOrderByProjectedBucket:
     async def test_functional_order_matches_column_name_order(self, exec_engine) -> None:
-        by_functional = await exec_engine.execute(_month_query("date_trunc('month', created_at)"))
-        by_column = await exec_engine.execute(_month_query("created_at"))
+        by_functional = await exec_engine.execute(_month_query("date_trunc('month', orders.created_at)"))
+        by_column = await exec_engine.execute(_month_query("orders.created_at"))
         assert by_functional.data == by_column.data
         assert [r["orders.created_at"] for r in by_functional.data] == [
-            "2025-03-01", "2024-02-01", "2024-01-01",
+            "2025-03-01 00:00:00", "2024-02-01 00:00:00", "2024-01-01 00:00:00",
         ]
 
     async def test_functional_order_over_functional_projection(self, exec_engine) -> None:
         resp = await exec_engine.execute(fx.q(
             population="orders",
-            dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"metric": "sum(amount)"}],
-            order=[{"field": "date_trunc('month', created_at)", "direction": "asc"}],
+            dimensions=["date_trunc('month', orders.created_at)"],
+            metrics=[{"metric": "sum(orders.amount)"}],
+            order=[{"field": "date_trunc('month', orders.created_at)", "direction": "asc"}],
         ))
         assert [r["orders.created_at"] for r in resp.data] == [
-            "2024-01-01", "2024-02-01", "2025-03-01",
+            "2024-01-01 00:00:00", "2024-02-01 00:00:00", "2025-03-01 00:00:00",
         ]
 
 
@@ -46,9 +46,9 @@ class TestOrderWithoutMatchingTimeDimension:
     ) -> None:
         query = fx.q(
             population="orders",
-            dimensions=["status"],
-            metrics=[{"metric": "sum(amount)"}],
-            order=[{"field": "date_trunc('month', created_at)", "direction": "desc"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "sum(orders.amount)"}],
+            order=[{"field": "date_trunc('month', orders.created_at)", "direction": "desc"}],
         )
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)
@@ -60,7 +60,7 @@ class TestOrderWithoutMatchingTimeDimension:
         )
 
     async def test_granularity_mismatch_errors_with_remedy(self, exec_engine) -> None:
-        query = _month_query("date_trunc('year', created_at)")
+        query = _month_query("date_trunc('year', orders.created_at)")
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value)

@@ -15,12 +15,10 @@ filter actually excluded from a producer (unreachable, or outside semi-join push
 scope). The error names the metric, the dimension or filter, and the remedy. A filter
 applied by semi-join pushdown is correctly applied and MUST NOT error; explicit
 `partition_by=` broadcasting of an attributable declared grain MUST NOT error, while
-an unattributable explicit `partition_by=` key is a hard error under `broadcast`/`error`
-and associates when the mode is omitted or `associate` — unless the key's own dependency
-closure crosses a fanning hop from its host, which is an input-safety error that fails
-closed in every mode, the default and `associate` included (see "Partition key fanning
-from its host fails closed in every mode"); an ambiguous correlation hop errors in every
-mode and is not an error-mode concern.
+an unattributable explicit `partition_by=` key — local or cross-model, plain or derived —
+is a hard error under `broadcast`/`error` and associates when the mode is omitted or
+`associate` (see "Unattributable explicit partition keys resolve per the mode"); an
+ambiguous correlation hop errors in every mode and is not an error-mode concern.
 
 #### Scenario: Broadcast-would-happen errors
 - **WHEN** an error-mode query would broadcast a metric — cross-model or local — over
@@ -36,58 +34,6 @@ mode and is not an error-mode concern.
 - **WHEN** an error-mode query's only cross-root filter pushes down by semi-join and
   every metric is computable at the full query grain
 - **THEN** the query succeeds with values identical to the run omitting the mode
-
-### Requirement: Partition key fanning from its host fails closed in every mode
-
-An explicit `partition_by=` key whose dependency closure — its own join path plus every
-path the definition of a derived column it names crosses, recursively — crosses a
-fanning or unproven hop **from the aggregate's host** SHALL fail with a clear typed error
-in **every** `to_many_handling` mode, the default and `associate` included. Such a key is
-not single-valued at the host grain, so it can never be counted without multiplying rows;
-this is an input-safety failure (mode-invariant), distinct from a dimension merely
-unattributable from a further root (which resolves per the mode axis). The error names
-the fanning hop and the remedy (declare join cardinality or a covering unique key on the
-target). The rule applies uniformly wherever the key appears — a partitioned measure,
-filter, ORDER BY target, computed-dimension aggregate, transform partition set,
-re-aggregation inner, or windowed aggregate — and to both the path-less spelling
-(`partition_by=<derived host field>`) and the path-bearing spelling
-(`partition_by=<dotted reference across the hop>`). A partition key that is safe from the
-host but unattributable only from a further (cross-model) root is unaffected: it keeps
-its mode-aware resolution.
-
-#### Scenario: Path-less derived fanning partition key fails closed in every mode
-- **WHEN** a query rooted at `regions` selects `sum(pop, partition_by=bad_pop)`, where
-  `bad_pop` is the host-local derived column `pop + region_events.value` over the
-  one-to-many `regions → region_events` hop, omitting the mode or under `broadcast`,
-  `error`, or `associate`
-- **THEN** the query fails with a typed error naming `region_events` and the remedy, in
-  every mode — never the join-multiplied value
-
-#### Scenario: Chained derived fanning partition key fails closed
-- **WHEN** the partition key is a derived column defined over another derived column that
-  crosses the fanning hop (e.g. `bad_pop2 = bad_pop * 2`), in any mode
-- **THEN** the query fails closed naming the fanning hop, exactly as for the direct
-  derived key
-
-#### Scenario: Fanning partition key fails closed in every position
-- **WHEN** the fanning derived partition key appears as a filter target, an ORDER BY
-  target, a computed-dimension aggregate, a transform's partition set, a re-aggregation
-  inner aggregate, or a windowed aggregate, in any mode
-- **THEN** the query fails closed naming the fanning hop in each position — never a
-  silently multiplied value
-
-#### Scenario: Unanalysable derived partition key fails closed without naming a hop
-- **WHEN** the partition key names a derived column whose definition no supported dialect
-  can analyse for join dependencies, in any mode
-- **THEN** the query fails closed with a typed error that does not falsely attribute a
-  specific fanning hop it could not prove
-
-#### Scenario: Host-safe partition key keeps its mode-aware resolution
-- **WHEN** a `customers`-rooted aggregate declares `partition_by=status`, where `status`
-  is a plain column on the query's host model (safe from the host but unattributable from
-  the cross-model root)
-- **THEN** the key is not treated as a fanning-from-host safety error: it errors under
-  `broadcast`/`error` and associates when the mode is omitted or `associate`
 
 ### Requirement: Distinct-entity association over the virtual model
 When an aggregate with at least one unattributable grain dimension associates (the mode
@@ -184,12 +130,11 @@ dimensions retain exact partition values identical to broadcast mode.
 
 ### Requirement: Mode selection and the association default
 A query SHALL accept `to_many_handling` with values `"broadcast"`, `"associate"`, and
-`"error"`, or omit it (`null`), which selects the default. The default SHALL resolve as
-`"associate"`, except that an aggregate that needs association but is not
-association-eligible broadcasts (per "Broadcast fallback for association-ineligible
-aggregates"). The mode governs, uniformly for cross-model and local aggregates alike and
-in every consumer context (measure, composite leaf, filter, ORDER BY, computed dimension,
-nested producer), how each pair of (aggregate, query dimension unattributable from the
+`"error"`, or omit it (`null`), which selects the default. The default SHALL resolve
+exactly as `"associate"`. The mode governs, uniformly for cross-model and local
+aggregates alike, for every aggregation (plain, `first`/`last`, windowed, windowed
+`first`/`last`), and in every consumer context (measure, composite leaf, filter, ORDER BY,
+computed dimension, nested producer), how each pair of (aggregate, query dimension unattributable from the
 aggregate's home) resolves. A dimension is attributable from a home iff every path in
 its dependency closure — its own join path and every path the definition of a derived
 column it names crosses, recursively — is provably many-to-one from that home; a
@@ -226,7 +171,8 @@ mode unset inherits the refined query's mode.
 - **WHEN** the same query whose metrics are all computable at the full query grain runs
   once omitting the mode and once per mode value
 - **THEN** all four runs return identical executed values with no mode-related
-  warnings or errors, and every cell partitions the home rows and sums to the total
+  warnings or errors, every cell partitions the home rows, and an additive aggregate's
+  cells sum to its total
 
 #### Scenario: Unrecognized mode value fails
 - **WHEN** a query sets `to_many_handling` to a value outside the three modes
@@ -269,13 +215,12 @@ per cell. An aggregation's own column filter restricts the associated entities b
 per-cell aggregation. Association is needed only when at least one grain dimension is
 unattributable from the aggregate's home: an aggregate whose grain dimensions the home
 all determines takes the plain path in every mode, its attached inputs compiled at
-their own homes, so eligibility applies only when association is needed. An aggregate
-is **association-eligible** unless it declares `window=`, uses `first`/`last`, or has a
-row-valued parameter the entity grain does not determine. An ineligible aggregate that
-needs association SHALL fail under `to_many_handling: "associate"` with a clear typed
-error naming the combination and the remedy, and SHALL broadcast with the reason when
-the mode is omitted (per "Broadcast fallback for association-ineligible aggregates").
-A home declaring no primary key SHALL be associated through a per-query row
+their own homes. Every aggregation is **association-eligible** — `first`/`last`,
+windowed and windowed `first`/`last` aggregations included (per "Ranked and windowed
+association"); a parameter the entity grain does not determine is a typed parameter-grain
+error, never a reason to resolve the aggregate any other way. For an association over
+list children only, each associated row is one root row, so the entity grain is the root
+row and a parameter the root row determines is determined. A home declaring no primary key SHALL be associated through a per-query row
 identity (per "Per-query row identity for keyless homes"), never refused.
 
 #### Scenario: Percentile attributes over the association
@@ -306,11 +251,29 @@ identity (per "Per-query row identity for keyless homes"), never refused.
   customer with two orders in one cell weighted once — with unchanged result grain and
   sibling values
 
-#### Scenario: Windowed or first/last combination fails closed under explicit associate
+#### Scenario: Windowed or first/last combination executes under explicit associate
 - **WHEN** a query with `to_many_handling: "associate"` needs association for an
   aggregate that also declares `window=` or uses `first`/`last`
-- **THEN** the query fails with a clear typed error naming the unsupported combination
-  — never a silently wrong value
+- **THEN** the combination no longer fails: the query executes with the per-cell values
+  of "Ranked and windowed association", by executed values — never a broadcast or a
+  silently wrong value
+
+#### Scenario: A list-child association reads a root-determined parameter
+- **WHEN** a query selects `weighted_avg(contractors.rate, weight=contractors.rate)` by
+  `contractors.skills.value`, omitting the mode and again under `"associate"`
+- **THEN** each skill cell is the weighted average over the distinct contractors listing
+  that skill (go 43.33, sql 16.67 on the reference data), by executed values on SQLite
+  and DuckDB, with the associated-cells warning — never a broadcast or a parameter-grain
+  error
+
+#### Scenario: Every parameter shape associates or fails with its own typed error
+- **WHEN** an associated aggregate takes a field-valued custom parameter, a definition
+  default, an attached aggregate- or transform-valued parameter, a parameter over a
+  provably to-one path, or a parameter across a fanning hop, against keyed and keyless
+  homes, in every mode
+- **THEN** each executes with hand-computed per-entity values, or fails before SQL
+  generation with its established typed error (input safety across the fanning hop in
+  every mode) — never a broadcast fallback
 
 #### Scenario: A keyless home associates
 - **WHEN** a query rooted at `orders`, omitting the mode and again under `"associate"`,
@@ -328,58 +291,6 @@ identity (per "Per-query row identity for keyless homes"), never refused.
 - **THEN** the query executes with the same values as under `broadcast` and no
   association warning — the home determines every dimension, so no entity
   deduplication is needed
-
-### Requirement: Broadcast fallback for association-ineligible aggregates
-When `to_many_handling` is omitted, an aggregate that needs association but is not
-association-eligible (per "Association eligibility, input handling and row identity")
-SHALL broadcast across its unattributable dimensions — its value repeats across their
-cells — and the query SHALL NOT fail. The response SHALL carry a broadcast warning naming
-the aggregate, the dimensions, and the reason association is unsupported, with a hint
-naming the remedy (drop the `window=` / `first`/`last`, or make the dimension
-attributable) instead of the dice–slice hint; one measure whose constituents fall back
-for different reasons reports each reason. Under explicit `"associate"` the same
-aggregate fails with its typed error, under `"broadcast"` it broadcasts with the ordinary
-warning, and under `"error"` it is refused. The fallback never changes the result rows or
-any other column's values. The fallback covers only the query's implicit grain: an
-ineligible aggregate whose explicit `partition_by=` names a key it would have to
-associate fails when the mode is omitted with the same typed error as under
-`"associate"`, since requested grain is never broadcast. Input-safety failures are not
-ineligibility: an input that crosses a fanning or unproven hop from its home, or a
-partition key fanning from its host, fails in every mode, the default included.
-
-#### Scenario: first/last broadcasts with its reason by default
-- **WHEN** a query rooted at `orders` omitting the mode selects
-  `last(customers.spend, customers.signup_at)` by `status`
-- **THEN** the value repeats on every status row, and the response carries a broadcast
-  warning naming the measure, `status`, the first/last reason and the fallback remedy
-
-#### Scenario: window= broadcasts with its reason by default
-- **WHEN** a query rooted at `orders` omitting the mode selects
-  `sum(customers.spend, window='90d')` by `status` and a month of `customers.signup_at`
-- **THEN** each month's value repeats across the statuses of that month, and the
-  response carries a broadcast warning naming the window reason and the fallback remedy
-
-#### Scenario: Each fallback reason is reported
-- **WHEN** a query omitting the mode selects one measure combining a `first`/`last` and a
-  `window=` aggregate that both need association
-- **THEN** the response reports both reasons, each with the fallback remedy
-
-#### Scenario: Explicit modes keep their behaviour for ineligible aggregates
-- **WHEN** the queries above run under `"associate"`, `"broadcast"` and `"error"`
-- **THEN** `"associate"` fails with the typed unsupported-combination error,
-  `"broadcast"` broadcasts with the ordinary broadcast warning, and `"error"` refuses
-
-#### Scenario: Requested grain is never broadcast by the fallback
-- **WHEN** a query rooted at `orders` omitting the mode selects
-  `last(customers.spend, customers.signup_at, partition_by=status)` by `status`
-- **THEN** the query fails with the typed unsupported-combination error, exactly as
-  under `"associate"`
-
-#### Scenario: Input safety is not a fallback
-- **WHEN** a query omitting the mode aggregates a `customers` column whose filter reads
-  `orders.status` across the fanning `customers → orders` hop
-- **THEN** the query fails with the input-safety error naming the hop, exactly as under
-  every explicit mode
 
 ### Requirement: Per-query row identity for keyless homes
 A home dataset whose model declares no primary key that needs association SHALL be
@@ -462,9 +373,8 @@ SHALL store no mode.
 A re-aggregation whose inner aggregate takes the query grain (no explicit
 `partition_by=`) and needs association SHALL resolve that inner per the query's mode
 exactly as the same aggregate standing alone: associated when the mode is omitted or
-`"associate"`, broadcast under `"broadcast"`, refused under `"error"`; an
-association-ineligible inner falls back or fails per "Broadcast fallback for
-association-ineligible aggregates".
+`"associate"`, broadcast under `"broadcast"`, refused under `"error"` — a `first`/`last`
+or windowed inner included.
 
 #### Scenario: A plain ungrained inner associates
 - **WHEN** a query rooted at `orders` selects `sum(sum(customers.spend))` by `status`,
@@ -473,9 +383,11 @@ association-ineligible aggregates".
   (new 290, ok 420 on the reference data), by executed values on SQLite and DuckDB
 
 #### Scenario: A ranked ungrained inner falls back or fails
-- **WHEN** the query selects `sum(last(customers.spend, customers.signup_at))` by `status`
-- **THEN** omitting the mode broadcasts it with the first/last reason, and `"associate"`
-  fails with the typed unsupported-combination error
+- **WHEN** the query selects `sum(last(customers.spend, customers.signup_at))` by `status`,
+  omitting the mode and again under `"associate"`
+- **THEN** it neither falls back nor fails: each status cell equals the associated `last`
+  of that cell (new 40, ok 30 on the reference data), by executed values on SQLite and
+  DuckDB; under `"broadcast"` the inner broadcasts and under `"error"` the query refuses
 
 ### Requirement: The strict flag is a deprecated alias
 
@@ -512,3 +424,338 @@ association-ineligible aggregates".
 #### Scenario: Surfaces accept the mode parameter
 - **WHEN** a query sets `to_many_handling` through the REST API or the MCP query tool
 - **THEN** the mode reaches the engine and governs resolution exactly as a direct `SlayerQuery` field does
+
+### Requirement: Ranked and windowed association
+An aggregate that associates SHALL first take each cell's distinct associated home
+entities — each counted once — and then apply its own reduction over them, whatever the
+reduction:
+
+- **`first` / `last`**: the cell's value is the value of the associated entity whose
+  ranking key is lowest / highest. The ranking key SHALL be determined by the home (per
+  "Unsafe aggregate inputs fail closed" in `queries/cross-model-aggregates`, unchanged in
+  every mode); an entity with a NULL ranking key is never picked, a cell whose associated
+  entities all have NULL keys is NULL, and ties are broken arbitrarily by the database.
+- **`window=`**: a home entity belongs to the cell of bucket *t* iff one of its associated
+  rows carrying the cell's other dimension values has its time in *t*'s trailing frame —
+  the home row itself when the time axis is attributable from the home, the related rows
+  reached over the home's join path when it is not. The entity counts once in that cell,
+  however many of its rows fall in the frame, so cells are not additive across buckets. A
+  population filter conjunct on the time axis's branch SHALL be satisfied by the same
+  related row that places the entity in the frame. The buckets are the population's cells;
+  a bucket whose frame holds no associated row — the NULL bucket included — takes the
+  aggregation's empty value.
+- **windowed `first` / `last`**: the pick runs over the entities in the cell's frame.
+
+Every such aggregate SHALL carry the associated-cells warning when its grain is implicit,
+naming each unattributable dimension — the time dimension included when the axis fans —
+and none for an explicit `partition_by=` grain. Under `"broadcast"` and `"error"` it
+broadcasts or refuses exactly as a plain aggregate does, except that a windowed aggregate
+whose time axis is not attributable from its home SHALL fail in both modes with the typed
+time-axis error naming the time dimension and naming association (omitting
+`to_many_handling`) among the remedies.
+
+#### Scenario: Cross-model first/last associates per cell
+- **WHEN** a query rooted at `orders` selects `last(customers.spend, customers.signup_at)`
+  and `first(customers.spend, customers.signup_at)` by `status`, omitting the mode and
+  again under `"associate"`
+- **THEN** `last` is new 40, ok 30 and `first` is new 100, ok 100 on the reference data —
+  the pick among the distinct customers having an order of that status — by executed
+  values on SQLite and DuckDB, with the associated-cells warning
+
+#### Scenario: Unequal fan-out never changes the pick
+- **WHEN** the associated `last` runs where the entity with the highest ranking key has
+  one related row in the cell and other entities have several, some entities have a NULL
+  ranking key, and the home is keyless
+- **THEN** each cell picks the value of the highest non-NULL key among its distinct
+  entities, identical for the keyed and the keyless home, by executed values
+
+#### Scenario: Explicit partition key associates a ranked aggregate
+- **WHEN** a query rooted at `orders` selects
+  `last(customers.spend, customers.signup_at, partition_by=status)` by `status`, omitting
+  the mode and again under `"associate"`
+- **THEN** it returns new 40, ok 30 with no warning; under `"broadcast"` and `"error"` it
+  fails with the unattributable-partition-key error
+
+#### Scenario: Window over a fanning time axis associates
+- **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` by the month of
+  `orders.ordered_at`, and another rooted at `orders` selects
+  `sum(customers.spend, window='1y')` by the month of `ordered_at`, omitting the mode and
+  again under `"associate"`
+- **THEN** both return Jan 100, Feb 250, Mar 350, Apr 460 on the reference data — each
+  customer counted once in every month whose trailing year holds one of its orders — and
+  the customers-rooted NULL bucket (the customer with no orders) is NULL, by executed
+  values on SQLite and DuckDB, with the associated-cells warning naming the time dimension
+
+#### Scenario: A windowed count counts distinct entities in the frame
+- **WHEN** a query rooted at `orders` selects `count(customers.*, window='1y')` by the month
+  of `ordered_at`, and a query rooted at `customers` selects `count(customers.*,
+  window='1y')` by the month of `orders.ordered_at`
+- **THEN** the months are 1, 2, 4, 6 — the active customers in each trailing year — and the
+  customers-rooted NULL bucket is 0, never NULL
+
+#### Scenario: Empty frames take each aggregation's empty value
+- **WHEN** associated windowed `count(*)`, `count(<field>)`, `sum`, a custom aggregation and
+  `collect` are read at a bucket whose frame holds no associated row, including the NULL
+  bucket and a bucket whose source rows a filter removed
+- **THEN** the counts are 0, `collect` is the empty list, and the others are NULL
+
+#### Scenario: The axis filter binds to the in-frame related row
+- **WHEN** a customer has an in-frame order whose status is not `ok` and an `ok` order
+  outside the frame but no in-frame `ok` order, and the fanning-axis window queries above
+  filter `orders.status = 'ok'`
+- **THEN** that customer is absent from the bucket, by executed values on SQLite and
+  DuckDB, in both the customers-rooted and the orders-rooted spelling (on the reference
+  data without that customer: Jan 100, Feb 250, Mar 310, Apr 420)
+
+#### Scenario: Window over an attributable axis associates the other dimensions
+- **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` by
+  `orders.status` and the month of `signup_at`, omitting the mode and again under
+  `"associate"`
+- **THEN** each cell sums the distinct customers having an order of that status and a
+  signup in the trailing year — new 100, 250, 290; ok 100, 250, 310, 420; the NULL status
+  in April 55 on the reference data — never a customer counted once per order
+
+#### Scenario: Windowed first/last picks among the in-frame entities
+- **WHEN** a query rooted at `customers` selects `last(spend, signup_at, window='1y')` by
+  the month of `orders.ordered_at`
+- **THEN** the months are 100, 150, 40, 30 on the reference data, by executed values; the
+  same measure spelled `last(spend, window='1y')` — whose implicit ranking key is the
+  fanning time dimension — fails in every mode with the input-safety error naming it
+
+#### Scenario: A fanning time axis is refused outside association
+- **WHEN** the fanning-axis window queries above run under `"broadcast"` and under
+  `"error"`
+- **THEN** each fails at plan time with the typed time-axis error naming the time
+  dimension and the remedies, association among them, containing no issue reference
+
+#### Scenario: Every position reads the associated ranked and windowed value
+- **WHEN** an associated `last` and an associated window are used as a measure, in a
+  measure filter, as an order key, and spelled with an explicit `partition_by=` naming the
+  unattributable dimension
+- **THEN** each position reads the same per-cell value, adding them never changes the
+  result rows or any other column, and filtering to `d = v` equals the `v` cell of the
+  grouped query, by executed values
+
+#### Scenario: The windowed association renders on every dialect
+- **WHEN** a ranked and a windowed association query are rendered for every supported
+  dialect
+- **THEN** each statement renders with the dialect's accepted syntax, and executes on the
+  in-process and locally runnable engines
+
+### Requirement: Local first/last and windowed aggregates follow the mode axis
+A first/last or windowed aggregate homed at the query population SHALL resolve a query
+dimension it does not attribute exactly as every other aggregate does: associated when the
+mode is omitted or `"associate"`, broadcast with the ordinary warning under
+`"broadcast"`, refused under `"error"`. It SHALL never be evaluated over the rows a fanning
+join multiplies.
+
+#### Scenario: Local first/last over a fanning dimension follows the mode
+- **WHEN** a query rooted at `customers` selects `last(spend, signup_at)` by
+  `orders.status`, omitting the mode, and under each explicit mode
+- **THEN** omitting the mode and `"associate"` return new 40, ok 30, NULL 55 with the
+  associated-cells warning; `"broadcast"` returns 55 on every status with the broadcast
+  warning; `"error"` refuses naming the metric and `orders.status`
+
+#### Scenario: A local window over a fanning dimension never double-counts
+- **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` by
+  `orders.status` and the month of `signup_at`, under each explicit mode
+- **THEN** `"broadcast"` returns each month's trailing total on every status (Jan 100,
+  Feb 250, Mar 350, Apr 515 on the reference data) with the broadcast warning, and
+  `"error"` refuses — never the multiplied (ok, Jan) 200
+
+### Requirement: Broadcast is a deprecated mode
+`to_many_handling: "broadcast"` SHALL stay accepted and honoured throughout 2.x — generated SQL, executed values
+and the `broadcast` warning unchanged — and SHALL be reported as deprecated, scheduled for removal in 3.0, through
+the shared marker (`compatibility/removal-tripwire`). Its replacement is an explicit `partition_by=` on each
+aggregate naming the dimensions that aggregate attributes, which returns the same values without a warning
+(Axiom 10).
+
+- **Run reporting.** Every query run — executed or dry run, in process, through REST, the MCP `query` tool or the
+  HTTP client — SHALL carry exactly one `deprecated_input` warning (`old` naming `to_many_handling: "broadcast"`,
+  `new` naming an explicit `partition_by=` on each aggregate, `removal` 3.0) per stage of its input whose
+  effective mode is `"broadcast"`, whether that stage was submitted fresh or loaded from storage, emitted or
+  pruned. A stage's effective mode is its own value, or the saved value a refinement leaving the mode unset
+  inherits. Building one query and running it several times reports it on every run, never twice in one run.
+- **Python warning.** Fresh input — a Python query object, a REST body, an MCP query object or a refinement,
+  given without a `version` and outside a stored document — SHALL emit exactly one `FutureWarning` per query
+  object at construction, attributed to the first line outside SLayer that supplied it. Loading a stored document
+  SHALL emit none.
+- **Saves.** A save whose query or stages carry `"broadcast"` SHALL report the `deprecated_input` payload on that
+  save's response (a structured entry on REST model saves, its message on MCP model saves and memory saves), and
+  SHALL persist `"broadcast"` as given.
+- **Concrete replacement.** Each `broadcast` warning SHALL carry `partition_by`: the query dimensions its
+  aggregate attributes, spelled as the query spells them — a time dimension as its field, `[]` for the grand
+  total — and its hint SHALL name the aggregate call in canonical form, its references spelled as the query
+  spells them (a leaf of a composite metric by
+  its own call, never an internal label) and the `partition_by=[…]` returning the same values, keeping the
+  dice–slice disclosure.
+- **Not offered.** The published query and refinement schemas SHALL enumerate only `associate` and `error`, and
+  an unrecognized mode value's validation error SHALL name only those two; validation SHALL still accept
+  `"broadcast"`.
+
+Omitting the mode, `"associate"` and `"error"` SHALL report no deprecation.
+
+#### Scenario: Fresh broadcast reports one deprecation and keeps its values
+- **WHEN** a query rooted at `orders` with `to_many_handling: "broadcast"` selects `sum(customers.spend)` by
+  `orders.status`, through Python, REST and the MCP `query` tool
+- **THEN** each response carries the same values, SQL and `broadcast` warning as before the change, plus exactly
+  one `deprecated_input` warning naming `to_many_handling: "broadcast"`, `partition_by=` and 3.0, and the Python
+  run records exactly one `FutureWarning`
+
+#### Scenario: Every run reports the deprecation once
+- **WHEN** a broadcast query object is built once and run three times
+- **THEN** exactly one `FutureWarning` is recorded, at construction, and each of the three responses carries
+  exactly one `deprecated_input` warning
+
+#### Scenario: Each broadcast stage reports its own deprecation
+- **WHEN** a multi-stage query whose two named stages set `"broadcast"` and whose root stage omits the mode is
+  run, and again with one of those stages pruned from the emitted SQL
+- **THEN** each response carries exactly two `deprecated_input` warnings
+
+#### Scenario: A broadcast stage that never broadcasts still reports
+- **WHEN** a `"broadcast"` query has only attributable dimensions, or no dimensions, and runs executed, as a dry
+  run and with `explain`
+- **THEN** each response carries exactly one `deprecated_input` warning and no `broadcast` warning
+
+#### Scenario: A stored broadcast stage reports on every run
+- **WHEN** a query-backed model whose source query stores `"broadcast"` at the current version is loaded and
+  queried twice, and a saved query storing `"broadcast"` is run by name
+- **THEN** loading records no `FutureWarning`, and every response carries exactly one `deprecated_input` warning
+  per broadcast stage with unchanged values
+
+#### Scenario: Refinements report the effective mode
+- **WHEN** a saved query omitting the mode runs with `refine={"to_many_handling": "broadcast"}`, a saved
+  `"broadcast"` query runs with a refinement leaving the mode unset, and the same saved query runs with
+  `refine={"to_many_handling": "associate"}`, in process, through REST and through the MCP `query` tool
+- **THEN** the first two responses each carry exactly one `deprecated_input` warning and the third none
+
+#### Scenario: A save reports the deprecation and keeps broadcast
+- **WHEN** a query-backed model whose source query carries `"broadcast"` is saved through REST and through MCP,
+  and a memory whose query carries `"broadcast"` is saved
+- **THEN** the REST response's `warnings` carry the `deprecated_input` payload, the MCP response and the memory
+  save's `warnings` each carry its message exactly once, and every stored query reloads with `"broadcast"`
+
+#### Scenario: The broadcast warning names the concrete partition
+- **WHEN** broadcast queries select `sum(customers.spend)` rooted at `orders` by `orders.status` (and again by
+  `orders.status` and `customers.tier`), `sum(customers.spend, window='1y')` rooted at `customers` by
+  `orders.status` and the month of `customers.signup_at`, and the composite `sum(customers.spend) /
+  sum(orders.amount)` by `orders.status`
+- **THEN** the `broadcast` warnings carry `partition_by` `[]`, `[customers.tier]`, `[customers.signup_at]` and
+  `[]` respectively, each hint names `sum(customers.spend)` (or the windowed call) and that `partition_by=[…]`,
+  and each aggregate rewritten with that `partition_by=` and run omitting the mode returns identical values with
+  no `broadcast`, `associated` or `deprecated_input` warning, by executed values on SQLite and DuckDB
+
+#### Scenario: Aliased, repeated, filter and order positions name the call
+- **WHEN** a broadcast query uses an aliased broadcast aggregate, the same aggregate twice in one composite, and
+  a broadcast aggregate used only in a measure filter and only as an order key
+- **THEN** each `broadcast` warning's hint names the aggregate's own call and its concrete `partition_by=[…]`
+
+#### Scenario: The schema does not offer broadcast but validation accepts it
+- **WHEN** the query and refinement JSON schemas are generated, a query sets `to_many_handling: "broadcast"`, and
+  another sets `to_many_handling: "sometimes"`
+- **THEN** the schemas enumerate exactly `associate` and `error`, the broadcast query validates, and the
+  unrecognized value fails naming `associate` and `error` and not `broadcast`
+
+#### Scenario: Other modes report no deprecation
+- **WHEN** the same query runs omitting the mode, under `"associate"` and under `"error"`
+- **THEN** no response carries a `deprecated_input` warning and no `FutureWarning` is recorded
+
+### Requirement: Unattributable explicit partition keys resolve per the mode
+An aggregate's explicit `partition_by=` key that is not attributable from the aggregate's
+home SHALL resolve per `to_many_handling` exactly as an unattributable query dimension
+does. This holds whether the aggregate is local or cross-model, whether the key is a plain
+column, a derived column (path-less or path-bearing, chained or not) or a time bucket, and
+whatever its aggregation (plain, `first`/`last`, windowed, windowed `first`/`last`). A key
+is attributable iff every path in its dependency closure is provably many-to-one from the
+home; a fanning hop and an unproven hop make it unattributable alike. When the mode is
+omitted or `"associate"`, the aggregate SHALL compute at the declared grain over the
+distinct home rows associated with each cell (per "Distinct-entity association over the
+virtual model"), with no warning, since the grain is requested. Under `"broadcast"` and
+`"error"` the query SHALL fail at plan time with a typed partition-key error naming the
+key, the hop and the home, and suggesting both remedies: omitting `to_many_handling` (or
+setting `"associate"`) and declaring relationship cardinality or a covering unique key. The
+rule SHALL apply uniformly in every position the aggregate appears: measure, composite
+leaf, filter, ORDER BY target, computed-dimension aggregate, re-aggregation inner,
+attached parameter, and windowed aggregate. A key whose definition no supported dialect
+can analyse SHALL fail closed in every mode with a typed error that names no hop it could
+not prove. A rank-family transform's own `partition_by=` is not an aggregate grain: its
+keys SHALL name members of the transform's operand grain (`queries/transforms`), and a
+fanning key reaches that grain only through an inner aggregate or query dimension that
+resolves per this rule. Keys across a product hop keep `queries/unrelated-datasets`.
+
+#### Scenario: Path-less derived key associates like the dimension spelling
+- **WHEN** a query rooted at `regions` selects `sum(pop, partition_by=bad_pop)` by `bad_pop`,
+  where `bad_pop` is the host-local derived column `pop + region_events.value` over the
+  one-to-many `regions → region_events` hop, omitting the mode and again under `"associate"`
+- **THEN** both runs return 150 → 100 and 230 → 200 with no warning, the same values as
+  `sum(pop)` by the dimension `bad_pop`, by executed values on SQLite and DuckDB
+
+#### Scenario: Path-bearing derived key associates like the dimension spelling
+- **WHEN** a query rooted at `orders` selects `sum(amount, partition_by=customers.regions.bad_pop)`
+  by `customers.regions.bad_pop`, omitting the mode and again under `"associate"`
+- **THEN** both runs return 150 → 100, 230 → 20 and NULL → 47 with no warning, the same
+  values as `sum(amount)` by that dimension, by executed values on SQLite and DuckDB
+
+#### Scenario: Chained derived key resolves like its base
+- **WHEN** the partition key is a derived column defined over another derived column that
+  crosses the fanning hop (`bad_pop2 = bad_pop * 2`)
+- **THEN** it resolves exactly as `bad_pop` does in every mode: per-cell values under the
+  default and `"associate"`, the typed partition-key error under `"broadcast"` and `"error"`
+
+#### Scenario: Unattributable explicit key refuses outside association
+- **WHEN** any query above runs under `"broadcast"` or `"error"`
+- **THEN** it fails at plan time with a typed partition-key error naming the key, the
+  fanning hop and the home, suggesting both omitting `to_many_handling` and declaring
+  cardinality or a covering unique key, and containing no issue reference
+
+#### Scenario: Every position resolves per the mode
+- **WHEN** the fanning derived key appears in an aggregate used as a filter target, an
+  ORDER BY target, a computed-dimension aggregate, a re-aggregation inner
+  (`avg(sum(pop, partition_by=bad_pop))`), an attached parameter, or a windowed aggregate
+- **THEN** each position executes under the default and `"associate"` with the same
+  associated cells as the measure position, by executed values — an attached parameter
+  only where the enclosing aggregation's home determines its grain, otherwise failing with
+  the typed determination error (`queries/partitioned-aggregates`) — and fails with the
+  typed partition-key error under `"broadcast"` and `"error"`
+
+#### Scenario: Keys mixing attributable and unattributable members
+- **WHEN** a query rooted at `customers` selects
+  `sum(spend, partition_by=[customers.tier, orders.status])` by `customers.tier` and
+  `orders.status`, omitting the mode
+- **THEN** the cells are gold/ok 190, gold/new 100, gold/NULL 55, silver/ok 230,
+  silver/new 150 and bronze/new 40, with no warning, by executed values; under `"broadcast"`
+  and `"error"` it fails naming `orders.status`
+
+#### Scenario: Two unattributable keys on one branch read one related row
+- **WHEN** a query rooted at `customers` selects
+  `sum(spend, partition_by=[orders.status, orders.ordered_at])` by status and order month
+- **THEN** each customer counts in a (status, month) cell iff one of its orders carries both
+  values, never by pairing one order's status with another order's month, by executed values
+
+#### Scenario: Keyless homes, list children, saved measures and stages resolve alike
+- **WHEN** an unattributable explicit key is declared on a keyless home, names a list child's
+  value, sits in a saved measure, or sits in an inner stage read by an outer stage, omitting
+  the mode and again under `"error"`
+- **THEN** under the default each executes with associated cells, by hand-computed executed
+  values, leaving sibling metrics and row counts unchanged; under `"error"` each fails with
+  the typed partition-key error
+
+#### Scenario: Unanalysable key fails closed in every mode
+- **WHEN** the partition key names a derived column whose definition no supported dialect
+  can analyse for relationship dependencies, directly or through another derived column, in
+  a measure, a transform partition set or an attached parameter, in any mode
+- **THEN** the query fails closed with a typed error that names no fanning hop
+
+#### Scenario: Transform partition keys stay operand-grain members
+- **WHEN** a query rooted at `regions` by `bad_pop` selects
+  `rank(sum(pop), partition_by=bad_pop, direction='desc')`, omitting the mode
+- **THEN** the inner aggregate associates at the query grain and the rank partitions its
+  cells by `bad_pop`, by executed values; a rank-family transform whose own `partition_by=`
+  names a key outside its operand grain still fails with the operand-grain partition-key
+  error in every mode
+
+#### Scenario: Host-safe partition key keeps its mode-aware resolution
+- **WHEN** a query rooted at `orders` by `status` selects `sum(customers.spend, partition_by=status)`,
+  where `status` is a plain host column unattributable from the `customers` home
+- **THEN** it returns new 290 and ok 420 when the mode is omitted or `"associate"`, and fails
+  with the typed partition-key error under `"broadcast"` and `"error"`

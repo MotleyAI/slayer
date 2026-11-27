@@ -1,11 +1,11 @@
 """The one dependency closure (python.engine.arc42.md principle 10).
 
 Unit tests for ``slayer.engine.reference_closure``: a fragment's / key's
-dependency closure is its own join path plus every path the definition of any
-derived column it names crosses, recursively — root-relative prefixes, tri-state
+dependency closure is its own relationship path plus every path the definition of any
+derived field it names crosses, recursively — root-relative prefixes, tri-state
 ``None`` when a definition cannot be analysed, a raised cycle guard on a
 self-referential definition. Plus ``ResolvedSourceBundle.datasets_by_name`` — the
-host-inclusive, source-first model map every walker consumes.
+host-inclusive, source-first dataset map every walker consumes.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ def _bundle(datasets):
     return by, ResolvedSourceBundle(dialect="postgres", population=by["orders"], referenced_datasets=referenced)
 
 
-def _regions_sqlkey(column_name: str) -> FieldSqlKey:
-    return FieldSqlKey(path=("regions",), dataset="regions", field_name=column_name)
+def _regions_sqlkey(field_name: str) -> FieldSqlKey:
+    return FieldSqlKey(path=("regions",), dataset="regions", field_name=field_name)
 
 
 class TestFragmentClosure:
@@ -52,10 +52,10 @@ class TestFragmentClosure:
         assert self._frag("region_events.value") == (("region_events",),)
 
     def test_derived_crossing_is_expanded(self):
-        assert self._frag("bad_pop") == (("region_events",),)
+        assert self._frag("regions.bad_pop") == (("region_events",),)
 
     def test_chain_crossing_is_expanded(self):
-        assert self._frag("bad_pop * 2") == (("region_events",),)
+        assert self._frag("regions.bad_pop * 2") == (("region_events",),)
 
     def test_local_column_contributes_nothing(self):
         assert self._frag("pop") == ()
@@ -177,7 +177,7 @@ class TestModelsByName:
         assert mbn["orders"] is by["orders"]
 
     def test_source_wins_dedup_over_a_referenced_namesake(self):
-        """A distinct model sharing the source's name in referenced_models must
+        """A distinct dataset sharing the source's name in referenced_models must
         NOT replace the source — the source is inserted first and wins."""
         by = {m.name: m for m in dev1900_datasets()}
         source_orders = by["orders"]

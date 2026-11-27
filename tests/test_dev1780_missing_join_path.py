@@ -1,4 +1,4 @@
-"""A non-direct-join dotted dim/time-dim binds hop-by-hop so no unbound ``A__B`` alias reaches the SQL.
+"""A non-direct-relationship dotted dim/time-dim binds hop-by-hop so no unbound ``A__B`` alias reaches the SQL.
 Short-form auto-routing is on (broken chains never auto-fixed); full routing behaviour in test_dev1856."""
 
 from __future__ import annotations
@@ -29,15 +29,15 @@ def _norm(s: str) -> str:
 
 
 def _pk() -> DatasetField:
-    return DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)
+    return DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)
 
 
 def _d(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.FLOAT)
+    return DatasetField(name=name, expression=name, datatype=DataType.FLOAT)
 
 
 def _t(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.STRING)
+    return DatasetField(name=name, expression=name, datatype=DataType.STRING)
 
 
 async def _save_chain(
@@ -54,7 +54,7 @@ async def _save_chain(
     await storage.save_dataset(SlayerDataset(
         name="Consumer", sql_table="Consumer", data_source="test",
         fields=[_pk(), _t("name"), _t("email"),
-                 DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME)],
+                 DatasetField(name="signup_at", expression="signup_at", datatype=DataType.DATETIME)],
     ))
     customer_joins = (
         [] if drop_customer_consumer
@@ -75,7 +75,7 @@ async def _save_chain(
     invoice = SlayerDataset(
         name="Invoice", sql_table="Invoice", data_source="test",
         fields=[_pk(), _d("subscriptionId"), _d("customerId"), _d("amount"), _t("status"),
-                 DatasetField(name="issued_at", sql="issued_at", datatype=DataType.DATETIME)],
+                 DatasetField(name="issued_at", expression="issued_at", datatype=DataType.DATETIME)],
         relationships=invoice_joins,
     )
     await storage.save_dataset(invoice)
@@ -95,7 +95,7 @@ async def _dry_sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
 
 
 def _amount_query(**kw) -> dict:
-    return dict(population="Invoice", metrics=[{"metric": "sum(amount)", "alias": "amt"}], **kw)
+    return dict(population="Invoice", metrics=[{"metric": "sum(Invoice.amount)", "alias": "amt"}], **kw)
 
 
 # ===========================================================================
@@ -104,7 +104,7 @@ def _amount_query(**kw) -> dict:
 
 class TestValidPathBindsAllJoins:
     async def test_full_valid_path_resolves_all_joins_bound(self, tmp_path) -> None:
-        """``Subscription.Customer.Consumer.name`` — every hop is a direct join, so each
+        """``Subscription.Customer.Consumer.name`` — every hop is a direct relationship, so each
         JOIN is emitted, the alias is bound, and the SQL parses on Postgres."""
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
@@ -116,11 +116,11 @@ class TestValidPathBindsAllJoins:
         sqlglot.parse_one(sql, dialect="postgres")
 
     async def test_valid_two_hop_direct_path(self, tmp_path) -> None:
-        """With a direct Invoice->Customer join, the 2-hop ``Customer.Consumer.name``
+        """With a direct Invoice->Customer relationship, the 2-hop ``Customer.Consumer.name``
         is fully direct and resolves."""
         engine = await _engine(tmp_path, direct_customer=True)
         sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
-            dimensions=["Customer.Consumer.name"],
+            dimensions=["Invoice.Customer.Consumer.name"],
         )))
         assert "AS Customer__Consumer " in sql
         sqlglot.parse_one(sql, dialect="postgres")
@@ -130,7 +130,7 @@ class TestValidPathBindsAllJoins:
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery.model_validate({
             "population": "Invoice",
-            "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
+            "metrics": [{"metric": "sum(Invoice.amount)", "alias": "amt"}],
             "time_dimensions": [{
                 "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
@@ -141,7 +141,7 @@ class TestValidPathBindsAllJoins:
 
     async def test_self_qualified_root_col_is_local(self, tmp_path) -> None:
         """A self-qualified ``Invoice.status`` normalizes to a local ref (no
-        circular-join error, no routing)."""
+        circular-relationship-path error, no routing)."""
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
             dimensions=["Invoice.status"],
@@ -166,7 +166,7 @@ class TestValidPathBindsAllJoins:
 class TestShortFormRoutingAndBrokenChains:
     async def test_broken_explicit_chain_rejects_and_suggests_short_form(self, tmp_path) -> None:
         engine = await _engine(tmp_path)
-        q = SlayerQuery(**_amount_query(dimensions=["Customer.Consumer.name"]))
+        q = SlayerQuery(**_amount_query(dimensions=["Invoice.Customer.Consumer.name"]))
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _dry_sql(engine, q)
         assert ei.value.suggested_path == "Consumer.name"
@@ -185,7 +185,7 @@ class TestShortFormRoutingAndBrokenChains:
         q = SlayerQuery(**_amount_query(dimensions=["Consumer.name"]))
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _dry_sql(engine, q)
-        assert ei.value.suggested_path == "Customer.Consumer.name"
+        assert ei.value.suggested_path == "Invoice.Customer.Consumer.name"
 
     async def test_unreachable_target_rejects_without_suggestion(self, tmp_path) -> None:
         engine = await _engine(tmp_path, drop_customer_consumer=True)
@@ -199,9 +199,9 @@ class TestShortFormRoutingAndBrokenChains:
         engine = await _engine(tmp_path)
         q = SlayerQuery.model_validate({
             "population": "Invoice",
-            "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
+            "metrics": [{"metric": "sum(Invoice.amount)", "alias": "amt"}],
             "time_dimensions": [{
-                "field": "Customer.Consumer.signup_at",
+                "field": "Invoice.Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
         })
@@ -210,7 +210,7 @@ class TestShortFormRoutingAndBrokenChains:
 
     async def test_missing_terminal_column_on_valid_path_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path, direct_customer=True)
-        query = SlayerQuery.model_validate(_amount_query(dimensions=["Customer.Consumer.does_not_exist"]))
+        query = SlayerQuery.model_validate(_amount_query(dimensions=["Invoice.Customer.Consumer.does_not_exist"]))
         with pytest.raises(UnknownReferenceError):
             await _dry_sql(engine, query)
 
@@ -221,15 +221,15 @@ class TestShortFormRoutingAndBrokenChains:
 
 class TestDiagnosticsPreserved:
     async def test_circular_join_keeps_its_own_error(self, tmp_path) -> None:
-        """A path that revisits a model is a circular-join error (a distinct
-        ValueError), not folded into the missing-join rejection."""
+        """A path that revisits a dataset is a circular-relationship-path error (a
+        distinct ValueError), not folded into the missing-relationship rejection."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=":memory:")
         )
         # A <-> B cycle over two DISTINCT edges; named so each hop resolves
         # unambiguously (two edges on one pair fail closed on a bare
-        # model-name token) and the revisit check still fires.
+        # dataset-name token) and the revisit check still fires.
         await storage.save_dataset(SlayerDataset(
             name="B", sql_table="B", data_source="test",
             fields=[_pk(), _d("a_id"), _t("label")],
@@ -245,8 +245,8 @@ class TestDiagnosticsPreserved:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "A",
-            "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
-            "dimensions": ["to_b.to_a.amount"],
+            "metrics": [{"metric": "sum(A.amount)", "alias": "amt"}],
+            "dimensions": ["A.to_b.to_a.amount"],
         })
         with pytest.raises(ValueError) as ei:
             await _dry_sql(engine, query)
@@ -254,18 +254,18 @@ class TestDiagnosticsPreserved:
 
 
 # ===========================================================================
-# Internal enrichments unaffected (cross-model re-rooting)
+# Internal enrichments unaffected (cross-dataset re-rooting)
 # ===========================================================================
 
 class TestInternalEnrichmentsUnaffected:
     async def test_cross_model_rerooting_still_binds(self, tmp_path) -> None:
-        """A cross-model measure over a routed path, with a source-local dim, must
+        """A cross-dataset metric over a routed path, with a source-local dim, must
         still emit valid SQL — the re-rooted CTE carries a host-local dimension
         that never binds to a base-table join, and that is legal."""
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery.model_validate({
             "population": "Invoice",
-            "dimensions": ["status"],
+            "dimensions": ["Invoice.status"],
             "metrics": [{"metric": "count(Subscription.Customer.Consumer.email)", "alias": "c"}],
         }))
         sqlglot.parse_one(sql, dialect="postgres")
@@ -277,19 +277,19 @@ class TestInternalEnrichmentsUnaffected:
 
 class TestDownstreamStageScope:
     async def test_downstream_stage_dotted_ref_rejects(self, tmp_path) -> None:
-        """An outer-stage dotted ref names a model no join path reaches from the flat
+        """An outer-stage dotted ref names a dataset no relationship path reaches from the flat
         stage: ``UnrelatedDatasetError``; the inner stage's full-path dim resolves."""
         engine = await _engine(tmp_path)
         inner = SlayerQuery.model_validate({
             "name": "s1",
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.name"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(Invoice.*)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "dimensions": ["Subscription.Customer.Consumer.email"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(s1.*)"}],
         })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -306,7 +306,7 @@ def _count(nodes: set[str], edges: list[tuple[str, str, str | None]], root: str,
 
 
 class TestCountSimplePaths:
-    # The join graph is an undirected multigraph — one entry per declared
+    # The relationship graph is an undirected multigraph — one entry per declared
     # edge; route counts below are derived on the bidirectional semantics.
     def test_unique(self) -> None:
         assert _count({"A", "B", "C"}, [("A", "B", None), ("B", "C", None)], "A", "C") == 1

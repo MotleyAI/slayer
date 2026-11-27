@@ -1,7 +1,7 @@
 """A ``null`` ``date_range`` bound is an open side; ``[null, null]`` is rejected at construction.
 
-Exercised through the public planning path on a plain model and on a
-multi-stage ``source_queries`` model; a one-sided range must never render
+Exercised through the public planning path on a plain dataset and on a
+multi-stage ``source_queries`` dataset; a one-sided range must never render
 ``BETWEEN ... AND NULL``.
 """
 
@@ -33,8 +33,8 @@ def _daily() -> SlayerDataset:
         source_queries=[
             SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["created_at"],
-                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+                "dimensions": ["orders.created_at"],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             })
         ],
     )
@@ -43,7 +43,7 @@ def _daily() -> SlayerDataset:
 def _query(*, source_dataset: str, metric: str, date_range: list) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": source_dataset,
-        "time_dimensions": [TimeDimension(field="created_at", granularity="month", date_range=date_range)],
+        "time_dimensions": [TimeDimension(field=f"{source_dataset}.created_at", granularity="month", date_range=date_range)],
         "metrics": [{"metric": metric, "alias": "m0"}],
     })
 
@@ -64,12 +64,12 @@ class TestOneSidedRangePlans:
 
     @pytest.mark.parametrize(("date_range", "bound"), ONE_SIDED)
     async def test_plain_model(self, date_range, bound) -> None:
-        query = _query(source_dataset="orders", metric="sum(amount)", date_range=date_range)
+        query = _query(source_dataset="orders", metric="sum(orders.amount)", date_range=date_range)
         _assert_one_sided(await _engine_generate(query=query, dataset=_orders()), bound)
 
     @pytest.mark.parametrize(("date_range", "bound"), ONE_SIDED)
     async def test_source_queries_model(self, date_range, bound) -> None:
-        query = _query(source_dataset="daily", metric="max(rev)", date_range=date_range)
+        query = _query(source_dataset="daily", metric="max(daily.rev)", date_range=date_range)
         sql = await _engine_generate(query=query, dataset=_orders(), extra_datasets=[_daily()])
         _assert_one_sided(sql, bound)
 
@@ -78,7 +78,7 @@ class TestBothBoundsMissing:
 
     def test_rejected_at_construction_naming_the_dimension(self) -> None:
         with pytest.raises(pydantic.ValidationError) as exc_info:
-            _query(source_dataset="orders", metric="sum(amount)", date_range=[None, None])
+            _query(source_dataset="orders", metric="sum(orders.amount)", date_range=[None, None])
         assert "created_at" in str(exc_info.value), exc_info.value
 
 
@@ -86,7 +86,7 @@ class TestWellFormedRangeStillPlans:
 
     async def test_two_string_bounds_emit_the_half_open_range(self) -> None:
         query = _query(
-            source_dataset="orders", metric="sum(amount)",
+            source_dataset="orders", metric="sum(orders.amount)",
             date_range=["2024-01-01", "2024-12-31"],
         )
         sql = await _engine_generate(query=query, dataset=_orders())

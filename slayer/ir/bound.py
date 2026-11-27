@@ -57,6 +57,8 @@ class BoundTimeDimension(BaseModel):
     bound: BoundExpr
     field_type: Optional[DataType] = None
     bucketed_leaves: Tuple[Tuple[str, Granularity], ...] = ()
+    #: ``(leaf, zone)`` per bucketed leaf whose buckets are in a time zone.
+    bucketed_zones: Tuple[Tuple[str, str], ...] = ()
     is_expression: bool = False
 
 

@@ -13,7 +13,7 @@ from tests._stored_upgrade_fixtures import (
     DS,
     TOTAL,
     customers_v10,
-    measure_total,
+    metric_total,
     memory_v2,
     orders_v10,
     query_backed_v10,
@@ -58,8 +58,8 @@ async def test_query_backed_model_returns_the_0_10_2_rows(tmp_path, shop_ds, bac
     qb = query_backed_v10(name="rev_range", stages=[rev_query(time_dimensions=[year_td(date_range)])])
     storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), qb])
-    resp = await run(storage, {"population": "rev_range", "metrics": ["sum(rev)"]})
-    assert measure_total(resp, measure="rev_sum") == expected
+    resp = await run(storage, {"population": "rev_range", "metrics": ["sum(rev_range.rev)"]})
+    assert metric_total(resp, metric="rev_sum") == expected
 
 
 @pytest.mark.parametrize("date_range", [[], ["2024-01-01"], ["2024-01-01", "2024-06-30", "2024-12-31"]])
@@ -91,7 +91,7 @@ async def test_memory_query_with_offset_bound_runs(tmp_path, shop_ds, backend):
     mem = await storage.get_memory("m_offset")
     assert mem.query is not None
     resp = await run(storage, mem.query)
-    assert measure_total(resp, measure="rev") == FROM_0200
+    assert metric_total(resp, metric="rev") == FROM_0200
 
 
 @pytest.mark.parametrize("date_range", [[], ["2024-01-01T00:00:00Z", "2024-12-31"], ["2024/01/01", "2024/12/31"]])

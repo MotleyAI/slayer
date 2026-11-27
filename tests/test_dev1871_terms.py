@@ -18,7 +18,6 @@ from slayer.ir.terms import (
     Dataset,
     Field,
     StoredDataset,
-    StageDataset,
     Transform,
 )
 
@@ -51,15 +50,9 @@ class TestDatasetIdentity:
         assert a != StoredDataset(data_source="other", dataset_name="orders")
         assert len({a, b}) == 1
 
-    def test_stage_dataset_identity(self) -> None:
-        a = StageDataset(stage_name="s1")
-        assert a == StageDataset(stage_name="s1")
-        assert a != StageDataset(stage_name="s2")
-
     def test_aggregate_is_a_dataset(self) -> None:
         """The aggregate-is-a-dataset axiom as subtyping."""
         assert isinstance(_dataset_ds(), Dataset)
-        assert isinstance(StageDataset(stage_name="s1"), Dataset)
         assert isinstance(_aggregate(), Dataset)
         # The protocol must be non-vacuous: arbitrary objects don't satisfy it.
         assert not isinstance(object(), Dataset)
@@ -72,7 +65,7 @@ class TestDatasetIdentity:
         assert hash(a) == hash(b)
         assert a != _aggregate(grain=Grain.of({_TIER}))
         assert a != Aggregate(
-            home=StageDataset(stage_name="s1"), recipe=_recipe(),
+            home=StoredDataset(data_source="ds", dataset_name="customers"), recipe=_recipe(),
             grain=Grain.of({_STATUS}),
         )
 

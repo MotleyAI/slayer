@@ -1,16 +1,16 @@
-"""Cross-model derived-column completeness.
+"""Cross-dataset derived-field completeness.
 
-Extends the #4a/#4b ``ColumnSqlKey`` support to the cross-model CTE path:
+Extends the #4a/#4b ``FieldSqlKey`` support to the cross-dataset CTE path:
 
-* Codex C1 — a cross-model aggregate target whose ``SlayerModel.filters``
-  references a derived column expands it (not a bogus ``target.derived``).
-* Codex C2 — a query filter on a joined derived column routed into the
+* Codex C1 — a cross-dataset aggregate target whose ``SlayerDataset.filters``
+  references a derived field expands it (not a bogus ``target.derived``).
+* Codex C2 — a query filter on a joined derived field routed into the
   target CTE renders the expanded predicate.
-* CR[7] — ``agg_kwarg_canonical_str`` canonicalizes a ``ColumnSqlKey``
+* CR[7] — ``agg_kwarg_canonical_str`` canonicalizes a ``FieldSqlKey``
   arg/kwarg instead of raising ``TypeError``.
-* CR[9] — typed re-rooting re-roots column-valued kwargs (strips the
+* CR[9] — typed re-rooting re-roots field-valued kwargs (strips the
   agg-source/target prefix) instead of dropping the path.
-* CR[11] — aggregate metadata for a derived source resolves via ``src.model``.
+* CR[11] — aggregate metadata for a derived source resolves via ``src.dataset``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 # ---------------------------------------------------------------------------
-# Unit: CR[7] agg_kwarg_canonical_str handles ColumnSqlKey
+# Unit: CR[7] agg_kwarg_canonical_str handles FieldSqlKey
 # ---------------------------------------------------------------------------
 
 
@@ -49,7 +49,7 @@ def test_agg_kwarg_canonical_str_columnsqlkey_joined():
 
 
 # ---------------------------------------------------------------------------
-# Engine fixture: orders -> customers, customers has derived columns
+# Engine fixture: orders -> customers, customers has derived fields
 # ---------------------------------------------------------------------------
 
 
@@ -83,8 +83,8 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    # Customers with a derived model filter (is_active) AND a derived
-    # column used in a query filter (big_spender).
+    # Customers with a derived dataset filter (is_active) AND a derived
+    # field used in a query filter (big_spender).
     await storage.save_dataset(
         SlayerDataset(
             name="customers",
@@ -95,11 +95,11 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 DatasetField(name="region", datatype=DataType.STRING),
                 DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="revenue", datatype=DataType.FLOAT, label="Revenue"),
-                DatasetField(name="is_active", sql="status = 'active'", datatype=DataType.BOOLEAN),
-                DatasetField(name="big_spender", sql="revenue > 60", datatype=DataType.BOOLEAN),
-                DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.FLOAT),
+                DatasetField(name="is_active", expression="status = 'active'", datatype=DataType.BOOLEAN),
+                DatasetField(name="big_spender", expression="revenue > 60", datatype=DataType.BOOLEAN),
+                DatasetField(name="rev_x2", expression="revenue * 2", datatype=DataType.FLOAT),
             ],
-            filters=["is_active"],
+            filters=["customers.is_active"],
         )
     )
     await storage.save_dataset(
@@ -121,7 +121,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 async def test_c1_target_derived_model_filter_expands(engine):
-    """The cross-model CTE applies the target's derived model filter
+    """The cross-dataset CTE applies the target's derived dataset filter
     (is_active = status='active') — inactive customers are excluded."""
     resp = await engine.execute(
         SlayerQuery.model_validate({
@@ -142,7 +142,7 @@ async def test_c1_target_derived_model_filter_expands(engine):
     assert "status" in dry.sql
     assert "'active'" in dry.sql
     by_region = {
-        r["orders.customers.region"]: r["orders.customers.revenue_sum"]
+        r["customers.region"]: r["customers.revenue_sum"]
         for r in resp.data
     }
     # NA: only active customer 1 (100); customer 2 (inactive, 50) excluded —
@@ -151,7 +151,7 @@ async def test_c1_target_derived_model_filter_expands(engine):
 
 
 async def test_c2_routed_query_filter_on_joined_derived_column(engine):
-    """A query filter on a joined derived column (customers.big_spender)
+    """A query filter on a joined derived field (customers.big_spender)
     routes into the target CTE and renders the expanded predicate."""
     q = SlayerQuery.model_validate({
         "population": "orders",
@@ -164,7 +164,7 @@ async def test_c2_routed_query_filter_on_joined_derived_column(engine):
     assert "revenue > 60" in dry.sql.replace('"', "")
     resp = await engine.execute(q)
     by_region = {
-        r["orders.customers.region"]: r["orders.customers.revenue_sum"]
+        r["customers.region"]: r["customers.revenue_sum"]
         for r in resp.data
     }
     # big_spender = revenue > 60 AND is_active (active): customer 1 (100, NA),
@@ -173,7 +173,7 @@ async def test_c2_routed_query_filter_on_joined_derived_column(engine):
 
 
 async def test_derived_column_as_cross_model_agg_source(engine: SlayerQueryEngine):
-    """A DERIVED column used as a cross-model aggregate source
+    """A DERIVED field used as a cross-dataset aggregate source
     (``sum(customers.rev_x2)`` where rev_x2 = revenue*2) re-roots and
     expands correctly in the CTE, and aliases as ``rev_x2_sum`` (not the
     star ``_sum`` form)."""
@@ -183,11 +183,11 @@ async def test_derived_column_as_cross_model_agg_source(engine: SlayerQueryEngin
         "metrics": [{"metric": "sum(customers.rev_x2)"}],
     })
     dry = await engine.execute(q, dry_run=True)
-    assert "orders.customers.rev_x2_sum" in dry.columns, dry.columns
+    assert "customers.rev_x2_sum" in dry.columns, dry.columns
     assert "_sum" not in [c.split(".")[-1] for c in dry.columns]
     resp = await engine.execute(q)
     by_region = {
-        r["orders.customers.region"]: r["orders.customers.rev_x2_sum"]
+        r["customers.region"]: r["customers.rev_x2_sum"]
         for r in resp.data
     }
     # is_active filter keeps cust1 (NA, 100*2=200) and cust3 (EU, 70*2=140); the
@@ -196,8 +196,8 @@ async def test_derived_column_as_cross_model_agg_source(engine: SlayerQueryEngin
 
 
 async def test_cr11_cross_model_agg_over_derived_column_metadata(engine: SlayerQueryEngine):
-    """An aggregate over a derived column resolves label/format via
-    src.model (not a path walk that could miss it)."""
+    """An aggregate over a derived field resolves label/format via
+    src.dataset (not a path walk that could miss it)."""
     resp = await engine.execute(
         SlayerQuery.model_validate({
             "population": "orders",
@@ -205,7 +205,7 @@ async def test_cr11_cross_model_agg_over_derived_column_metadata(engine: SlayerQ
             "metrics": [{"metric": "sum(customers.revenue)"}],
         })
     )
-    # revenue carries label "Revenue"; the cross-model measure inherits it.
-    meta = resp.attributes.metrics.get("orders.customers.revenue_sum")
+    # revenue carries label "Revenue"; the cross-dataset metric inherits it.
+    meta = resp.attributes.metrics.get("customers.revenue_sum")
     assert meta is not None
     assert meta.label == "Revenue"

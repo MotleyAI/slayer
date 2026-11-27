@@ -77,8 +77,8 @@ non-aggregate position (dimension, row filter).
 #### Scenario: Emitted SQL on every dialect
 - **WHEN** SQL is generated for `sum(flag)`, `avg(flag)`, `min(flag)` and `max(flag)` on each
   supported dialect
-- **THEN** each aggregate takes the integer form of `flag` as its input (T-SQL's `avg` reads it as a
-  float, since its integer `AVG` truncates), `min` / `max` convert
+- **THEN** each aggregate takes the integer form of `flag` as its input (T-SQL's and MySQL's `avg`
+  read it as a float, since their integer `AVG` truncates or keeps only four decimals), `min` / `max` convert
   the aggregate back to the dialect's boolean type, and no aggregate receives the raw boolean
 
 #### Scenario: Boolean weight
@@ -120,8 +120,9 @@ non-aggregate position (dimension, row filter).
 The result of an aggregation over a boolean-valued input SHALL be typed and formatted as:
 `sum` → INT with INTEGER format; `avg` → DOUBLE with PERCENT format unless the source column
 declares a format, which wins; `min` / `max` → BOOLEAN; every other numeric aggregation → DOUBLE,
-as over an INT source; the count family → INT; `first` / `last` and custom aggregations → the
-source type. Every surface that reports an aggregate's
+as over an INT source; the count family → INT; `first` / `last` → the source type; a custom
+aggregation → its declared or inferred type (per `aggregations/formula-templates` › A custom
+aggregation's result type). Every surface that reports an aggregate's
 type — the query plan, stage schemas consumed by a later stage, and the SQL facade's
 metric catalogue — SHALL report the same type for the same column and aggregation.
 
@@ -142,7 +143,12 @@ metric catalogue — SHALL report the same type for the same column and aggregat
 - **WHEN** the SQL facade lists the metrics of a model with a BOOLEAN, an INT, a DOUBLE, a TEXT
   and a TIMESTAMP column
 - **THEN** every metric's data type equals the type the query engine assigns the same column and
-  aggregation, including custom aggregations (the source type)
+  aggregation, including custom aggregations (their declared or inferred type)
+
+#### Scenario: A custom aggregation over a boolean takes its formula's type
+- **WHEN** a model defines `trues` as `COUNT(CASE WHEN {value} THEN 1 END)` and a query selects
+  `trues(flag)`
+- **THEN** the measure's type is INT, not BOOLEAN
 
 ### Requirement: Boolean defaults are the numeric set
 A BOOLEAN column with no explicit allowed-aggregations list SHALL accept exactly the aggregations

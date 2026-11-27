@@ -1,8 +1,8 @@
 """Tests for ``SchemaDriftError`` query-time wrap.
 
 When ``engine.execute()`` raises a DBAPI error, the engine attempts to
-attribute it to schema drift via ``validate_models``. If drift is found in
-the touched models, the original error is wrapped in ``SchemaDriftError``
+attribute it to schema drift via ``validate_datasets``. If drift is found in
+the touched datasets, the original error is wrapped in ``SchemaDriftError``
 (with ``original`` as ``__cause__``); otherwise the original error
 re-raises untouched.
 """
@@ -86,8 +86,8 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
     )
@@ -97,10 +97,10 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 DatasetField(
-                    name="customer_id", sql="customer_id", datatype=DataType.FLOAT
+                    name="customer_id", expression="customer_id", datatype=DataType.FLOAT
                 ),
             ],
             relationships=[
@@ -130,15 +130,15 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
         # Original error preserved as __cause__
         assert exc.value.__cause__ is not None
-        # Touched-models set covers orders
+        # Touched-datasets set covers orders
         assert "orders" in exc.value.datasets
-        # to_delete includes a WholeModelDelete on orders
+        # to_delete includes a WholeDatasetDelete on orders
         assert any(
             isinstance(e, WholeDatasetDelete) and e.dataset_name == "orders"
             for e in exc.value.to_delete
@@ -147,7 +147,7 @@ class TestSchemaDriftErrorWrap:
     async def test_dbapi_error_without_drift_re_raises_original(
         self, workspace: Path
     ) -> None:
-        """A model whose own SQL is broken (source tables and columns intact)
+        """A dataset whose own SQL is broken (source tables and columns intact)
         is not drift — the original DBAPI error must reach the caller."""
         engine, _ = await _setup(workspace)
         broken_model = SlayerDataset(
@@ -155,15 +155,15 @@ class TestSchemaDriftErrorWrap:
             sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
             ],
         )
         await engine.storage.save_dataset(broken_model)
 
         q = SlayerQuery.model_validate({
             "population": "broken",
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "metrics": [{"metric": "sum(broken.amount)", "alias": "total"}],
         })
         # Original SQLAlchemy/DBAPI error should bubble up — NOT
         # SchemaDriftError. Assert on the original error class so a
@@ -183,8 +183,8 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -206,7 +206,7 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT NO_SUCH_FUNCTION(1) AS x",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="x", sql="x", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="x", expression="x", datatype=DataType.FLOAT, primary_key=True),
                 ],
             )
         )
@@ -227,8 +227,8 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT id, amount FROM orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -237,7 +237,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_view",
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "metrics": [{"metric": "sum(orders_view.amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -260,8 +260,8 @@ class TestSchemaDriftErrorWrap:
                 ),
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -270,7 +270,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_by_batch",
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "metrics": [{"metric": "sum(orders_by_batch.amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -291,8 +291,8 @@ class TestSchemaDriftErrorWrap:
                 ),
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -301,7 +301,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_cte",
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "metrics": [{"metric": "sum(orders_cte.amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -317,8 +317,8 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT id, amount FROM orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -327,7 +327,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_view",
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "metrics": [{"metric": "sum(orders_view.amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -348,7 +348,7 @@ class TestSchemaDriftErrorWrap:
         with patch.object(engine, "_validate_read_set", side_effect=_boom):
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
             })
             # The original DBAPI error should bubble up — NOT SchemaDriftError
             # and NOT the RuntimeError from the failing attribution.
@@ -371,7 +371,7 @@ class TestHealthyPathNoOverhead:
         ) as scoped:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
             })
             resp = await engine.execute(q)
             assert resp.data is not None
@@ -382,20 +382,20 @@ class TestHealthyPathNoOverhead:
 class TestModelsTouchedComputation:
     async def test_touched_includes_join_targets(self, workspace: Path) -> None:
         engine, db_path = await _setup(workspace)
-        # Drop customers; orders query joins to customers, so customers must
-        # appear in the touched-models set even though the query syntactically
+        # Drop customers; the orders query walks the relationship to customers, so customers must
+        # appear in the touched-datasets set even though the query syntactically
         # only names "orders" as source.
         with transaction(db_path) as conn:
             conn.execute("DROP TABLE customers")
 
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
             "dimensions": ["customers.region"],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
-        # Both source_model and the join target must be reported as touched.
+        # Both the population and the relationship target must be reported as touched.
         assert "orders" in exc.value.datasets
         assert "customers" in exc.value.datasets
 
@@ -427,7 +427,7 @@ class TestIntrospectionUnavailable:
             ds = self._ds_with_one_table(tmpdir)
             model = SlayerDataset(
                 name="t", sql_table="t", data_source="live",
-                fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+                fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
             )
             async with _client(ds) as client:
                 with patch(

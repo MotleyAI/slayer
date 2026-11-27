@@ -22,7 +22,7 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1835_fixtures import (
     BAND35,
-    dev1835_models,
+    dev1835_datasets,
     month_td,
     q,
 )
@@ -36,7 +36,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 BAND = {"field": BAND35, "alias": "band"}
 RBAND = {
-    "field": "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END",
+    "field": "CASE WHEN sum(orders.amount, partition_by=orders.region) > 55 THEN 1 ELSE 0 END",
     "alias": "rband",
 }
 
@@ -44,44 +44,44 @@ RBAND = {
 def _cases() -> dict:
     return {
         "mig/bare_wm": q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
             ],
         ),
         "mig/bare_rk": q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="last(amount)", alias="l"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="last(orders.amount)", alias="l"),
             ],
         ),
         "lift/band_x_wm": q(
-            dimensions=["region", BAND], time_dimensions=month_td(),
+            dimensions=["orders.region", BAND], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         ),
         "lift/cumsum_over_bare_wm": q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="cumsum(sum(amount, window='90d'))", alias="x"),
+                QueryMetric(metric="cumsum(sum(orders.amount, window='90d'))", alias="x"),
             ],
         ),
         "dedup/dual_role": q(
-            dimensions=["region", RBAND],
+            dimensions=["orders.region", RBAND],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
         ),
     }
 
 
 async def _generate_one(query, dialect: str):
-    models = dev1835_models()
+    models = dev1835_datasets()
     try:
         return await _engine_generate(
             query=query, dataset=models[0], extra_datasets=models[1:],

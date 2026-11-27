@@ -1,21 +1,21 @@
-"""DEV-1743 — the SlayerModel v8 → v9 storage migration (WP4).
+"""The SlayerModel v8 → v9 storage migration (WP4).
 
 The registered v8→v9 converter is a no-op (like v7→v8): the actual legacy-``__``
 rewrite runs in the storage load path (``_migrate_and_refine_on_load``), because
-it needs sibling models to resolve multi-hop walks — a per-document dict
+it needs sibling datasets to resolve multi-hop walks — a per-document dict
 converter cannot see them. So these tests seed raw ``version: 8`` payloads and
 load them through the real backends.
 
 Fail-first:
 * ``CURRENT_VERSIONS['SlayerModel']`` reaches 9 and the step is registered;
 * a legacy ``customers__regions.name`` Mode-A qualifier is rewritten to the
-  dotted ``customers.regions.name`` on load (YAML and SQLite), and the file is
-  written back at version 9.
+  dotted ``customers.regions.name`` on load (YAML and SQLite); a save persists
+  it at the current version.
 
 Invariant locks:
 * an unresolvable ``__`` qualifier (a CTE alias, a physical table) is preserved
   byte-verbatim — the migration never touches what the runtime treats as opaque;
-* re-loading an already-migrated model is a no-op.
+* re-loading an already-migrated dataset is a no-op.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ def _orders_v8(*, region_sql: str) -> dict:
 
 
 def _customers__regions_v8() -> dict:
-    """A model literally named ``customers__regions`` (exact ``__`` name, D3)."""
+    """A dataset literally named ``customers__regions`` (exact ``__`` name, D3)."""
     return {
         "version": 8, "name": "customers__regions", "sql_table": "customers__regions",
         "data_source": "ds",
@@ -114,7 +114,7 @@ def _customers__regions_v8() -> dict:
 
 
 def _orders_v8_dual(*, region_sql: str) -> dict:
-    """orders joins BOTH ``customers`` (walk → regions) AND the exact model
+    """orders relates to BOTH ``customers`` (walk → regions) AND the exact dataset
     ``customers__regions`` — so ``customers__regions.name`` is ambiguous between
     a split-path and an exact name; the exact name must win (D1)."""
     return {
@@ -172,23 +172,26 @@ class TestLegacyAliasRewrittenOnLoad:
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
             col = loaded.get_field("region_name")
-            assert col.sql == "customers.regions.name"
+            assert col.definition_sql == "customers.regions.name"
             assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
     @pytest.mark.asyncio
-    async def test_yaml_writes_back_migrated_form(self) -> None:
+    async def test_yaml_save_persists_migrated_form(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(d, [
                 _orders_v8(region_sql="customers__regions.name"),
                 _customers_v8(), _regions_v8(),
             ])
-            await storage.get_dataset("orders", data_source="ds")
-            on_disk = yaml.safe_load(
-                open(os.path.join(d, "models", "ds", "orders.yaml")).read())
+            path = os.path.join(d, "models", "ds", "orders.yaml")
+            loaded = await storage.get_dataset("orders", data_source="ds")
+            assert loaded is not None
+            assert yaml.safe_load(open(path).read())["version"] == 8
+            await storage.save_dataset(loaded)
+            on_disk = yaml.safe_load(open(path).read())
             assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
             region_col = next(c for c in on_disk["fields"]
                               if c["name"] == "region_name")
-            assert region_col["sql"] == "customers.regions.name"
+            assert region_col["expression"]["dialects"][0]["expression"] == "customers.regions.name"
 
     @pytest.mark.asyncio
     async def test_sqlite_rewrites_two_hop_alias_to_dotted(self) -> None:
@@ -199,7 +202,7 @@ class TestLegacyAliasRewrittenOnLoad:
             ])
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "customers.regions.name"
+            assert loaded.get_field("region_name").definition_sql == "customers.regions.name"
 
 
 # --------------------------------------------------------------------------- #
@@ -236,7 +239,7 @@ class TestRewritePrecedesValidation:
 # --------------------------------------------------------------------------- #
 # [C7] Sibling raw-load works through the resolve_storage factory path, not
 # just a directly-constructed backend — the multi-hop rewrite reads sibling
-# models through whatever the factory returns.
+# datasets through whatever the factory returns.
 # --------------------------------------------------------------------------- #
 class TestSiblingLoadThroughFactory:
     @pytest.mark.asyncio
@@ -249,7 +252,7 @@ class TestSiblingLoadThroughFactory:
             storage = resolve_storage(d)
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "customers.regions.name"
+            assert loaded.get_field("region_name").definition_sql == "customers.regions.name"
 
 
 # --------------------------------------------------------------------------- #
@@ -258,7 +261,7 @@ class TestSiblingLoadThroughFactory:
 class TestOpaqueQualifierPreserved:
     @pytest.mark.asyncio
     async def test_non_join_dunder_left_untouched(self) -> None:
-        # foo is not a join target on orders — the migration cannot resolve
+        # foo is not a relationship target on orders — the migration cannot resolve
         # foo__bar as a walk, so it stays exactly as written (opaque; a user's
         # own CTE alias would look like this).
         with tempfile.TemporaryDirectory() as d:
@@ -268,11 +271,11 @@ class TestOpaqueQualifierPreserved:
             ])
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "foo__bar"
+            assert loaded.get_field("region_name").definition_sql == "foo__bar"
 
 
 # --------------------------------------------------------------------------- #
-# Idempotence: an already-migrated (current-version) model is untouched.
+# Idempotence: an already-migrated (current-version) dataset is untouched.
 # --------------------------------------------------------------------------- #
 class TestIdempotence:
     @pytest.mark.asyncio
@@ -284,8 +287,8 @@ class TestIdempotence:
             ])
             first = await storage.get_dataset("orders", data_source="ds")
             second = await storage.get_dataset("orders", data_source="ds")
-            assert first.get_field("region_name").sql == \
-                second.get_field("region_name").sql == "customers.regions.name"
+            assert first.get_field("region_name").definition_sql == \
+                second.get_field("region_name").definition_sql == "customers.regions.name"
             assert second.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
@@ -297,7 +300,7 @@ class TestPartialResolvableSubset:
     @pytest.mark.asyncio
     async def test_only_resolvable_chain_rewritten(self) -> None:
         # customers__regions resolves (orders->customers->regions); cte__x is not
-        # a join walk, so it must survive untouched in the same expression.
+        # a relationship walk, so it must survive untouched in the same expression.
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(d, [
                 _orders_v8(region_sql="customers__regions.name || cte__x.y"),
@@ -305,20 +308,20 @@ class TestPartialResolvableSubset:
             ])
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            sql = loaded.get_field("region_name").sql
+            sql = loaded.get_field("region_name").definition_sql
             assert "customers.regions.name" in sql
             assert "cte__x.y" in sql
             assert "customers__regions" not in sql
 
 
 # --------------------------------------------------------------------------- #
-# D1 exact-beats-split: a ``__``-named EXACT join target is never rewritten as a
+# D1 exact-beats-split: a ``__``-named EXACT relationship target is never rewritten as a
 # legacy split-alias, even when the split path also happens to be a valid walk.
 # --------------------------------------------------------------------------- #
 class TestExactDunderTargetBeatsSplit:
     @pytest.mark.asyncio
     async def test_exact_dunder_join_target_not_rewritten(self) -> None:
-        """FAIL-FIRST: orders joins the exact model ``customers__regions`` AND
+        """FAIL-FIRST: orders relates to the exact dataset ``customers__regions`` AND
         has the walk customers→regions. ``customers__regions.name`` must stay
         verbatim (exact name wins), not be rewritten to ``customers.regions.name``."""
         with tempfile.TemporaryDirectory() as d:
@@ -328,7 +331,7 @@ class TestExactDunderTargetBeatsSplit:
             ])
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "customers__regions.name"
+            assert loaded.get_field("region_name").definition_sql == "customers__regions.name"
 
 
 # --------------------------------------------------------------------------- #
@@ -359,7 +362,7 @@ class TestLegacyAliasRewriteHelper:
 
 
 # --------------------------------------------------------------------------- #
-# [C1] A v8 model migrates even when its datasource is unreachable — the version
+# [C1] A v8 dataset migrates even when its datasource is unreachable — the version
 # bump must not force live-schema type refinement.
 # --------------------------------------------------------------------------- #
 class TestMigrationDoesNotForceRefinement:
@@ -380,4 +383,4 @@ class TestMigrationDoesNotForceRefinement:
                     yaml.dump(p, f, sort_keys=False)
             loaded = await storage.get_dataset("orders", data_source="ds")
             assert loaded is not None
-            assert loaded.get_field("region_name").sql == "customers.regions.name"
+            assert loaded.get_field("region_name").definition_sql == "customers.regions.name"

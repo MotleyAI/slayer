@@ -61,10 +61,14 @@ class ReflectedColumn(BaseModel):
     type_name: str | None = None
     # SQLAlchemy's ``quoted_name`` flag on ``name`` (a lower-case Snowflake / Oracle name).
     quoted: bool = False
+    #: The dialect's type holds an instant (BigQuery ``TIMESTAMP``, MySQL ``TIMESTAMP``, ClickHouse zoned ``DateTime``).
+    instant: bool = False
 
     @property
     def narrowed_type(self) -> DataType:
         """``type`` narrowed by the database's type name (``Decimal``, ``DateTimeTz``)."""
+        if self.instant and self.type is DataType.DATETIME:
+            return DataType.DATETIME_TZ
         return finer_datatype(self.type, self.db_type or self.type_name)
 
 
@@ -79,7 +83,7 @@ class ResultColumnType(BaseModel):
 
     @property
     def lossy_db_type(self) -> str | None:
-        """The type name a stored ``Column.db_type`` keeps: only where ``type`` is lossy (opaque, a list or
+        """The type name a stored ``DatasetField.db_type`` keeps: only where ``type`` is lossy (opaque, a list or
         exact-numeric)."""
         if self.db_type is None:
             return None
@@ -153,7 +157,8 @@ _TYPE_NAME_MAP = {
     "TIMESTAMP_LTZ": DataType.DATETIME,
     "TIMESTAMP_TZ": DataType.DATETIME,
     "DATE": DataType.DATE,
-    "TIME": DataType.DATETIME,
+    "TIME": DataType.TIME,
+    "TIME64": DataType.TIME,
     "INTERVAL": DataType.STRING,  # no interval DataType; groupable as TEXT
     # ClickHouse
     "INT8": DataType.INTEGER,
@@ -250,6 +255,27 @@ def parse_info_schema_is_float(data_type_str: str) -> bool:
     return True
 
 
+# Time-of-day base names and zone suffixes, each to whether it makes the type zoned.
+_TIME_OF_DAY_BASES = {"TIME": False, "TIME64": False, "TIMETZ": True}
+_TIME_ZONE_SUFFIXES = {"": False, "WITHOUT TIME ZONE": False, "WITH TIME ZONE": True}
+
+
+def time_of_day_type(name: str) -> DataType | None:
+    """``Time`` for a time-of-day type name without a time zone, ``Opaque`` for a zoned one, else ``None``."""
+    head, paren, rest = name.strip().partition("(")
+    if paren:
+        precision, close, rest = rest.partition(")")
+        if not close or not precision.strip().isdigit():
+            return None
+        base, suffix = head.strip().upper(), " ".join(rest.upper().split())
+    else:
+        base, _, suffix = " ".join(head.upper().split()).partition(" ")
+    if base not in _TIME_OF_DAY_BASES or suffix not in _TIME_ZONE_SUFFIXES or (base == "TIMETZ" and suffix):
+        return None
+    zoned = _TIME_OF_DAY_BASES[base] or _TIME_ZONE_SUFFIXES[suffix]
+    return DataType.OPAQUE if zoned else DataType.TIME
+
+
 def _is_container_name(name: str) -> bool:
     if name.endswith("[]"):
         return True
@@ -270,21 +296,26 @@ def info_schema_type(
         return DataType.STRING, False
     if base in _OPAQUE_TYPE_NAMES:
         return DataType.OPAQUE, False
+    time_of_day = time_of_day_type(name)
+    if time_of_day is not None:
+        return time_of_day, False
     if is_exact_numeric_db_type(base):
         is_float = parse_info_schema_is_float(name)
         return (DataType.FLOAT if is_float else DataType.INTEGER), is_float
     mapped = _TYPE_NAME_MAP.get(base)
     if mapped is not None:
         return mapped, base in _FLOAT_LIKE_TYPE_NAMES
-    if "DOUBLE" in base or "FLOAT" in base or "REAL" in base:
-        return DataType.FLOAT, True
-    if "TIMESTAMP" in base or "DATETIME" in base:
-        return DataType.DATETIME, False
-    if "INTERVAL" in base:
-        return DataType.STRING, False
-    if "INT" in base:
-        return DataType.INTEGER, False
-    return DataType.STRING, False
+    return next(((datatype, is_float) for fragments, datatype, is_float in _TYPE_NAME_FRAGMENTS
+                 if any(fragment in base for fragment in fragments)), (DataType.STRING, False))
+
+
+# An unmapped base name's type by the first fragment it contains: ``(fragments, type, is_float)``.
+_TYPE_NAME_FRAGMENTS: tuple[tuple[tuple[str, ...], DataType, bool], ...] = (
+    (("DOUBLE", "FLOAT", "REAL"), DataType.FLOAT, True),
+    (("TIMESTAMP", "DATETIME"), DataType.DATETIME, False),
+    (("INTERVAL",), DataType.STRING, False),
+    (("INT",), DataType.INTEGER, False),
+)
 
 
 def info_schema_list_element(data_type_str: str | None) -> DataType | None:
@@ -318,9 +349,10 @@ def result_column_type_of_name(
 def column_from_type_string(
     *, name: str, data_type: str | None, comment: str | None = None, overrides: Mapping[str, DataType] | None = None,
     zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(),
+    instant: Callable[[str], bool] | None = None,
 ) -> ReflectedColumn:
-    """A column read from a catalog type string; ``db_type`` kept where ``DataType`` is lossy (a list, exact
-    numerics, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
+    """A column read from a catalog type string; ``db_type`` kept where ``DataType`` is lossy (opaque, a list,
+    exact numerics, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
     unwrapped = unwrap_clickhouse_wrapper_str(data_type) if data_type else ""
     element = info_schema_list_element(unwrapped)
     if element is not None:
@@ -330,10 +362,12 @@ def column_from_type_string(
         )
     mapped, is_float = info_schema_type(unwrapped, overrides=overrides)
     word = unwrapped.split("(")[0].upper().strip()
-    lossy = is_exact_numeric_db_type(unwrapped) or word in json_types or unwrapped.upper() in zoned_types
+    lossy = (mapped.is_opaque or is_exact_numeric_db_type(unwrapped) or word in json_types
+             or unwrapped.upper() in zoned_types)
     return ReflectedColumn(
         name=name, type=mapped, is_float=is_float, db_type=unwrapped if lossy else None,
         comment=clean_comment(comment), type_name=unwrapped or None,
+        instant=bool(unwrapped) and instant is not None and instant(unwrapped),
     )
 
 
@@ -356,6 +390,11 @@ def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEn
 
 
 #: Element types that are records or containers: a list of them has opaque elements.
+def is_untyped_sa_type(sa_type: sa.types.TypeEngine) -> bool:
+    """A type the driver did not recognise (``NullType``), a ClickHouse wrapper around one included."""
+    return isinstance(_unwrap_clickhouse_wrappers(sa_type), sa.types.NullType)
+
+
 _OPAQUE_ELEMENT_TYPE_NAMES = frozenset({"STRUCT", "RECORD", "TUPLE", "MAP", "OBJECT", "VARIANT", "ROW", "JSON"})
 
 
@@ -404,8 +443,8 @@ def list_db_type(sa_type: sa.types.TypeEngine, *, sa_dialect: Any = None) -> str
     return f"{type(_unwrap_clickhouse_wrappers(item)).__name__.upper()}[]"
 
 
-def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
-    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+def _sa_class_type(sa_type: sa.types.TypeEngine) -> DataType | None:
+    """The type a SQLAlchemy type's class settles before its name is read, else ``None``."""
     if _sa_list_item(sa_type)[0]:
         return DataType.ARRAY
     # mssql.TIMESTAMP is rowversion (binary), and its name collides with sa.TIMESTAMP.
@@ -414,18 +453,31 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     # Any dialect's UUID, e.g. SQL Server UNIQUEIDENTIFIER.
     if isinstance(sa_type, sa.Uuid):
         return DataType.STRING
+    if isinstance(sa_type, sa.Time):
+        # SQLite's affinity reader passes a ``TIME(p)`` precision as ``timezone``.
+        return DataType.OPAQUE if getattr(sa_type, "timezone", False) is True else DataType.TIME
+    return None
+
+
+def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    by_class = _sa_class_type(sa_type)
+    if by_class is not None:
+        return by_class
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
     if type_name in _CONTAINER_PREFIXES or _is_container_name(str(sa_type)):
         return DataType.STRING
+    time_of_day = time_of_day_type(str(sa_type)) or time_of_day_type(type_name)
+    if time_of_day is not None:
+        return time_of_day
     if type_name in _OPAQUE_TYPE_NAMES or type_str in _OPAQUE_TYPE_NAMES:
         return DataType.OPAQUE
     if is_exact_numeric_db_type(type_name) or is_exact_numeric_db_type(type_str):
         return DataType.FLOAT if _sa_type_is_float(sa_type) else DataType.INTEGER
-    if type_name in _TYPE_NAME_MAP:
-        return _TYPE_NAME_MAP[type_name]
-    if type_str in _TYPE_NAME_MAP:
-        return _TYPE_NAME_MAP[type_str]
+    mapped = _TYPE_NAME_MAP.get(type_name, _TYPE_NAME_MAP.get(type_str))
+    if mapped is not None:
+        return mapped
     if type_name not in _logged_unmapped_sa_types:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
@@ -440,7 +492,7 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
 
 
 def _raw_db_type_str(sa_type: sa.types.TypeEngine, *, sa_dialect: Any = None) -> str | None:
-    """Best-effort raw database type string for ``Column.db_type``, spelled by ``sa_dialect`` when given (never raises)."""
+    """Best-effort raw database type string for ``DatasetField.db_type``, spelled by ``sa_dialect`` when given (never raises)."""
     if sa_dialect is not None:
         try:
             compiled = str(sa_type.compile(dialect=sa_dialect)).strip()
@@ -492,6 +544,7 @@ def _sa_type_is_json(sa_type: sa.types.TypeEngine, *, json_types: frozenset[str]
 def column_from_sa_type(
     *, name: str, sa_type: sa.types.TypeEngine, comment: str | None = None,
     zoned_types: frozenset[str] = frozenset(), json_types: frozenset[str] = frozenset(), sa_dialect: Any = None,
+    instant: Callable[[str], bool] | None = None,
 ) -> ReflectedColumn:
     """A column read through the Inspector; ``db_type`` kept only where ``DataType`` is lossy (opaque, a list,
     exact NUMERIC/DECIMAL, a JSON type in ``json_types``, a zoned timestamp in ``zoned_types``)."""
@@ -506,9 +559,11 @@ def column_from_sa_type(
     lossy = data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) or _sa_type_is_json(
         sa_type, json_types=json_types,
     ) or type(sa_type).__name__.upper() in zoned_types
+    names = (type(_unwrap_clickhouse_wrappers(sa_type)).__name__, type_name or "")
     return ReflectedColumn(
         name=name, type=data_type, is_float=_sa_type_is_float(sa_type), db_type=type_name if lossy else None,
         comment=clean_comment(comment), type_name=type_name, quoted=getattr(name, "quote", None) is True,
+        instant=instant is not None and any(instant(n) for n in names if n),
     )
 
 

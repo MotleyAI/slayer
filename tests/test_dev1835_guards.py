@@ -5,12 +5,12 @@ the post-projection mixed-filter twin, ``time_shift``-over-ranked, and the
 residual windowed/first-last union-grain guard — asserted absent from
 the package sources. Preserved verbatim: G8 (duration syntax), G2 (time
 resolution), and the ranked no-ranking-column error.
-Resolved: G3 (windowed cross-model) is now a precise attributability
+Resolved: G3 (windowed cross-dataset) is now a precise attributability
 error naming the unreachable time dimension, no longer a deferral.
 
 Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   The lifted windowed/ranked guard leaves no residue . TestDeletedGuardResidue
-  Cross-model measures still guarded ................. (tests/test_dev1837_guards.py)
+  Cross-dataset metrics still guarded ................ (tests/test_dev1837_guards.py)
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ G2_MESSAGE = (
     "  suggestion: Add a single time_dimensions entry, or set main_time_dimension "
     "to select among multiple time dimensions."
 )
-NO_RANKING_COLUMN = (
+NO_RANKING_FIELD = (
     "first/last aggregation requires a ranking time field "
     "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
     "dataset's default_time_dimension); none is resolvable for "
@@ -95,8 +95,8 @@ class TestDeletedGuardResidue:
 class TestPreservedGuardsVerbatim:
     async def test_g8_malformed_duration(self) -> None:
         query = q(
-            dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='90x')", alias="w")],
+            dimensions=["orders.region"], time_dimensions=month_td(),
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90x')", alias="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -104,8 +104,8 @@ class TestPreservedGuardsVerbatim:
 
     async def test_g2_no_resolvable_time_dimension(self) -> None:
         query = q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -113,18 +113,18 @@ class TestPreservedGuardsVerbatim:
 
     async def test_ranked_no_ranking_column(self) -> None:
         models = dev1739_datasets()
-        # A second temporal column leaves no sole-column default either.
+        # A second temporal field leaves no sole-field default either.
         models[0] = models[0].model_copy(update={
             "default_time_dimension": None,
-            "fields": [*models[0].fields, DatasetField(name="updated_at", sql="ordered_at", datatype=DataType.DATETIME)],
+            "fields": [*models[0].fields, DatasetField(name="updated_at", expression="ordered_at", datatype=DataType.DATETIME)],
         })
         query = q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="last(amount)", alias="l")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query, datasets=models)
-        assert str(ei.value) == NO_RANKING_COLUMN
+        assert str(ei.value) == NO_RANKING_FIELD
 
 
 class TestRepointedGuards:
@@ -132,7 +132,7 @@ class TestRepointedGuards:
         self,
     ) -> None:
         # The former blanket G3 deferral resolves into a precise
-        # attributability error: the active time dimension is a host column,
+        # attributability error: the active time dimension is a host field,
         # unreachable from the customers root.
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),

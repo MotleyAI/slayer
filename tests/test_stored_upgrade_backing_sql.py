@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from collections.abc import AsyncGenerator
@@ -15,6 +16,7 @@ from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.inspect.service import InspectService
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
+from tests._storage_upgrade_cli import store_path, upgrade
 from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
@@ -55,6 +57,8 @@ async def test_v14_model_loads_without_backing_sql(storage: StorageBackend) -> N
     model = await storage.get_dataset("rev", data_source=DS)
     assert model is not None
     assert "backing_query_sql" not in model.model_dump()
+    assert (await raw_doc(storage, "rev"))["backing_query_sql"] == CACHED_SQL
+    assert (await asyncio.to_thread(upgrade, store_path(storage))).code == 0
     doc = await raw_doc(storage, "rev")
     assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
     assert "backing_query_sql" not in doc
@@ -90,7 +94,7 @@ def test_rest_returns_no_backing_sql() -> None:
 
 
 async def test_dry_run_renders_the_sql(storage: StorageBackend) -> None:
-    response = await run(storage, {"population": "rev", "metrics": [{"metric": "sum(rev)"}]}, dry_run=True)
+    response = await run(storage, {"population": "rev", "metrics": [{"metric": "sum(rev.rev)"}]}, dry_run=True)
     assert response.sql is not None
     assert "orders" in response.sql
     assert "stale_marker" not in response.sql

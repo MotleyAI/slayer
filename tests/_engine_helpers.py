@@ -1,21 +1,5 @@
-"""Shared test helpers for engine-driven SQL-shape assertions.
-
-Used by tests migrated off the legacy ``slayer.engine.enrichment`` pipeline.
-Naming intentionally underscored so pytest skips it
-during test discovery while still allowing ``from tests._engine_helpers
-import ...`` from individual test modules.
-
-Helpers:
-
-* :func:`_assert_valid_sql` — verifies generated SQL parses with sqlglot
-  and contains no nested ``WITH`` clause. Lifted from the legacy
-  ``test_sql_generator.py`` ``_validating_generate`` wrapper.
-* :func:`_engine_generate` — builds a fresh ephemeral ``YAMLStorage`` +
-  ``SlayerQueryEngine`` for a single ``SlayerModel``, runs the supplied
-  ``SlayerQuery`` with ``dry_run=True``, and returns the emitted SQL.
-  Mirrors the legacy ``_generate(query, model)`` semantics on the
-  typed pipeline.
-"""
+"""Shared engine test helpers: seeded executing engines, dry-run SQL generation and SQL-shape assertions
+(underscored so pytest skips the module)."""
 
 from __future__ import annotations
 
@@ -28,6 +12,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import Any, Optional
 
+import duckdb
 import pytest
 import sqlalchemy as sa
 import sqlglot
@@ -44,6 +29,7 @@ from slayer.database import client as sql_client
 from slayer.database import engine_factory
 from slayer.sql.dialects import SQLGLOT_NAMES, dialect_for_ds_type
 from slayer.storage.base import StorageBackend
+from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Dialect → file extension for a seeded on-disk database (cosmetic; the
@@ -144,7 +130,7 @@ async def seeded_exec_engine(
     clock: Optional[Callable[[], datetime]] = None,
     datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> AsyncGenerator[tuple[SlayerQueryEngine, str]]:
-    """The one seeded executing-engine context: seeds a temp db (``seed(db_path)``), registers ``models``
+    """The one seeded executing-engine context: seeds a temp db (``seed(db_path)``), registers ``datasets``
     against a ``dialect``-typed datasource, and yields ``(engine, db_path)``, owned by ``owned_query_engine``
     so no engine outlives its file."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -158,14 +144,18 @@ async def seeded_exec_engine(
             yield engine, db_path
 
 
+def seed_tables(db_path: str, tables: dict[str, tuple[str, list[tuple[Any, ...]]]]) -> None:
+    """Create and fill ``{name: (column DDL, rows)}`` in the SQLite or DuckDB file at ``db_path``."""
+    with duckdb.connect(db_path) if db_path.endswith(".duckdb") else transaction(db_path) as con:
+        for name, (columns, rows) in tables.items():
+            con.execute(f"CREATE TABLE {name} ({columns})")
+            con.executemany(f"INSERT INTO {name} VALUES ({', '.join('?' * len(rows[0]))})", rows)
+
+
 async def make_seeded_sqlite_engine(
     *, base_dir: str, db_path: str, datasets: list[SlayerDataset], datasource: str = "test"
 ) -> SlayerQueryEngine:
-    """Storage + engine bound to a seeded SQLite file.
-
-    Consolidates the byte-identical ``make_sqlite_engine`` helpers previously
-    duplicated across the per-DEV fixture modules; they now delegate here.
-    """
+    """Storage + engine bound to a seeded SQLite file."""
     for model in datasets:
         if model.data_source != datasource:
             raise ValueError(
@@ -182,7 +172,7 @@ async def make_seeded_sqlite_engine(
 
 
 def datasets_bundle(datasets_by_name: dict[str, SlayerDataset], *, dialect: str = "postgres") -> ResolvedSourceBundle:
-    """A rootless bundle over a model map, for unit tests over plain keys."""
+    """A rootless bundle over a dataset map, for unit tests over plain keys."""
     return ResolvedSourceBundle(dialect=dialect, referenced_datasets=list(datasets_by_name.values()))
 
 
@@ -220,20 +210,8 @@ async def _engine_generate(
     clock: Optional[Callable[[], datetime]] = None,
     datasource_fields: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    """Build a fresh ``YAMLStorage`` + ``SlayerQueryEngine`` for ``model``,
-    run ``query`` with ``dry_run=True``, and return the emitted SQL.
-
-    Each call creates and tears down its own temporary directory so callers
-    can freely compare two model variants (with vs without a saved measure,
-    etc.) without storage cross-talk. ``extra_models`` is an optional list
-    of additional ``SlayerModel`` instances to register in the same store
-    (e.g. join targets sharing ``model.data_source``).
-
-    ``validate=False`` skips save-time derived-column cycle
-    detection for the few migrated tests that feed intentionally-shaped
-    models the cycle validator would otherwise reject. ``datasource_fields``
-    adds extra ``DatasourceConfig`` fields.
-    """
+    """The SQL a dry run of ``query`` emits over ``dataset`` (plus ``extra_datasets``) in a fresh temporary
+    store; ``validate=False`` skips save-time cycle detection, ``datasource_fields`` adds datasource fields."""
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig.model_validate(
@@ -272,7 +250,7 @@ def _where_text(sql: str, *, dialect: str = "postgres") -> str:
 
 
 def _dataset_where_text(sql: str, *, dialect: str = "postgres") -> str:
-    """Rendered WHERE of the outermost SELECT's FROM when it is a model's filtered dataset ('' if none)."""
+    """Rendered WHERE of the outermost SELECT's FROM when it is a dataset's filtered subquery ('' if none)."""
     source = _outer_select(sql, dialect=dialect).args["from_"].this
     where = source.this.args.get("where") if isinstance(source, exp.Subquery) else None
     return where.this.sql(dialect=dialect) if where is not None else ""
@@ -290,17 +268,8 @@ def _norm(s: str) -> str:
 
 
 def _join_aliases(sql: str, *, dialect: str = "postgres") -> set[str]:
-    """The set of joined-table aliases in ``sql``.
-
-    Walks every ``JOIN`` node and collects the joined table's alias (or
-    bare name when unaliased) — e.g. ``LEFT JOIN customers AS customers``
-    yields ``customers``; ``LEFT JOIN regions AS customers__regions``
-    yields ``customers__regions``.
-
-    Shared out of ``tests/test_sql_generator.py`` so the
-    frame-bound tests assert against real JOIN nodes rather than alias
-    substrings in predicate text.
-    """
+    """The alias (or bare name) of every joined table in ``sql``, e.g. ``customers__regions`` for
+    ``LEFT JOIN regions AS customers__regions``."""
     tree = sqlglot.parse_one(sql, dialect=dialect)
     aliases: set[str] = set()
     for join in tree.find_all(exp.Join):
@@ -311,20 +280,8 @@ def _join_aliases(sql: str, *, dialect: str = "postgres") -> set[str]:
 
 
 def _extract_src_body(sql: str) -> str:
-    """Pull out the ``_src`` subquery body from a generated window-measure SQL.
-
-    Resilient when the outer query also contains other LEFT JOIN (...) blocks
-    (e.g. cross-model measure subqueries): anchors on the ``\\n) AS _src`` suffix
-    and reverse-searches for the matching ``LEFT JOIN (\\n`` before it. Multiple
-    windowed measures emit SIBLING ``) AS _src`` closes (never nested); anchor on
-    the LAST so the reverse search pairs it with the last measure's opening.
-
-    The missing-anchor assertion is not reachable with today's generator output
-    (CodeRabbit): without it the helper silently returns a slice from an
-    arbitrary offset, so a future change to the join keyword or its formatting
-    would surface as a confusing assertion against the wrong text rather than a
-    clear failure here.
-    """
+    """The last ``_src`` subquery body of a window-metric SQL: anchors on the last ``\\n) AS _src`` (sibling
+    closes, never nested) and reverse-searches for its ``LEFT JOIN (\\n``; a missing anchor fails loudly."""
     closes = list(re.finditer(r"\n[ \t]*\) AS _src", sql))
     assert closes, f"No `) AS _src` closing the _src subquery in:\n{sql}"
     end = closes[-1].start()
@@ -366,8 +323,8 @@ def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
 def plan_as_producer(*, query: SlayerQuery, bundle):
     """Compile ``query`` through the producer entry (``compile_synthesized``), with no
     inherited population."""
-    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
-    prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
+    scope = resolve_scope(bundle=bundle)
+    prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
     return stages.compile_synthesized(
         prebound, source_dataset=query.population if isinstance(query.population, str) else None,
         bundle=bundle, scope=scope, stage_schemas={},
@@ -379,7 +336,7 @@ async def orders_agg_sql(
     expression: str, *, dialect: str = "postgres",
     aggregations: Optional[list[Aggregation]] = None,
 ) -> str:
-    """Whitespace-normalised SQL for one ``formula`` measure over a flat ``orders`` model
+    """Whitespace-normalised SQL for one ``expression`` metric over a flat ``orders`` dataset
     (``amount``, ``quantity``, ``status`` and the masked ``completed_amount``)."""
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
@@ -388,8 +345,8 @@ async def orders_agg_sql(
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="quantity", datatype=DataType.FLOAT),
             DatasetField(name="status", datatype=DataType.STRING),
-            DatasetField(name="completed_amount", datatype=DataType.FLOAT, sql="amount",
-                   filter="status = 'completed'"),
+            DatasetField(name="completed_amount", datatype=DataType.FLOAT, expression="amount",
+                   filter="orders.status = 'completed'"),
         ],
         aggregations=aggregations or [],
     )

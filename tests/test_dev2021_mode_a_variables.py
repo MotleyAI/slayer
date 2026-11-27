@@ -1,4 +1,4 @@
-"""A ``{var}`` in a model's Mode-A text binds as a literal node, never as spliced text.
+"""A ``{var}`` in a dataset's Mode-A text binds as a literal node, never as spliced text.
 
 Spec: queries/variables › Mode-A surfaces bind variables as literals; models/save-validation;
 models/column-filters › Variables substitute into both fields.
@@ -15,6 +15,7 @@ import duckdb
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
@@ -59,22 +60,22 @@ def _seed_duckdb(db_path: str) -> None:
         con.close()
 
 
-_BASE_COLUMNS = (
+_BASE_FIELDS = (
     ("id", DataType.INTEGER), ("status", DataType.STRING), ("name", DataType.STRING),
     ("amount", DataType.FLOAT), ("created_at", DataType.DATE),
 )
 
 
-def _columns(*extra: DatasetField) -> list[DatasetField]:
-    return [DatasetField(name=n, datatype=t, primary_key=n == "id") for n, t in _BASE_COLUMNS] + list(extra)
+def _fields(*extra: DatasetField) -> list[DatasetField]:
+    return [DatasetField(name=n, datatype=t, primary_key=n == "id") for n, t in _BASE_FIELDS] + list(extra)
 
 
 def _table_dataset(*, filters: list[str] | None = None, extra: tuple[DatasetField, ...] = (), name: str = "orders") -> SlayerDataset:
-    return SlayerDataset(name=name, sql_table="orders", data_source=DS, filters=filters or [], fields=_columns(*extra))
+    return SlayerDataset(name=name, sql_table="orders", data_source=DS, filters=filters or [], fields=_fields(*extra))
 
 
 def _sql_dataset(sql: str, *, name: str = "orders_sql") -> SlayerDataset:
-    return SlayerDataset(name=name, sql=sql, data_source=DS, fields=_columns())
+    return SlayerDataset(name=name, sql=sql, data_source=DS, fields=_fields())
 
 
 def _query(source: str, expression: str, *, variables: dict[str, Any] | None = None, **extra: Any) -> SlayerQuery:
@@ -95,7 +96,7 @@ class _Env:
 
     async def value(self, dataset: SlayerDataset, query: SlayerQuery) -> Any:
         resp = await self.run(dataset, query)
-        return resp.data[0][f"{dataset.name}.v"]
+        return resp.data[0]["v"]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -137,19 +138,19 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
-_SCALED = DatasetField(name="scaled", sql="amount * {k}", datatype=DataType.FLOAT)
-_FLOORED = DatasetField(name="big", sql="amount", filter="amount >= {floor}", datatype=DataType.FLOAT)
-_TAGGED = DatasetField(name="tagged", sql="name || '{suffix}'", datatype=DataType.STRING)
-_FLAGGED = DatasetField(name="flagged", sql="CASE WHEN {flag} THEN amount ELSE 0 END", datatype=DataType.FLOAT)
+_SCALED = DatasetField(name="scaled", expression="amount * {k}", datatype=DataType.FLOAT)
+_FLOORED = DatasetField(name="big", expression="amount", filter="amount >= {floor}", datatype=DataType.FLOAT)
+_TAGGED = DatasetField(name="tagged", expression="name || '{suffix}'", datatype=DataType.STRING)
+_FLAGGED = DatasetField(name="flagged", expression="CASE WHEN {flag} THEN amount ELSE 0 END", datatype=DataType.FLOAT)
 
-#: (model, formula, variables) — one hostile value per Mode-A surface.
+#: (dataset, expression, variables) — one hostile value per Mode-A surface.
 _HOSTILE = {
-    "column-sql": (lambda: _table_dataset(extra=(_SCALED,)), "sum(scaled)", {"k": _HOSTILE_SCALAR}),
-    "column-filter": (lambda: _table_dataset(extra=(_FLOORED,)), "sum(big)", {"floor": _HOSTILE_PREDICATE}),
-    "model-filter": (lambda: _table_dataset(filters=["amount >= {floor}"]), "sum(amount)", {"floor": _HOSTILE_PREDICATE}),
-    "model-sql": (lambda: _sql_dataset("SELECT * FROM orders WHERE amount >= {floor}"), "sum(amount)",
+    "column-sql": (lambda: _table_dataset(extra=(_SCALED,)), "sum(orders.scaled)", {"k": _HOSTILE_SCALAR}),
+    "column-filter": (lambda: _table_dataset(extra=(_FLOORED,)), "sum(orders.big)", {"floor": _HOSTILE_PREDICATE}),
+    "model-filter": (lambda: _table_dataset(filters=["amount >= {floor}"]), "sum(orders.amount)", {"floor": _HOSTILE_PREDICATE}),
+    "model-sql": (lambda: _sql_dataset("SELECT * FROM orders WHERE amount >= {floor}"), "sum(orders_sql.amount)",
                   {"floor": _HOSTILE_PREDICATE}),
-    "string-in-bare-slot": (lambda: _table_dataset(extra=(_SCALED,)), "sum(scaled)", {"k": "abc"}),
+    "string-in-bare-slot": (lambda: _table_dataset(extra=(_SCALED,)), "sum(orders.scaled)", {"k": "abc"}),
 }
 
 
@@ -167,7 +168,7 @@ class TestHostileValuesAreRefused:
     async def test_a_model_default_is_bound_as_a_literal_too(self, env: _Env, executed: list[str]) -> None:
         model = _table_dataset(extra=(_SCALED,)).model_copy(update={"query_variables": {"k": _HOSTILE_SCALAR}})
         await env.storage.save_dataset(model)
-        query = _query("orders", "sum(scaled)")
+        query = _query("orders", "sum(orders.scaled)")
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await env.engine.execute(query)
         assert not any("users" in sql for sql in executed)
@@ -175,7 +176,7 @@ class TestHostileValuesAreRefused:
 
 class TestLiteralValuesBind:
     async def test_a_number_in_column_sql(self, env: _Env) -> None:
-        assert await env.value(_table_dataset(extra=(_SCALED,)), _query("orders", "sum(scaled)", variables={"k": 2})) == 200
+        assert await env.value(_table_dataset(extra=(_SCALED,)), _query("orders", "sum(orders.scaled)", variables={"k": 2})) == 200
 
     @pytest.mark.parametrize("surface", ["column-filter", "model-filter", "model-sql"])
     async def test_a_numeric_string_reads_as_its_number(self, env: _Env, surface: str) -> None:
@@ -184,16 +185,16 @@ class TestLiteralValuesBind:
             "model-filter": _table_dataset(filters=["amount >= {floor}"]),
             "model-sql": _sql_dataset("SELECT * FROM orders WHERE amount >= {floor}"),
         }[surface]
-        formula = "sum(big)" if surface == "column-filter" else "sum(amount)"
+        formula = "sum(orders.big)" if surface == "column-filter" else f"sum({model.name}.amount)"
         assert await env.value(model, _query(model.name, formula, variables={"floor": "25"})) == 70
 
     async def test_a_whole_in_list(self, env: _Env) -> None:
         model = _table_dataset(filters=["status IN ({statuses})"])
-        assert await env.value(model, _query("orders", "sum(amount)", variables={"statuses": ["ok", "new"]})) == 60
+        assert await env.value(model, _query("orders", "sum(orders.amount)", variables={"statuses": ["ok", "new"]})) == 60
 
     async def test_a_quote_inside_a_string_literal(self, env: _Env) -> None:
         resp = await env.run(_table_dataset(extra=(_TAGGED,)), SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["id", "tagged"], "filter": ["id = 1"],
+            "population": "orders", "dimensions": ["orders.id", "orders.tagged"], "filter": ["orders.id = 1"],
             "variables": {"suffix": "O'Brien"},
         }))
         assert [r["orders.tagged"] for r in resp.data] == ["AnnO'Brien"]
@@ -201,25 +202,25 @@ class TestLiteralValuesBind:
     @pytest.mark.parametrize(("flag", "expected"), [(True, 100), (False, 0)])
     async def test_a_boolean_in_a_bare_slot(self, env: _Env, flag: bool, expected: float) -> None:
         model = _table_dataset(extra=(_FLAGGED,))
-        assert await env.value(model, _query("orders", "sum(flagged)", variables={"flag": flag})) == expected
+        assert await env.value(model, _query("orders", "sum(orders.flagged)", variables={"flag": flag})) == expected
 
     async def test_sql_and_filter_of_one_column_both_bind(self, env: _Env) -> None:
-        both = DatasetField(name="both", sql="amount * {k}", filter="amount >= {floor}", datatype=DataType.FLOAT)
+        both = DatasetField(name="both", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * {k}"), DialectEntry(dialect="SQLITE", expression="amount * {k}")]), filter="amount >= {floor}", datatype=DataType.FLOAT)
         model = _table_dataset(extra=(both,))
-        assert await env.value(model, _query("orders", "sum(both)", variables={"k": 2, "floor": 25})) == 140
+        assert await env.value(model, _query("orders", "sum(orders.both)", variables={"k": 2, "floor": 25})) == 140
 
 
-#: (field, model) pairs whose placeholder stands in a non-literal position.
+#: (field, dataset) pairs whose placeholder stands in a non-literal position.
 _NON_LITERAL = {
     "model-sql-table": _sql_dataset("SELECT * FROM {table}"),
-    "column-function-name": _table_dataset(extra=(DatasetField(name="c", sql="{f}(amount)", datatype=DataType.FLOAT),)),
-    "column-quoted-identifier": _table_dataset(extra=(DatasetField(name="c", sql='"{c}"', datatype=DataType.FLOAT),)),
-    "column-comment": _table_dataset(extra=(DatasetField(name="c", sql="amount /* {c} */", datatype=DataType.FLOAT),)),
-    "column-type-name": _table_dataset(extra=(DatasetField(name="c", sql="CAST(amount AS {t})", datatype=DataType.FLOAT),)),
-    "column-partial-in-list": _table_dataset(extra=(DatasetField(name="c", sql="status IN ('x', {s})", datatype=DataType.BOOLEAN),)),
+    "column-function-name": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="{f}(amount)") for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.FLOAT),)),
+    "column-quoted-identifier": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression='"{c}"') for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.FLOAT),)),
+    "column-comment": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="amount /* {c} */") for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.FLOAT),)),
+    "column-type-name": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="CAST(amount AS {t})") for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.FLOAT),)),
+    "column-partial-in-list": _table_dataset(extra=(DatasetField(name="c", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="status IN ('x', {s})") for d in ("DUCKDB", "POSTGRES", "SQLITE")]), datatype=DataType.BOOLEAN),)),
 }
 #: A bare slot is a literal position: saved, and refused at query time when its value is no number or boolean.
-_BARE_SLOT = _table_dataset(extra=(DatasetField(name="c", sql="{col} * 2", datatype=DataType.FLOAT),))
+_BARE_SLOT = _table_dataset(extra=(DatasetField(name="c", expression="{col} * 2", datatype=DataType.FLOAT),))
 
 
 class TestNonLiteralPositionsAreRefused:
@@ -230,9 +231,9 @@ class TestNonLiteralPositionsAreRefused:
         assert await env.storage.get_dataset(model.name, data_source=DS) is None
 
     @pytest.mark.parametrize(("model", "formula", "variables"), [
-        pytest.param(_BARE_SLOT, "sum(c)", {"col": "amount"}, id="identifier"),
-        pytest.param(_NON_LITERAL["column-partial-in-list"], "count(*)", {"s": "ok"}, id="partial-in-list"),
-        pytest.param(_NON_LITERAL["model-sql-table"], "count(*)", {"table": "users"}, id="table-name"),
+        pytest.param(_BARE_SLOT, "sum(orders.c)", {"col": "amount"}, id="identifier"),
+        pytest.param(_NON_LITERAL["column-partial-in-list"], "count(orders.*)", {"s": "ok"}, id="partial-in-list"),
+        pytest.param(_NON_LITERAL["model-sql-table"], "count(orders_sql.*)", {"table": "users"}, id="table-name"),
     ])
     async def test_a_stored_model_is_refused_at_query_time(
         self, env: _Env, executed: list[str], model: SlayerDataset, formula: str, variables: dict[str, Any],
@@ -248,22 +249,22 @@ class TestOptionalBlocks:
     _BLOCK = _table_dataset(filters=["{? created_at >= '{from}' ?}"])
 
     async def test_a_supplied_block_filters_on_the_literal(self, env: _Env) -> None:
-        assert await env.value(self._BLOCK, _query("orders", "sum(amount)", variables={"from": "2024-03-01"})) == 70
+        assert await env.value(self._BLOCK, _query("orders", "sum(orders.amount)", variables={"from": "2024-03-01"})) == 70
 
     async def test_an_unsupplied_block_is_dropped(self, env: _Env) -> None:
-        assert await env.value(self._BLOCK, _query("orders", "sum(amount)", variables={"other": 1})) == 100
+        assert await env.value(self._BLOCK, _query("orders", "sum(orders.amount)", variables={"other": 1})) == 100
 
     async def test_a_hostile_value_inside_a_block_stays_a_literal(self, env: _Env) -> None:
         model = _table_dataset(filters=["{? amount >= {floor} ?}"])
         await env.storage.save_dataset(model)
-        query = _query("orders", "sum(amount)", variables={"floor": _HOSTILE_PREDICATE})
+        query = _query("orders", "sum(orders.amount)", variables={"floor": _HOSTILE_PREDICATE})
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await env.engine.execute(query)
 
     async def test_escaped_braces_render_one_brace(self, env: _Env) -> None:
-        tag = DatasetField(name="tag", sql="'{{x}}' || '{suffix}'", datatype=DataType.STRING)
+        tag = DatasetField(name="tag", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="'{{x}}' || '{suffix}'"), DialectEntry(dialect="SQLITE", expression="'{{x}}' || '{suffix}'")]), datatype=DataType.STRING)
         resp = await env.run(_table_dataset(extra=(tag,)), SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["tag"], "variables": {"suffix": "!"},
+            "population": "orders", "dimensions": ["orders.tag"], "variables": {"suffix": "!"},
         }))
         assert {r["orders.tag"] for r in resp.data} == {"{x}!"}
 
@@ -272,16 +273,16 @@ class TestPostgres:
     async def test_literal_values_bind(self, pg_env: _Env) -> None:
         model = _table_dataset(filters=["status IN ({statuses})", "amount >= {floor}"], extra=(_SCALED, _TAGGED))
         resp = await pg_env.run(model, SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["tagged"], "metrics": [{"metric": "sum(scaled)", "alias": "v"}],
+            "population": "orders", "dimensions": ["orders.tagged"], "metrics": [{"metric": "sum(orders.scaled)", "alias": "v"}],
             "variables": {"statuses": ["ok", "new"], "floor": "15", "k": 2, "suffix": "O'Brien"},
         }))
-        assert {r["orders.tagged"]: float(r["orders.v"]) for r in resp.data} == {
+        assert {r["orders.tagged"]: float(r["v"]) for r in resp.data} == {
             "O'BrienO'Brien": 40.0, "BobO'Brien": 60.0,
         }
 
     async def test_a_hostile_value_is_refused(self, pg_env: _Env, executed: list[str]) -> None:
         await pg_env.storage.save_dataset(_table_dataset(extra=(_SCALED,)))
-        query = _query("orders", "sum(scaled)", variables={"k": _HOSTILE_SCALAR})
+        query = _query("orders", "sum(orders.scaled)", variables={"k": _HOSTILE_SCALAR})
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await pg_env.engine.execute(query)
         assert not any("users" in sql for sql in executed)

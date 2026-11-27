@@ -1,4 +1,4 @@
-"""Measures may be named after transforms (spec: queries/measure-naming)."""
+"""Metrics may be named after transforms (spec: queries/measure-naming)."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ async def assert_renamed_twin(engine: SlayerQueryEngine, healed: Any, control: A
 class TestQueryMeasureNamedAfterTransform:
     async def test_result_key_rows_and_sql(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(monthly("change"))
-        assert "orders.change" in resp.columns
+        assert "change" in resp.columns
         await assert_renamed_twin(engine, monthly("change"), monthly("chg"))
 
     async def test_filter_reference(self, engine: SlayerQueryEngine) -> None:
@@ -115,7 +115,7 @@ class TestSavedMeasureNamedRank:
             expected = await eng.execute(query("n"))
         assert actual.columns == expected.columns
         assert table(actual, ordered=False) == table(expected, ordered=False)
-        by_region = {r["orders.region"]: (r["orders.doubled"], r["orders.r"]) for r in actual.data}
+        by_region = {r["orders.region"]: (r["doubled"], r["r"]) for r in actual.data}
         assert by_region == {"EU": (6, 1), "US": (6, 2), None: (2, 3)}
 
 

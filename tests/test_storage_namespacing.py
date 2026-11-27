@@ -7,17 +7,17 @@ backends do has to be backend-agnostic per repo convention.
 
 Contract:
 
-* Two models with the same ``name`` but different ``data_source`` coexist.
-* ``get_model(name, data_source=None)`` resolves bare names by:
-    1. Returning the unique match if exactly one model has that name.
+* Two datasets with the same ``name`` but different ``data_source`` coexist.
+* ``get_dataset(name, data_source=None)`` resolves bare names by:
+    1. Returning the unique match if exactly one dataset has that name.
     2. Else walking ``get_datasource_priority()`` in order and returning the
        first match whose ``data_source`` is in the list.
-    3. Else raising ``AmbiguousModelError`` whose message lists the matching
+    3. Else raising ``AmbiguousDatasetError`` whose message lists the matching
        datasources and tells the caller to either pass ``data_source=`` or
        call ``set_datasource_priority``.
-* ``list_models(data_source=None)`` returns names within a single datasource
+* ``list_datasets(data_source=None)`` returns names within a single datasource
   (validated against ``list_datasources()`` if supplied; auto-detected if
-  exactly one datasource has saved models; raises if ≥2).
+  exactly one datasource has saved datasets; raises if ≥2).
 * ``set_datasource_priority(priority)`` validates each name against
   ``list_datasources()`` and persists. ``get_datasource_priority()`` reads it
   back, including across storage re-opens.
@@ -59,7 +59,7 @@ def _dataset(name: str, data_source: str, *, sql_table: str | None = None) -> Sl
         name=name,
         sql_table=sql_table or name,
         data_source=data_source,
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)],
     )
 
 
@@ -103,8 +103,8 @@ class TestNamespacedSaveLoad:
         assert await storage.get_dataset("orders", data_source="db_b") is None
 
     def test_save_model_rejects_empty_data_source(self, storage) -> None:
-        # Construction itself fails — non-empty validator on SlayerModel —
-        # so the model never reaches storage. ``storage`` parameter is
+        # Construction itself fails — non-empty validator on SlayerDataset —
+        # so the dataset never reaches storage. ``storage`` parameter is
         # unused by design; we keep it so the test runs once per backend
         # and stays grouped with its peers.
         del storage
@@ -162,7 +162,7 @@ class TestBareNameResolution:
 
     async def test_priority_skips_datasources_without_a_match(self, storage: StorageBackend) -> None:
         """Priority [db_b, db_a] but only db_a and db_c contain ``users`` →
-        first list entry that actually has the model wins."""
+        first list entry that actually has the dataset wins."""
         for n in ("db_a", "db_b", "db_c"):
             await storage.save_datasource(_ds(n))
         await storage.save_dataset(_dataset("users", data_source="db_a"))
@@ -269,10 +269,10 @@ class TestListModels:
         assert await storage.list_datasets() == []
 
     async def test_list_with_data_source_having_models_but_no_config(self, storage: StorageBackend) -> None:
-        """A model can carry a ``data_source`` string even when no
+        """A dataset can carry a ``data_source`` string even when no
         ``DatasourceConfig`` has been saved for it (e.g. an orphan after a
-        manual datasource delete, or a model imported from another env).
-        ``list_models("db_x")`` must surface those names rather than raise
+        manual datasource delete, or a dataset imported from another env).
+        ``list_datasets("db_x")`` must surface those names rather than raise
         — otherwise ``get_model("name", data_source="db_x")`` works but
         ``list_models("db_x")`` doesn't, which is internally inconsistent.
         See PR #92 thread #9.
@@ -348,7 +348,7 @@ class TestListModels:
 
     async def test_list_with_unknown_data_source_still_raises(self, storage: StorageBackend) -> None:
         """The 'unknown data_source' error stays when the name has neither
-        a config nor any saved models — otherwise typos go unnoticed.
+        a config nor any saved datasets — otherwise typos go unnoticed.
         """
         await storage.save_datasource(_ds("db_a"))
         await storage.save_dataset(_dataset("orders", data_source="db_a"))

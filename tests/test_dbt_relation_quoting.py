@@ -16,7 +16,7 @@ from slayer.ingest_report import ConversionResult
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import denoted_name
 from slayer.sql.render.parse import parse_query, parse_table
-from tests._dev2171_fixtures import column, entries, datasets_of, write_yaml
+from tests._dev2171_fixtures import field_of, entries, datasets_of, write_yaml
 from tests._engine_helpers import _engine_generate
 
 DS = "ds"
@@ -44,7 +44,7 @@ def _import(tmp_path: Path, *, dialect: str, semantic_models: list[dict[str, Any
 
 
 def _relation(dataset: SlayerDataset, *, dialect: str) -> list[str]:
-    """The catalog names of the one relation ``model`` reads, as SLayer reads its stored text."""
+    """The catalog names of the one relation ``dataset`` reads, as SLayer reads its stored text."""
     sql_dialect = get_dialect(dialect)
     if dataset.sql_table is not None:
         table = parse_table(name=dataset.sql_table, dialect=sql_dialect)
@@ -55,7 +55,7 @@ def _relation(dataset: SlayerDataset, *, dialect: str) -> list[str]:
 
 
 async def _generated_relation(dataset: SlayerDataset, *, dialect: str) -> list[tuple[str, bool]]:
-    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": dataset.name, "dimensions": ["qty"]}),
+    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": dataset.name, "dimensions": ["items.qty"]}),
                                  dataset=dataset, dialect=dialect)
     (table,) = parse_query(sql=sql, target_dialect=get_dialect(dialect)).find_all(exp.Table)
     return [(p.name, p.quoted) for p in cast(list[exp.Identifier], table.parts)]
@@ -229,11 +229,11 @@ def test_metric_filter_with_a_mixed_case_logical_dimension_is_unchanged(tmp_path
     measure = orders.get_metric("paid_revenue")
     assert measure is not None
     assert measure.expression == "sum(revenue_filtered)"
-    assert column(orders, "revenue_filtered").filter == "Status = 'paid'"
+    assert field_of(orders, "revenue_filtered").filter == "orders.Status = 'paid'"
 
 
 def test_member_without_an_expr_reads_its_folded_name(tmp_path: Path) -> None:
     sm = {"name": "orders", "model": "ref('orders')",
           "dimensions": [{"name": "OrderDate", "type": "time", "type_params": {"time_granularity": "day"}}]}
     orders = datasets_of(_import(tmp_path, dialect="postgres", semantic_models=[sm]))["orders"]
-    assert column(orders, "OrderDate").physical_name == "orderdate"
+    assert field_of(orders, "OrderDate").physical_name == "orderdate"

@@ -170,7 +170,7 @@ class TestExtractParsesAsDatePart:
 
 
 class TestAmbiguousWeekdays:
-    @pytest.mark.parametrize("name", AMBIGUOUS_WEEKDAYS)
+    @pytest.mark.parametrize("name", ("dow", "weekday"))
     @pytest.mark.parametrize("template", ["date_part('{n}', created_at)", "extract({n} from created_at)"])
     def test_part_names_both_conventions(self, name: str, template: str) -> None:
         text = template.format(n=name) + " = 1"
@@ -219,7 +219,7 @@ class TestExecutedEquivalence:
             return {"population": "orders", "dimensions": [{"field": expr, "alias": "dow"}], "metrics": ["count(*)"]}
 
         resp = await assert_equivalent(engine, query("isodow(created_at)"), query(canonical("day_of_week")))
-        assert {r["orders.dow"]: r["orders._count"] for r in resp.data} == {1: 2, 3: 1, 4: 1, 6: 1, 7: 2}
+        assert {r["dow"]: r["orders._count"] for r in resp.data} == {1: 2, 3: 1, 4: 1, 6: 1, 7: 2}
 
     async def test_extract_with_alias_part(self, engine: SlayerQueryEngine) -> None:
         def query(expr: str) -> dict[str, Any]:

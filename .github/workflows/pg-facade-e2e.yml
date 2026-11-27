@@ -34,6 +34,11 @@ on:
       - '.github/workflows/pg-facade-e2e.yml'
       - '.github/actions/poetry-env/**'
 
+# A new push to a PR cancels that PR's run still in progress; other runs never cancel or queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   metabase-e2e:
     runs-on: ubuntu-latest
@@ -45,9 +50,6 @@ jobs:
       - uses: ./.github/actions/poetry-env
         with:
           python-version: "3.11"
-
-      - name: Install jafgen (for demo data generation)
-        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
 
       - name: Restore Metabase image
         id: mb_cache

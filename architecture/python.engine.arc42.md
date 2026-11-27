@@ -43,15 +43,12 @@ flowchart TD
   end
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
-  core__models -.-> sql__window_detect
-  core__query -.-> sql__window_detect
   core__models -.-> storage__migrations
   core__query -.-> storage__migrations
   core__models -.-> core__query
   core__query --> core__models
   core__query --> core__syntax
   sql__render --> sql__dialects
-  sql__sql_predicate --> sql__window_detect
   engine__binding --> core__syntax
   engine__bind_inputs --> engine__binding
   engine__bind_inputs --> engine__elaborate_env
@@ -157,10 +154,10 @@ elaborate→compile and `query_engine.py` orchestrates.
    the public projection. [review] A value consumed at several attach phases
    attaches once per phase over one interned producer — never a phase chosen by
    precedence. [enforced: test:tests/test_dev1964_dual_phase_consumption.py]
-5. **Stages compose only through schemas**: every stage emits an explicit flat
-   `StageSchema` downstream stages bind against; the two scope kinds
-   (`DatasetScope`: dots walk joins; `StageSchema`: flat names, plus a list
-   column's elements `L.value` / `L.*`) are distinct types, never a flag. [review]
+5. **Stages compose only through schemas**: every stage emits an explicit
+   `StageSchema` (its columns, grain and inherited edges), and a later stage
+   reads a stage only as the dataset that schema defines, bound like any other
+   dataset. [review]
 6. **Phase and stage are properties of the value**: phase (ROW / AGGREGATE /
    POST — when the value exists relative to aggregation) is intrinsic to the
    term; stage (the relation of the emitted statement that computes the value)
@@ -174,10 +171,11 @@ elaborate→compile and `query_engine.py` orchestrates.
    warning on the response; a slack rule retires by promotion to first-class
    grammar, never by accumulating rewrites. [review]
 8. **Models persist verbatim**: `save_dataset` stores the author's spelling
-   unchanged, a deprecated spelling excepted, which is stored as its canonical
-   twin; normalization applies to queries at execute time only. The one
-   exception: a saved query stores each stage's inferred population as its
-   `population`. [review]
+   unchanged, except a deprecated spelling or one Ossie rejects where it is
+   stored, each stored as its canonical twin; normalization applies to queries
+   at execute time only. The one
+   exception: a saved query stores each inferred stage's dimension anchor as its
+   `population`, marked `population_inferred`. [review]
 9. **The term-interface boundary**: `binding`, `bind_inputs`,
    `elaborate`, `elaborate_env` (THE checker), `compile` and `plan` are
    declared children with only the modeled arrows among them — the compiler
@@ -205,5 +203,5 @@ elaborate→compile and `query_engine.py` orchestrates.
 Structural identity end to end (P1) is what keeps enrichment from degenerating
 into string rewriting. Purity of binding (P3) is what keeps re-resolution
 state (context variables) unrepresentable; schema-only composition (P5) is
-what makes downstream stages structurally unable to reach an upstream join
-graph.
+what limits a downstream stage to the edges its upstream schema carries, never
+the rest of the upstream join graph.

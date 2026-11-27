@@ -1,17 +1,17 @@
-"""Shared fixtures for DEV-1840 — semi-join (EXISTS) filter pushdown into
+"""Shared fixtures for semi-join (EXISTS) filter pushdown into
 target-rooted producers.
 
 Underscore-prefixed so pytest skips collection; mirrors the
 ``tests/_dev1836_fixtures.py`` dual-engine pattern (one hand-computed dataset
 seeded into SQLite AND DuckDB).
 
-Join design (the point of this graph)
--------------------------------------
+Relationship design (the point of this graph)
+---------------------------------------------
 ``orders → customers``   safe: customers.id PK. One stored edge — the
                          canonical inversion shape. ``declare_reverse=True``
                          moves the declaration to the customers side
                          (``customers → orders``, 1:N) — mirror-parity
-                         variant, same single edge (DEV-1853).
+                         variant, same single edge.
 ``orders → stores``      safe: composite PK (co, no) — composite inline pin
                          AND, for a stores-rooted producer, a composite
                          inverted correlation.
@@ -23,8 +23,8 @@ Join design (the point of this graph)
 ``customers.last_status``  (reverse variant only) Mode-A derived over the 1:N
                          hop (``orders.status``): must never inline.
 ``tickets → agents`` ×2  (separate graph) two unnamed parallel edges: every
-                         hop across the pair — measure, filter, correlation,
-                         either direction — fails closed (DEV-1853).
+                         hop across the pair — metric, filter, correlation,
+                         either direction — fails closed.
 ``tickets → reviews``    safe m:1 — the graph's healthy leg.
 
 Dataset (hand-computed; every executed expectation derives from here)
@@ -106,7 +106,7 @@ from tests._engine_helpers import _engine_generate
 
 
 # --------------------------------------------------------------------------- #
-# Models.
+# Datasets.
 # --------------------------------------------------------------------------- #
 def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -120,7 +120,7 @@ def regions_dataset() -> SlayerDataset:
 
 
 def plans_dataset(*, strong: bool = True) -> SlayerDataset:
-    # `strong` puts a PK on the join-target column: provably m:1 vs unproven.
+    # `strong` puts a PK on the relationship-target field: provably m:1 vs unproven.
     return SlayerDataset(
         name="plans", data_source="test", sql_table="plans",
         fields=[
@@ -146,7 +146,7 @@ def stores_dataset() -> SlayerDataset:
 def customers_dataset(*, declare_reverse: bool = False) -> SlayerDataset:
     """``declare_reverse=True``: customers OWNS the orders edge (1:N) and the
     ``last_status`` Mode-A probe; orders then declares no customers edge — one
-    symmetric edge either way (DEV-1853)."""
+    symmetric edge either way."""
     columns = [
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="region_id", datatype=DataType.INTEGER),
@@ -166,7 +166,7 @@ def customers_dataset(*, declare_reverse: bool = False) -> SlayerDataset:
         ))
         # Derived over the declared 1:N hop — classification-by-deps probe.
         columns.append(DatasetField(
-            name="last_status", datatype=DataType.STRING, sql="orders.status",
+            name="last_status", datatype=DataType.STRING, expression="orders.status",
         ))
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
@@ -196,7 +196,7 @@ def orders_dataset(*, customers_edge: bool = True) -> SlayerDataset:
             DatasetField(name="store_co", datatype=DataType.STRING),
             DatasetField(name="store_no", datatype=DataType.INTEGER),
             # Host-declared, target-reading: expanded-deps probe.
-            DatasetField(name="cust_tier", datatype=DataType.STRING, sql="customers.tier"),
+            DatasetField(name="cust_tier", datatype=DataType.STRING, expression="customers.tier"),
         ],
         relationships=joins,
     )

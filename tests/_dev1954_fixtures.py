@@ -1,10 +1,10 @@
-"""Shared fixtures for DEV-1954 — canonical join-path spelling.
+"""Shared fixtures for canonical relationship-path spelling.
 
-The DEV-1900 ``orders → customers → regions → region_events`` graph with the
+The ``_dev1900_fixtures`` ``orders → customers → regions → region_events`` graph with the
 ``customers → regions`` edge named ``hr`` (so it may be spelled ``hr`` or
 ``regions``), plus:
 
-* ``regions.pop`` labelled ``Population`` (so measure metadata surfaces);
+* ``regions.pop`` labelled ``Population`` (so metric metadata surfaces);
 * ``regions.rname`` (physical copy of ``name``) and ``regions.founded_at``
   (North 2020-01-15, South 2021-06-15);
 * ``regions.maxpop`` (saved ``max(pop)``), ``customers.tot_spend`` (saved
@@ -13,7 +13,7 @@ The DEV-1900 ``orders → customers → regions → region_events`` graph with t
   ``orders.north_amount`` (``amount`` masked by ``customers.regions.rname = 'North'``) and the
   aggregation ``orders.wpop`` whose ``weight`` defaults to ``customers.regions.pop``.
 
-Oracles derive from the DEV-1840/1900 dataset: amount by region North 100,
+Oracles derive from the ``_dev1840``/``_dev1900`` fixtures' dataset: amount by region North 100,
 South 20, region-less 47; pop North 100, South 200; region_events.value max
 North 50, South 30.
 """
@@ -27,6 +27,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -73,10 +74,10 @@ def dev1954_datasets(*, named: bool = True) -> List[SlayerDataset]:
 
     orders = _by_name(models, "orders")
     orders.fields.append(DatasetField(
-        name="north_amount", datatype=DataType.FLOAT, sql="amount",
+        name="north_amount", datatype=DataType.FLOAT, expression="amount",
         filter="customers.regions.rname = 'North'"))
     orders.fields.append(DatasetField(
-        name="region_label", datatype=DataType.STRING, sql="customers.regions.rname"))
+        name="region_label", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.regions.rname"), DialectEntry(dialect="SQLITE", expression="customers.regions.rname")])))
     orders.metrics.append(DatasetMetric(name="rp", expression="max(customers.regions.pop)"))
     orders.aggregations.append(Aggregation(
         name="wpop", expression="SUM({value} * {weight})",
@@ -137,7 +138,7 @@ def table_count(sql: str, table: str, *, dialect: str = "duckdb") -> int:
 
 
 def by_key(resp, dim: str, metric: str) -> dict:
-    """``{dim value: measure value}`` over ``resp.data``."""
+    """``{dim value: metric value}`` over ``resp.data``."""
     out = {r[dim]: r[metric] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one group key"
     return out
@@ -162,7 +163,7 @@ def stale_warnings(resp) -> list:
 
 
 #: Canonical result keys (query rooted at orders).
-RNAME = "orders.customers.hr.rname"
+RNAME = "customers.hr.rname"
 #: SUM(amount) per region name.
 AMOUNT_BY_RNAME = {"North": 100.0, "South": 20.0, None: 47.0}
 #: MAX(pop) per region name.

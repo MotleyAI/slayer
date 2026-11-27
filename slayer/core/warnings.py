@@ -88,29 +88,24 @@ DICE_SLICE_HINT = (
 )
 
 
-def association_fallback_hint(reason: str) -> str:
-    """The hint of a broadcast the default mode fell back to because association does not support ``reason``."""
+def broadcast_hint(*, call: str, partition_by: list[str]) -> str:
+    """A broadcast warning's hint: the ``partition_by=`` giving ``call`` the same values, then ``DICE_SLICE_HINT``."""
     return (
-        f"association does not support {reason} yet, so the value repeats across the cells; "
-        "filter on the dimension instead, or drop the dimension(s) it cannot be attributed to."
+        f"{call} with partition_by=[{', '.join(partition_by)}] returns the same values without a warning; "
+        f"{DICE_SLICE_HINT}"
     )
 
 
 class BroadcastGrainWarningPayload(SlayerWarning):
-    """A cross-dataset aggregate whose implicit grain lost query dimensions to broadcasting; ``metric`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
+    """A cross-dataset aggregate whose implicit grain lost query dimensions to broadcasting; ``metric`` names the metric, ``dimensions`` lists each broadcast dimension and its reason."""
 
     kind: Literal["broadcast"] = "broadcast"
     metric: str
     location: str
     dimensions: list[BroadcastDimension]
-    association_unsupported: Optional[str] = None
+    #: The dimensions the aggregate attributes: its ``partition_by=`` returning the same values without a warning.
+    partition_by: list[str] = Field(default_factory=list)
     hint: str = DICE_SLICE_HINT
-
-    @model_validator(mode="after")
-    def _fallback_hint(self) -> "BroadcastGrainWarningPayload":
-        if self.association_unsupported is not None and "hint" not in self.model_fields_set:
-            self.hint = association_fallback_hint(self.association_unsupported)
-        return self
 
     def human_message(self) -> str:
         dims = ", ".join(f"{d.dimension} ({d.reason})" for d in self.dimensions)
@@ -166,11 +161,17 @@ class UnrelatedDatasetWarningPayload(SlayerWarning):
 
     kind: Literal["unrelated_dataset"] = "unrelated_dataset"
     dataset: str
-    population: str
+    #: ``None`` in a query without dimensions, whose measure homes no relationship path connects.
+    population: Optional[str] = None
     metrics: list[str]
     location: str
 
     def human_message(self) -> str:
+        if self.population is None:
+            return (
+                f"{', '.join(repr(m) for m in self.metrics)} (at {self.location}) read {self.dataset!r}, which no "
+                f"relationship path connects to the query's other measures: each is aggregated over its own rows"
+            )
         return (
             f"{', '.join(repr(m) for m in self.metrics)} (at {self.location}) read {self.dataset!r}, which no "
             f"relationship path reaches from {self.population!r}: unrelated dataset, aggregated over its own rows and "
@@ -349,17 +350,34 @@ class ExtensionFieldInlinedWarning(SlayerWarning):
 
 
 class UnloadableDocumentWarning(SlayerWarning):
-    """A stored dataset or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a memory."""
+    """A stored dataset, semantic model or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a
+    memory."""
 
     kind: Literal["unloadable_document"] = "unloadable_document"
-    document_kind: Literal["dataset", "memory"]
+    document_kind: Literal["dataset", "semantic_model", "memory"]
     data_source: Optional[str] = None
     name: str
     cause: str
 
     def human_message(self) -> str:
         document = f"{self.data_source}.{self.name}" if self.data_source is not None else f"memory:{self.name}"
-        return _single_line(f"skipped stored {self.document_kind} {document!r}, which cannot be loaded: {self.cause}")
+        kind = self.document_kind.replace("_", " ")
+        return _single_line(f"skipped stored {kind} {document!r}, which cannot be loaded: {self.cause}")
+
+
+class StoredUpgradeNeededWarning(SlayerWarning):
+    """A stored document loaded in a form ``slayer storage upgrade`` would change; ``data_source`` is ``None`` for a
+    memory or a datasource."""
+
+    kind: Literal["stored_upgrade_needed"] = "stored_upgrade_needed"
+    document_kind: Literal["dataset", "memory", "datasource"]
+    data_source: Optional[str] = None
+    name: str
+
+    def human_message(self) -> str:
+        document = f"{self.data_source}.{self.name}" if self.data_source is not None else self.name
+        return (f"stored {self.document_kind} {document!r} is in an older format, upgraded in memory on every load; "
+                f"run `slayer storage upgrade` to store it in the current format")
 
 
 class NarrowedAccessWarning(SlayerWarning):
@@ -576,8 +594,18 @@ class DeprecatedSpellingWarning(SlayerWarning):
     removal: str = "3.0"
 
     def human_message(self) -> str:
-        return (f"the {self.spelling} spelling `{self.written}` is deprecated and removed in SLayer {self.removal}; "
-                f"write `{self.canonical}`")
+        removed = f"is deprecated and removed in SLayer {self.removal}"
+        if self.spelling == "==":
+            return f"The comparison `{self.written}` {removed}; write `{self.canonical}`."
+        if self.spelling in ("is None", "is not None"):
+            return f"`{self.written}` {removed}; write `{self.canonical}`."
+        if self.spelling == "bare None":
+            return f"A bare {self.written} {removed}; write `{self.canonical}`."
+        if self.spelling == "list after IN":
+            return f"A [ … ] list after IN {removed}; write a parenthesised list ( … )."
+        if self.spelling == "method-call":
+            return f"The method-call form `{self.written}` {removed}; write `{self.canonical}`."
+        return f"The {self.spelling} spelling `{self.written}` {removed}; write `{self.canonical}`."
 
 
 class DateOnlyMidnightWarning(SlayerWarning):
@@ -593,6 +621,59 @@ class DateOnlyMidnightWarning(SlayerWarning):
 
     def human_message(self) -> str:
         return self.message
+
+
+class ChangedReferenceWarning(SlayerWarning):
+    """A dataset-first ``reference`` now reaches its anchor by ``path``, where it once read the population's direct
+    relationship, which ``spelling`` still names."""
+
+    kind: Literal["changed_reference"] = "changed_reference"
+    reference: str
+    path: str
+    spelling: str
+    message: str
+    removal: str = "3.0"
+
+    def human_message(self) -> str:
+        return self.message
+
+
+class TimeZoneUndeclaredWarning(SlayerWarning):
+    """Under a query zone, ``dataset.field`` (reached by ``path``) has no source zone, so it is read as stored."""
+
+    kind: Literal["time_zone_undeclared"] = "time_zone_undeclared"
+    dataset: str
+    field: str
+    path: List[str] = Field(default_factory=list)
+    time_zone: str
+
+    def human_message(self) -> str:
+        via = f" (via {'.'.join(self.path)})" if self.path else ""
+        return (
+            f"{self.dataset}.{self.field}{via} has no source time zone, so it is read as stored, not converted to "
+            f"{self.time_zone}. Declare the field's time_zone (an IANA name, or 'civil' for zone-free time), or the "
+            f"datasource's time_zone."
+        )
+
+
+class OntologyMismatchWarning(SlayerWarning):
+    """Mapping ``mapping`` of ontology ``ontology`` disagrees with the semantic model of ``data_source``: an
+    ``identifier`` against a dataset's keys, or a ``multiplicity`` against a relationship's cardinality."""
+
+    kind: Literal["ontology_mismatch"] = "ontology_mismatch"
+    check: Literal["identifier", "multiplicity"]
+    data_source: str
+    mapping: str
+    ontology: str
+    concept: Optional[str] = None
+    dataset: Optional[str] = None
+    fields: List[str] = Field(default_factory=list)
+    relationship: Optional[str] = None
+    suggestion: Optional[str] = None
+    message: str
+
+    def human_message(self) -> str:
+        return _single_line(self.message)
 
 
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
@@ -620,6 +701,10 @@ AnySlayerWarning = Annotated[
         SpineRelationshipDroppedWarning,
         UnknownStoredKeyWarning,
         DateOnlyMidnightWarning,
+        ChangedReferenceWarning,
+        StoredUpgradeNeededWarning,
+        TimeZoneUndeclaredWarning,
+        OntologyMismatchWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -662,6 +747,17 @@ class SlayerUnloadableDocumentWarning(UserWarning):
     """Carrier ``UserWarning`` for an ``UnloadableDocumentWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: UnloadableDocumentWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerStoredUpgradeNeededWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``StoredUpgradeNeededWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: StoredUpgradeNeededWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
@@ -772,6 +868,28 @@ class SlayerDateOnlyMidnightWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``DateOnlyMidnightWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: DateOnlyMidnightWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerTimeZoneUndeclaredWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``TimeZoneUndeclaredWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: TimeZoneUndeclaredWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerOntologyMismatchWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``OntologyMismatchWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: OntologyMismatchWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

@@ -1,4 +1,4 @@
-"""The docs must not advertise the dropped reachable-fields section of the model view."""
+"""The docs must not advertise the dropped reachable-fields section of the dataset view."""
 from __future__ import annotations
 
 import json
@@ -16,7 +16,7 @@ _NOTEBOOK = _REPO_ROOT / "docs" / "examples" / "08_mcp_introspect" / "mcp_intros
 
 @pytest.mark.parametrize("path", _MCP_DOCS, ids=lambda p: str(p.relative_to(_REPO_ROOT)))
 def test_mcp_doc_drops_reachable_fields_tokens(path: Path) -> None:
-    """The model view in the MCP docs must not reference the
+    """The dataset view in the MCP docs must not reference the
     dropped section or kwarg. The catch-all phrase from the prose ("all
     fields reachable via joins") must also be gone."""
     text = path.read_text()

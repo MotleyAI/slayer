@@ -1,4 +1,4 @@
-"""DEV-1847 task 1.5/2.1 — the narrowed parse/bind gate (spec: aggregations/
+"""The narrowed parse/bind gate (spec: aggregations/
 expression-aggregation + queries/partitioned-aggregates fail-closed scenarios)."""
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ import re
 import pytest
 
 from slayer.core.errors import SlayerError
-from slayer.core.keys import AggregateKey, TransformKey
+from slayer.core.keys import AggregateKey
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import _source_is_reaggregation, bind_expr
 from slayer.core.syntax import AggCall, parse_expr
@@ -48,7 +48,7 @@ class TestFullyAttachedAccepted:
             parsed = parse_expr(f)
             assert isinstance(parsed, AggCall)
             assert _source_is_reaggregation(parsed.source)
-        row_level = parse_expr("sum(amount > 45)")
+        row_level = parse_expr("sum(sales.amount > 45)")
         assert isinstance(row_level, AggCall)
         assert not _source_is_reaggregation(row_level.source)
 
@@ -65,7 +65,7 @@ class TestFullyAttachedAccepted:
 
     async def test_reaggregation_compiles_to_sql(self):
         """Accepted end-to-end: emits SQL rather than raising the gate."""
-        sql = await gen(sales_q(dimensions=["region"],
+        sql = await gen(sales_q(dimensions=["sales.region"],
                                 metrics=[QueryMetric(metric=f"avg({INNER_CR})",
                                                        alias="acr")]))
         assert "SELECT" in sql.upper()
@@ -74,22 +74,22 @@ class TestFullyAttachedAccepted:
 class TestRejections:
     def test_mixed_row_and_attached_accepted(self):
         """A source mixing a row-level reference with an attached value is a
-        row-grain aggregation and parses (DEV-1859). A nested transform in a
-        source now parses too (DEV-1832); only a row-level leaf under it is
+        row-grain aggregation and parses. A nested transform in a
+        source now parses too; only a row-level leaf under it is
         rejected, at plan time — see test_dev1832_transform_source."""
-        parsed = parse_expr("sum(amount * avg(amount, partition_by=city))")
+        parsed = parse_expr("sum(sales.amount * avg(sales.amount, partition_by=sales.city))")
         assert isinstance(parsed, AggCall)
         assert parsed.agg == "sum"
 
     async def test_column_parameter_on_outer_rejected(self):
         """Scenario: Column-reference outer parameter fails closed — explicit
         ``weight=id`` is undetermined at the operand grain; the one-rule error
-        (DEV-1892) names the parameter, the grain, and the partition_by remedy,
+        names the parameter, the grain, and the partition_by remedy,
         ref-free."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric=f"wavg({INNER_CR}, weight=id)", alias="w")])
+                metric=f"wavg({INNER_CR}, weight=sales.id)", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -100,10 +100,10 @@ class TestRejections:
 
     async def test_column_default_parameter_on_outer_rejected(self):
         """Scenario: Column-reference outer parameter fails closed — ``wavg``'s
-        weight default (the ``amount`` column) is undetermined at the operand
+        weight default (the ``amount`` field) is undetermined at the operand
         grain; same one-rule error."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"wavg({INNER_CR})", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
@@ -118,7 +118,7 @@ class TestRejections:
         attached operand is a typed error naming the combination, never a
         NotImplementedError."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
                 metric=f"sum({INNER_CR}, window='90d')", alias="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
@@ -127,28 +127,28 @@ class TestRejections:
         assert not isinstance(ei.value, NotImplementedError)
         # The pure-attached source is accepted; the rejection is the specific
         # window-over-aggregate one, NOT the generic expression-nesting gate
-        # (whose message echoes 'window' from the formula — so match the phrase).
+        # (whose message echoes 'window' from the expression — so match the phrase).
         assert "nested inside the expression aggregated" not in msg
         assert "window" in msg.lower()
 
 
 class TestCrossModelAndFilteredOperandNowAccepted:
-    """DEV-1832 lifts the two v1 boundaries DEV-1847 left intact (positive
+    """The two v1 boundaries the narrowed gate kept are lifted (positive
     coverage in test_dev1832_cross_model_exec / test_dev1832_column_filter)."""
 
     async def test_cross_model_expression_accepted(self):
-        """A dotted joined-model leaf inside the expression now compiles."""
+        """A dotted joined-dataset leaf inside the expression now compiles."""
         query = SlayerQuery(
             population="corders",
-            dimensions=[QueryDimension(field="customer_id")],
-            metrics=[QueryMetric(metric="sum(amount - customers.region_id)",
+            dimensions=[QueryDimension(field="corders.customer_id")],
+            metrics=[QueryMetric(metric="sum(corders.amount - customers.region_id)",
                                    alias="x")])
         assert "SELECT" in (await gen(query)).upper()
 
     async def test_filtered_column_operand_accepted(self):
-        """A filtered column operand desugars to CASE WHEN, not a rejection."""
-        query = sales_q(dimensions=["region"],
-                        metrics=[QueryMetric(metric="sum(q_amount - 1)",
+        """A filtered field operand desugars to CASE WHEN, not a rejection."""
+        query = sales_q(dimensions=["sales.region"],
+                        metrics=[QueryMetric(metric="sum(sales.q_amount - 1)",
                                                alias="x")])
         assert "CASE WHEN" in (await gen(query)).upper()
 
@@ -163,15 +163,15 @@ def _bound(expression: str):
 
 class TestFirstLastDispatchUnchanged:
     @pytest.mark.parametrize("fn", ["first", "last"])
-    def test_first_last_over_aggregate_binds_as_transform(self, fn):
-        """first/last over an aggregated first arg is the transform."""
+    def test_first_last_over_aggregate_binds_as_ranked_aggregation(self, fn):
+        """first/last over an aggregated first arg ranks the operand's cells."""
         key = _bound(f"{fn}({INNER_CR})")
-        assert isinstance(key, TransformKey)
-        assert key.op == fn
+        assert isinstance(key, AggregateKey)
+        assert key.agg == fn
 
     def test_last_over_plain_column_is_aggregation(self):
         """The non-aggregated first argument still routes to the aggregation."""
-        key = _bound("last(amount)")
+        key = _bound("last(sales.amount)")
         assert isinstance(key, AggregateKey)
         assert key.agg == "last"
 
@@ -180,7 +180,7 @@ class TestUnknownOuterAggregationRejectedAtBinding:
     async def test_unknown_custom_name_over_aggregate_errors(self):
         """Unknown custom-aggregation candidates are rejected at binding."""
         query = sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=f"magic_fn({INNER_CR})", alias="x")])
         with pytest.raises((SlayerError, ValueError), match="(?i)unknown function"):
             await gen(query)

@@ -1,4 +1,4 @@
-"""Entity-text rendering for the search index (DEV-1375).
+"""Entity-text rendering for the search index.
 
 Each entity kind (datasource / dataset / field / metric / aggregation /
 memory) gets a ``render_*_text`` helper that returns the full plain-text
@@ -20,18 +20,19 @@ Spec rules pinned by ``tests/test_search_render.py``:
 * Hidden fields / hidden datasets are skipped at the *call site*; these
   helpers expect their input to already be filtered. The dataset renderer
   itself also filters hidden fields out of its CSV (see
-  ``render_dataset_text``'s ``visible_columns`` filter), so a hidden
+  ``render_dataset_text``'s ``visible_fields`` filter), so a hidden
   field will never appear in the indexed text of any entity.
 """
 
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 from typing_extensions import deprecated
 
+from slayer.core.field_expression import Expression, ExpressionObject, portable_text
 from slayer.core.models import (
     Aggregation,
     DatasetField,
@@ -39,20 +40,23 @@ from slayer.core.models import (
     SlayerDataset,
     field_type_text,
 )
+from slayer.core.semantic_model import AIContext, AIContextObject, ModelScopedMetric
 from slayer.core.vocabulary import name_twins
 from slayer.memories.models import Memory
+from slayer.ontology.use import Annotations
+from slayer.search.concepts import dataset_concept_lines, field_concept_lines
 
 
 class RenderedEntity(BaseModel):
     """One (canonical_id, kind, text) triple produced by the unified
-    dispatch (DEV-1513). Carries the indexed text + the entity-kind tag
+    dispatch. Carries the indexed text + the entity-kind tag
     every caller needs (corpus build, embedding refresh, named-entity
     surfacing). Single source of truth for "what counts as an indexable
     entity" — filter rules (hidden dataset -> empty list, hidden field
     skipped, unnamed metric skipped) live in ``collect_dataset_entity_pairs``
     and ``render_datasource_pair`` only.
 
-    DEV-1549: ``description`` carries the entity's structured description
+    ``description`` carries the entity's structured description
     field (``None`` when the entity has none). The search service surfaces
     it as ``SearchHit.description`` under compact mode.
     """
@@ -64,7 +68,7 @@ class RenderedEntity(BaseModel):
 
 
 def _named_children_csv(items: list[tuple[str, str]]) -> str:
-    """Render ``[("a", "column"), ("b", "column")]`` as ``"a (column), b (column)"`` (embedding text keeps its words)."""
+    """Render ``[("a", "field"), ("b", "field")]`` as ``"a (field), b (field)"``."""
     return ", ".join(f"{name} ({kind})" for name, kind in items)
 
 
@@ -85,7 +89,7 @@ def render_datasource_text(
     No dataset descriptions are included here — each dataset has its own
     indexed doc.
 
-    DEV-1549: ``description`` is included so the lexical BM25 / tantivy
+    ``description`` is included so the lexical BM25 / tantivy
     channels can match terms that live only in the datasource's
     ``DatasourceConfig.description`` field, in parity with the other
     entity render helpers.
@@ -96,8 +100,8 @@ def render_datasource_text(
     visible = [m for m in datasets if not m.hidden]
     if visible:
         lines.append(
-            "Models: " + _named_children_csv(
-                [(m.name, "model") for m in visible]
+            "Datasets: " + _named_children_csv(
+                [(m.name, "dataset") for m in visible]
             )
         )
     return "\n".join(lines)
@@ -109,11 +113,11 @@ def render_datasource_pair(
     datasets: list[SlayerDataset],
     description: str | None = None,
 ) -> RenderedEntity:
-    """Unified dispatch (DEV-1513) for the datasource doc. Used by both
+    """Unified dispatch for the datasource doc. Used by both
     the tantivy corpus builder and the embedding refresh path so the
     visibility filter is applied in exactly one place.
 
-    DEV-1549: ``description`` is the datasource's free-form description
+    ``description`` is the datasource's free-form description
     (DatasourceConfig.description), surfaced as ``SearchHit.description``
     under compact mode AND woven into the indexed text so lexical /
     embedding channels can match terms that live only there.
@@ -133,14 +137,16 @@ def render_datasource_pair(
 # ---------------------------------------------------------------------------
 
 
-def render_dataset_text(*, dataset: SlayerDataset) -> str:
+def render_dataset_text(*, dataset: SlayerDataset, concepts: Annotations | None = None) -> str:
     """Dataset doc: own metadata, non-named children in full, named children
-    by name + kind only."""
+    by name + kind only, then its ontology concepts."""
     lines: list[str] = [
-        f"Model: {dataset.data_source}.{dataset.name}",
+        f"Dataset: {dataset.data_source}.{dataset.name}",
     ]
     if dataset.description:
         lines.append(f"Description: {dataset.description}")
+    if ai := meta_ai_context_text(dataset.meta):
+        lines.append(f"AI context: {ai}")
     if dataset.sql_table:
         lines.append(f"sql_table: {dataset.sql_table}")
     if dataset.sql:
@@ -164,14 +170,14 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
     visible_fields = [c for c in dataset.fields if not c.hidden]
     if visible_fields:
         lines.append(
-            "Columns: " + _named_children_csv(
-                [(c.name, "column") for c in visible_fields]
+            "Fields: " + _named_children_csv(
+                [(c.name, "field") for c in visible_fields]
             )
         )
     if dataset.metrics:
         lines.append(
-            "Measures: " + _named_children_csv(
-                [(m.name or "", "measure") for m in dataset.metrics if m.name]
+            "Metrics: " + _named_children_csv(
+                [(m.name or "", "metric") for m in dataset.metrics if m.name]
             )
         )
     if dataset.aggregations:
@@ -183,14 +189,15 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
     if dataset.relationships:
         # Named-child mentions (target dataset name + kind).
         lines.append(
-            "Joins: " + _named_children_csv(
-                [(j.to, "model") for j in dataset.relationships]
+            "Relationships: " + _named_children_csv(
+                [(j.to, "dataset") for j in dataset.relationships]
             )
         )
         # Non-named-child: the relationship keys in full.
         for j in dataset.relationships:
             pairs = "; ".join(f"{src}={tgt}" for src, tgt in j.column_pairs)
-            lines.append(f"Join pairs to {j.to}: {pairs}")
+            lines.append(f"Relationship keys to {j.to}: {pairs}")
+    lines.extend(dataset_concept_lines(concepts, dataset=dataset))
     return "\n".join(lines)
 
 
@@ -199,57 +206,62 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
-    """Field doc: parent qualifier + per-field metadata + cached sample."""
+def _definition_lines(field: DatasetField) -> list[str]:
+    """The field's definition: portable text, each dialect entry, a deprecated ``sql``; a self-name read is omitted."""
+    expression = field.expression
+    portable = expression.sql if expression is not None and not isinstance(expression, str) else expression
+    lines: list[str] = []
+    if portable and portable.strip() != field.name:
+        lines.append(f"Expression: {portable}")
+    if expression is not None and not isinstance(expression, str):
+        lines.extend(f"Expression ({e.dialect}): {e.expression}" for e in expression.dialects or [])
+    if field.sql:
+        lines.append(f"SQL: {field.sql}")
+    return lines
+
+
+def _sample_lines(field: DatasetField) -> list[str]:
+    """Sample values: the structured list wins (``[]`` is authoritative), else the legacy ``sampled`` text."""
+    if field.sampled_values is None:
+        # ``sampled`` is a min/max range for numeric/temporal fields, or legacy data.
+        return [f"Sample values: {field.sampled}"] if field.sampled else []
+    if not field.sampled_values:
+        return []
+    # JSON keeps values containing commas unambiguous.
+    lines = ["Sample values: " + json.dumps(field.sampled_values, ensure_ascii=False)]
+    # Overflow signal only when the true cardinality strictly exceeds what we returned.
+    if field.distinct_count is not None and field.distinct_count > len(field.sampled_values):
+        lines.append(f"Distinct count: {field.distinct_count}")
+    return lines
+
+
+def render_field_text(*, dataset: SlayerDataset, field: DatasetField, concepts: Annotations | None = None) -> str:
+    """Field doc: parent qualifier + per-field metadata + cached sample + ontology concepts."""
     lines: list[str] = [
-        f"Column: {dataset.data_source}.{dataset.name}.{field.name}",
+        f"Field: {dataset.data_source}.{dataset.name}.{field.name}",
         f"Type: {field_type_text(field)}",
     ]
     if field.description:
         lines.append(f"Description: {field.description}")
+    if ai := meta_ai_context_text(field.meta):
+        lines.append(f"AI context: {ai}")
     if field.label:
         lines.append(f"Label: {field.label}")
     if field.format:
         lines.append(f"Format: {field.format}")
+    if field.time_zone:
+        lines.append(f"Time zone: {field.time_zone}")
     if field.allowed_aggregations:
         lines.append("Allowed aggregations: " + ", ".join(field.allowed_aggregations))
-    if field.sql:
-        lines.append(f"SQL: {field.sql}")
+    lines.extend(_definition_lines(field))
     if field.filter:
         lines.append(f"Filter: {field.filter}")
-    # DEV-1516: prefer the structured ``sampled_values`` list (full top-50)
-    # over the 20-truncated ``sampled`` text. ``is None`` gates the fallback
-    # so an authoritative empty list (``[]``) does not re-surface a stale
-    # ``sampled`` text; an empty list simply skips the line (avoids a bare
-    # ``Sample values: `` trailer in the indexed text).
-    if field.sampled_values is not None:
-        if field.sampled_values:
-            # JSON-encode the list to preserve values that contain commas
-            # (e.g. ``"R$ 1,000–3,000"``) — comma-joining would re-introduce
-            # the exact ambiguity that the structured ``sampled_values`` field
-            # was meant to solve.
-            lines.append(
-                "Sample values: "
-                + json.dumps(field.sampled_values, ensure_ascii=False)
-            )
-            # Overflow signal: render true cardinality on a follow-up line
-            # only when STRICTLY greater than the values we returned. Equal
-            # means we returned the entire set; emitting a hint would be
-            # noise. Gated on ``sampled_values is not None`` so the legacy
-            # ``"... (N distinct)"`` suffix in ``sampled`` text does not get
-            # duplicated by an extra line.
-            if (
-                field.distinct_count is not None
-                and field.distinct_count > len(field.sampled_values)
-            ):
-                lines.append(f"Distinct count: {field.distinct_count}")
-    elif field.sampled:
-        # Fallback for numeric/temporal fields (``sampled`` is a min/max
-        # range, not a list) and pre-DEV-1480 legacy data where the
-        # structured field was never populated.
-        lines.append(f"Sample values: {field.sampled}")
+    lines.extend(_sample_lines(field))
     if field.primary_key:
         lines.append("Primary key: yes")
+    if field.load_warning:
+        lines.append(f"Load warning: {field.load_warning}")
+    lines.extend(field_concept_lines(concepts, dataset=dataset, field=field.name))
     return "\n".join(lines)
 
 
@@ -261,13 +273,70 @@ def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
 def render_metric_text(*, dataset: SlayerDataset, metric: DatasetMetric) -> str:
     name = metric.name or ""
     lines: list[str] = [
-        f"Measure: {dataset.data_source}.{dataset.name}.{name}",
-        f"Formula: {metric.expression}",
+        f"Metric: {dataset.data_source}.{dataset.name}.{name}",
+        f"Expression: {metric.text}",
     ]
     if metric.description:
         lines.append(f"Description: {metric.description}")
+    if ai := meta_ai_context_text(metric.meta):
+        lines.append(f"AI context: {ai}")
     if metric.label:
         lines.append(f"Label: {metric.label}")
+    if metric.load_warning:
+        lines.append(f"Load warning: {metric.load_warning}")
+    return "\n".join(lines)
+
+
+def expression_text(expression: Expression | None) -> str:
+    """An Ossie expression as text: its portable SQL, else each dialect's entry."""
+    portable = portable_text(expression)
+    if portable is not None or not isinstance(expression, ExpressionObject):
+        return portable or ""
+    return "; ".join(f"{e.dialect}: {e.expression}" for e in expression.dialects or [])
+
+
+def ai_context_text(ai_context: AIContext | dict[str, Any] | None) -> str:
+    """An Ossie ``ai_context`` (or its raw mapping) as one line."""
+    if isinstance(ai_context, dict):
+        ai_context = AIContextObject.model_validate(ai_context)
+    if ai_context is None or isinstance(ai_context, str):
+        return ai_context or ""
+    parts = [ai_context.instructions or "",
+             *(f"{label}: {', '.join(items)}" for label, items in
+               (("synonyms", ai_context.synonyms), ("examples", ai_context.examples)) if items)]
+    return "; ".join(p for p in parts if p)
+
+
+def meta_ai_context_text(meta: dict[str, Any] | None) -> str:
+    """The Ossie ``ai_context`` a load recorded in ``meta`` as one line; empty when none or malformed."""
+    try:
+        return ai_context_text((meta or {}).get("osi_ai_context"))
+    except ValueError:
+        return ""
+
+
+def render_semantic_model_text(*, data_source: str, name: str, document: dict[str, Any]) -> str:
+    """A semantic-model document: its name, description and ``ai_context``."""
+    lines = [f"Semantic model: {data_source}.{name}"]
+    if document.get("description"):
+        lines.append(f"Description: {document['description']}")
+    if ai := ai_context_text(document.get("ai_context")):
+        lines.append(f"AI context: {ai}")
+    return "\n".join(lines)
+
+
+def render_model_scoped_metric_text(*, metric: ModelScopedMetric) -> str:
+    lines: list[str] = [
+        f"Metric: {metric.name} (model-scoped, semantic model {metric.semantic_model!r} "
+        f"of datasource {metric.data_source!r})",
+        f"Expression: {expression_text(metric.expression)}",
+    ]
+    if metric.description:
+        lines.append(f"Description: {metric.description}")
+    if ai := ai_context_text(metric.ai_context):
+        lines.append(f"AI context: {ai}")
+    if metric.load_warning:
+        lines.append(f"Load warning: {metric.load_warning}")
     return "\n".join(lines)
 
 
@@ -281,7 +350,7 @@ def render_aggregation_text(*, dataset: SlayerDataset, aggregation: Aggregation)
         f"Aggregation: {dataset.data_source}.{dataset.name}.{aggregation.name}",
     ]
     if aggregation.expression:
-        lines.append(f"Formula: {aggregation.expression}")
+        lines.append(f"Expression: {aggregation.expression}")
     if aggregation.description:
         lines.append(f"Description: {aggregation.description}")
     if aggregation.params:
@@ -301,7 +370,7 @@ def render_memory_text(*, memory: Memory) -> str:
     tagged canonical entities so the memory surfaces both via
     natural-language search and via exact-entity search.
 
-    DEV-1549: ``description`` is included here so the lexical BM25 /
+    ``description`` is included here so the lexical BM25 /
     tantivy channels can match terms that live only in
     ``Memory.description``. Without this, installs without the optional
     embedding extra would lose recall for the new field.
@@ -315,7 +384,7 @@ def render_memory_text(*, memory: Memory) -> str:
 
 
 def compact_description_from_learning(learning: str) -> str:
-    """DEV-1549 compact-mode fallback: take the first non-empty
+    """Compact-mode fallback: take the first non-empty
     paragraph (text up to the first blank line) of ``learning`` and
     cap at 500 chars (suffix-truncated, no ellipsis).
 
@@ -336,11 +405,11 @@ def compact_description_from_learning(learning: str) -> str:
 def render_memory_text_for_embedding(*, memory: Memory) -> str:
     """Memory doc for embeddings: learning text + optional description.
 
-    DEV-1428: entity tags are excluded so the cascade-strip path (which
+    Entity tags are excluded so the cascade-strip path (which
     only rewrites ``entities``) does not change the embedding content
     hash. The cascade still skips embedding work for free.
 
-    DEV-1549 (Codex#5): when ``description`` is set, append it so the
+    When ``description`` is set, append it so the
     user-supplied summary contributes to semantic recall. Cascade-strip
     only touches ``entities``, so the hash skip on tag-only mutations is
     preserved.
@@ -351,12 +420,12 @@ def render_memory_text_for_embedding(*, memory: Memory) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Unified entity-pair dispatch (DEV-1513)
+# Unified entity-pair dispatch
 # ---------------------------------------------------------------------------
 
 
 def collect_dataset_entity_pairs(
-    *, dataset: SlayerDataset, include_hidden: bool = False
+    *, dataset: SlayerDataset, include_hidden: bool = False, concepts: Annotations | None = None,
 ) -> list[RenderedEntity]:
     """Walk a dataset's subtree (dataset + fields + named metrics
     + custom aggregations) into the unified ``RenderedEntity`` shape.
@@ -369,7 +438,7 @@ def collect_dataset_entity_pairs(
       Pydantic validator already rejects unnamed metrics, but the skip
       keeps the helper aligned with the documented filter set).
 
-    ``include_hidden=True`` (DEV-1588) is the ``inspect`` escape hatch:
+    ``include_hidden=True`` is the ``inspect`` escape hatch:
     it emits the hidden dataset + hidden fields so a deliberate
     point-lookup can render them. The default (``False``) preserves the
     search/index corpus behavior — hidden entities never leak.
@@ -385,7 +454,7 @@ def collect_dataset_entity_pairs(
     out: list[RenderedEntity] = [RenderedEntity(
         canonical_id=qualifier,
         kind="dataset",
-        text=render_dataset_text(dataset=dataset),
+        text=render_dataset_text(dataset=dataset, concepts=concepts),
         description=dataset.description,
     )]
     for field in dataset.fields:
@@ -394,7 +463,7 @@ def collect_dataset_entity_pairs(
         out.append(RenderedEntity(
             canonical_id=f"{qualifier}.{field.name}",
             kind="field",
-            text=render_field_text(dataset=dataset, field=field),
+            text=render_field_text(dataset=dataset, field=field, concepts=concepts),
             description=field.description,
         ))
     for metric in dataset.metrics:

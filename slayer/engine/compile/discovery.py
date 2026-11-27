@@ -1,29 +1,36 @@
 """The one regroup discovery walk: every producer root of a prebound query with
-its phase (from the consumer position) and routing (from the key itself)."""
+its phase (from the consumer position) and routing (from its resolved home)."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
+from slayer.core.models import SlayerDataset
 from slayer.core.keys import (
     AggregateKey,
     ConsumerNode,
+    FieldKey,
+    FieldSqlKey,
+    Grain,
+    TimeTruncKey,
     TransformKey,
     ValueKey,
     attached_inputs,
-    is_cross_dataset_agg,
+    is_transform,
+    value_grain,
     is_kernel_requiring,
     is_reaggregation_key,
     is_row_attach_root,
     restricts_own_rows,
-    source_anchor_path,
     walk_consumer_positions,
+    walk_value_keys,
+    window_kwarg_of,
 )
-from slayer.core.scope import DatasetScope, StageSchema
-from slayer.engine.compile.shift import _series_mode
+from slayer.core.scope import DatasetScope
+from slayer.engine.compile.shift import _series_mode, is_placeholder
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
     combined_kind,
@@ -36,12 +43,15 @@ from slayer.engine.elaborate_env import (
 from slayer.engine.cardinality.relationship_safety import (
     crossing_local_root_predicate,
     grain_member_attributable,
+    key_host_path,
+    mixes_untrusted_branch,
     reads_population_spine,
 )
 from slayer.ir.elaborated import ConjunctTyping
 from slayer.ir.planned import MaskTyping
-from slayer.ir.prebound import PreboundQuery
+from slayer.ir.prebound import PreboundQuery, walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.terms import AggregateHomes
 
 RootPhase = Literal["row", "combined"]
 Routing = Literal[
@@ -66,44 +76,94 @@ class RootDisposition(BaseModel):
     series: Optional[bool] = None
 
 
-def _is_bare_own_rows_local(k: ValueKey) -> bool:
+def _is_bare_own_rows_local(k: ValueKey, *, homes: AggregateHomes) -> bool:
     """A bare local aggregate needing its own rows: windowed, ranked, or row-restricted by FILTER."""
     return (
         (is_kernel_requiring(k) or restricts_own_rows(k)) and k.partition_keys is None
-        and not source_anchor_path(k.source)
+        and not homes.target_rooted(k)
     )
 
 
-def _input_routing(a: ValueKey) -> Routing:
+def _input_routing(a: ValueKey, *, homes: AggregateHomes) -> Routing:
     if is_reaggregation_key(a):
         return "reaggregation_constituent"
-    return "target_rooted" if is_cross_dataset_agg(a) else "local_producer"
+    return "target_rooted" if homes.target_rooted(a) else "local_producer"
 
 
-def row_attach_inputs(root: ValueKey, *, names: Tuple[str, ...]) -> List[RootDisposition]:
+def row_attach_inputs(
+    root: ValueKey, *, names: Tuple[str, ...], homes: AggregateHomes,
+) -> List[RootDisposition]:
     """The row-phase dispositions of an inline row-attach root's attached inputs."""
     return [
-        RootDisposition(root=a, phase="row", routing=_input_routing(a),
+        RootDisposition(root=a, phase="row", routing=_input_routing(a, homes=homes),
                         consumer_public_names=names)
         for a in attached_inputs(root)
     ]
+
+
+class TransformRouting(BaseModel):
+    """Which transforms of a plan evaluate over its own rows: ``answers`` always (a domain producer's own transforms);
+    any other only when the plan's rows are its host's cells and it reads nothing but host-local aggregates at the
+    plan grain — its domain is then the plan's rows (Axiom 11.6). Every other transform gets its own producer."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    route: bool = True
+    answers: frozenset = frozenset()
+    rows_are_host_cells: bool = True
+    #: A spine plan: every ``time_shift`` reads a shifted producer over the moved spine bounds (Axiom 15).
+    spine: bool = False
 
 
 class _Walker:
     """Classifies each walked node by consumer position; ``out`` in first-seen order."""
 
     def __init__(
-        self, *, prebound: PreboundQuery, scope: Union[DatasetScope, StageSchema],
-        bundle: ResolvedSourceBundle,
+        self, *, prebound: PreboundQuery, scope: DatasetScope,
+        bundle: ResolvedSourceBundle, homes: AggregateHomes,
+        transforms: TransformRouting = TransformRouting(),
     ) -> None:
         self.out: List[RootDisposition] = []
+        self.homes = homes
         n_grain = prebound.n_dims + prebound.n_time_dimensions
         self.classes = position_classes(prebound.declared_metrics, n_grain=n_grain)
         self.row_attach_names: Dict[ValueKey, List[str]] = {}
-        self.crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)
-        self.host = scope.population if isinstance(scope, DatasetScope) else None
+        self.crossing = crossing_local_root_predicate(scope=scope, bundle=bundle, homes=homes)
+        self.host = scope.population
         self.bundle = bundle
         self.grain = [dm.bound.value_key for dm in prebound.declared_metrics[:n_grain]]
+        self.active_td = prebound.main_time_key
+        self.transforms = transforms
+        self.host_cells = transforms.rows_are_host_cells and all(
+            self._over_host_cells(t) for t in transforms.answers if is_transform(t)
+        )
+
+    def _host_inline(self, a: AggregateKey) -> bool:
+        """An aggregate computed over the plan's host rows at the plan grain (inline, or host-rooted across its
+        inputs' hops)."""
+        return (
+            a.written_grain is None and not attached_inputs(a) and not is_reaggregation_key(a)
+            and not self.homes.target_rooted(a) and not _is_bare_own_rows_local(a, homes=self.homes)
+            and not self.local_broadcasts(a)
+        )
+
+    def _over_host_cells(self, t: ValueKey) -> bool:
+        """Whether ``t``'s domain is its host's cells at the plan grain."""
+        grain = Grain.of(self.grain)
+        return all(
+            self._host_inline(k) if isinstance(k, AggregateKey)
+            else value_grain(k, query_grain=grain, active_bucket=self.active_td) == grain
+            for k in walk_value_keys(t) if isinstance(k, AggregateKey) or is_transform(k)
+        )
+
+    def routes(self, k: ValueKey) -> bool:
+        """Whether transform ``k`` evaluates in its own domain producer."""
+        # A dimensionless plan has one cell, the unit.
+        if not (self.transforms.route and self.grain and is_transform(k)) or k in self.transforms.answers:
+            return False
+        if isinstance(k, TransformKey) and k.op == "time_shift" and not _series_mode(k.input, to_original={}):
+            return False
+        return not (self.host_cells and self._over_host_cells(k))
 
     def emit(self, root: ValueKey, phase: RootPhase, routing: Routing, *,
              names: Tuple[str, ...] = (), declared_type: Optional[DataType] = None,
@@ -115,22 +175,44 @@ class _Walker:
             self.out.append(d)
 
     def local_broadcasts(self, k: ValueKey) -> bool:
-        """A plain local aggregate grouped by a dimension unattributable from the host."""
+        """A local aggregate (plain, ranked or windowed) whose grain member — explicit key or query dimension — or
+        partitioned window axis is unattributable from the host goes through the mode gate."""
         host = self.host
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
-            or is_cross_dataset_agg(k) or k.locus == "host" or k.partition_keys is not None
-            or self.crossing(k) or is_kernel_requiring(k)
+            or self.homes.target_rooted(k) or k.locus == "host" or self.crossing(k)
+            or any(is_placeholder(r) for r in walk_value_keys(k.source))  # a lowered re-aggregation outer
         ):
             return False
-        # The population's spine is counted over each home's own axis, never the product.
-        return any(
-            reads_population_spine(g, host=host) or not grain_member_attributable(
-                key=g, target_path=(), root_dataset=host,
-                datasets_by_name=self.bundle.datasets_by_name, bundle=self.bundle,
-                host_dataset=host, host_name=host.name,
+        written = k.written_grain
+        if written is not None:
+            # A requested key the host reaches but does not determine resolves per the mode axis, as does a fanning
+            # window axis.
+            return any(self._associable_key(pk, host=host) for pk in written) or (
+                window_kwarg_of(k) is not None and self.active_td is not None
+                and not self._attributable(self.active_td, host=host)
             )
-            for g in self.grain
+        # The population's spine is counted over each home's own axis, never the product; a member mixing an
+        # untrusted to-one branch with other reads counts each home row once by association.
+        return any(
+            reads_population_spine(g, host=host, datasets_by_name=self.bundle.datasets_by_name)
+            or not self._attributable(g, host=host)
+            or mixes_untrusted_branch(g, root_dataset=host, host_dataset=host, bundle=self.bundle)
+            for g in (self.grain if k.partition_keys is None else k.partition_keys)
+        )
+
+    def _associable_key(self, pk: ValueKey, *, host: SlayerDataset) -> bool:
+        """An explicit key the host reaches through relationships but does not attribute; a key from across a
+        product hop resolves on the unrelated-dataset path instead."""
+        return not self._attributable(pk, host=host) and all(
+            walk_key_path(dataset=host, path=key_host_path(r), bundle=self.bundle) is not None
+            for r in walk_value_keys(pk) if isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey))
+        )
+
+    def _attributable(self, key: ValueKey, *, host: SlayerDataset) -> bool:
+        return grain_member_attributable(
+            key=key, target_path=(), root_dataset=host, datasets_by_name=self.bundle.datasets_by_name,
+            bundle=self.bundle, host_dataset=host, host_name=host.name,
         )
 
     def emit_named(self, k: ValueKey, phase: RootPhase, routing: Routing, *, top: bool,
@@ -146,7 +228,7 @@ class _Walker:
                                 declared=declared)
                 continue
             if is_dimension_transform_root(k) or is_grained_aggregate(k):
-                self.emit(k, "row", _input_routing(k))
+                self.emit(k, "row", "target_rooted" if self.local_broadcasts(k) else _input_routing(k, homes=self.homes))
             self.row_attach(k, attach_pk=False)
 
     def row_attach(self, k: ValueKey, *, attach_pk: bool, names: Sequence[str] = ()) -> None:
@@ -160,21 +242,35 @@ class _Walker:
     ) -> None:
         """Route every node of a metric / order / filter root; a row-scope reference
         to a dimension's own value routes nowhere."""
-        opaque = self.classes.opaque(position)
-        for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys_for(position),
+        base = self.classes.opaque(position)
+
+        def opaque(k: ValueKey) -> bool:
+            return (base is not None and base(k)) or self.routes(k)
+
+        for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys,
                                          opaque=opaque):
-            if opaque is not None and opaque(n.key):
-                continue
-            top = n.key is vk
-            if is_reaggregation_key(n.key):
-                if self.classes.combined_admits(n, position=position, root=vk):
-                    self.emit_named(n.key, "combined", "reaggregation", top=top, name=name,
-                                    declared=declared)
-                continue
-            self.combined_node(n, root=vk, position=position,
-                               names=(name,) if name and top else (),
-                               declared=declared if top else None)
-            self.row_attach(n.key, attach_pk=n.attach_pk, names=containing)
+            self._consume(n, root=vk, position=position, base=base, name=name, declared=declared,
+                          containing=containing)
+
+    def _consume(
+        self, n: ConsumerNode, *, root: ValueKey, position: ConsumerPosition,
+        base: Optional[Callable[[ValueKey], bool]], name: Optional[str], declared: Optional[DataType],
+        containing: Sequence[str],
+    ) -> None:
+        top = n.key is root
+        if self.routes(n.key) and not n.dim_key and self.classes.combined_admits(n, position=position, root=root):
+            self.emit_named(n.key, "combined", "local_producer", top=top, name=name, declared=declared)
+            return
+        if base is not None and base(n.key):
+            return
+        if is_reaggregation_key(n.key):
+            if self.classes.combined_admits(n, position=position, root=root):
+                self.emit_named(n.key, "combined", "reaggregation", top=top, name=name, declared=declared)
+            return
+        self.combined_node(n, root=root, position=position,
+                           names=(name,) if name and top else (),
+                           declared=declared if top else None)
+        self.row_attach(n.key, attach_pk=n.attach_pk, names=containing)
 
     def combined_node(
         self, n: ConsumerNode, *, root: ValueKey, position: ConsumerPosition,
@@ -182,17 +278,27 @@ class _Walker:
     ) -> None:
         k = n.key
         if isinstance(k, TransformKey) and k.op == "time_shift":
-            self.emit(k, "combined", "shifted", series=_series_mode(k.input, to_original={}))
-        kind = combined_kind(k)
-        if kind is not None and self.classes.combined_admits(n, position=position, root=root):
-            if kind == "local":
-                self.emit(k, "combined", "local_producer", names=names)
-            else:
-                self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
-        if _is_bare_own_rows_local(k) or self.crossing(k):
+            self.emit(k, "combined", "shifted",
+                      series=False if self.transforms.spine else _series_mode(k.input, to_original={}))
+        kind = combined_kind(k, homes=self.homes)
+        admitted = kind is not None and self.classes.combined_admits(n, position=position, root=root)
+        if self.local_broadcasts(k):
+            # A partitioned one is consumed combined only where admitted, like its local twin.
+            if kind is None or admitted:
+                self.emit(k, "combined", "target_rooted", names=names)
+            return
+        if admitted:
+            self._emit_admitted_combined(k, local=kind == "local", names=names, declared=declared)
+        if _is_bare_own_rows_local(k, homes=self.homes) or self.crossing(k):
             self.emit(k, "combined", "local_producer", names=names)
-        elif self.local_broadcasts(k):
-            self.emit(k, "combined", "target_rooted", names=names)
+
+    def _emit_admitted_combined(
+        self, k: ValueKey, *, local: bool, names: Tuple[str, ...], declared: Optional[DataType],
+    ) -> None:
+        if local:
+            self.emit(k, "combined", "local_producer", names=names)
+        else:
+            self.emit(k, "combined", "target_rooted", names=names, declared_type=declared)
 
     def inline_row_attach_roots(self) -> None:
         """Emit each row-attach root no producer disposition routes, with its inputs."""
@@ -202,16 +308,18 @@ class _Walker:
                 continue
             ns = tuple(names)
             self.emit(root, "combined", "inline", names=ns)
-            for d in row_attach_inputs(root, names=ns):
-                self.emit(d.root, d.phase, d.routing, names=d.consumer_public_names)
+            for d in row_attach_inputs(root, names=ns, homes=self.homes):
+                routing = "target_rooted" if self.local_broadcasts(d.root) else d.routing
+                self.emit(d.root, d.phase, routing, names=d.consumer_public_names)
 
 
 def discover_roots(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
-    scope: Union[DatasetScope, StageSchema], bundle: ResolvedSourceBundle,
+    scope: DatasetScope, bundle: ResolvedSourceBundle, homes: AggregateHomes,
+    transforms: TransformRouting = TransformRouting(route=False),
 ) -> List[RootDisposition]:
-    """Every producer root of ``prebound``, one disposition per consumer occurrence."""
-    w = _Walker(prebound=prebound, scope=scope, bundle=bundle)
+    """Every producer root of ``prebound``, one disposition per consumer occurrence, routed by its home."""
+    w = _Walker(prebound=prebound, scope=scope, bundle=bundle, homes=homes, transforms=transforms)
     metric_typed = frozenset(
         i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.METRIC
     )

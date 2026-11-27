@@ -1,13 +1,13 @@
-"""Shared fixtures for DEV-1835 — local family unification (bare windowed /
+"""Shared fixtures for local family unification (bare windowed /
 first-last onto the regroup primitive) + attach-dedup.
 
-Reuses the DEV-1739/1824/1837 models, dataset, and oracles verbatim and adds
+Reuses the ``_dev1739``/``_dev1824``/``_dev1837`` fixtures' datasets, seed data, and oracles verbatim and adds
 hand-computed oracles for the migrated families, the guard-dissolution shapes,
-and the union-grain broadcasts, plus a shipped-at model variant for the
-explicit-ranking-column cases.
+and the union-grain broadcasts, plus a shipped-at dataset variant for the
+explicit-ranking-field cases.
 
-Oracle derivations (from the DEV-1739 rows; row list in ``_dev1824_fixtures``)
-------------------------------------------------------------------------------
+Oracle derivations (from the ``_dev1739_fixtures`` rows; row list in ``_dev1824_fixtures``)
+-------------------------------------------------------------------------------------------
 CITY_WM        bare ``sum(amount, window='1y')`` at (region, city, month): the
                window spans the whole dataset, so each bucket carries the
                running (region, city) total: (N,CityA,Jan)=30 (N,CityB,Feb)=40
@@ -25,7 +25,7 @@ OK_W90         ``sum(ok_amount, window='90d')`` at (region, month) — row 6
                (hold) drops, so (S,Mar)=25 (vs 50 unfiltered): (N,Jan)=30
                (N,Feb)=100 (S,Jan)=25 (S,Mar)=25 (NULL,Mar)=60.
 OK_LAST        ``last(ok_amount)`` by region — the MASKED value at the newest row
-               (DEV-1832: Column.filter masks, it does not restrict the ranking):
+               (DatasetField.filter masks, it does not restrict the ranking):
                N=30 (newest N row is ok), S=NULL (S's newest row #6 is 'hold' →
                masked to NULL), NULL-region=60. The all-NULL ``last(nomatch)`` is
                the discriminating twin.
@@ -63,6 +63,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -88,7 +89,7 @@ from tests._dev1837_fixtures import (  # noqa: F401 — re-exported fixture surf
     TRAILING_90D_REGION,
     TimeDimension,
     TimeGranularity,
-    dev1837_models,
+    dev1837_datasets,
     dim_key,
     gen,
     make_exec_engine,
@@ -99,7 +100,7 @@ from tests._dev1837_fixtures import (  # noqa: F401 — re-exported fixture surf
     with_nulls,
 )
 
-dev1835_models = dev1837_models
+dev1835_datasets = dev1837_datasets
 
 # --------------------------------------------------------------------------- #
 # Migrated-family executed-value oracles.
@@ -200,14 +201,14 @@ CHANGE_OVER_LAST = {("North", "2024-02"): 10.0}
 CHANGE_PCT_OVER_LAST = {("North", "2024-02"): 0.5}
 
 # --------------------------------------------------------------------------- #
-# Union-grain (DEV-1839 lift, task 3.7) oracles.
+# Union-grain oracles.
 # --------------------------------------------------------------------------- #
 UNION_WM_DIM = (
-    "rank(sum(amount, window='90d', partition_by=region) - "
-    "sum(amount, partition_by=region), direction='desc')"
+    "rank(sum(orders.amount, window='90d', partition_by=orders.region) - "
+    "sum(orders.amount, partition_by=orders.region), direction='desc')"
 )
 UNION_RK_DIM = (
-    "rank(last(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
+    "rank(last(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), direction='desc')"
 )
 UNION_WM_RANK = {
     ("North", "2024-01"): 5, ("North", "2024-02"): 1,
@@ -239,8 +240,8 @@ def cte_aliases(sql: str, prefix: str, *, dialect: str = "sqlite") -> List[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Shipped-at model variant — a second ranking timestamp for the explicit
-# ranking-column cases. Same rows as DEV-1739 plus ``shipped_at``.
+# Shipped-at dataset variant — a second ranking timestamp for the explicit
+# ranking-field cases. Same rows as ``_dev1739_fixtures`` plus ``shipped_at``.
 # --------------------------------------------------------------------------- #
 _SHIPPED_ROWS = [
     # (id, customer_id, region, city, channel, amount, status, ordered_at, shipped_at)
@@ -272,8 +273,8 @@ def shipped_orders_dataset() -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             DatasetField(name="shipped_at", datatype=DataType.DATETIME),
-            # Derived column — the "every dimension kind" scenario (Codex F3).
-            DatasetField(name="city_key", datatype=DataType.STRING, sql="LOWER(city)"),
+            # Derived field — the "every dimension kind" scenario (Codex F3).
+            DatasetField(name="city_key", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="LOWER(city)"), DialectEntry(dialect="SQLITE", expression="LOWER(city)")])),
         ],
         relationships=[
             DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
@@ -305,7 +306,7 @@ def _seed_shipped_duckdb(db_path: str) -> None:
 
 async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture over the shipped-at
-    model (mirrors ``_dev1739_fixtures.make_exec_engine``)."""
+    dataset (mirrors ``_dev1739_fixtures.make_exec_engine``)."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
@@ -320,14 +321,14 @@ async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 # shipped_backend fixtures stay inline in each module — pytest fixture imports
 # trip F811 where the fixture name shadows the test-method parameter).
 def _by_region(resp, col: str) -> dict:
-    mapping = {r["orders.region"]: r[f"orders.{col}"] for r in resp.data}
+    mapping = {r["orders.region"]: r[col] for r in resp.data}
     assert len(mapping) == len(resp.data), f"duplicate region rows: {resp.data}"
     return mapping
 
 
 def _by_region_month(resp, col: str) -> dict:
     mapping = {
-        (r["orders.region"], month_key(r["orders.ordered_at"])): r[f"orders.{col}"]
+        (r["orders.region"], month_key(r["orders.ordered_at"])): r[col]
         for r in resp.data
     }
     assert len(mapping) == len(resp.data), f"duplicate (region, month) rows: {resp.data}"
@@ -355,7 +356,7 @@ __all__ = [
     "TRAILING_45D_REGION", "TRAILING_90D_REGION", "TS_OVER_LAST", "TS_OVER_W90",
     "TimeDimension", "TimeGranularity", "UNION_RK_DIM", "UNION_RK_RANK",
     "UNION_WM_DIM", "UNION_WM_RANK", "W90_RATIO", "WM_X", "cte_aliases",
-    "dev1835_models", "dim_key", "gen", "make_exec_engine",
+    "dev1835_datasets", "dim_key", "gen", "make_exec_engine",
     "make_shipped_exec_engine", "month_key", "month_td", "q", "rows_by",
     "shipped_orders_dataset", "with_nulls",
 ]

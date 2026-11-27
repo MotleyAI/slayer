@@ -256,3 +256,70 @@ SHALL run read-only where the dialect supports it and SHALL always roll back.
 - **WHEN** a raw-`sql` model is trial-executed at save time
 - **THEN** the probe runs in a rolled-back transaction (read-only where the
   dialect supports it), so nothing it runs is committed
+
+### Requirement: Saves judge what they add or change
+A save through SLayer SHALL apply its save-time checks to every definition the save adds or changes, and SHALL run the broken-dependents analysis over every stored definition that depends on what changed, as saves do today; a save that breaks a stored model-scoped metric SHALL be refused as `models/semantic-model-documents` › Explicit changes never break a model-scoped metric specifies. A definition the save neither adds nor changes, and which depends on nothing the save changes, SHALL NOT be judged, so a stored definition that fails every query (allowed in a user-written document, `models/semantic-model-documents` › Entities SLayer cannot evaluate yet still load) never blocks an unrelated save. A definition SLayer is asked to add or change that is guaranteed to fail every query SHALL be refused, whether or not Ossie defines it.
+
+#### Scenario: An unrelated edit beside a windowed metric
+- **WHEN** a stored document holds a model-scoped metric using `OVER`, and `edit_dataset` changes the description of one of its datasets
+- **THEN** the save succeeds and the windowed metric is unchanged
+
+#### Scenario: Authoring a windowed metric saves; an unwindowable function is refused
+- **WHEN** `edit_semantic_model` adds a model-scoped metric whose expression uses `OVER`
+- **THEN** the save succeeds and a query naming the metric returns its value; a metric windowing a function Ossie does not window (`last(orders.amount, orders.order_date) OVER ()`) fails the save with a typed error naming the metric and the function
+
+#### Scenario: Renaming a referenced field warns about dependents
+- **WHEN** a save renames the document field `orders.amount` that a model-scoped metric reads
+- **THEN** the save is refused naming the metric and `orders.amount`, and nothing is stored
+
+### Requirement: Saves re-validate the whole dataset or datasource
+
+Saving a dataset, saving a document dataset's SLayer extensions, and saving a datasource SHALL first validate the object in full, every nested part included, with the checks construction applies, before any canonicalization, dialect conversion, peer loading or write. An object these checks refuse SHALL be refused with the construction error and nothing SHALL be written. Runtime-only state the object carries SHALL take part in the check as it does at construction, and the saved object SHALL NOT be modified by the check.
+
+#### Scenario: A dataset changed in place is refused on save
+- **WHEN** a dataset is saved after a field duplicating another's name was appended to its fields, after a key was appended to one relationship's `from_columns` only, after a non-field value was appended to its fields, or after `"bogus"` was appended to one field's `allowed_aggregations`
+- **THEN** each save is refused with the error construction raises for that state, and the store's write was never called
+
+#### Scenario: Document dataset extensions are re-validated
+- **WHEN** a document-declared dataset whose fields gained a duplicate name in place has its SLayer extensions saved
+- **THEN** the save is refused with the construction error and the document is unchanged
+
+#### Scenario: A datasource changed in place is refused on save
+- **WHEN** a datasource is saved after a value that is not a granularity was appended to its granularities
+- **THEN** the save is refused with the construction error and the store's write was never called
+
+#### Scenario: A valid dataset with runtime-only state saves as before
+- **WHEN** a dataset carrying a metric that loaded with a load warning, and a document-declared dataset, are saved unchanged
+- **THEN** both saves succeed exactly as before this change
+
+### Requirement: Enforced keys name declared keys of a table-backed dataset
+Saving a dataset SHALL refuse an `enforced_keys` entry that is not one of its declared key
+sets (its primary key, or a unique field), one naming a field that is not a base column,
+and any `enforced_keys` on a dataset backed by `sql` or a backing query. A save that changes
+a dataset's `sql_table`, `sql`, backing query or datasource SHALL drop its `enforced_keys`;
+one that makes a field an enforced key names no longer a base column, or a different one,
+SHALL drop that key.
+
+#### Scenario: An undeclared enforced key is refused
+- **WHEN** a dataset with primary key `id` is saved with `enforced_keys: [[email]]` and `email`
+  is not unique
+- **THEN** the save fails naming the entry
+
+#### Scenario: A query-backed dataset cannot carry enforced keys
+- **WHEN** a dataset backed by `sql` is saved with an enforced key
+- **THEN** the save fails
+
+#### Scenario: Repointing drops enforced keys
+- **WHEN** a dataset recording `[customer_id]` as enforced is saved with a different
+  `sql_table`
+- **THEN** the stored dataset has no enforced keys
+
+#### Scenario: An enforced key on a computed field is refused
+- **WHEN** a dataset is saved with `enforced_keys: [[customer_id]]` and field `customer_id`
+  has the expression `lower(email)`
+- **THEN** the save fails naming the entry
+
+#### Scenario: Re-pointing a key field drops its enforced key
+- **WHEN** a dataset recording `[customer_id]` as enforced is saved with field `customer_id`
+  reading another column, or a computed expression
+- **THEN** the stored dataset no longer records `[customer_id]` as enforced

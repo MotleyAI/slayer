@@ -1,8 +1,8 @@
-"""DEV-1866 — the effective population is reported on every response path.
+"""The effective population is reported on every response path.
 
 ``SlayerResponse.population`` / ``.population_inferred`` are populated uniformly
 across execute, dry-run, explain, cache miss/hit, refresh (real re-execution),
-run-by-name, explicit vs inferred vs extended source models, and the
+run-by-name, explicit vs inferred vs extended source datasets, and the
 Python client's decode path. Engine-level datasource forwarding into inference
 is covered here too.
 """
@@ -55,7 +55,7 @@ class TestExplicitVsInferredReporting:
 
     async def test_explicit_string_flag_false(self, engine) -> None:
         resp = await engine.execute(SlayerQuery(
-            population="customers", dimensions=["region"],
+            population="customers", dimensions=["customers.region"],
         ))
         assert resp.population == "customers"
         assert resp.population_inferred is False
@@ -67,7 +67,7 @@ class TestExplicitVsInferredReporting:
                 "dataset": "customers",
                 "metrics": [{"name": "n", "expression": "count(*)"}],
             })],
-            dimensions=["region"],
+            dimensions=["customers.region"],
         ))
         assert resp.population == "customers"
         assert resp.population_inferred is False
@@ -76,8 +76,8 @@ class TestExplicitVsInferredReporting:
         await engine.create_dataset_from_query(
             query=SlayerQuery(
                 population="customers",
-                dimensions=["region"],
-                metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
+                dimensions=["customers.region"],
+                metrics=[QueryMetric(metric="sum(customers.orders.amount)", alias="rev")],
             ),
             name="cust_by_region",
         )
@@ -88,10 +88,10 @@ class TestExplicitVsInferredReporting:
     @pytest.mark.parametrize("dry_run", [False, True])
     async def test_stage_population_reports_the_stage_name(self, engine, dry_run) -> None:
         stage = SlayerQuery.model_validate({
-            "name": "by_region", "population": "customers", "dimensions": ["region"],
+            "name": "by_region", "population": "customers", "dimensions": ["customers.region"],
             "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
-        main = SlayerQuery.model_validate({"population": "by_region", "metrics": [{"metric": "sum(rev)"}]})
+        main = SlayerQuery.model_validate({"population": "by_region", "metrics": [{"metric": "sum(by_region.rev)"}]})
         resp = await engine.execute([stage, main], dry_run=dry_run)
         assert resp.population == "by_region"
         assert resp.population_inferred is False
@@ -118,18 +118,14 @@ class TestReportedAcrossExecutionModes:
         assert miss.population_inferred is hit.population_inferred is True
 
     async def test_cache_twin_reports_current_inferred_flag(self, engine) -> None:
-        """Explicit and inferred twins share a cache key (identical SQL); a cache
+        """Explicit and inferred dimension-only twins share a cache key (identical SQL); a cache
         hit must report the CURRENT query's inferred flag, not the stored one."""
-        explicit = SlayerQuery.model_validate({
-            "population": "customers",
-            "dimensions": ["customers.region"],
-            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
-        })
+        explicit = SlayerQuery.model_validate({"population": "customers", "dimensions": ["customers.region"]})
         first = await engine.execute(explicit, cache=True)
         assert first.population_inferred is False
         assert engine.cache_size == 1
         # Same SQL ⇒ cache hit, but this query inferred its population.
-        second = await engine.execute(_INFERRED, cache=True)
+        second = await engine.execute(SlayerQuery.model_validate({"dimensions": ["customers.region"]}), cache=True)
         assert engine.cache_size == 1
         assert second.population == "customers"
         assert second.population_inferred is True
@@ -168,9 +164,9 @@ class TestEngineDatasourceForwarding:
         assert resp.population_inferred is True
 
     async def test_inferred_datasource_pins_bundle_resolution(self) -> None:
-        """The winning model name may also exist in another datasource; anchor
+        """The winning dataset name may also exist in another datasource; anchor
         voting fixes exactly one, and that datasource must pin bundle resolution
-        so the bare model name never resolves ambiguously."""
+        so the bare dataset name never resolves ambiguously."""
         storage = YAMLStorage(base_dir=tempfile.mkdtemp())
         for ds in ("dsa", "dsb"):
             await storage.save_datasource(

@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1945 — the first/last ranking key is a closure-judged input.
+"""Shared fixtures for the first/last ranking key as a closure-judged input.
 
 Underscore-prefixed so pytest skips collection. ``orders → line_items`` (``id =
 order_id``) and ``line_items → shipments`` (``id = line_item_id``) are undeclared
@@ -12,7 +12,7 @@ line_items (id, order_id, qty, created_at):    1 o1 1.0 2024-01-05 | 2 o1 2.0 20
 shipments (id, line_item_id, shipped_at):      1 li1 2024-01-06 | 2 li1 2024-01-07 | 3 li3 2024-01-08
 
 Ranking ``last(amount)`` by ``created_at`` or by ``cust_signup`` picks order 2 (30.0);
-ranking over the fanned ``li_ts`` join would pick order 1 (its line item dated
+ranking over the fanned ``li_ts`` relationship would pick order 1 (its line item dated
 2024-01-05 is newest) — the defect the refusals guard against.
 """
 
@@ -22,6 +22,7 @@ import os
 from typing import List, Optional
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -31,7 +32,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import make_seeded_sqlite_engine
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 UNPARSEABLE_SQL = ")((( bad"
 
@@ -46,15 +47,15 @@ def orders_dataset(*, default: Optional[str] = None) -> SlayerDataset:
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             # Derived across the unproven hop.
-            DatasetField(name="li_ts", datatype=DataType.DATETIME, sql="line_items.created_at"),
+            DatasetField(name="li_ts", datatype=DataType.DATETIME, expression="line_items.created_at"),
             # Local value, filter across the unproven hop.
             DatasetField(
-                name="li_flag_ts", datatype=DataType.DATETIME, sql="created_at",
+                name="li_flag_ts", datatype=DataType.DATETIME, expression="created_at",
                 filter="line_items.qty > 0",
             ),
-            DatasetField(name="bad_ts", datatype=DataType.DATETIME, sql=UNPARSEABLE_SQL),
+            DatasetField(name="bad_ts", datatype=DataType.DATETIME, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression=UNPARSEABLE_SQL) for d in ("DUCKDB", "SQLITE")])),
             # Derived across the proven hop.
-            DatasetField(name="cust_signup", datatype=DataType.DATETIME, sql="customers.signup_at"),
+            DatasetField(name="cust_signup", datatype=DataType.DATETIME, expression="customers.signup_at"),
         ],
         relationships=[
             DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"]),
@@ -72,7 +73,7 @@ def line_items_dataset(*, default: Optional[str] = None) -> SlayerDataset:
             DatasetField(name="order_id", datatype=DataType.INTEGER),
             DatasetField(name="qty", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="sh_ts", datatype=DataType.DATETIME, sql="shipments.shipped_at"),
+            DatasetField(name="sh_ts", datatype=DataType.DATETIME, expression="shipments.shipped_at"),
         ],
         relationships=[
             DatasetRelationship(to="shipments", from_columns=["id"], to_columns=["line_item_id"]),
@@ -104,7 +105,7 @@ def customers_dataset() -> SlayerDataset:
 def dev1945_datasets(
     *, orders_default: Optional[str] = None, line_items_default: Optional[str] = None,
 ) -> List[SlayerDataset]:
-    """Host first; each model's ``default_time_dimension`` is set per case."""
+    """Host first; each dataset's ``default_time_dimension`` is set per case."""
     return [
         orders_dataset(default=orders_default),
         line_items_dataset(default=line_items_default),
@@ -153,7 +154,7 @@ async def make_engine(
     base_dir: str, *, orders_default: Optional[str] = None,
     line_items_default: Optional[str] = None,
 ) -> SlayerQueryEngine:
-    """Seeded SQLite engine over the graph with the given model defaults."""
+    """Seeded SQLite engine over the graph with the given dataset defaults."""
     db_path = os.path.join(base_dir, "dev1945.db")
     seed_dev1945_sqlite(db_path)
     return await make_seeded_sqlite_engine(
@@ -172,9 +173,9 @@ def orders_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "created_at") -> List[TimeDimension]:
+def month_td(field: str = "orders.created_at") -> List[TimeDimension]:
     return [TimeDimension(
-        field=column, granularity=TimeGranularity.MONTH,
+        field=field, granularity=TimeGranularity.MONTH,
     )]
 
 

@@ -1,5 +1,5 @@
-"""DEV-1868 — series-regime ``time_shift`` (spec: queries/transforms,
-composite-input requirement): nested-transform inputs, cross-model composite
+"""Series-regime ``time_shift`` (spec: queries/transforms,
+composite-input requirement): nested-transform inputs, cross-dataset composite
 leaves, and aggregate-typed predicate inputs shift the materialised series;
 NULL outside it. Row-level leaves stay fail-closed."""
 
@@ -39,7 +39,7 @@ def _q(**kw) -> SlayerQuery:
 
 
 def _dr_td() -> list:
-    return [TimeDimension(field="ordered_at",
+    return [TimeDimension(field="sales.ordered_at",
                           granularity=TimeGranularity.MONTH,
                           date_range=["2024-02-01", "2024-03-31"])]
 
@@ -67,26 +67,26 @@ class TestNestedTransformInput:
     async def test_shifts_the_inner_series(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="time_shift(cumsum(sum(revenue)), -1)",
+            metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t"),
-                      QueryMetric(metric="sum(revenue)", alias="r")],
+                      QueryMetric(metric="sum(sales.revenue)", alias="r")],
         ))
-        _assert_months(resp, name="sales.t", expected=SHIFTED_CUMSUM)
-        # The shifted measure changes neither the row count nor its sibling.
+        _assert_months(resp, name="t", expected=SHIFTED_CUMSUM)
+        # The shifted metric changes neither the row count nor its sibling.
         for month, rev in {"2024-01": 60.0, "2024-02": 100.0,
                            "2024-03": 60.0}.items():
-            assert float(keyed_by_month(resp)[(month,)]["sales.r"]) == rev
+            assert float(keyed_by_month(resp)[(month,)]["r"]) == rev
 
     async def test_partitions_by_the_query_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=["store"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="time_shift(cumsum(sum(revenue)), -1)",
+            dimensions=["sales.store"], time_dimensions=month_td(),
+            metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t")],
         ))
         by = keyed_by_month(resp, "sales.store")
         assert set(by) == set(SHIFTED_CUMSUM_BY_STORE)
         for key, value in SHIFTED_CUMSUM_BY_STORE.items():
-            cell = by[key]["sales.t"]
+            cell = by[key]["t"]
             if value is None:
                 assert cell is None
             else:
@@ -95,7 +95,7 @@ class TestNestedTransformInput:
     async def test_inner_series_is_computed_once(self) -> None:
         sql = await gen(_q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="time_shift(cumsum(sum(revenue)), -1)",
+            metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t")],
         ))
         assert len(re.findall(r"OVER\s*\(", sql)) == 1, sql
@@ -106,46 +106,46 @@ class TestCrossModelCompositeLeaf:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="time_shift(sum(revenue) + sum(regions.factor), -1)",
+                metric="time_shift(sum(sales.revenue) + sum(regions.factor), -1)",
                 alias="t")],
         ))
-        _assert_months(resp, name="sales.t", expected=SHIFTED_REV_PLUS_FACTOR)
+        _assert_months(resp, name="t", expected=SHIFTED_REV_PLUS_FACTOR)
 
     async def test_cross_model_operand_has_one_producer(self) -> None:
         sql = await gen(_q(
             time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="time_shift(sum(revenue) + sum(regions.factor), -1)",
+                metric="time_shift(sum(sales.revenue) + sum(regions.factor), -1)",
                 alias="t")],
         ))
-        assert len(set(re.findall(r"_cm_\w+", sql))) == 1, sql
+        assert len(set(re.findall(r"_cm_\w*factor\w*", sql))) == 1, sql
 
 
 class TestAggregateTypedPredicateInput:
     async def test_in_predicate_shifts_as_a_boolean_series(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="time_shift(sum(revenue) in (100, 999), -1)",
+            metrics=[QueryMetric(metric="time_shift(sum(sales.revenue) in (100, 999), -1)",
                                    alias="t")],
         ))
-        _assert_months(resp, name="sales.t", expected=SHIFTED_IN_PRED, boolean=True)
+        _assert_months(resp, name="t", expected=SHIFTED_IN_PRED, boolean=True)
 
     async def test_comparison_predicate_shifts_as_a_boolean_series(
         self, exec_engine,
     ) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="time_shift(sum(revenue) > 80, -1)",
+            metrics=[QueryMetric(metric="time_shift(sum(sales.revenue) > 80, -1)",
                                    alias="t")],
         ))
-        _assert_months(resp, name="sales.t", expected=SHIFTED_GT_PRED, boolean=True)
+        _assert_months(resp, name="t", expected=SHIFTED_GT_PRED, boolean=True)
 
     async def test_change_over_a_predicate_stays_rejected(self, exec_engine) -> None:
         # The desugared subtraction consumes a boolean — typed error, no
         # silent 0/1 arithmetic and no engine-level error.
         query = _q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="change(sum(revenue) > 100)",
+            metrics=[QueryMetric(metric="change(sum(sales.revenue) > 100)",
                                    alias="t")],
         )
         with pytest.raises(ValueError, match=r"(?i)boolean"):
@@ -160,10 +160,10 @@ class TestSeriesEdgeVsReaggregation:
     async def test_series_input_is_null_outside_the_range(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            metrics=[QueryMetric(metric="time_shift(cumsum(sum(revenue)), -1)",
+            metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t")],
         ))
-        _assert_months(resp, name="sales.t",
+        _assert_months(resp, name="t",
                        expected={"2024-02": None, "2024-03": 100.0})
 
     async def test_predicate_input_is_null_outside_the_range(
@@ -171,44 +171,44 @@ class TestSeriesEdgeVsReaggregation:
     ) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            metrics=[QueryMetric(metric="time_shift(sum(revenue) > 80, -1)",
+            metrics=[QueryMetric(metric="time_shift(sum(sales.revenue) > 80, -1)",
                                    alias="t")],
         ))
-        _assert_months(resp, name="sales.t",
+        _assert_months(resp, name="t",
                        expected={"2024-02": None, "2024-03": True}, boolean=True)
 
     async def test_bare_leaf_keeps_the_lookback(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            metrics=[QueryMetric(metric="time_shift(sum(revenue), -1)",
+            metrics=[QueryMetric(metric="time_shift(sum(sales.revenue), -1)",
                                    alias="t")],
         ))
-        _assert_months(resp, name="sales.t",
+        _assert_months(resp, name="t",
                        expected={"2024-02": 60.0, "2024-03": 100.0})
 
     async def test_local_composite_keeps_the_lookback(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            metrics=[QueryMetric(metric="time_shift(sum(revenue) / sum(qty), -1)",
+            metrics=[QueryMetric(metric="time_shift(sum(sales.revenue) / sum(sales.qty), -1)",
                                    alias="t")],
         ))
-        _assert_months(resp, name="sales.t",
+        _assert_months(resp, name="t",
                        expected={"2024-02": 6.0, "2024-03": 100.0 / 11.0})
 
 
 class TestFiltersApplyOnce:
     async def test_row_filter_shapes_the_series_once(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            time_dimensions=month_td(), filter=["status = 'a'"],
-            metrics=[QueryMetric(metric="time_shift(cumsum(sum(revenue)), -1)",
+            time_dimensions=month_td(), filter=["sales.status = 'a'"],
+            metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t")],
         ))
-        _assert_months(resp, name="sales.t", expected=SHIFTED_CUMSUM_STATUS_A)
+        _assert_months(resp, name="t", expected=SHIFTED_CUMSUM_STATUS_A)
 
     async def test_the_predicate_renders_once(self) -> None:
         sql = await gen(_q(
-            time_dimensions=month_td(), filter=["status = 'a'"],
-            metrics=[QueryMetric(metric="time_shift(cumsum(sum(revenue)), -1)",
+            time_dimensions=month_td(), filter=["sales.status = 'a'"],
+            metrics=[QueryMetric(metric="time_shift(cumsum(sum(sales.revenue)), -1)",
                                    alias="t")],
         ))
         assert sql.count("= 'a'") == 1, sql
@@ -229,9 +229,9 @@ class TestManyToOneCalendarShift:
     ) -> None:
         resp = await daily_engine.execute(SlayerQuery(
             population="daily",
-            time_dimensions=[TimeDimension(field="ordered_at",
+            time_dimensions=[TimeDimension(field="daily.ordered_at",
                                            granularity=TimeGranularity.DAY)],
-            metrics=[QueryMetric(metric="time_shift(cumsum(sum(revenue)), -1, 'month')",
+            metrics=[QueryMetric(metric="time_shift(cumsum(sum(daily.revenue)), -1, 'month')",
                                    alias="t")],
         ))
         td_key = next(k for k in resp.data[0] if k.endswith(".ordered_at"))
@@ -239,7 +239,7 @@ class TestManyToOneCalendarShift:
         assert len(resp.data) == len(SHIFTED_CUMSUM_MONTH_END)  # no fan-out
         assert set(by) == set(SHIFTED_CUMSUM_MONTH_END)
         for day, value in SHIFTED_CUMSUM_MONTH_END.items():
-            cell = by[day]["daily.t"]
+            cell = by[day]["t"]
             if value is None:
                 assert cell is None, (day, cell)
             else:
@@ -260,21 +260,21 @@ class TestRowLeafStaysFailClosed:
     async def test_mixed_aggregate_and_row_composite(self, exec_engine) -> None:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="time_shift(sum(revenue) * weight, -1)",
+            metrics=[QueryMetric(metric="time_shift(sum(sales.revenue) * sales.weight, -1)",
                                    alias="t")],
         ))
 
     async def test_row_level_predicate_input(self, exec_engine) -> None:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="time_shift(store in ('A', 'B'), -1)",
+            metrics=[QueryMetric(metric="time_shift(sales.store in ('A', 'B'), -1)",
                                    alias="t")],
         ))
 
     async def test_nested_transform_over_row_leaf(self, exec_engine) -> None:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="time_shift(cumsum(weight), -1)",
+            metrics=[QueryMetric(metric="time_shift(cumsum(sales.weight), -1)",
                                    alias="t")],
         ), op="cumsum")
 
@@ -284,6 +284,6 @@ class TestRowLeafStaysFailClosed:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="time_shift(sum(revenue) + cumsum(weight), -1)",
+                metric="time_shift(sum(sales.revenue) + cumsum(sales.weight), -1)",
                 alias="t")],
         ), op="cumsum")

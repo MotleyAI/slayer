@@ -1,4 +1,4 @@
-"""ModelJoin gains optional ``description`` + ``meta`` (DEV-1643).
+"""DatasetRelationship gains optional ``description`` + ``meta``.
 
 These carry OSI relationship ai_context. The fields are purely additive/optional
 (no SlayerModel version bump), so old v7 join data validates unchanged, and both

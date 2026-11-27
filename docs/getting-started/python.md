@@ -50,7 +50,7 @@ for dataset in datasets:
 
 Storage methods are async: `await` them inside async code, or wrap them with `run_sync` as above.
 
-The free functions `ingest_datasource(ds, client=...)` and `ingest_datasource_report(ds, client=...)` take the client explicitly (`engine.client_for(ds)`), and a dbt / OSI converter reads the database only through `await converter.collect_metadata(client=engine.client_for(ds))` before `convert()`.
+The free functions `ingest_datasource(ds, client=...)` and `ingest_datasource_report(ds, client=...)` take the client explicitly (`engine.client_for(ds)`), and the dbt converter reads the database only through `await converter.collect_metadata(client=engine.client_for(ds))` before `convert()`.
 
 ## Query
 
@@ -59,8 +59,8 @@ engine = SlayerQueryEngine(storage=storage)
 
 result = engine.execute_sync(query={
     "population": "orders",
-    "metrics": ["count(*)", "sum(order_total)"],
-    "dimensions": ["status"],
+    "metrics": ["count(orders.*)", "sum(orders.order_total)"],
+    "dimensions": ["orders.status"],
 })
 
 for row in result.data:
@@ -111,8 +111,8 @@ client = SlayerClient(url="http://localhost:5143")
 # Query — returns SlayerResponse (same as embedded mode)
 result = client.query_sync({
     "population": "orders",
-    "metrics": ["count(*)"],
-    "dimensions": ["status"],
+    "metrics": ["count(orders.*)"],
+    "dimensions": ["orders.status"],
 })
 print(result.data)
 ```
@@ -123,8 +123,8 @@ print(result.data)
 # With pandas (requires motley-slayer[client] extra)
 df = client.query_df({
     "population": "orders",
-    "metrics": ["count(*)", "sum(order_total)"],
-    "dimensions": ["status"],
+    "metrics": ["count(orders.*)", "sum(orders.order_total)"],
+    "dimensions": ["orders.status"],
 })
 print(df)
 ```
@@ -163,7 +163,7 @@ engine = SlayerQueryEngine(storage=storage)
 print(run_sync(storage.list_datasets()))
 
 # Should return data
-result = engine.execute_sync(query={"population": "orders", "metrics": ["count(*)"]})
+result = engine.execute_sync(query={"population": "orders", "metrics": ["count(orders.*)"]})
 print(f"{result.row_count} row(s), columns: {result.columns}")
 ```
 

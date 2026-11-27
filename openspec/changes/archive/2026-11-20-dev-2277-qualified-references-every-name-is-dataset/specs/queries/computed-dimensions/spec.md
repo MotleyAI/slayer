@@ -1,0 +1,44 @@
+## MODIFIED Requirements
+
+### Requirement: A named computed dimension keys by its name
+A computed dimension with a user-chosen `name` SHALL surface under that name — result key `<name>` in a single query, column `<name>` in any downstream stage or when its query backs a model — whatever its expression, including a bare joined path of any length. A computed dimension without a user-chosen name whose expression is a bare joined path SHALL behave exactly as the plain dotted dimension: result key `<anchor>.<canonical route>.<field>` (`queries/references`), downstream column `<canonical path, __-joined>__<field>`. Every dimension entry SHALL project its own column, including two entries over the same joined path. A query's planned result keys SHALL equal, in projection order, the result keys its rendered SQL returns.
+
+#### Scenario: Named one-hop path in a single query
+- **WHEN** `orders` is queried with dimension `{"field": "customers.region_id", "alias": "region_id"}` and measure `{"metric": "sum(amount)", "alias": "revenue"}`
+- **THEN** the result columns are `region_id` and `revenue`, with rows `(1, 160)` and `(2, 50)`
+
+#### Scenario: Named one-hop path crosses a stage
+- **WHEN** stage `cr` over `orders` declares dimensions `{"field": "customers.region_id", "alias": "region_id"}` and `customer_id` and measure `{"metric": "sum(amount)", "alias": "revenue"}`, and the next stage over `cr` selects dimensions `region_id`, `customer_id`, `revenue`
+- **THEN** the query executes, with rows `(1, 1, 90)`, `(1, 2, 70)`, `(2, 3, 50)`
+
+#### Scenario: Named two-hop path crosses a stage
+- **WHEN** stage `cr` over `orders` declares dimension `{"field": "customers.regions.name", "alias": "region_name"}` and measure `revenue = sum(amount)`, and the next stage over `cr` selects dimensions `region_name`, `revenue`
+- **THEN** the query executes, with rows `(RegN, 160)` and `(RegS, 50)`
+
+#### Scenario: A downstream stage aggregates by a named joined dimension
+- **WHEN** stage `cr` over `orders` declares dimensions `{"field": "customers.region_id", "alias": "rid"}` and `customer_id` and measure `revenue = sum(amount)`, and the next stage over `cr` selects dimension `rid` and measure `sum(revenue)` named `tot`
+- **THEN** the query executes, with rows `(1, 160)` and `(2, 50)`
+
+#### Scenario: A query-backed model exposes a named joined dimension
+- **WHEN** a saved query-backed model `cr` over `orders` declares dimension `{"field": "customers.region_id", "alias": "region_id"}` and measure `revenue = sum(amount)`, and `cr` is queried with dimensions `region_id` and `revenue`
+- **THEN** the query executes, with rows `(1, 160)` and `(2, 50)`
+
+#### Scenario: Unnamed computed path equals the plain dimension
+- **WHEN** `orders` is queried with dimension `{"field": "customers.region_id"}` and measure `revenue = sum(amount)`, alone and as stage `cr` read downstream by dimension `customers__region_id`
+- **THEN** the single query's result key is `customers.region_id`, and the two-stage query executes with rows `(1, 160)` and `(2, 50)`
+
+#### Scenario: Plain and named entries over one path each project a column
+- **WHEN** `orders` is queried with dimensions `customers.region_id`, `status`, `{"field": "customers.region_id", "alias": "rid"}` and measure `revenue = sum(amount)`, alone and as stage `cr` read downstream by `customers__region_id`, `status`, `rid`
+- **THEN** the single query's result columns are `customers.region_id`, `orders.status`, `rid`, `revenue` in that order with `rid` equal to `customers.region_id` on every row, and the two-stage query executes with both columns
+
+#### Scenario: Ordering and filtering by the name
+- **WHEN** `orders` is queried with dimension `{"field": "customers.region_id", "alias": "rid"}`, measure `revenue = sum(amount)`, and either order `rid` descending or filter `rid = 1`
+- **THEN** the rows are keyed `rid` and come back as `(2, 50), (1, 160)` or `(1, 160)` respectively
+
+#### Scenario: Plain dotted dimension and local rename unchanged
+- **WHEN** stage `cr` over `orders` declares dimension `customers.region_id` read downstream as `customers__region_id`, or declares `{"field": "customer_id", "alias": "cust"}` read downstream as `cust`
+- **THEN** both queries execute with their existing names and values
+
+#### Scenario: A name colliding with a host column is still rejected
+- **WHEN** `orders` (which has a column `region`) is queried with dimension `{"field": "customers.regions.name", "alias": "region"}`
+- **THEN** the query fails with the computed-dimension name-collision error

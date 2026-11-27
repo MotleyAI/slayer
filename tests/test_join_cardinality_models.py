@@ -1,4 +1,4 @@
-"""Data-model coverage for ``ModelJoin.cardinality`` and ``Column.unique``."""
+"""Data-model coverage for ``DatasetRelationship.cardinality`` and ``DatasetField.unique``."""
 
 import tempfile
 
@@ -106,7 +106,7 @@ def test_modeljoin_cardinality_orthogonal_to_join_type() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Column.unique
+# DatasetField.unique
 # ---------------------------------------------------------------------------
 
 

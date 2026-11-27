@@ -12,6 +12,7 @@ from slayer.core.enums import (
     SUB_DAY_GRANULARITIES,
     UNIT_MONTHS,
     UNIT_SECONDS,
+    DataType,
     GranularityParts,
     TimeGranularity,
     boundaries_nest,
@@ -26,6 +27,8 @@ class CustomGranularity(BaseModel, frozen=True):
     base: str
     multiple: int = 1
     origin: Optional[datetime] = None
+    #: The reserved library name this granularity had before the rename that freed it.
+    renamed_from: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -94,6 +97,11 @@ def nests_into(fine: Granularity, coarse: Granularity) -> bool:
     return boundaries_nest(fine=granularity_parts(fine), coarse=granularity_parts(coarse))
 
 
+def bucket_type(source: DataType, g: Granularity) -> DataType:
+    """A bucket's logical type: Date for a day-or-coarser bucket of a Date, else a naive DateTime."""
+    return DataType.DATE if source is DataType.DATE and not is_sub_day(g) else DataType.DATETIME
+
+
 def definition_error(g: CustomGranularity, *, reserved: Mapping[str, str]) -> Optional[str]:
     """The save-time rule ``g`` violates, else ``None``; ``reserved`` maps a taken name to its kind."""
     if not g.name.isidentifier():
@@ -105,6 +113,8 @@ def definition_error(g: CustomGranularity, *, reserved: Mapping[str, str]) -> Op
         return f"base {g.base!r} is not a built-in granularity ({', '.join(t.value for t in TimeGranularity)})"
     if g.multiple < 1:
         return f"multiple must be an integer >= 1, got {g.multiple}"
+    if g.renamed_from is not None and g.renamed_from.lower() not in reserved:
+        return f"renamed_from {g.renamed_from!r} names no reserved library name"
     return _origin_error(g.anchor, unit=g.unit)
 
 

@@ -6,23 +6,36 @@ import logging
 import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
-from typing import Any
+from typing import Any, TypeVar
 
+import yaml
 from sqlalchemy.exc import SQLAlchemyError
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, PrivateAttr, ValidationError, model_validator,
+)
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from slayer import usage_reporting
 from slayer import otel
 from slayer.mcp.server import create_mcp_server
+from slayer.core.enums import Conformance
 from slayer.core.errors import (
     AmbiguousDatasetError,
     MemoryNotFoundError,
+    OssieErrorCode,
+    OssieQueryError,
     SchemaDriftError,
+    UnknownConformanceError,
+    UnknownKeyError,
 )
+from slayer.core.ossie_conformance import parse_conformance
 from slayer.core.format import NumberFormat, encode_json
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import (
@@ -31,7 +44,10 @@ from slayer.core.query import (
     SlayerQuery,
     SourceSpec,
     check_unique_extensions,
+    broadcast_already_warned,
     prepare_query_input,
+    warn_fresh_broadcast,
+    without_null_version,
 )
 from slayer.core.vocabulary import deprecated_spelling
 from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
@@ -43,6 +59,7 @@ from slayer.live_schema.schema_scope import validate_scope_args
 from slayer.inspect.service import InspectService
 from slayer.memories.help_seed import seed_help_memories
 from slayer.memories.service import MemoryService
+from slayer.ontology.documents import content_text, document_name
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
@@ -76,7 +93,7 @@ class QueryRequest(BaseModel):
     # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
-    # How aggregates resolve query dimensions unattributable from their root (broadcast|associate|error).
+    # How aggregates resolve query dimensions unattributable from their root (associate|error).
     to_many_handling: str | None = None
     dry_run: bool | None = None
     explain: bool | None = None
@@ -90,10 +107,14 @@ class QueryRequest(BaseModel):
     @classmethod
     def _prepare_query_input(cls, data: Any, handler: ModelWrapValidatorHandler["QueryRequest"]) -> "QueryRequest":
         payloads: list[DeprecatedInputWarning] = []
+        data = without_null_version(data)
+        fresh = isinstance(data, dict) and "version" not in data
         if isinstance(data, dict):
             data, payloads = prepare_query_input(data)
         request = handler(data)
         request._deprecated_inputs = tuple(payloads)
+        if fresh:
+            warn_fresh_broadcast(request.to_many_handling)
         return request
 
     @property
@@ -108,6 +129,14 @@ class QueryRequest(BaseModel):
 
 
 _RUN_BY_NAME_FIELDS = frozenset({"name", "variables", "dry_run", "explain", "refine"})
+
+
+def _refuses_unknown_key(exc: ValueError) -> bool:
+    """Whether ``exc`` is, or is a validation error raised by, an unknown-key refusal."""
+    if isinstance(exc, UnknownKeyError):
+        return True
+    return isinstance(exc, ValidationError) and any(
+        isinstance((err.get("ctx") or {}).get("error"), UnknownKeyError) for err in exc.errors())
 
 
 def _dumped(warnings: list[SlayerWarning]) -> list[dict[str, Any]]:
@@ -151,6 +180,8 @@ class QueryResponse(BaseModel):
     # The effective population dataset and whether it was inferred.
     population: str | None = None
     population_inferred: bool = False
+    # The datasets supplying the rows (``["unit"]`` with no dimensions).
+    row_sources: list[str] = []
     # Advisories about the query itself — slack-normalization
     # rewrites and filters that were dropped as unreachable. One list, each
     # entry tagged with a ``kind`` discriminator the consumer switches on.
@@ -178,6 +209,43 @@ class IngestRequest(BaseModel):
             all_schemas=self.all_schemas,
         )
         return self
+
+
+class SemanticModelRequest(BaseModel):
+    """Body for ``POST /semantic-models`` (content, or standalone ``datasets`` to move in) and ``PUT``."""
+    data_source: str | None = None
+    name: str | None = None
+    content: str | dict[str, Any] | None = None
+    datasets: list[str] | None = None
+
+
+_T = TypeVar("_T")
+
+
+class DocumentRequest(BaseModel):
+    """Body for ``POST /ontologies`` and every ``PUT`` of an ontology or mapping: the Ossie document."""
+    content: str | dict[str, Any]
+
+
+class MappingRequest(DocumentRequest):
+    """Body for ``POST /ontology-mappings``: the mapping and the datasource it belongs to."""
+    data_source: str
+
+
+async def _refused_as_400(call: Awaitable[_T]) -> _T:
+    """``call``; a refusal (every ``SlayerError`` is a ``ValueError``) answers 400 with every reason."""
+    try:
+        return await call
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+def _named(text: str) -> str:
+    """The document's own ``name``; 400 when it declares none."""
+    try:
+        return document_name(text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 class ValidateDatasetsRequest(BaseModel):
@@ -381,7 +449,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
     client_factory: ClientFactory | None = None,
+    host: str = "127.0.0.1",
 ) -> FastAPI:
+    """The REST app with the MCP server mounted at ``/mcp``; a loopback ``host`` keeps its DNS-rebinding check."""
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
     engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
     # Every route reads datasets, and the live database, through the server's engine.
@@ -419,12 +489,77 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     mcp = create_mcp_server(
         storage=storage, always_load_query=always_load_query, client_factory=client_factory, _seed_help=False,
     )
-    mcp_app = mcp.sse_app()
+    mcp_app = mcp.sse_app(host=host)
     app.mount(_MCP_MOUNT, mcp_app)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    async def _strict_query(body: Any, *, request: Any) -> tuple[Any, dict[str, bool]]:
+        """A strict request: the run's wrapper keys, the rest of the body the query as submitted; the execution flags
+        as ``request`` validated them."""
+        wrapper: dict[str, Any] = {}
+        if isinstance(body, dict):
+            wrapper = {k: v for k, v in body.items() if k in _RUN_BY_NAME_FIELDS}
+            body = {k: v for k, v in body.items() if k not in _RUN_BY_NAME_FIELDS}
+        flags = {"dry_run": bool(request.dry_run), "explain": bool(request.explain)}
+        name = wrapper.get("name")
+        if name is not None and body:
+            raise OssieQueryError(OssieErrorCode.E_INVALID_QUERY, f"a saved query run by name takes no query parts "
+                                  f"beside its name; put {sorted(body)} in 'refine'")
+        run_query = name if name is not None else body
+        if flags["dry_run"]:
+            usage_reporting.mark_dry_run()
+        usage_reporting.observe_query(run_query)
+        result = await engine.execute(query=run_query, variables=wrapper.get("variables"), refine=wrapper.get("refine"),
+                                      conformance=Conformance.OSSIE_L3, dry_run=flags["dry_run"],
+                                      explain=flags["explain"])
+        usage_reporting.observe_executed(result)
+        return result, flags
+
+    def _query_response(result: Any, *, dry_run: bool, explain: bool, deprecations: Any = ()) -> Response:
+        attrs = result.attributes
+
+        def _convert_meta(d: dict) -> dict[str, FieldMetadataResponse]:
+            return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
+
+        attributes = None
+        if attrs and (attrs.dimensions or attrs.metrics):
+            attributes = AttributesResponse(
+                dimensions=_convert_meta(attrs.dimensions),
+                metrics=_convert_meta(attrs.metrics),
+            )
+        response = QueryResponse(
+            data=result.data,
+            row_count=result.row_count,
+            columns=result.columns,
+            attributes=attributes,
+            warnings=[w.model_dump(mode="json") for w in [*(result.warnings or []), *deprecations]],
+            population=result.population,
+            population_inferred=result.population_inferred,
+            row_sources=list(result.row_sources),
+        )
+        if dry_run or explain:
+            response.sql = result.sql
+        body = {"data": response.data, **response.model_dump(mode="json", exclude={"data"})}
+        return Response(content=encode_json(body), media_type="application/json")
+
+    @app.exception_handler(RequestValidationError)
+    async def _strict_malformed(request: Request, exc: RequestValidationError) -> Any:
+        """Under the strict binding a query body that does not validate is malformed (``E_INVALID_QUERY``)."""
+        conformance = request.query_params.get("conformance") if request.url.path == "/query" else None
+        if conformance is not None:
+            # The conformance is chosen before the body is judged: an unknown one is refused as such.
+            try:
+                chosen = parse_conformance(conformance)
+            except UnknownConformanceError as unknown:
+                return JSONResponse(status_code=400, content={"detail": str(unknown)})
+            if chosen is Conformance.OSSIE_L3:
+                refusal = OssieQueryError(OssieErrorCode.E_INVALID_QUERY,
+                                          f"the request body is malformed: {exc.errors()}")
+                return JSONResponse(status_code=400, content={"detail": jsonable_encoder(refusal.detail())})
+        return await request_validation_exception_handler(request, exc)
 
     @app.post(
         "/query",
@@ -433,19 +568,25 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             400: {"description": "Invalid query payload (e.g. missing population/name, mutually exclusive fields, validation error)."},
             422: {
                 "description": (
-                    "Schema drift detected on datasets the query read — it "
-                    "could not run against the live schema. Body shape: "
-                    "``{\"error\": \"schema_drift\", \"datasets\": [...], "
-                    "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
-                    "Run validate_datasets for the same datasource to inspect."
+                    "A query object carries a key it does not read: ``{\"detail\": str}`` or, when "
+                    "caught while parsing the body, ``{\"detail\": [validation error]}``; either names "
+                    "the key. Or schema drift was detected on datasets the query read: "
+                    "``{\"detail\": {\"error\": \"schema_drift\", \"datasets\": [...], "
+                    "\"to_delete\": [ToDeleteEntry], \"original\": str|null}}``; "
+                    "run validate_datasets for the same datasource to inspect."
                 ),
             },
         },
     )
     async def query(
         request: QueryRequest | QueryListRequest,
+        http_request: Request,
+        conformance: str = Conformance.SLAYER.value,
     ) -> Response:
         try:
+            if parse_conformance(conformance) is Conformance.OSSIE_L3:
+                result, flags = await _strict_query(await http_request.json(), request=request)
+                return _query_response(result, **flags)
             # Multi-stage DAG: body is ``{"queries": [...], "variables": ...,
             # "dry_run": ..., "explain": ...}``. Mirrors the MCP ``query``
             # tool's list form and ``engine.execute(query=[...])``.
@@ -490,7 +631,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 # A rootless query (no name, no population) is valid —
                 # the engine infers the population. The query must still project
                 # something, which SlayerQuery validation enforces downstream.
-                payload = request.model_dump(exclude_none=True)
+                # Exactly the keys sent, nulls included, so SlayerQuery sees every key it must refuse.
+                payload = request.model_dump(exclude_unset=True)
                 # ``variables`` is consumed at execute() level, not part of
                 # SlayerQuery's filter-substitution variables (those merge
                 # automatically via the kwarg path).
@@ -500,7 +642,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 # (extra="forbid") doesn't reject them.
                 dry_run = bool(payload.pop("dry_run", False))
                 explain = bool(payload.pop("explain", False))
-                run_query = SlayerQuery.model_validate(payload)
+                with broadcast_already_warned():
+                    run_query = SlayerQuery.model_validate(payload)
             if dry_run:
                 usage_reporting.mark_dry_run()
             usage_reporting.observe_query(run_query)
@@ -508,32 +651,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 query=run_query, variables=variables, dry_run=dry_run, explain=explain, **run_kwargs,
             )
             usage_reporting.observe_executed(result)
-            attrs = result.attributes
-
-            def _convert_meta(d: dict) -> dict[str, FieldMetadataResponse]:
-                return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
-
-            attributes = None
-            if attrs and (attrs.dimensions or attrs.metrics):
-                attributes = AttributesResponse(
-                    dimensions=_convert_meta(attrs.dimensions),
-                    metrics=_convert_meta(attrs.metrics),
-                )
-            response = QueryResponse(
-                data=result.data,
-                row_count=result.row_count,
-                columns=result.columns,
-                attributes=attributes,
-                warnings=[
-                    w.model_dump(mode="json") for w in [*(result.warnings or []), *request_deprecations]
-                ],
-                population=result.population,
-                population_inferred=result.population_inferred,
-            )
-            if dry_run or explain:
-                response.sql = result.sql
-            body = {"data": response.data, **response.model_dump(mode="json", exclude={"data"})}
-            return Response(content=encode_json(body), media_type="application/json")
+            return _query_response(result, dry_run=dry_run, explain=explain, deprecations=request_deprecations)
+        except OssieQueryError as refusal:
+            raise HTTPException(status_code=400, detail=refusal.detail())
         except SchemaDriftError as drift:
             raise HTTPException(
                 status_code=422,
@@ -547,8 +667,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 },
             )
         except ValueError as e:
-            # SlayerError subclasses ValueError; both map to 400.
-            raise HTTPException(status_code=400, detail=str(e))
+            # SlayerError subclasses ValueError; an unknown key is a malformed body (422), the rest 400.
+            raise HTTPException(status_code=422 if _refuses_unknown_key(e) else 400, detail=str(e))
 
     @app.get("/datasets")
     async def list_datasets(
@@ -638,6 +758,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.delete(
         "/datasets/{name}",
         responses={
+            400: {"description": "The delete would break a stored dependent, or touches hidden content."},
             404: {"description": "Dataset not found."},
             409: {
                 "description": (
@@ -662,9 +783,132 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     f"or PUT /datasources/priority to disambiguate."
                 ),
             )
+        except ValueError as exc:  # a refusal: the delete would break a stored dependent
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
         return {"status": "deleted", "name": name}
+
+    @app.get("/semantic-models")
+    async def list_semantic_models(data_source: str | None = None) -> list[dict[str, str]]:
+        return [{"data_source": ds, "name": n} for ds, n in await storage.list_semantic_models(data_source=data_source)]
+
+    @app.get("/semantic-models/{data_source}/{name}", responses={404: {"description": "Semantic model not found."}})
+    async def get_semantic_model(data_source: str, name: str) -> dict[str, str]:
+        text = await storage.get_semantic_model_text(name, data_source=data_source)
+        if text is None:
+            raise HTTPException(status_code=404, detail=f"Semantic model '{data_source}.{name}' not found")
+        return {"data_source": data_source, "name": name, "text": text}
+
+    @app.post("/semantic-models", responses={400: {"description": "The document was refused."}})
+    async def create_semantic_model(body: SemanticModelRequest) -> dict[str, Any]:
+        if body.data_source is None:
+            raise HTTPException(status_code=400, detail="data_source is required")
+        notes: list[SlayerWarning] = []
+        try:
+            await storage.create_semantic_model(data_source=body.data_source, name=body.name, content=body.content,
+                                                datasets=body.datasets, warnings_out=notes)
+        except ValueError as e:  # SlayerError is a ValueError subclass
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "created", "warnings": _dumped(notes)}
+
+    @app.put("/semantic-models/{data_source}/{name}", responses={400: {"description": "The document was refused."}})
+    async def replace_semantic_model(data_source: str, name: str, body: SemanticModelRequest) -> dict[str, Any]:
+        if body.content is None:
+            raise HTTPException(status_code=400, detail="content is required")
+        text = body.content if isinstance(body.content, str) else yaml.safe_dump(body.content, sort_keys=False)
+        notes: list[SlayerWarning] = []
+        try:
+            await storage.save_semantic_model_text(data_source=data_source, name=name, text=text, warnings_out=notes)
+        except ValueError as e:  # SlayerError is a ValueError subclass
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "replaced", "name": name, "warnings": _dumped(notes)}
+
+    @app.delete("/semantic-models/{data_source}/{name}", responses={
+        404: {"description": "Semantic model not found."},
+        400: {"description": "The delete would break a stored dependent."}})
+    async def delete_semantic_model(data_source: str, name: str) -> dict[str, Any]:
+        if not await _refused_as_400(storage.delete_semantic_model(name, data_source=data_source)):
+            raise HTTPException(status_code=404, detail=f"Semantic model '{data_source}.{name}' not found")
+        return {"status": "deleted", "name": name}
+
+    # Pass the engine so the search service's post-fusion
+    # field-hit hook can auto-refresh stale categorical fields.
+    search_service = SearchService(storage=storage, engine=engine)
+
+    @app.get("/ontologies")
+    async def list_ontologies() -> list[dict[str, str]]:
+        return [{"name": n} for n in await storage.list_ontologies()]
+
+    @app.get("/ontologies/{name}", responses={404: {"description": "Ontology not found."},
+                                              400: {"description": "The name is not a valid ontology name."}})
+    async def get_ontology(name: str) -> dict[str, str]:
+        text = await _refused_as_400(storage.get_ontology_text(name))
+        if text is None:
+            raise HTTPException(status_code=404, detail=f"Ontology '{name}' not found")
+        return {"name": name, "text": text}
+
+    @app.post("/ontologies", responses={400: {"description": "The document was refused."}})
+    async def create_ontology(body: DocumentRequest) -> dict[str, Any]:
+        text = content_text(body.content)
+        name = _named(text)
+        notes: list[SlayerWarning] = []
+        await _refused_as_400(storage.save_ontology_text(name=name, text=text, warnings_out=notes))
+        return {"status": "created", "name": name, "warnings": _dumped(notes),
+                "notes": await search_service.refresh_after_concept_change()}
+
+    @app.put("/ontologies/{name}", responses={400: {"description": "The document was refused."}})
+    async def replace_ontology(name: str, body: DocumentRequest) -> dict[str, Any]:
+        notes: list[SlayerWarning] = []
+        await _refused_as_400(storage.save_ontology_text(name=name, text=content_text(body.content),
+                                                         warnings_out=notes))
+        return {"status": "replaced", "name": name, "warnings": _dumped(notes),
+                "notes": await search_service.refresh_after_concept_change()}
+
+    @app.delete("/ontologies/{name}", responses={404: {"description": "Ontology not found."},
+                                                400: {"description": "A stored mapping resolves against it."}})
+    async def delete_ontology(name: str) -> dict[str, Any]:
+        if not await _refused_as_400(storage.delete_ontology(name)):
+            raise HTTPException(status_code=404, detail=f"Ontology '{name}' not found")
+        return {"status": "deleted", "name": name, "notes": await search_service.refresh_after_concept_change()}
+
+    @app.get("/ontology-mappings")
+    async def list_ontology_mappings(data_source: str | None = None) -> list[dict[str, str]]:
+        return [{"data_source": ds, "name": n} for ds, n in await storage.list_ontology_mappings(data_source)]
+
+    @app.get("/ontology-mappings/{data_source}/{name}", responses={
+        404: {"description": "Mapping not found."}, 400: {"description": "The name is not a valid mapping name."}})
+    async def get_ontology_mapping(data_source: str, name: str) -> dict[str, str]:
+        text = await _refused_as_400(storage.get_ontology_mapping_text(name, data_source))
+        if text is None:
+            raise HTTPException(status_code=404, detail=f"Mapping '{data_source}.{name}' not found")
+        return {"data_source": data_source, "name": name, "text": text}
+
+    @app.post("/ontology-mappings", responses={400: {"description": "The document was refused."}})
+    async def create_ontology_mapping(body: MappingRequest) -> dict[str, Any]:
+        text = content_text(body.content)
+        name = _named(text)
+        warnings_out: list[SlayerWarning] = []
+        notes = await _refused_as_400(storage.save_ontology_mapping_text(data_source=body.data_source, name=name,
+                                                                         text=text, warnings_out=warnings_out))
+        notes += await search_service.refresh_after_concept_change(body.data_source)
+        return {"status": "created", "name": name, "notes": notes, "warnings": _dumped(warnings_out)}
+
+    @app.put("/ontology-mappings/{data_source}/{name}", responses={400: {"description": "The document was refused."}})
+    async def replace_ontology_mapping(data_source: str, name: str, body: DocumentRequest) -> dict[str, Any]:
+        warnings_out: list[SlayerWarning] = []
+        notes = await _refused_as_400(storage.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                                         text=content_text(body.content),
+                                                                         warnings_out=warnings_out))
+        notes += await search_service.refresh_after_concept_change(data_source)
+        return {"status": "replaced", "name": name, "notes": notes, "warnings": _dumped(warnings_out)}
+
+    @app.delete("/ontology-mappings/{data_source}/{name}", responses={
+        404: {"description": "Mapping not found."}, 400: {"description": "The deletion was refused."}})
+    async def delete_ontology_mapping(data_source: str, name: str) -> dict[str, Any]:
+        if not await _refused_as_400(storage.delete_ontology_mapping(name, data_source)):
+            raise HTTPException(status_code=404, detail=f"Mapping '{data_source}.{name}' not found")
+        return {"status": "deleted", "name": name, "notes": await search_service.refresh_after_concept_change(data_source)}
 
     @app.get("/datasources/priority")
     async def get_datasource_priority() -> dict[str, list[str]]:
@@ -926,9 +1170,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     # ---------- Semantic search -----------------------------
 
-    # Pass the engine so the search service's post-fusion
-    # field-hit hook can auto-refresh stale categorical fields.
-    search_service = SearchService(storage=storage, engine=engine)
 
     @app.post(
         "/search",

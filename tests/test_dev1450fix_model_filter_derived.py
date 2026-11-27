@@ -1,16 +1,16 @@
-"""Model filters referencing derived columns.
+"""Dataset filters referencing derived fields.
 
-A ``SlayerModel.filters`` entry (Mode-A SQL, always-applied WHERE) that
-references a non-trivial DERIVED column (``Column.sql`` set) now inlines
-the column's expanded SQL instead of raising ``NotImplementedError``.
-When the derived column's SQL crosses a join, the ``LEFT JOIN`` is pulled
+A ``SlayerDataset.filters`` entry (Mode-A SQL, always-applied WHERE) that
+references a non-trivial DERIVED field (``DatasetField.sql`` set) now inlines
+the field's expanded SQL instead of raising ``NotImplementedError``.
+When the derived field's SQL crosses a relationship, the ``LEFT JOIN`` is pulled
 into the FROM and the predicate is qualified to the join alias.
 
-The base-only model-filter path (no derived columns) is unchanged, and
-the two genuine rejects — a windowed ``Column.sql`` and a same-model
-``ModelMeasure`` reference — still raise.
+The base-only dataset-filter path (no derived fields) is unchanged, and
+the two genuine rejects — a windowed ``DatasetField.sql`` and a same-dataset
+``DatasetMetric`` reference — still raise.
 
-Each scenario is a distinct model over the SAME ``orders`` table so its
+Each scenario is a distinct dataset over the SAME ``orders`` table so its
 ``filters`` list can differ. End-to-end through ``engine.execute`` with
 ``dry_run`` to inspect the emitted SQL.
 """
@@ -24,6 +24,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -87,7 +88,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             DatasetField(name="amount", datatype=DataType.FLOAT),
         ]
 
-    # Same-model derived column referenced by the model filter.
+    # Same-dataset derived field referenced by the dataset filter.
     await storage.save_dataset(
         SlayerDataset(
             name="orders_big",
@@ -95,12 +96,12 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             data_source="prod",
             fields=[
                 *_base_cols(),
-                DatasetField(name="big_order", sql="amount > 5", datatype=DataType.BOOLEAN),
+                DatasetField(name="big_order", expression="amount > 5", datatype=DataType.BOOLEAN),
             ],
-            filters=["big_order"],
+            filters=["orders_big.big_order"],
         )
     )
-    # Derived column whose SQL crosses a join.
+    # Derived field whose SQL crosses a relationship.
     await storage.save_dataset(
         SlayerDataset(
             name="orders_eu",
@@ -110,17 +111,17 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 *_base_cols(),
                 DatasetField(
                     name="eu_flag",
-                    sql="customers.region = 'EU'",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="customers.region = 'EU'")]),
                     datatype=DataType.BOOLEAN,
                 ),
             ],
             relationships=[
                 DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
-            filters=["eu_flag"],
+            filters=["orders_eu.eu_flag"],
         )
     )
-    # Base-only model filter (regression guard).
+    # Base-only dataset filter (regression guard).
     await storage.save_dataset(
         SlayerDataset(
             name="orders_base",
@@ -130,7 +131,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             filters=["status = 'paid'"],
         )
     )
-    # Windowed derived column — still rejected in a model filter.
+    # Windowed derived field — still rejected in a dataset filter.
     await storage.save_dataset(
         SlayerDataset(
             name="orders_win",
@@ -140,15 +141,15 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 *_base_cols(),
                 DatasetField(
                     name="ranked",
-                    sql="rank() over (order by amount)",
+                    expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="rank() over (order by amount)")]),
                     datatype=DataType.INTEGER,
                 ),
             ],
-            filters=["ranked > 1"],
+            filters=["orders_win.ranked > 1"],
         ),
         _validate=False,
     )
-    # Same-model measure reference — still rejected in a model filter.
+    # Same-dataset metric reference — still rejected in a dataset filter.
     await storage.save_dataset(
         SlayerDataset(
             name="orders_meas",
@@ -156,7 +157,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             data_source="prod",
             fields=_base_cols(),
             metrics=[DatasetMetric(expression="sum(amount)", name="tot")],
-            filters=["tot > 100"],
+            filters=["orders_meas.tot > 100"],
         ),
         _validate=False,
     )
@@ -164,12 +165,12 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 async def test_model_filter_inlines_same_model_derived(engine):
-    """A model filter naming a same-model derived column inlines its SQL."""
-    q = SlayerQuery.model_validate({"population": "orders_big", "metrics": [{"metric": "count(*)"}]})
+    """A dataset filter naming a same-dataset derived field inlines its SQL."""
+    q = SlayerQuery.model_validate({"population": "orders_big", "metrics": [{"metric": "count(orders_big.*)"}]})
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
-    # Expanded expression appears; the derived column NAME does not leak.
+    # Expanded expression appears; the derived field NAME does not leak.
     assert "amount" in sql
     assert "> 5" in sql
     assert "big_order" not in sql, sql
@@ -179,9 +180,9 @@ async def test_model_filter_inlines_same_model_derived(engine):
 
 
 async def test_model_filter_derived_crosses_join(engine):
-    """A derived column whose SQL crosses a join pulls the LEFT JOIN into the
+    """A derived field whose SQL crosses a relationship pulls the LEFT JOIN into the
     FROM and qualifies the predicate to the join alias."""
-    q = SlayerQuery.model_validate({"population": "orders_eu", "metrics": [{"metric": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": "orders_eu", "metrics": [{"metric": "count(orders_eu.*)"}]})
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
@@ -196,8 +197,8 @@ async def test_model_filter_derived_crosses_join(engine):
 
 
 async def test_base_only_model_filter_unchanged(engine):
-    """The base-column model-filter path is unaffected (regression guard)."""
-    q = SlayerQuery.model_validate({"population": "orders_base", "metrics": [{"metric": "count(*)"}]})
+    """The base-field dataset-filter path is unaffected (regression guard)."""
+    q = SlayerQuery.model_validate({"population": "orders_base", "metrics": [{"metric": "count(orders_base.*)"}]})
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
@@ -208,14 +209,14 @@ async def test_base_only_model_filter_unchanged(engine):
 
 
 async def test_windowed_derived_column_model_filter_raises(engine):
-    """A model filter referencing a windowed ``Column.sql`` still raises."""
-    q = SlayerQuery.model_validate({"population": "orders_win", "metrics": [{"metric": "count(*)"}]})
+    """A dataset filter referencing a windowed ``DatasetField.sql`` still raises."""
+    q = SlayerQuery.model_validate({"population": "orders_win", "metrics": [{"metric": "count(orders_win.*)"}]})
     with pytest.raises(ValueError, match="window"):
         await engine.execute(q)
 
 
 async def test_measure_ref_model_filter_raises(engine):
-    """A model filter referencing a same-model ModelMeasure still raises."""
-    q = SlayerQuery.model_validate({"population": "orders_meas", "metrics": [{"metric": "count(*)"}]})
+    """A dataset filter referencing a same-dataset DatasetMetric still raises."""
+    q = SlayerQuery.model_validate({"population": "orders_meas", "metrics": [{"metric": "count(orders_meas.*)"}]})
     with pytest.raises(ValueError, match="metric"):
         await engine.execute(q)

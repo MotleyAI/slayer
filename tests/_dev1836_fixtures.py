@@ -1,17 +1,17 @@
-"""Shared fixtures for DEV-1836 — cross-model unification: target-rooted
+"""Shared fixtures for cross-dataset unification: target-rooted
 regroup producers, fan-out-safe grains, broadcast semantics, strict mode.
 
 Underscore-prefixed so pytest skips collection (like ``tests/_dev1739_fixtures.py``,
 whose dual-engine pattern this mirrors). One hand-computed dataset seeded into
 SQLite AND DuckDB; ``make_exec_engine`` yields an engine per backend.
 
-Join-arity design (the point of this chain)
--------------------------------------------
+Relationship-arity design (the point of this chain)
+---------------------------------------------------
 ``orders → customers``           safe: customers.id is PK (structural proof)
 ``customers → regions``          safe: regions.id is PK (structural proof)
 ``customers → segments``         UNPROVEN: segments.code has no PK/unique claim
 ``customers → orders``           UNSAFE: the inverted orders→customers edge is
-                                 an unproven 1:N orientation (DEV-1853 — no
+                                 an unproven 1:N orientation (no
                                  declared reverse edge; traversal is automatic)
 
 So, for an aggregate rooted at ``customers``: ``tier`` is zero-hop (exact),
@@ -21,7 +21,7 @@ So, for an aggregate rooted at ``customers``: ``tier`` is zero-hop (exact),
 roots at ``regions``: every hop away from it is an inverted fan-out
 orientation, so every query dimension broadcasts. Unsafe-input probes:
 ``customers.seg_label`` (Mode-A derived over the unproven hop) and
-``customers.vip_spend`` (``Column.filter`` over the unproven hop).
+``customers.vip_spend`` (``DatasetField.filter`` over the unproven hop).
 
 Dataset (hand-computed; every executed expectation derives from here)
 ---------------------------------------------------------------------
@@ -76,8 +76,8 @@ from tests._engine_helpers import _engine_generate
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers → {regions, segments}; the reverse
-# customers → orders direction is the inverted forward edge (DEV-1853).
+# Datasets — orders (host) → customers → {regions, segments}; the reverse
+# customers → orders direction is the inverted forward edge.
 # --------------------------------------------------------------------------- #
 def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -91,7 +91,7 @@ def regions_dataset() -> SlayerDataset:
 
 
 def segments_dataset() -> SlayerDataset:
-    # `code` is the join target but carries NO primary_key/unique claim:
+    # `code` is the relationship target but carries NO primary_key/unique claim:
     # the customers → segments hop is deliberately unproven.
     return SlayerDataset(
         name="segments", data_source="test", sql_table="segments",
@@ -113,12 +113,12 @@ def customers_dataset() -> SlayerDataset:
             DatasetField(name="tier", datatype=DataType.STRING),
             DatasetField(name="spend", datatype=DataType.FLOAT),
             DatasetField(name="signup_at", datatype=DataType.DATETIME),
-            # Target-local filtered column (safe; CASE-WHEN at aggregation time):
-            DatasetField(name="gold_spend", datatype=DataType.FLOAT, sql="spend",
+            # Target-local filtered field (safe; CASE-WHEN at aggregation time):
+            DatasetField(name="gold_spend", datatype=DataType.FLOAT, expression="spend",
                    filter="tier = 'gold'"),
             # Unsafe-input probes (only planned when referenced):
-            DatasetField(name="seg_label", datatype=DataType.STRING, sql="segments.label"),
-            DatasetField(name="vip_spend", datatype=DataType.FLOAT, sql="spend",
+            DatasetField(name="seg_label", datatype=DataType.STRING, expression="segments.label"),
+            DatasetField(name="vip_spend", datatype=DataType.FLOAT, expression="spend",
                    filter="segments.label = 'Alpha'"),
         ],
         relationships=[
@@ -172,14 +172,14 @@ def q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "ordered_at") -> List[TimeDimension]:
+def month_td(field: str = "orders.ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        field=column,
+        field=field,
         granularity=TimeGranularity.MONTH,
     )]
 
 
-#: Cross-model aggregate source inside a computed dimension (per-tier spend band).
+#: Cross-dataset aggregate source inside a computed dimension (per-tier spend band).
 SPEND_BAND = (
     "CASE WHEN sum(customers.spend, partition_by=customers.tier) > 100 "
     "THEN 'hi' ELSE 'lo' END"

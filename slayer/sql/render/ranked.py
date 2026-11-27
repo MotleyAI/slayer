@@ -45,6 +45,8 @@ __all__ = [
     "RANKED_SOURCE_ALIAS",
     "RANK_FIELD",
     "RANK_KEY_FIELD",
+    "RANK_PASS_FIELD",
+    "RANK_VALUE_FIELD",
     "RankedGrainProjection",
     "build_rank_field",
     "build_rank_key",
@@ -64,6 +66,9 @@ RANKED_SOURCE_ALIAS = "_ranked_src"
 RANK_FIELD = "_ranked_rn"
 #: The ranking key, carried out of the ranked scope so a NULL key is never picked.
 RANK_KEY_FIELD = "_ranked_key"
+#: An associated ranking's per-entity value and FILTER pass flag (0 passes).
+RANK_VALUE_FIELD = "_ranked_v"
+RANK_PASS_FIELD = "_ranked_pass"
 
 
 class RankedGrainProjection(BaseModel):
@@ -87,28 +92,32 @@ def build_rank_field(
     partition_by: Sequence[Expression],
     ranking_time: exp.Ordered,
     leading: Sequence[exp.Ordered] = (),
+    native_nulls_first: Optional[bool] = None,
 ) -> Expression:
     """``ROW_NUMBER() OVER (PARTITION BY <grain> ORDER BY <key is null>, <time>) AS _ranked_rn``.
 
     ``ranking_time`` arrives already ordered because the DIRECTION is the whole
     difference between ``first`` and ``last``. The leading null flag ranks every
-    non-NULL key first in both directions, on every dialect.
+    non-NULL key first in both directions, on every dialect; it is never NULL, so it takes the dialect's native
+    ascending NULL placement (``native_nulls_first``) and needs no emulation.
     """
     window = exp.Window(
         this=exp.RowNumber(),
         partition_by=[p.copy() for p in partition_by],
         order=exp.Order(expressions=[
-            _null_flag(ranking_time.this), *(o.copy() for o in leading), ranking_time.copy(),
+            _null_flag(ranking_time.this, nulls_first=native_nulls_first),
+            *(o.copy() for o in leading), ranking_time.copy(),
         ]),
     )
     return window.as_(RANK_FIELD)
 
 
-def _null_flag(key: Expression) -> exp.Ordered:
-    return exp.Ordered(this=exp.Case(
+def _null_flag(key: Expression, *, nulls_first: Optional[bool]) -> exp.Ordered:
+    flag = exp.Case(
         ifs=[exp.If(this=exp.Is(this=key.copy(), expression=exp.Null()), true=exp.Literal.number(1))],
         default=exp.Literal.number(0),
-    ))
+    )
+    return exp.Ordered(this=flag) if nulls_first is None else exp.Ordered(this=flag, nulls_first=nulls_first)
 
 
 def build_rank_key(ranking_time: Expression) -> Expression:

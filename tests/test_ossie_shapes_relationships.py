@@ -22,7 +22,7 @@ from slayer.core.query import SlayerQuery
 from slayer.core.relationship_edges import RelationshipEdgeRef, relationship_signature
 from tests._deprecated_input_helpers import deprecated_in, deprecations, errors_in, payload_of, recorded
 from tests._engine_helpers import _engine_generate, owned_query_engine
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store, stored_document
 from tests._osi_export_helpers import export_datasets, make_env, relationships
 from tests._stored_upgrade_fixtures import DS
@@ -113,7 +113,7 @@ class TestShape:
             dataset_name="lines", relationship=reordered)
 
     def test_an_extension_relationship_takes_the_same_shape(self) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"], "extensions": [
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"], "extensions": [
             {"dataset": "orders", "relationships": [{**REL, "name": "buyer"}]}]})
         [ext] = query.model_dump(mode="json")["extensions"]
         [rel] = ext["relationships"]
@@ -143,7 +143,7 @@ class TestOrderKept:
     async def test_the_join_condition_pairs_in_order(self) -> None:
         lines, parts = composite_pair()
         sql = await _engine_generate(query=SlayerQuery.model_validate(
-            {"population": "lines", "dimensions": ["parts.label"], "metrics": ["count(*)"]}),
+            {"population": "lines", "dimensions": ["parts.label"], "metrics": ["count(lines.*)"]}),
             dataset=lines, extra_datasets=[parts])
         joins = [j for j in sqlglot.parse_one(sql, read="postgres").find_all(exp.Join) if j.args.get("on")]
         [on] = [j.args["on"] for j in joins if "parts" in j.sql(dialect="postgres")]
@@ -210,8 +210,8 @@ class TestSurfaces:
         await storage.save_dataset(SlayerDataset.model_validate(shop_orders(relationships=[])))
         with recorded() as caught:
             await mcp_text(storage, "edit_dataset", dataset_name="orders", data_source=DS,
-                           fields=[{"name": "extra_a", "sql": "amount", "type": "Float"},
-                                   {"name": "extra_b", "sql": "amount", "type": "Float"}],
+                           fields=[{"name": "extra_a", "expression": "amount", "type": "Float"},
+                                   {"name": "extra_b", "expression": "amount", "type": "Float"}],
                            metrics=[{"name": "m1", "formula": "count(*)"}, {"name": "m2", "formula": "count(*)"}])
         olds = sorted(payload_of(w).old for w in deprecations(caught))
         assert len([o for o in olds if "type" in o]) == 1

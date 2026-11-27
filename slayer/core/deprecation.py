@@ -1,5 +1,5 @@
-"""The one door for code scheduled for removal: a call to ``warn_deprecated``, ``raise_moved``, ``deprecated_input``
-or ``scheduled_notice`` is the tag.
+"""The one door for code scheduled for removal: a call to ``warn_deprecated``, ``raise_moved``, ``deprecated_input``,
+``deprecated_spelling`` or ``scheduled_notice`` is the tag.
 
 ``tests/test_law_removal_tripwire.py`` scans for these calls and fails once the package's
 major version reaches a call's ``removal``.
@@ -8,10 +8,12 @@ major version reaches a call's ``removal``.
 from __future__ import annotations
 
 import contextlib
+import dis
 import os
 import sys
 import warnings
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
+from contextvars import ContextVar
 from typing import NoReturn
 
 import pydantic
@@ -35,15 +37,42 @@ def warn_deprecated(message: str, *, removal: str, stacklevel: int = 2) -> None:
     warnings.warn(message, FutureWarning, stacklevel=stacklevel + 1)
 
 
-class DeprecatedInputFutureWarning(FutureWarning):
-    """Carrier ``FutureWarning`` for a ``DeprecatedInputWarning`` payload — one wording on both channels."""
+class DeprecationFutureWarning(FutureWarning):
+    """Carrier ``FutureWarning`` for a deprecation payload — one wording on both channels."""
 
-    def __init__(self, payload: payloads.DeprecatedInputWarning) -> None:
+    def __init__(self, payload: payloads.SlayerWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
     def __str__(self) -> str:
         return self.payload.human_message()
+
+
+class DeprecatedInputFutureWarning(DeprecationFutureWarning):
+    """Carrier for a ``DeprecatedInputWarning``."""
+
+    payload: payloads.DeprecatedInputWarning
+
+    def __init__(self, payload: payloads.DeprecatedInputWarning) -> None:
+        super().__init__(payload)
+
+
+class DeprecatedSpellingFutureWarning(DeprecationFutureWarning):
+    """Carrier for a ``DeprecatedSpellingWarning``."""
+
+    payload: payloads.DeprecatedSpellingWarning
+
+    def __init__(self, payload: payloads.DeprecatedSpellingWarning) -> None:
+        super().__init__(payload)
+
+
+def _deprecation_payloads() -> tuple[type[payloads.SlayerWarning], ...]:
+    """Read at use, not import: this module loads while ``payloads`` is still initialising."""
+    return (payloads.DeprecatedInputWarning, payloads.DeprecatedSpellingWarning, payloads.DateOnlyMidnightWarning,
+            payloads.ChangedReferenceWarning)
+
+# The texts the innermost ``deprecations_on_one_line`` block has shown or let through.
+_shown: ContextVar[set[str] | None] = ContextVar("slayer_shown_deprecations", default=None)
 
 
 def outside_stacklevel() -> int:
@@ -56,18 +85,41 @@ def outside_stacklevel() -> int:
     return level
 
 
-def deprecated_input(old: str, new: str, *, removal: str) -> payloads.DeprecatedInputWarning:
+def deprecated_input(old: str, new: str, *, removal: str, emit: bool = True) -> payloads.DeprecatedInputWarning:
     """Report converting the input form ``old`` to ``new``: one ``FutureWarning`` at the first line outside SLayer
-    that supplied it, and the payload the caller keeps with the converted input. ``removal`` as in ``warn_deprecated``."""
+    that supplied it (none when ``emit`` is off), and the payload. ``removal`` as in ``warn_deprecated``."""
     payload = payloads.DeprecatedInputWarning(old=old, new=new, removal=removal)
-    warnings.warn(DeprecatedInputFutureWarning(payload), stacklevel=outside_stacklevel())
+    if emit:
+        warnings.warn(DeprecatedInputFutureWarning(payload), stacklevel=outside_stacklevel())
     return payload
 
 
-def raise_moved(old: str, new: str, *, removal: str) -> NoReturn:
-    """Raise an ``ImportError`` saying ``old`` moved to ``new`` in SLayer 2.0; ``removal`` as in ``warn_deprecated``."""
+def deprecated_spelling(
+    spelling: str, written: str, canonical: str, *, removal: str,
+) -> payloads.DeprecatedSpellingWarning:
+    """Report reading the Mode-B ``spelling`` (as ``written``) for ``canonical``: one ``FutureWarning`` at the first
+    line outside SLayer, and the payload. ``removal`` as in ``warn_deprecated``."""
+    payload = payloads.DeprecatedSpellingWarning(
+        spelling=spelling, written=written, canonical=canonical, removal=removal)
+    warnings.warn(DeprecatedSpellingFutureWarning(payload), stacklevel=outside_stacklevel())
+    return payload
+
+
+def raise_moved(old: str, new: str, *, removal: str, attribute: bool = False) -> NoReturn:
+    """Raise an ``ImportError`` saying ``old`` moved to ``new`` in SLayer 2.0; ``removal`` as in ``warn_deprecated``.
+    With ``attribute`` (a module ``__getattr__``), any access but ``from … import`` gets an ``AttributeError``, as
+    PEP 562 asks, so ``getattr(module, name, default)`` probes work."""
     del removal  # read statically by the tripwire
-    raise ImportError(f"{old} moved to {new} in SLayer 2.0")
+    message = f"{old} moved to {new} in SLayer 2.0"
+    if attribute and not _imported_from(sys._getframe(2)):
+        raise AttributeError(message)
+    raise ImportError(message)
+
+
+def _imported_from(frame: object) -> bool:
+    """Whether ``frame`` is executing a ``from … import name``."""
+    code, offset = getattr(frame, "f_code", None), getattr(frame, "f_lasti", -1)
+    return code is not None and 0 <= offset < len(code.co_code) and dis.opname[code.co_code[offset]] == "IMPORT_FROM"
 
 
 def scheduled_notice(message: str, *, removal: str) -> str:
@@ -78,15 +130,37 @@ def scheduled_notice(message: str, *, removal: str) -> str:
 
 @contextlib.contextmanager
 def deprecations_on_one_line() -> Generator[None]:
-    """Within the block, show each deprecation as one ``Deprecated: …`` line on the current stderr."""
-    with warnings.catch_warnings():
-        shown = warnings.showwarning
+    """Within the block, show each deprecation once, as one ``Deprecated: …`` line on the current stderr."""
+    seen: set[str] = set()
+    token = _shown.set(seen)
+    try:
+        with warnings.catch_warnings():
+            shown = warnings.showwarning
 
-        def _show(message, category, filename, lineno, file=None, line=None) -> None:  # noqa: ANN001 — showwarning's signature
-            if issubclass(category, FutureWarning):
-                print(f"Deprecated: {message}", file=sys.stderr)
-            else:
-                shown(message, category, filename, lineno, file, line)
+            def _show(message, category, filename, lineno, file=None, line=None) -> None:  # noqa: ANN001 — showwarning's signature
+                if not issubclass(category, FutureWarning):
+                    shown(message, category, filename, lineno, file, line)
+                elif (text := str(message)) not in seen:
+                    seen.add(text)
+                    print(f"Deprecated: {text}", file=sys.stderr)
 
-        warnings.showwarning = _show
-        yield
+            warnings.showwarning = _show
+            yield
+    finally:
+        _shown.reset(token)
+
+
+def unshown(items: Iterable[str | payloads.SlayerWarning]) -> list[str]:
+    """The texts of ``items`` the enclosing ``deprecations_on_one_line`` block has not shown; deprecation payloads
+    returned count as shown."""
+    seen = _shown.get()
+    out: list[str] = []
+    for item in items:
+        text = item if isinstance(item, str) else item.human_message()
+        if seen is None:
+            out.append(text)
+        elif text not in seen:
+            out.append(text)
+            if isinstance(item, _deprecation_payloads()):
+                seen.add(text)
+    return out

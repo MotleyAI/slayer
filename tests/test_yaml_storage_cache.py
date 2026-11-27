@@ -1,4 +1,4 @@
-"""mtime-keyed model/datasource load cache for YAMLStorage (DEV-1816)."""
+"""mtime-keyed dataset/datasource load cache for YAMLStorage."""
 
 import os
 import tempfile
@@ -27,7 +27,7 @@ def _dataset(*, name: str = "m", ds: str = "ds", sql_table: str = "public.t") ->
         name=name,
         sql_table=sql_table,
         data_source=ds,
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.STRING, primary_key=True)],
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.STRING, primary_key=True)],
     )
 
 
@@ -48,7 +48,7 @@ def _bump_mtime(path: str) -> None:
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000))
 
 
-# ---- models: cache hits skip work -----------------------------------------
+# ---- datasets: cache hits skip work ---------------------------------------
 
 
 async def test_hit_skips_parse(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,7 +74,7 @@ async def test_hit_skips_validate_and_migrate(storage: YAMLStorage, monkeypatch:
     assert migrates["n"] == m0
 
 
-# ---- models: invalidation --------------------------------------------------
+# ---- datasets: invalidation ------------------------------------------------
 
 
 async def test_save_model_evicts(storage: YAMLStorage) -> None:
@@ -349,22 +349,22 @@ async def test_external_atomic_replace_invalidates_cache(storage: YAMLStorage) -
     assert reloaded.sql_table == "public.bbbb"
 
 
-# ---- models: mutation safety (deep-copy handout) --------------------------
+# ---- datasets: mutation safety (deep-copy handout) ------------------------
 
 
 async def test_mutating_returned_model_does_not_poison_cache(storage: YAMLStorage) -> None:
     await storage.save_dataset(_dataset())
     first = await storage.get_dataset("m", data_source="ds")
     first.sql_table = "MUTATED"
-    first.fields[0].sql = "MUTATED"  # nested object mutation — shallow copy would leak
+    first.fields[0].expression = "MUTATED"  # nested object mutation — shallow copy would leak
     first.fields.clear()
     second = await storage.get_dataset("m", data_source="ds")
     assert second.sql_table == "public.t"
     assert len(second.fields) == 1
-    assert second.fields[0].sql == "id"
+    assert second.fields[0].expression == "id"
 
 
-# ---- models: migration behavior & cache coherence -------------------------
+# ---- datasets: migration behavior & cache coherence -----------------------
 
 
 def _write_legacy_model(storage: YAMLStorage) -> str:
@@ -380,27 +380,23 @@ def _write_legacy_model(storage: YAMLStorage) -> str:
 
 async def test_migration_applied_on_first_load(storage: YAMLStorage) -> None:
     path = _write_legacy_model(storage)
+    with open(path) as f:
+        before = f.read()
     model = await storage.get_dataset("m", data_source="ds")
     assert model is not None
     assert model.version == _mig.CURRENT_VERSIONS["SlayerModel"]
     with open(path) as f:
-        on_disk = _yaml.safe_load(f)
-    assert on_disk["version"] == _mig.CURRENT_VERSIONS["SlayerModel"]  # write-back upgraded
+        assert f.read() == before
 
 
-async def test_migration_writeback_not_cached_then_coherent(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_an_old_document_is_not_cached(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     path = _write_legacy_model(storage)
-    # First load migrates + writes the file back (new mtime), so the stable-read
-    # guard does NOT cache it — the just-parsed bytes no longer match the file.
+    # An older document upgrades in memory on every load until it is stored upgraded.
     await storage.get_dataset("m", data_source="ds")
     assert path not in storage._dataset_cache
-    # Second load reads the now-current file and caches it coherently.
-    await storage.get_dataset("m", data_source="ds")
-    assert storage._dataset_cache[path][0] == _yaml_storage.stat_key(path)
-    # Third load is a hit — no parse.
     loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
     await storage.get_dataset("m", data_source="ds")
-    assert loads["n"] == 0
+    assert loads["n"] == 1
 
 
 async def test_mid_read_external_edit_not_cached(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -547,9 +543,9 @@ async def test_factory_storage_hands_out_independent_copies() -> None:
         first = await wrapped.get_dataset("m", data_source="ds")
         second = await wrapped.get_dataset("m", data_source="ds")
         assert first is not second
-        first.fields[0].sql = "MUTATED"
+        first.fields[0].expression = "MUTATED"
         third = await wrapped.get_dataset("m", data_source="ds")
-        assert third.fields[0].sql == "id"
+        assert third.fields[0].expression == "id"
 
 
 async def test_cache_is_per_instance() -> None:

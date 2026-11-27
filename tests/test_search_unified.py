@@ -1,4 +1,4 @@
-"""DEV-1532: Unified flat-list search interface.
+"""Unified flat-list search interface.
 
 Covers the full spec:
 * SearchResponse.results replaces three separate buckets.
@@ -50,7 +50,7 @@ from slayer.storage.base import StorageBackend, resolve_storage
 
 @pytest_asyncio.fixture
 async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
-    """1 datasource, 2 models, 5 memories (3 learning-only, 2 query-bearing)."""
+    """1 datasource, 2 datasets, 5 memories (3 learning-only, 2 query-bearing)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
         await seed_warehouse_datasets(storage)
@@ -73,7 +73,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="sum(amount_paid)")],
+                metrics=[QueryMetric(metric="sum(orders.amount_paid)")],
             ),
         )
         await storage.save_memory(
@@ -81,7 +81,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             entities=["warehouse.customers.email"],
             query=SlayerQuery(
                 population="customers",
-                metrics=[QueryMetric(metric="count(*)")],
+                metrics=[QueryMetric(metric="count(customers.*)")],
             ),
         )
         yield storage
@@ -226,7 +226,7 @@ async def test_learning_only_memory_appears_in_results_without_query(
     service: SearchService,
 ) -> None:
     """Learning-only memories have kind='memory' and query=None."""
-    # DEV-1549: opt out of compact-by-default — this test pins the full
+    # Opt out of compact-by-default — this test pins the full
     # learning body in ``hit.text``.
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
@@ -353,7 +353,7 @@ async def test_naive_cypher_single_model_label_filters_results(
     service: SearchService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MATCH (n:Dataset) RETURN n.id AS id filters to model-kind entities only."""
+    """MATCH (n:Dataset) RETURN n.id AS id filters to dataset-kind entities only."""
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     response = await service.search(
         question="orders amount customers",
@@ -362,7 +362,7 @@ async def test_naive_cypher_single_model_label_filters_results(
     )
     for hit in response.results:
         assert hit.kind == "dataset", (
-            f"expected only model hits; got kind={hit.kind!r}, id={hit.id!r}"
+            f"expected only dataset hits; got kind={hit.kind!r}, id={hit.id!r}"
         )
 
 
@@ -371,7 +371,7 @@ async def test_naive_cypher_multi_label_colon_separated(
     service: SearchService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MATCH (n:Memory:Dataset) RETURN n.id AS id filters to memory + model."""
+    """MATCH (n:Memory:Dataset) RETURN n.id AS id filters to memory + dataset."""
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     response = await service.search(
         question="orders amount customers",
@@ -380,7 +380,7 @@ async def test_naive_cypher_multi_label_colon_separated(
     )
     for hit in response.results:
         assert hit.kind in ("memory", "dataset"), (
-            f"expected only memory/model hits; got kind={hit.kind!r}"
+            f"expected only memory/dataset hits; got kind={hit.kind!r}"
         )
 
 
@@ -590,7 +590,7 @@ async def test_mcp_search_tool_schema_has_max_results(
     mcp = create_mcp_server(storage=storage_with_corpus)
     tools = await mcp.list_tools()
     search_tool = next(t for t in tools if t.name == "search")
-    schema = search_tool.inputSchema
+    schema = search_tool.input_schema
     props = schema.get("properties", {})
     assert "max_results" in props
 
@@ -602,7 +602,7 @@ async def test_mcp_search_tool_schema_does_not_have_old_params(
     mcp = create_mcp_server(storage=storage_with_corpus)
     tools = await mcp.list_tools()
     search_tool = next(t for t in tools if t.name == "search")
-    schema = search_tool.inputSchema
+    schema = search_tool.input_schema
     props = schema.get("properties", {})
     assert "max_memories" not in props
     assert "max_example_queries" not in props

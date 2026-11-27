@@ -1,20 +1,18 @@
-"""DEV-1747 §5.10 — ``OrderEntry`` enrichment at PLAN time.
+"""§5.10 — ``OrderEntry`` enrichment at PLAN time.
 
 Today ``OrderEntry`` carries only ``(slot_id, direction)``, so each of the
 three renderers re-derives everything else at render time — and disagrees:
 
 * ``_apply_order_limit_from_planned`` dispatches on the SLOT KIND;
 * ``_resolve_combined_order_term`` runs a 5-way precedence chain
-  (hidden-CTE ref → cross-model alias → outer-composite alias → outer-composite
+  (hidden-CTE ref → cross-dataset alias → outer-composite alias → outer-composite
   expression → bare → ``_base.``-qualified);
 * ``_planned_order_by_sql`` builds text and knows about none of it.
 
-§5.10 moved the classification out of render-time re-derivation; DEV-1865 moved
+§5.10 moved the classification out of render-time re-derivation; the mask lowering moved
 it again — ``scope`` is now classified once by the emission-side lowering
 (``_lower_positions``), still observable without rendering SQL, while the plan
 ``OrderEntry`` carries ``phase`` and ``nulls``.
-
-Refs: DEV-1747 (D3, D5), DEV-1742 §5.10 / P-D, DEV-1865.
 """
 from __future__ import annotations
 
@@ -33,7 +31,7 @@ from slayer.core.keys import AggregateKey
 from slayer.core.keys import FieldKey
 from slayer.core.keys import Phase
 
-_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
+_METRIC = [{"metric": "sum(orders.amount)", "alias": "rev"}]
 
 
 def _plan(query: SlayerQuery):
@@ -66,7 +64,7 @@ class TestOrderEntryShape:
             OrderEntry(slot_id="s1", direction="asc")  # type: ignore[call-arg]
 
     def test_scope_is_not_a_plan_field(self) -> None:
-        """DEV-1865: the producing scope is an emission-side lowering fact."""
+        """The producing scope is an emission-side lowering fact."""
         assert "scope" not in OrderEntry.model_fields
 
     def test_nulls_defaults_to_dialect_default(self) -> None:
@@ -99,17 +97,17 @@ class TestScopeClassification:
     def test_projected_dimension_is_host_base(self) -> None:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
-            order=[OrderItem(field="status", direction="asc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
+            order=[OrderItem(field="orders.status", direction="asc")],
         ))
         assert entry.scope is OrderScope.HOST_BASE
 
     def test_projected_measure_is_host_base(self) -> None:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
             order=[OrderItem(field="rev", direction="desc")],
         ))
         assert entry.scope is OrderScope.HOST_BASE
@@ -119,18 +117,18 @@ class TestScopeClassification:
         the distinction the ``bare_ids`` set encodes at render time today."""
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
-            order=[OrderItem(field="created_at", direction="asc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         ))
         assert entry.scope is OrderScope.HOST_BASE_HIDDEN
 
     def test_cross_model_aggregate_is_cross_model_cte(self) -> None:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
                 {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
             order=[OrderItem(field="cs", direction="desc")],
@@ -138,21 +136,21 @@ class TestScopeClassification:
         assert entry.scope is OrderScope.CROSS_DATASET_CTE
 
     def test_windowed_measure_is_cross_model_cte(self) -> None:
-        """MIGRATED (DEV-1835): a LOCAL windowed measure is desugared into a
+        """MIGRATED: a LOCAL windowed metric is desugared into a
         regroup producer that renders as a ``_cm_`` CTE, so its ordered value
-        now resolves in the cross-model / regroup scope rather than a dedicated
+        now resolves in the cross-dataset / regroup scope rather than a dedicated
         ``_wm_`` windowed CTE."""
         entry = _sole_scoped(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "sum(amount, window='90d')", "alias": "w"}], "order": [OrderItem(field="w", direction="desc")]}))
+            )], "metrics": [{"metric": "sum(orders.amount, window='90d')", "alias": "w"}], "order": [OrderItem(field="w", direction="desc")]}))
         assert entry.scope is OrderScope.CROSS_DATASET_CTE
 
     def test_transform_measure_is_transform_step(self) -> None:
         entry = _sole_scoped(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="asc")]}))
+            )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="asc")]}))
         assert entry.scope is OrderScope.TRANSFORM_STEP
 
     def test_composite_over_a_cross_model_operand_is_outer_composite(self) -> None:
@@ -160,14 +158,14 @@ class TestScopeClassification:
         — one operand lives in a ``_cm_`` CTE — so it is rendered in the outer
         combined SELECT and ordered there.
 
-        This is its own scope, not a variant of ``CROSS_MODEL_CTE``: the value
+        This is its own scope, not a variant of ``CROSS_DATASET_CTE``: the value
         has no CTE column to name, only an outer alias or a re-rendered
         expression, which is exactly the branch
         ``_resolve_combined_order_term``'s precedence chain gets wrong."""
         entry = _sole_scoped(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [QueryDimension(field="status")],
-            "metrics": [{"metric": "sum(customers.spend) + sum(amount)", "alias": "mix"}],
+            "dimensions": [QueryDimension(field="orders.status")],
+            "metrics": [{"metric": "sum(customers.spend) + sum(orders.amount)", "alias": "mix"}],
             "order": [OrderItem(field="mix", direction="desc")],
         }))
         assert entry.scope is OrderScope.OUTER_COMPOSITE
@@ -175,22 +173,22 @@ class TestScopeClassification:
     def test_hidden_composite_order_is_outer_composite_too(self) -> None:
         """The hidden variant: nothing projects the composite, so a scope that
         fell back to ``HOST_BASE`` would render it inline in ``_base`` and
-        silently substitute a plain aggregate for the cross-model one."""
+        silently substitute a plain aggregate for the cross-dataset one."""
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
-            order=[OrderItem.model_validate({"field": "sum(customers.spend) + sum(amount)", "direction": "desc"})],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
+            order=[OrderItem.model_validate({"field": "sum(customers.spend) + sum(orders.amount)", "direction": "desc"})],
         ))
         assert entry.scope is OrderScope.OUTER_COMPOSITE
 
     def test_grouped_joined_wrap_is_cross_model_cte(self) -> None:
-        """The DEV-1735 wrap lives in its own host-rooted CTE, so it resolves
+        """The grouped joined-field wrap lives in its own host-rooted CTE, so it resolves
         CTE-qualified — not as a bare ``_base`` alias."""
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
             order=[OrderItem(
                 field="customers.regions.name",
                 direction="asc",
@@ -207,9 +205,9 @@ class TestPhaseAndDirection:
 
         entry = _sole_entry(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
-            order=[OrderItem(field="status", direction="asc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
+            order=[OrderItem(field="orders.status", direction="asc")],
         ))
         assert entry.phase is Phase.ROW
 
@@ -217,8 +215,8 @@ class TestPhaseAndDirection:
 
         entry = _sole_entry(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
             order=[OrderItem(field="rev", direction="desc")],
         ))
         assert entry.phase is Phase.AGGREGATE
@@ -226,12 +224,12 @@ class TestPhaseAndDirection:
     def test_multiple_entries_keep_their_own_scope_and_direction(self) -> None:
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
             order=[
-                OrderItem(field="status", direction="asc"),
+                OrderItem(field="orders.status", direction="asc"),
                 OrderItem(field="rev", direction="desc"),
-                OrderItem(field="created_at", direction="asc"),
+                OrderItem(field="orders.created_at", direction="asc"),
             ],
         ))
         assert [e.direction for e in plan.order] == ["asc", "desc", "asc"]
@@ -248,10 +246,10 @@ class TestDirectionAwareWrapIsPlanned:
 
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
             order=[OrderItem(
-                field="created_at", direction=direction,
+                field="orders.created_at", direction=direction,
             )],
         ))
         return [
@@ -271,11 +269,11 @@ class TestDirectionAwareWrapIsPlanned:
 
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
             order=[
-                OrderItem(field="created_at", direction="asc"),
-                OrderItem(field="created_at", direction="desc"),
+                OrderItem(field="orders.created_at", direction="asc"),
+                OrderItem(field="orders.created_at", direction="desc"),
             ],
         ))
         aggs = sorted(
@@ -294,8 +292,8 @@ class TestHostGrainMarker:
 
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
             order=[OrderItem(
                 field="customers.regions.name",
                 direction="asc",
@@ -313,9 +311,9 @@ class TestHostGrainMarker:
 
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=_MEASURE,
-            order=[OrderItem(field="created_at", direction="asc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=_METRIC,
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         ))
         wraps = [
             s.key for s in plan.aggregate_slots
@@ -325,7 +323,7 @@ class TestHostGrainMarker:
         assert wraps[0].locus == "target"
 
     def test_host_grain_and_target_grain_are_distinct_identities(self) -> None:
-        """A user-declared ``max(customers.regions.name)`` measure and the
+        """A user-declared ``max(customers.regions.name)`` metric and the
         synthetic host-grain wrap mean different things (global vs per-group),
         so they must not intern onto one slot."""
 
@@ -342,33 +340,33 @@ class TestHostGrainMarker:
 # ---------------------------------------------------------------------------
 _GROUPED_HEAD = {
     "population": "orders",
-    "dimensions": [QueryDimension(field="status")],
+    "dimensions": [QueryDimension(field="orders.status")],
 }
 
 #: ``locus="host"`` + non-empty ``source.path`` — the NEW branch. Today the
 #: trigger reads ``if not agg_path and not has_crossing_input: continue`` and
 #: then routes any path-bearing key to a TARGET-rooted CTE.
 _HOST_GRAIN_WITH_PATH = SlayerQuery(
-    **_GROUPED_HEAD, metrics=_MEASURE,
+    **_GROUPED_HEAD, metrics=_METRIC,
     order=[OrderItem(
         field="customers.regions.name", direction="asc",
     )],
 )
 
-#: Target-grain + path — the pre-existing cross-model case, unchanged.
+#: Target-grain + path — the pre-existing cross-dataset case, unchanged.
 _TARGET_GRAIN_WITH_PATH = SlayerQuery(
     **_GROUPED_HEAD,
     metrics=[
-        {"metric": "sum(amount)", "alias": "rev"},
+        {"metric": "sum(orders.amount)", "alias": "rev"},
         {"metric": "sum(customers.spend)", "alias": "cs"},
     ],
 )
 
-#: Host-grain, NO path, crossing input — the DEV-1709 branch that already
+#: Host-grain, NO path, crossing input — the branch that already
 #: works. Included so the matrix proves D2 does not disturb it.
 _HOST_GRAIN_CROSSING_INPUT = SlayerQuery(
-    **_GROUPED_HEAD, metrics=_MEASURE,
-    order=[OrderItem(field="cust_region", direction="asc")],
+    **_GROUPED_HEAD, metrics=_METRIC,
+    order=[OrderItem(field="orders.cust_region", direction="asc")],
 )
 
 
@@ -376,9 +374,9 @@ class TestLaw3TriggerMatrix:
     """Each branch of the widened trigger, and where it routes.
 
     ``cte_root_model`` is the discriminator the planner already carries: set to
-    the HOST model name for a host-rooted CTE, ``None`` for a target-rooted one.
+    the HOST dataset name for a host-rooted CTE, ``None`` for a target-rooted one.
     A host-grain wrap landing target-rooted is the scalar-CROSS-JOIN
-    degeneration DEV-1735 describes, and it is invisible in a per-case test that
+    degeneration, and it is invisible in a per-case test that
     only asserts "a plan exists".
     """
 
@@ -410,8 +408,8 @@ class TestLaw3TriggerMatrix:
                 "the Law-3 trigger did not fire for this branch"
             )
         else:
-            # DEV-1836: a target-grain cross-model aggregate now routes to a
-            # TARGET-rooted regroup producer, not a top-level cross-model plan.
+            # A target-grain cross-dataset aggregate now routes to a
+            # TARGET-rooted regroup producer, not a top-level cross-dataset plan.
             attach = next(
                 a for a in plan.regroup_attach_plans
                 if a.producer_root_dataset == "customers"
@@ -420,7 +418,7 @@ class TestLaw3TriggerMatrix:
 
     def test_the_wrap_producer_holds_its_key_inline(self) -> None:
         """The recursion guard. The wrap's own producer plan contains the SAME
-        crossing key as a plain measure, so if the desugar fired again inside
+        crossing key as a plain metric, so if the desugar fired again inside
         it the planner would recurse without bound — which is why a root at
         exactly the producer's grain compiles inline there.
 
@@ -442,7 +440,7 @@ class TestLaw3TriggerMatrix:
 
     def test_producer_mode_does_not_suppress_target_rooted_plans(self) -> None:
         """Producer mode keeps target-rooted discovery. Suppressing genuine
-        cross-model aggregates would silently inline a joined SUM into the
+        cross-dataset aggregates would silently inline a joined SUM into the
         host base and multiply it by the join's fan-out."""
         plan = plan_as_producer(
             query=_TARGET_GRAIN_WITH_PATH, bundle=dev1747_bundle(),

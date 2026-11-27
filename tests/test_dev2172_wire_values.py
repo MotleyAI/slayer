@@ -1,5 +1,5 @@
 """Each value type read back by real clients — psycopg over the Postgres wire, pyarrow over Arrow Flight — and
-``collect`` over a UUID column (spec: results/value-encoding, facade/list-values)."""
+``collect`` over a UUID field (spec: results/value-encoding, facade/list-values)."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def _single_cell(text: str, *, fmt: str) -> str:
     assert row.startswith("| "), row
     assert row.endswith(" |"), row
     return row[2:-2]
-UIDS = {"population": "things", "metrics": ["uids"]}
+UIDS = {"population": "things", "metrics": ["things.uids"]}
 
 
 @pytest.mark.parametrize("wire", WIRES)
@@ -125,7 +125,7 @@ class TestCollectOverUuid:
 class TestCollectOverExactDecimals:
     async def test_mcp_json_keeps_every_digit(self, store: FacadeStore) -> None:
         text = await mcp_text(create_mcp_server(storage=store.storage),
-                              {"population": "things", "metrics": ["prices"]}, fmt="json")
+                              {"population": "things", "metrics": ["things.prices"]}, fmt="json")
         assert str(BIG) in text
         assert f'"{BIG}"' not in text
         assert sorted(mcp_rows(text)[0]["things.prices"]) == sorted([BIG, Decimal("0.50")])

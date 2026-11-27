@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1853 — bidirectional join traversal.
+"""Shared fixtures for bidirectional relationship traversal.
 
 Chain graph (datasource ``test``): regions ← customers ← orders, with the
 edge between orders and customers declared on either side per builder flag.
@@ -153,7 +153,7 @@ def parallel_datasets(*, named: bool) -> list[SlayerDataset]:
         # Mode-A probe over a named edge (planned only when referenced).
         order_columns.append(
             DatasetField(name="bill_tier", datatype=DataType.STRING,
-                   sql="billing_customer.tier"))
+                   expression="billing_customer.tier"))
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=order_columns,
@@ -179,7 +179,7 @@ def parallel_datasets(*, named: bool) -> list[SlayerDataset]:
             DatasetField(name="region_id", datatype=DataType.INTEGER),
             DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="tier", datatype=DataType.STRING),
-            # Labels feed response metadata — the D5 terminal-model probe.
+            # Labels feed response metadata — the D5 terminal-dataset probe.
             DatasetField(name="spend", datatype=DataType.FLOAT, label="Customer spend"),
             DatasetField(name="signup_at", datatype=DataType.DATETIME,
                    label="Signup date"),
@@ -220,12 +220,12 @@ def seed_parallel(db_path: str) -> None:
 # --------------------------------------------------------------------------- #
 # Engines.
 # --------------------------------------------------------------------------- #
-async def chain_engine(tmpdir: str, **model_kwargs) -> SlayerQueryEngine:
+async def chain_engine(tmpdir: str, **dataset_kwargs) -> SlayerQueryEngine:
     db_path = os.path.join(tmpdir, "data.db")
     seed_chain(db_path)
     return await make_seeded_sqlite_engine(
         base_dir=os.path.join(tmpdir, "store"), db_path=db_path,
-        datasets=chain_datasets(**model_kwargs),
+        datasets=chain_datasets(**dataset_kwargs),
     )
 
 
@@ -256,7 +256,7 @@ CHAIN_AMOUNT_BY_NAME_WITH_ORPHAN = {
 }
 # Total-grain aggregate covers all orders, orphan included (mirror parity).
 CHAIN_REVERSE_AGG_TOTAL = 100.0
-# Local measure grouped by a reverse fan-out dim. Default broadcasts the
+# Local metric grouped by a reverse fan-out dim. Default broadcasts the
 # distinct-customer total (Alice 100 + Bob 150 + Cara 60); associate dedups
 # each customer once per status it has (overlapping, so not additive).
 CHAIN_SPEND_BY_REVERSE_STATUS = {"ok": 250.0, "new": 100.0, None: 60.0}

@@ -1,10 +1,10 @@
-"""DEV-1865 — keyless cross-model partitioned aggregates in filter/order position.
+"""Keyless cross-dataset partitioned aggregates in filter/order position.
 
-A computed dimension may band a cross-model partitioned aggregate whose
+A computed dimension may band a cross-dataset partitioned aggregate whose
 partition key is not a query dimension (keyless grain). Filtering on that same
 aggregate row-routes like the local shape; ordering by the dimension's name
 sorts by the banded value; consuming the keyless aggregate in a second
-(measure / raw ORDER BY) role fails with the partition-key error. Run on
+(metric / raw ORDER BY) role fails with the partition-key error. Run on
 SQLite + DuckDB.
 """
 
@@ -22,7 +22,7 @@ CM_BAND = (
     "THEN 'hi' ELSE 'lo' END"
 )
 KEYLESS_AGG = "sum(customers.spend, partition_by=customers.tier)"
-RK_REGION = "orders.customers.regions.name"
+RK_REGION = "customers.regions.name"
 
 
 
@@ -41,16 +41,16 @@ class TestKeylessFilterRowRoutes:
         ))).data
         assert 0 < len(filtered) <= len(unfiltered)
         # Row-routed against the attached tier-total: only silver rows survive → 'hi'.
-        assert all(r["orders.band"] == "hi" for r in filtered)
+        assert all(r["band"] == "hi" for r in filtered)
         # Exact: the lone surviving customer is c2 (silver, RegN, spend 200),
         # value-preserving against the unfiltered (hi, RegN) group.
-        by = {(r["orders.band"], r[RK_REGION]): r for r in filtered}
+        by = {(r["band"], r[RK_REGION]): r for r in filtered}
         assert set(by) == {("hi", "RegN")}
-        unfiltered_by = {(r["orders.band"], r[RK_REGION]): r for r in unfiltered}
-        assert float(by[("hi", "RegN")]["orders.sp"]) == pytest.approx(
-            float(unfiltered_by[("hi", "RegN")]["orders.sp"])
+        unfiltered_by = {(r["band"], r[RK_REGION]): r for r in unfiltered}
+        assert float(by[("hi", "RegN")]["sp"]) == pytest.approx(
+            float(unfiltered_by[("hi", "RegN")]["sp"])
         )
-        assert float(by[("hi", "RegN")]["orders.sp"]) == pytest.approx(200.0)
+        assert float(by[("hi", "RegN")]["sp"]) == pytest.approx(200.0)
 
 
 class TestKeylessOrderByDimensionName:
@@ -61,14 +61,14 @@ class TestKeylessOrderByDimensionName:
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
             order=[{"field": "band", "direction": "asc"}],
         ))
-        bands = [r["orders.band"] for r in resp.data]
+        bands = [r["band"] for r in resp.data]
         assert bands == sorted(bands)
 
 
 class TestKeylessDualRoleRejected:
     async def test_second_role_needs_partition_key_among_dims(self, exec_engine) -> None:
         # The keyless aggregate banded by the computed dim, also selected as a
-        # measure while its partition key (tier) is absent → partition-key error.
+        # metric while its partition key (tier) is absent → partition-key error.
         query = q(
             dimensions=[{"field": CM_BAND, "alias": "band"}, "customers.regions.name"],
             metrics=[QueryMetric(metric=KEYLESS_AGG, alias="dual")],

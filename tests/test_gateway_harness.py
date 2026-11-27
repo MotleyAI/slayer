@@ -26,7 +26,7 @@ from tests._gateway_harness import (
     shop_storage,
 )
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 
 
 async def test_a_plain_engine_query_is_refused(tmp_path: Path) -> None:

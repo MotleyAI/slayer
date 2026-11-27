@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-2006 — ranked / windowed re-aggregation operands.
+"""Shared fixtures for ranked / windowed re-aggregation operands.
 
 Underscore-prefixed so pytest skips collection. One snapshot dataset seeded into
 SQLite and DuckDB; ``account_snapshots.customer_id → customers.id`` is many-to-one.
@@ -58,7 +58,7 @@ from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 def snapshots_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -101,10 +101,10 @@ def dev2006_bundle(*, root: str = "account_snapshots") -> ResolvedSourceBundle:
 # --------------------------------------------------------------------------- #
 # Query shorthands
 # --------------------------------------------------------------------------- #
-PB = "partition_by=[account_id, customer_id]"
-PB_MONTH = "partition_by=[account_id, customer_id, snapshot_date]"
-LAST = f"last(balance, {PB})"
-FIRST = f"first(balance, {PB})"
+PB = "partition_by=[account_snapshots.account_id, account_snapshots.customer_id]"
+PB_MONTH = "partition_by=[account_snapshots.account_id, account_snapshots.customer_id, account_snapshots.snapshot_date]"
+LAST = f"last(account_snapshots.balance, {PB})"
+FIRST = f"first(account_snapshots.balance, {PB})"
 
 
 def snap_q(**kw) -> SlayerQuery:
@@ -116,8 +116,8 @@ def m(expression: str, name: str = "v") -> QueryMetric:
     return QueryMetric(metric=expression, alias=name)
 
 
-def month_td(column: str = "snapshot_date") -> List[TimeDimension]:
-    return [TimeDimension(field=column, granularity=TimeGranularity.MONTH)]
+def month_td(field: str = "account_snapshots.snapshot_date") -> List[TimeDimension]:
+    return [TimeDimension(field=field, granularity=TimeGranularity.MONTH)]
 
 
 # --------------------------------------------------------------------------- #
@@ -156,8 +156,8 @@ BALANCE_BY_BAND = {"big": 530.0, "small": 70.0}
 #: time_shift(<x>, -1) by customer, month: Feb reads Jan (last 70 / 40; 30d 370 / 70).
 SHIFTED_LAST_BY_CUSTOMER_MONTH = {(100, JAN): None, (100, FEB): 70.0, (200, JAN): None, (200, FEB): 40.0}
 SHIFTED_30D_BY_CUSTOMER_MONTH = {(100, JAN): None, (100, FEB): 370.0, (200, JAN): None, (200, FEB): 70.0}
-CROSS_MODEL_SUM_BY_NAME ={"A": 230.0, "B": 30.0, "C": None}
-CROSS_MODEL_COUNT_BY_NAME = {"A": 2, "B": 1, "C": 0}
+CROSS_DATASET_SUM_BY_NAME ={"A": 230.0, "B": 30.0, "C": None}
+CROSS_DATASET_COUNT_BY_NAME = {"A": 2, "B": 1, "C": 0}
 
 
 # --------------------------------------------------------------------------- #
@@ -224,7 +224,7 @@ def num(value) -> Optional[float]:
 
 
 def by_customer(resp, name: str = "v") -> dict:
-    out = {r["account_snapshots.customer_id"]: num(r[f"account_snapshots.{name}"]) for r in resp.data}
+    out = {r["account_snapshots.customer_id"]: num(r[name]) for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one customer"
     return out
 
@@ -232,7 +232,7 @@ def by_customer(resp, name: str = "v") -> dict:
 def by_customer_month(resp: SlayerResponse, name: str = "v") -> dict:
     tkey = next(k for k in resp.columns if "snapshot_date" in k)
     out = {
-        (r["account_snapshots.customer_id"], month_key(r[tkey])): num(r[f"account_snapshots.{name}"])
+        (r["account_snapshots.customer_id"], month_key(r[tkey])): num(r[name])
         for r in resp.data
     }
     assert len(out) == len(resp.data), "duplicate result rows for one (customer, month)"

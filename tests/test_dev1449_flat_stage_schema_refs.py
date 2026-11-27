@@ -1,9 +1,9 @@
 """Flat stage-schema references, end to end via ``engine.execute``.
 
 A downstream stage sees its upstream as a FLAT ``StageSchema``, not
-as a model with joins (P5/P6). A multi-hop upstream dimension
+as a dataset with relationships (P5/P6). A multi-hop upstream dimension
 (``customers.region``) surfaces downstream under its flat name
-(``customers__region``); the dotted form names ``customers``, which no join path
+(``customers__region``); the dotted form names ``customers``, which no relationship path
 reaches from the stage, so a row-level read of it raises ``UnrelatedDatasetError``.
 
 End-to-end through ``engine.execute([stage1, root])``. The planner-level
@@ -96,7 +96,7 @@ def _stage1() -> SlayerQuery:
         "name": "stage1",
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"metric": "sum(amount)"}],
+        "metrics": [{"metric": "sum(orders.amount)"}],
     })
 
 
@@ -107,8 +107,8 @@ async def test_dev1449_flat_name_resolves(engine: Tuple[SlayerQueryEngine, str])
     eng, _ = engine
     root = SlayerQuery.model_validate({
         "population": "stage1",
-        "dimensions": ["customers__region"],
-        "metrics": [{"metric": "sum(amount_sum)"}],
+        "dimensions": ["stage1.customers__region"],
+        "metrics": [{"metric": "sum(stage1.amount_sum)"}],
     })
     resp = await eng.execute([_stage1(), root])
     assert resp.columns == ["stage1.customers__region", "stage1.amount_sum_sum"]
@@ -129,12 +129,12 @@ async def test_dev1449_flat_name_resolves(engine: Tuple[SlayerQueryEngine, str])
 
 
 async def test_dev1449_dotted_form_raises(engine: Tuple[SlayerQueryEngine, str]) -> None:
-    """The dotted form reads a model no join path reaches from the flat upstream stage."""
+    """The dotted form reads a dataset no relationship path reaches from the flat upstream stage."""
     eng, _ = engine
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["customers.region"],
-        "metrics": [{"metric": "sum(amount_sum)"}],
+        "metrics": [{"metric": "sum(stage1.amount_sum)"}],
     })
     stage1 = _stage1()
     with pytest.raises(UnrelatedDatasetError):

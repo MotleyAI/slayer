@@ -1,8 +1,8 @@
-"""Filter / ORDER BY on a raw aggregation formula must
-resolve to the user-assigned alias when the same node renames the measure.
+"""Filter / ORDER BY on a raw aggregation expression must
+resolve to the user-assigned alias when the same node renames the metric.
 
-Bug: filter ``"count_distinct(operbotdetref) >= 5"`` paired with a measure
-``{"formula": "count_distinct(operbotdetref)", "name": "robot_count"}`` was
+Bug: filter ``"count_distinct(operbotdetref) >= 5"`` paired with a metric
+``{"metric": "count_distinct(operbotdetref)", "alias": "robot_count"}`` was
 rendered as ``WHERE per_robot_stats.operbotdetref_count_distinct >= 5``
 (canonical alias) — but the inner SELECT exposes only
 ``per_robot_stats.robot_count`` (user alias), so the query failed at
@@ -10,9 +10,9 @@ execution. Expected: filter resolves to the user alias and surfaces as
 ``HAVING COUNT(DISTINCT operbotdetref) >= 5``.
 
 Companion tickets surfaced during spec'ing:
-* DEV-1445 — cross-model agg refs in filters with rename (deferred scope).
-* DEV-1446 — transform-wrapped agg refs of a renamed measure produce a
-  duplicate ``legacy enriched-measure`` (pre-existing dedup bug).
+* DEV-1445 — cross-dataset agg refs in filters with rename (deferred scope).
+* DEV-1446 — transform-wrapped agg refs of a renamed metric produce a
+  duplicate ``legacy enriched-metric`` (pre-existing dedup bug).
 """
 
 import pytest
@@ -30,10 +30,10 @@ def _orders_dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -46,30 +46,30 @@ class TestFilterRenamedMeasureRemap:
     """The fix: filter `agg(col)` with a same-node rename resolves to user alias."""
 
     async def test_filter_renamed_measure_resolves_to_alias(self) -> None:
-        """Exact bug shape: filter uses the raw aggregation formula; same node
-        renames the measure. The rendered SQL must apply the predicate to the
+        """Exact bug shape: filter uses the raw aggregation expression; same node
+        renames the metric. The rendered SQL must apply the predicate to the
         actual aggregate (HAVING COUNT(DISTINCT customer_id) >= 5), NOT to a
         non-existent canonical alias `customer_id_count_distinct`.
         """
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
+                QueryMetric(metric="count_distinct(orders.customer_id)", alias="num_customers"),
             ],
-            filter=["count_distinct(customer_id) >= 5"],
+            filter=["count_distinct(orders.customer_id) >= 5"],
         )
         sql = await _generate(query, model)
 
         # Must surface the renamed alias in the projection.
-        assert '"orders.num_customers"' in sql, (
+        assert '"num_customers"' in sql, (
             f"renamed alias must appear in projection:\n{sql}"
         )
         # Must NOT reference the canonical alias anywhere — that column is
-        # never selected once the measure is renamed.
+        # never selected once the metric is renamed.
         assert "customer_id_count_distinct" not in sql, (
-            f"canonical alias must not leak when measure is renamed:\n{sql}"
+            f"canonical alias must not leak when metric is renamed:\n{sql}"
         )
         # Predicate must surface as HAVING against the actual aggregate.
         assert "HAVING" in sql, f"filter on aggregate must be HAVING:\n{sql}"
@@ -82,29 +82,29 @@ class TestFilterRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
+                QueryMetric(metric="count_distinct(orders.customer_id)", alias="num_customers"),
             ],
             filter=["num_customers >= 5"],
         )
         sql = await _generate(query, model)
 
-        assert '"orders.num_customers"' in sql
+        assert '"num_customers"' in sql
         assert "HAVING" in sql
         assert "COUNT(DISTINCT" in sql
         assert "customer_id_count_distinct" not in sql
 
     async def test_filter_unrenamed_measure_uses_canonical(self) -> None:
-        """Regression: when the measure is NOT renamed, filter on the
+        """Regression: when the metric is NOT renamed, filter on the
         aggregation resolves to the canonical alias as before.
         """
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count_distinct(customer_id)")],
-            filter=["count_distinct(customer_id) >= 5"],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count_distinct(orders.customer_id)")],
+            filter=["count_distinct(orders.customer_id) >= 5"],
         )
         sql = await _generate(query, model)
 
@@ -121,12 +121,12 @@ class TestFilterRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="revenue"),
-                QueryMetric(metric="count_distinct(customer_id)"),
+                QueryMetric(metric="sum(orders.amount)", alias="revenue"),
+                QueryMetric(metric="count_distinct(orders.customer_id)"),
             ],
-            filter=["sum(amount) / count_distinct(customer_id) > 100"],
+            filter=["sum(orders.amount) / count_distinct(orders.customer_id) > 100"],
         )
         sql = await _generate(query, model)
 
@@ -135,12 +135,12 @@ class TestFilterRenamedMeasureRemap:
         # canonical alias). The SQL must not contain ``amount_sum`` — the
         # rename consumed that slot.
         assert "HAVING" in sql, sql
-        assert '"orders.revenue"' in sql
+        assert '"revenue"' in sql
         # Canonical for `sum(amount)` must not appear (it's renamed to revenue).
         assert "orders.amount_sum" not in sql, (
             f"renamed canonical leaked:\n{sql}"
         )
-        # Canonical for the unrenamed measure surfaces.
+        # Canonical for the unrenamed metric surfaces.
         assert "customer_id_count_distinct" in sql
 
     async def test_filter_renamed_measure_classified_as_having_not_where(
@@ -154,11 +154,11 @@ class TestFilterRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
+                QueryMetric(metric="count_distinct(orders.customer_id)", alias="num_customers"),
             ],
-            filter=["count_distinct(customer_id) >= 5"],
+            filter=["count_distinct(orders.customer_id) >= 5"],
         )
         sql = await _generate(query, model)
         having = _having_text(sql)
@@ -179,23 +179,23 @@ class TestOrderByRenamedMeasureRemap:
 
     async def test_order_by_renamed_measure_canonical_form(self) -> None:
         """``order=["count_distinct(customer_id) desc"]`` with a renamed
-        measure must resolve to the user alias, not to a non-existent
+        metric must resolve to the user alias, not to a non-existent
         canonical column.
         """
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
+                QueryMetric(metric="count_distinct(orders.customer_id)", alias="num_customers"),
             ],
-            order=[OrderItem.model_validate({"field": "count_distinct(customer_id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "count_distinct(orders.customer_id)", "direction": "desc"})],
         )
         sql = await _generate(query, model)
 
         assert "ORDER BY" in sql
         order_clause = sql.split("ORDER BY", 1)[1]
-        assert '"orders.num_customers"' in order_clause, (
+        assert '"num_customers"' in order_clause, (
             f"renamed alias must surface in ORDER BY:\n{sql}"
         )
         assert "customer_id_count_distinct" not in order_clause, (
@@ -207,15 +207,15 @@ class TestOrderByRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
+                QueryMetric(metric="count_distinct(orders.customer_id)", alias="num_customers"),
             ],
             order=[OrderItem(field="num_customers", direction="desc")],
         )
         sql = await _generate(query, model)
         assert "ORDER BY" in sql
-        assert '"orders.num_customers"' in sql.split("ORDER BY", 1)[1]
+        assert '"num_customers"' in sql.split("ORDER BY", 1)[1]
 
 
 class TestRemapEdgeCases:
@@ -227,7 +227,7 @@ class TestRemapEdgeCases:
         """The filter remap is identifier-
         level only — canonical-name matches inside quoted string literals
         must NOT be rewritten. Example: filter ``first(country) = 'country_first'``
-        with the measure renamed to ``primary_country`` must remap the
+        with the metric renamed to ``primary_country`` must remap the
         first occurrence (the alias) but leave the literal
         ``'country_first'`` alone, otherwise the filter compares the
         renamed-alias column to itself instead of the original constant.
@@ -238,17 +238,17 @@ class TestRemapEdgeCases:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-                DatasetField(name="country", sql="country", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="country", expression="country", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
             population="orders",
             metrics=[
-                QueryMetric(metric="first(country)", alias="primary_country"),
+                QueryMetric(metric="first(orders.country)", alias="primary_country"),
             ],
-            filter=["first(country) = 'country_first'"],
+            filter=["first(orders.country) = 'country_first'"],
         )
         sql = await _generate(query, model)
         # The literal 'country_first' must still appear in the emitted
@@ -262,11 +262,11 @@ class TestRemapEdgeCases:
         ("formula_a", "formula_b"),
         [
             # Two plain aggregates.
-            ("sum(amount)", "avg(profit)"),
-            # Two arithmetic / non-aggregate measures — CodeRabbit + Codex
-            # round 4: the duplicate-name check must cover all measure
-            # kinds, not just the local legacy aggregated-measure node rename branch.
-            ("sum(amount) / 100", "avg(profit) * 2"),
+            ("sum(orders.amount)", "avg(orders.profit)"),
+            # Two arithmetic / non-aggregate metrics — CodeRabbit + Codex
+            # round 4: the duplicate-name check must cover all metric
+            # kinds, not just the local legacy aggregated-metric node rename branch.
+            ("sum(orders.amount) / 100", "avg(orders.profit) * 2"),
         ],
         ids=["plain_agg", "arithmetic"],
     )
@@ -276,11 +276,11 @@ class TestRemapEdgeCases:
         formula_b: str,
     ) -> None:
         """Two
-        query measures sharing the same explicit ``name`` would otherwise
+        query metrics sharing the same explicit ``alias`` would otherwise
         silently collapse to one alias, making filter/ORDER BY refs bind
-        to whichever measure was processed first. The pre-pass validator
-        must reject the collision regardless of measure shape — plain
-        aggregates, cross-model aggregates, or arithmetic /
+        to whichever metric was processed first. The pre-pass validator
+        must reject the collision regardless of metric shape — plain
+        aggregates, cross-dataset aggregates, or arithmetic /
         transform expressions.
         """
         model = SlayerDataset(
@@ -288,15 +288,15 @@ class TestRemapEdgeCases:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="profit", sql="profit", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="profit", expression="profit", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
                 QueryMetric(metric=formula_a, alias="metric"),
                 QueryMetric(metric=formula_b, alias="metric"),
@@ -308,35 +308,24 @@ class TestRemapEdgeCases:
     async def test_rename_collides_with_other_measure_canonical_raises(
         self,
     ) -> None:
-        """If a query measure's
-        ``name`` equals the canonical alias of another measure in the same
-        query, ``_ensure_aggregated_measure``'s alias-based dedup would
-        silently merge the two aggregates — both filter refs would resolve
-        to the SAME underlying aggregate even though the user declared two
-        distinct measures. Refuse the query at enrichment time.
-
-        Example: ``sum(revenue)`` renamed to ``profit_avg`` AND a separate
-        ``avg(profit)`` measure both end up at ``<model>.profit_avg``.
-        """
+        """Two distinct measures under one name are refused, never silently merged."""
         model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
-                DatasetField(name="profit", sql="profit", datatype=DataType.FLOAT),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="revenue", expression="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="profit", expression="profit", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                # Rename to a name that collides with the second measure's
-                # auto-canonical (``profit_avg``).
-                QueryMetric(metric="sum(revenue)", alias="profit_avg"),
-                QueryMetric(metric="avg(profit)"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
+                QueryMetric(metric="sum(orders.revenue)", alias="profit_avg"),
+                QueryMetric(metric="avg(orders.profit)", alias="profit_avg"),
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):
@@ -346,9 +335,9 @@ class TestRemapEdgeCases:
         self,
     ) -> None:
         """If the canonical agg alias
-        of a renamed measure literally shadows a source ``Column`` on the
-        model, the filter ``agg(col) <op> N`` is ambiguous (it
-        could mean the renamed aggregate or the source column). Refuse
+        of a renamed metric literally shadows a source ``DatasetField`` on the
+        dataset, the filter ``agg(col) <op> N`` is ambiguous (it
+        could mean the renamed aggregate or the source field). Refuse
         the query at enrichment time rather than silently picking one and
         producing surprising SQL.
         """
@@ -357,20 +346,20 @@ class TestRemapEdgeCases:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                # Pathological: a real column whose name happens to equal
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                # Pathological: a real field whose name happens to equal
                 # the canonical alias of ``sum(amount)``.
-                DatasetField(name="amount_sum", sql="amount_sum", datatype=DataType.FLOAT),
+                DatasetField(name="amount_sum", expression="amount_sum", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             # Rename triggers the collision check: canonical
-            # ``amount_sum`` already names a source column.
-            metrics=[QueryMetric(metric="sum(amount)", alias="revenue")],
+            # ``amount_sum`` already names a source field.
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="revenue")],
         )
         with pytest.raises(ValueError, match=r"shadows a source field"):
             await _generate(query, model)
@@ -379,10 +368,10 @@ class TestRemapEdgeCases:
         self,
     ) -> None:
         """Codex F3 (test-review): pin the Mode B/DSL-only boundary. A
-        ``SlayerModel.filters`` entry (Mode A SQL) must survive query
-        enrichment untouched even when the query renames a measure that
+        ``SlayerDataset.filters`` entry (Mode A SQL) must survive query
+        enrichment untouched even when the query renames a metric that
         would otherwise feed into ``canonical_to_user_name``. The remap
-        helper is only invoked for query filters; model filters go through
+        helper is only invoked for query filters; dataset filters go through
         ``parse_sql_predicate`` and never see canonical-agg aliases.
         """
         model = SlayerDataset(
@@ -390,51 +379,47 @@ class TestRemapEdgeCases:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="deleted_at", sql="deleted_at", datatype=DataType.DATETIME),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="deleted_at", expression="deleted_at", datatype=DataType.DATETIME),
             ],
-            # Plain Mode A model filter.
+            # Plain Mode A dataset filter.
             filters=["deleted_at IS NULL"],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
                 # Triggers the rename branch — populates canonical_to_user_name.
-                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
+                QueryMetric(metric="count_distinct(orders.customer_id)", alias="num_customers"),
             ],
         )
         sql = await _generate(query, model)
-        # The model-level (Mode A) filter must surface in the WHERE of the
-        # model's filtered dataset, unchanged by the query-side measure rename.
+        # The dataset-level (Mode A) filter must surface in the WHERE of the
+        # dataset's filtered source, unchanged by the query-side metric rename.
         where = _dataset_where_text(sql)
         assert "deleted_at" in where, (
-            f"model filter dropped from WHERE clause:\nWHERE={where!r}\nSQL:\n{sql}"
+            f"dataset filter dropped from WHERE clause:\nWHERE={where!r}\nSQL:\n{sql}"
         )
         assert "num_customers" not in where, (
-            f"model-level (Mode A) filter must not be remapped to the "
-            f"query measure alias:\nWHERE={where!r}"
+            f"dataset-level (Mode A) filter must not be remapped to the "
+            f"query metric alias:\nWHERE={where!r}"
         )
         assert "IS NULL" in where.upper(), (
-            f"model filter shape altered:\nWHERE={where!r}"
+            f"dataset filter shape altered:\nWHERE={where!r}"
         )
 
-    async def test_query_measure_name_collides_with_source_column_raises(
+    async def test_query_metric_name_equal_to_a_source_field_compiles(
         self,
     ) -> None:
-        """Codex F2: ``{"formula": "sum(amount)", "name": "status"}`` where
-        ``status`` is a source column must raise at enrichment with a clear
-        message — otherwise alias-form filters silently bind to the source
-        column instead of the renamed measure.
-        """
+        """``{"metric": "sum(amount)", "alias": "status"}`` where ``status`` is a source field compiles: fields are
+        always qualified and names bare, so the two never meet."""
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="id")],
-            metrics=[QueryMetric(metric="sum(amount)", alias="status")],
+            dimensions=[QueryDimension(field="orders.id")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="status")],
         )
-        with pytest.raises(ValueError, match=r"matches a source field"):
-            await _generate(query, model)
+        assert await _generate(query, model)

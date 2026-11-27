@@ -178,28 +178,39 @@ class TestEveryAdvertisedColumnIsSelectable:
         assert not failures, "\n".join(failures)
 
 
-#: Per-record rows of ``SELECT <column> FROM things``: local and to-one columns once per thing, ``parts.*``
-#: once per joined part (a thing without parts keeps one NULL row).
+#: Per-record rows of ``SELECT teams.label FROM things``: a to-one column once per thing.
 def _thing_rows(column: str) -> Counter[Any]:
     if column == "teams.label":
         return Counter({1: "red", 2: "blue"}[t["team_id"]] for t in THINGS)
-    if column == "parts.thing_id":
-        return Counter([thing for _, thing, _ in PARTS] + [None])
-    if column == "parts.qty":
-        return Counter([qty for _, _, qty in PARTS] + [None])
     raise KeyError(column)
 
 
 class TestFanningAndToOneDimensions:
-    @pytest.mark.parametrize("column", ["teams.label", "parts.thing_id", "parts.qty"])
-    def test_pg_returns_one_row_per_joined_record(self, servers: Servers, column: str) -> None:
-        rows = pg_query(servers.pg_port, f"SELECT {column} FROM things").rows
-        assert Counter(r[0] for r in rows) == _thing_rows(column)
+    def test_pg_returns_one_row_per_thing_for_a_to_one_column(self, servers: Servers) -> None:
+        rows = pg_query(servers.pg_port, "SELECT teams.label FROM things").rows
+        assert Counter(r[0] for r in rows) == _thing_rows("teams.label")
 
-    @pytest.mark.parametrize("column", ["teams.label", "parts.thing_id", "parts.qty"])
-    def test_flight_returns_one_row_per_joined_record(self, servers: Servers, column: str) -> None:
-        table = _flight_table(servers.flight_port, f"SELECT {column} FROM things")
-        assert Counter(table.column(0).to_pylist()) == _thing_rows(column)
+    def test_flight_returns_one_row_per_thing_for_a_to_one_column(self, servers: Servers) -> None:
+        table = _flight_table(servers.flight_port, "SELECT teams.label FROM things")
+        assert Counter(table.column(0).to_pylist()) == _thing_rows("teams.label")
+
+    @pytest.mark.parametrize("wire", ["pg", "flight"])
+    def test_a_fanning_column_is_not_advertised(self, servers: Servers, wire: str) -> None:
+        advertised = {c for t, c, _ in _dimensions(servers, wire=wire) if t == "things"}
+        assert "teams.label" in advertised
+        assert not {c for c in advertised if c.startswith("parts.")}
+
+    def test_pg_refuses_a_fanning_column_as_raw_rows(self, servers: Servers) -> None:
+        with pytest.raises(Exception, match="DistinctDimensionValuesError"):
+            pg_query(servers.pg_port, "SELECT parts.qty FROM things")
+
+    def test_flight_refuses_a_fanning_column_as_raw_rows(self, servers: Servers) -> None:
+        with pytest.raises(Exception, match="DistinctDimensionValuesError"):
+            _flight_table(servers.flight_port, "SELECT parts.qty FROM things")
+
+    def test_a_fanning_column_still_groups(self, servers: Servers) -> None:
+        rows = pg_query(servers.pg_port, "SELECT parts.qty, COUNT(*) FROM things GROUP BY parts.qty").rows
+        assert sorted(rows, key=str) == sorted([(qty, 1) for _, _, qty in PARTS] + [(None, 1)], key=str)
 
     def test_select_star_omits_fanning_dimensions(self, servers: Servers) -> None:
         result = pg_query(servers.pg_port, "SELECT * FROM things")

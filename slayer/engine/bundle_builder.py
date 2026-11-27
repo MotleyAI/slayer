@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from slayer.core.errors import AmbiguousReferenceError, DatasetNotFoundError, QueryBackedCycleError
@@ -13,6 +14,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, SourceSpec, extension_dataset_names
 from slayer.core.scope import StageDisplay
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine, is_spine_spelling, query_host, spine_dataset
+from slayer.core.time_zones import wall_clock
 from slayer.engine.field_dependency import definition_heads
 from slayer.engine.cardinality.unrelated import first_hop_names
 from slayer.engine.extensions import respelled_stages
@@ -66,6 +68,7 @@ async def build_resolved_source_bundle(
     now: Optional[datetime] = None,
     failures: Optional[DocumentLoadFailures] = None,
     respelled_spine: frozenset[str] = frozenset(),
+    resolve_types: Optional[Callable[[SlayerDataset], Awaitable[SlayerDataset]]] = None,
 ) -> ResolvedSourceBundle:
     """Eagerly assemble the :class:`ResolvedSourceBundle` for one execution (P11).
 
@@ -74,12 +77,14 @@ async def build_resolved_source_bundle(
     outer > source-dataset defaults. Stored query-backed datasets are collected as
     splice placeholders, never as referenced datasets. ``now`` is the execution's
     clock reading (default: the host clock); ``failures`` records skipped unloadable peers;
-    ``respelled_spine`` are the query's spellings of the spine respelled to ``time_spine``.
+    ``respelled_spine`` are the query's spellings of the spine respelled to ``time_spine``; ``resolve_types`` types
+    each read dataset's unknown field types.
     """
     failures = failures or DocumentLoadFailures()
+    reading = datetime.now() if now is None else now
     named_queries = named_queries or {}
     stage_displays = stage_displays or {}
-    storage = cast("StorageBackend", _DatasetReadCache(storage))
+    storage = cast("StorageBackend", _DatasetReadCache(storage, resolve=resolve_types))
     for q in [*named_queries.values(), query]:
         _reject_chain_source(spec=q.population, chain=splice_chain)
 
@@ -124,12 +129,17 @@ async def build_resolved_source_bundle(
         query=query,
         stage_source_datasets=stage_source_datasets,
         query_variables=query_variables,
+        variable_layers=merge_query_variables(
+            runtime=runtime_variables, stage=query.variables, outer=outer_variables, dataset_defaults=None,
+        ),
         datasource_hint=data_source,
         stage_displays=dict(stage_displays),
         query_backed=query_backed,
         splice_chain=tuple(splice_chain),
         runtime_variables=dict(runtime_variables or {}),
-        now=datetime.now() if now is None else now,
+        now=wall_clock(reading, None),
+        clock_reading=reading,
+        datasource_time_zone=ds.time_zone if ds else None,
         granularities=ds.granularity_definitions if ds else {},
         spine_clash=spine_clash,
         datasource_dataset_names=peer_names,
@@ -472,8 +482,11 @@ async def stored_dataset(
 class _DatasetReadCache:
     """Read-through ``get_dataset`` cache scoped to one bundle build (delegates the rest)."""
 
-    def __init__(self, inner: "StorageBackend") -> None:
+    def __init__(
+        self, inner: "StorageBackend", *, resolve: Optional[Callable[[SlayerDataset], Awaitable[SlayerDataset]]] = None,
+    ) -> None:
         self._inner = inner
+        self._resolve = resolve
         self._datasets: Dict[tuple, Optional[SlayerDataset]] = {}
 
     def __getattr__(self, name: str):
@@ -489,6 +502,8 @@ class _DatasetReadCache:
         key = (name, data_source)
         if key not in self._datasets:
             dataset = await self._inner.get_dataset(name, data_source=data_source)
+            if dataset is not None and self._resolve is not None:
+                dataset = await self._resolve(dataset)
             self._datasets[key] = dataset
             if dataset is not None:
                 # a hint-less read also answers the concrete-datasource key

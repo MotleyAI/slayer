@@ -24,6 +24,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import RenderContextMissingFacilityError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -62,7 +63,7 @@ from slayer.ir.planned import ValueSlot
 
 
 # ===========================================================================
-# Model graph + generation helper (dry_run, one bundle covers every shape).
+# Dataset graph + generation helper (dry_run, one bundle covers every shape).
 # ===========================================================================
 def _orders() -> SlayerDataset:
     return SlayerDataset(
@@ -76,10 +77,10 @@ def _orders() -> SlayerDataset:
             DatasetField(name="qty", datatype=DataType.FLOAT),
             DatasetField(name="disc", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="net", sql="amount - 1", datatype=DataType.FLOAT),
+            DatasetField(name="net", expression="amount - 1", datatype=DataType.FLOAT),
             # A NON-trivial DERIVED TIMESTAMP: the filter-CAST policy must
             # suppress the CAST for temporal types (Codex F9 / _filter_cast_type).
-            DatasetField(name="net_ts", sql="coalesce(created_at, created_at)",
+            DatasetField(name="net_ts", expression=ExpressionObject(dialects=[DialectEntry(dialect="POSTGRES", expression="coalesce(created_at, created_at)")]),
                    datatype=DataType.DATETIME),
             # A MIXED-CASE physical column: quoting must survive on the
             # shifted-CTE WHERE path, which stringifies without a re-parse
@@ -98,7 +99,7 @@ def _customers() -> SlayerDataset:
             DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(name="region_id", datatype=DataType.FLOAT),
             DatasetField(name="spend", datatype=DataType.FLOAT),
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", expression="regions.population", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -131,7 +132,7 @@ async def _generate(query: SlayerQuery, *, dialect: str = "postgres") -> str:
 
 
 _MONTH = TimeDimension(
-    field="created_at", granularity=TimeGranularity.MONTH,
+    field="orders.created_at", granularity=TimeGranularity.MONTH,
 )
 
 
@@ -161,8 +162,8 @@ _FILTER_SHAPES = {
         population="orders",
         time_dimensions=[_MONTH],
         metrics=[
-            QueryMetric(metric="sum(amount)", alias="amt"),
-            QueryMetric(metric="time_shift(sum(amount), -1, 'month')", alias="prev"),
+            QueryMetric(metric="sum(orders.amount)", alias="amt"),
+            QueryMetric(metric="time_shift(sum(orders.amount), -1, 'month')", alias="prev"),
         ],
         filter=["status = 'new'"],
     ),
@@ -170,10 +171,10 @@ _FILTER_SHAPES = {
         population="orders",
         time_dimensions=[_MONTH],
         metrics=[
-            QueryMetric(metric="sum(amount)", alias="amt"),
-            QueryMetric(metric="time_shift(sum(amount), -1, 'month')", alias="prev"),
+            QueryMetric(metric="sum(orders.amount)", alias="amt"),
+            QueryMetric(metric="time_shift(sum(orders.amount), -1, 'month')", alias="prev"),
         ],
-        filter=["MixedCol > 5"],
+        filter=["orders.MixedCol > 5"],
     ),
 }
 
@@ -226,7 +227,7 @@ class TestOptionalScopeFailsClosed:
 
 class TestScopeFrameColumnType:
     """``ScopeFrame.field_type(ref)`` gives the renderer the declared type for
-    the filter-CAST policy, using the same model lookup as resolution."""
+    the filter-CAST policy, using the same dataset lookup as resolution."""
 
     def test_local_column_type(self) -> None:
         assert _scope().field_type(FieldKey(leaf="amount")) is DataType.FLOAT
@@ -603,7 +604,7 @@ class TestMixedCaseShiftedCteParity:
 class TestContainsAggregateEquivalence:
     """The composite live call site swaps ``_build_agg``'s ``is_agg`` bool for
     ``contains_aggregate(key)``. They agree on the composite shapes: an
-    arithmetic-of-aggregates contains an aggregate; a pure column/literal
+    arithmetic-of-aggregates contains an aggregate; a pure field/literal
     composite does not (so it is not routed into GROUP BY / HAVING)."""
 
     def test_arithmetic_of_aggregates_contains_aggregate(self) -> None:

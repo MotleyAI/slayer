@@ -1,0 +1,24 @@
+document:
+  concept_mappings:
+  - concept: Item
+    link_mappings:
+    - object_mapping:
+        referent_mappings:
+        - relationship: Item.nr
+          expression: METRICS.SKU
+      relationship: active
+      children:
+      - object_mapping:
+          concept: Store
+          expression: METRICS.STORE
+        relationship: active_in
+        children:
+        - object_mapping:
+            concept: Amount
+            expression: METRICS.SALES
+          relationship: sold_in_for
+        - object_mapping:
+            concept: Amount
+            expression: METRICS.RETURNS
+          relationship: returned_in_for
+files: {}

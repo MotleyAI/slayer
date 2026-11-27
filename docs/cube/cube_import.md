@@ -69,7 +69,9 @@ metrics:
 - A calculated measure with SQL aggregates (`SUM({CUBE}.amount) FILTER (WHERE {CUBE}.status = 'paid') / COUNT(*)`)
   is translated: a bare operand aggregates its field, any other operand and a `FILTER` go to a hidden field
   holding Cube's SQL, and a window function, an undeclared member or an operand reading another cube drops
-  the measure with a report.
+  the measure with a report. `SUM`/`AVG(DISTINCT x)` become `sum_distinct` / `avg_distinct`, `MIN`/`MAX(DISTINCT x)`
+  `min` / `max`, `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)` `percentile_disc(x, p=p)` and `APPROX_PERCENTILE(x, p)`
+  `percentile_approx(x, p=p)`; a DISTINCT over several values or in another aggregate is dropped with a report.
 - `format` maps to `NumberFormat` (`percent`, `currency`, `number`).
 
 ### Dimensions → fields
@@ -80,10 +82,12 @@ field.
 
 `{CUBE}.x` always reads the physical column `x`, `{customers}.x` reads the physical column `x` of the joined cube
 `customers` (a cube that is not joined drops the member with a report), and `{orders.member}` inside cube `orders`
-means `{member}`; a
-member whose SQL reads a physical column another member's name holds, or transforms the physical column of its own name
-(`status: UPPER({CUBE}.status)`), is dropped with a report, as is an unquoted reserved word (`{CUBE}.from`; write
-`{CUBE}."from"`).
+means `{member}`, written into the field as the path `orders.member`. A member's SQL becomes the field's entry for
+the datasource's dialect (one column becomes the `expression` shorthand), so it reads the physical columns whatever
+members the cube declares (`status: UPPER({CUBE}.status)` upper-cases the physical `status`). A measure, join key or
+other cube's reference that needs a physical column no member reads bare gets one hidden field reading it, named
+`<column>_raw` (`_raw_2`, … when taken). An unquoted reserved word (`{CUBE}.from`; write `{CUBE}."from"`) is dropped
+with a report.
 
 Field types come from the live datasource when `--datasource` resolves (a list column as a list of its element
 type), else from an explicit dimension `type` or the measure's aggregation; an aggregation SLayer refuses over a
@@ -98,18 +102,18 @@ import whose datasource is not configured is refused when its SQL holds an unquo
 ### Joins → relationships
 
 A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes
-`from_columns` / `to_columns` naming the fields that read each side (a `{cube}.col` operand reads the physical column, through a hidden field when no member reads it; a `{cube.member}` operand names that member, which must be a base field; a physical column another member's name holds drops the join). Composite
+`from_columns` / `to_columns` naming the fields that read each side (a `{cube}.col` operand reads the physical column, through a hidden field when no member reads it; a `{cube.member}` operand names that member, which must read one column bare with no filter). Composite
 (`AND`-joined) keys are supported. All relationships emit as `LEFT`. When a Cube schema
 declares both directions of one relationship (`orders belongs_to customers` and
 `customers has_many orders` over the same columns), the importer keeps a single
 edge — the to-one declaration — since SLayer traverses every relationship
-[in both directions](../concepts/models.md#bidirectional-traversal);
+[in both directions](../concepts/datasets.md#bidirectional-traversal);
 contradicting declarations import as two edges and surface as an ambiguous hop.
 
 ### Segments → boolean fields
 
 Each segment becomes a boolean field carrying the predicate, so it stays
-filterable (`completed = true`) and group-able.
+filterable (`orders.completed = true`) and group-able.
 
 ### Views → facade datasets
 
@@ -151,7 +155,7 @@ Stage-1 gap: a JS **view** whose `join_path` is written as a bare cube identifie
 
 Cube's `FILTER_PARAMS.<cube>.<member>.filter(...)` renders a member's filter when
 the caller supplies one, else the neutral `1 = 1`. SLayer represents this with
-[`{variable}` substitution](../concepts/models.md#variables-in-dataset-sql):
+[`{variable}` substitution](../concepts/datasets.md#variables-in-dataset-sql):
 
 - **String form** `.filter('col')` → an optional block `{? col IN ({member}) ?}`
   — the caller passes a list (`{"brand": ["Acme", "Zeta"]}`), a bare scalar
@@ -164,7 +168,7 @@ the caller supplies one, else the neutral `1 = 1`. SLayer represents this with
 
 #### Scalars are accepted for the string form
 
-The general [`{variable}` rule](../concepts/models.md#variables-in-dataset-sql) puts
+The general [`{variable}` rule](../concepts/datasets.md#variables-in-dataset-sql) puts
 quoting on whoever writes the template — a scalar string substitutes *unquoted*,
 which is what makes `amount >= {floor}` and `'{d}'::TIMESTAMP` both expressible.
 That rule assumes an author who can see the SQL position, and the importer's

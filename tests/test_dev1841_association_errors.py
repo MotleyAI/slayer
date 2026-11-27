@@ -1,19 +1,16 @@
-"""Associate-mode eligibility: windowed / first-last combinations fail with a clear typed
-``SlayerError``; a root without a unique key associates through its row identity.
+"""Associate-mode eligibility: windowed / first-last aggregates associate; a root without a unique key associates
+through its row identity.
 
 Spec: queries/attribution-modes — "Association eligibility, input handling and row identity".
 """
 
 from __future__ import annotations
 
-import re
-
 import pytest
-
-from slayer.core.errors import SlayerError
 
 from slayer.core.query import QueryMetric
 
+from tests._dev1914_fixtures import LAST_BY_STATUS_SIGNUP, WINDOW_90D_BY_STATUS_SIGNUP, known_status_signup
 from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
     TimeDimension,
@@ -32,9 +29,6 @@ from tests._dev1892_fixtures import (
 )
 
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
-#: Must name the association concept — a generic ranked/time-dimension rejection
-#: (which would fire before association eligibility) must NOT satisfy it.
-_COMBO = re.compile(r"associat|attribut|distinct.entity|combination", re.IGNORECASE)
 _SIGNUP_TD = [TimeDimension(
     field="customers.signup_at",
     granularity=TimeGranularity.MONTH)]
@@ -64,41 +58,32 @@ async def exec_backend_coldef(request):
         yield request.param, engine
 
 
-class TestUnsupportedCombinations:
-    async def test_first_last_with_association_fails(self, exec_backend):
-        """Scenario: windowed or first/last combination fails closed — a
-        first/last aggregate that also needs association is a typed error. The
-        signup_at time dimension makes the ranking otherwise valid, so the sole
-        failure is the unsupported association combination."""
+class TestRankedAndWindowedCombinations:
+    async def test_first_last_with_association_associates(self, exec_backend):
+        """A first/last aggregate that needs association picks among each cell's distinct entities."""
         _, engine = exec_backend
-        query = assoc_q(
-            dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            metrics=[QueryMetric(metric="last(customers.spend)", alias="lastspend")])
-        with pytest.raises(SlayerError) as ei:
-            await engine.execute(query)
-        assert _COMBO.search(str(ei.value))
+        resp = await engine.execute(assoc_q(
+            dimensions=["orders.status"], time_dimensions=_SIGNUP_TD,
+            metrics=[QueryMetric(metric="last(customers.spend)", alias="lastspend")]))
+        assert known_status_signup(resp, "lastspend") == LAST_BY_STATUS_SIGNUP
 
-    async def test_window_with_association_fails(self, exec_backend):
-        """A ``window=`` aggregate that also needs association is a typed
-        error — never a silently wrong value."""
+    async def test_window_with_association_associates(self, exec_backend):
+        """A ``window=`` aggregate that needs association counts each entity once per frame."""
         _, engine = exec_backend
-        query = assoc_q(
-            dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            metrics=[QueryMetric(
-                metric="sum(customers.spend, window='90d')", alias="win")])
-        with pytest.raises(SlayerError) as ei:
-            await engine.execute(query)
-        assert _COMBO.search(str(ei.value))
+        resp = await engine.execute(assoc_q(
+            dimensions=["orders.status"], time_dimensions=_SIGNUP_TD,
+            metrics=[QueryMetric(metric="sum(customers.spend, window='90d')", alias="win")]))
+        assert known_status_signup(resp, "win") == WINDOW_90D_BY_STATUS_SIGNUP
 
 
 class TestMissingUniqueKey:
     async def test_root_without_unique_key_associates(self, exec_backend_keyless):
         """A keyless root is deduplicated by its per-query row identity."""
         _, engine = exec_backend_keyless
-        resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[CM]))
+        resp = await engine.execute(assoc_q(dimensions=["orders.status"], metrics=[CM]))
         by = status_key(resp)
         for status, expected in ASSOC_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.cm"]) == pytest.approx(expected)
+            assert float(by[(status,)]["cm"]) == pytest.approx(expected)
 
 
 class TestUnsafeInputInAssociate:
@@ -108,8 +93,8 @@ class TestUnsafeInputInAssociate:
 
     async def test_crossing_input_rejected_in_associate(self, exec_backend_crossing):
         _, engine = exec_backend_crossing
-        error_query = error_q(dimensions=["status"], metrics=[self.VIP])
-        assoc_query = assoc_q(dimensions=["status"], metrics=[self.VIP])
+        error_query = error_q(dimensions=["orders.status"], metrics=[self.VIP])
+        assoc_query = assoc_q(dimensions=["orders.status"], metrics=[self.VIP])
         # Reference: the broadcast/error path already rejects the unsafe input.
         with pytest.raises(ValueError, match="unproven relationship hop"):
             await engine.execute(error_query)
@@ -119,7 +104,7 @@ class TestUnsafeInputInAssociate:
 
 
 class TestColumnReferenceParameter:
-    """A column-reference parameter is picked once per distinct entity: the explicit
+    """A field-reference parameter is picked once per distinct entity: the explicit
     weight and the definition default both execute."""
 
     WAVG = QueryMetric(
@@ -128,14 +113,14 @@ class TestColumnReferenceParameter:
 
     async def test_explicit_column_param_executes(self, exec_backend):
         _, engine = exec_backend
-        resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[self.WAVG]))
+        resp = await engine.execute(assoc_q(dimensions=["orders.status"], metrics=[self.WAVG]))
         by = status_key(resp)
         for status, expected in ASSOC_WAVG_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.wavg"]) == pytest.approx(expected)
+            assert float(by[(status,)]["wavg"]) == pytest.approx(expected)
 
     async def test_column_default_param_executes(self, exec_backend_coldef):
         _, engine = exec_backend_coldef
-        resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[self.WSUM]))
+        resp = await engine.execute(assoc_q(dimensions=["orders.status"], metrics=[self.WSUM]))
         by = status_key(resp)
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
-            assert float(by[(status,)]["orders.wsum"]) == pytest.approx(expected)
+            assert float(by[(status,)]["wsum"]) == pytest.approx(expected)

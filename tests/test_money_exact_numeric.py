@@ -39,12 +39,12 @@ def _ledger(*, data_source: str = "ds", db_type: str = "money") -> SlayerDataset
     return SlayerDataset(name="ledger", sql_table="ledger", data_source=data_source, fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
         DatasetField(name="amount", datatype=DataType.FLOAT, db_type=db_type),
-        DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT, db_type=db_type),
+        DatasetField(name="doubled", expression="amount * 2", datatype=DataType.FLOAT, db_type=db_type),
     ])
 
 
-_SUM_QUERY = SlayerQuery.model_validate({"population": "ledger", "metrics": ["sum(amount)"]})
-_DOUBLED_QUERY = SlayerQuery.model_validate({"population": "ledger", "dimensions": ["id", "doubled"]})
+_SUM_QUERY = SlayerQuery.model_validate({"population": "ledger", "metrics": ["sum(ledger.amount)"]})
+_DOUBLED_QUERY = SlayerQuery.model_validate({"population": "ledger", "dimensions": ["ledger.id", "ledger.doubled"]})
 
 
 class TestRawNames:

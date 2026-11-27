@@ -1,4 +1,4 @@
-"""The built-in spine is reached in any case, its name is reserved in any case, and no stored join targets it
+"""The built-in spine is reached in any case, its name is reserved in any case, and no stored relationship targets it
 (spec: queries/time-spine)."""
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ async def outcome(engine: SlayerQueryEngine, query: Any) -> tuple:
     return ("ok", resp.columns, sorted(map(str, resp.data)), sorted(map(str, resp.warnings or [])))
 
 
-#: Each query-written model-name position: a query builder over the spine spelling, and the canonical outcome.
+#: Each query-written dataset-name position: a query builder over the spine spelling, and the canonical outcome.
 POSITIONS = {
     "source-model": (lambda s: {"population": s, "time_dimensions": [td(s)], **sum_orders()}, "ok"),
     "time-dimension": (lambda s: {"time_dimensions": [td(s)], **sum_orders()}, "ok"),
@@ -76,7 +76,7 @@ POSITIONS = {
                                    "time_dimensions": [td("time_spine")], **sum_orders()}, "TimeSpineError"),
     "extension-join": (lambda s: {"population": {"dataset": "returns", "relationships": [
         {"to": s, "from_columns": ["return_date"], "to_columns": ["timestamp"]}]},
-        "time_dimensions": [td("time_spine")], "metrics": [m("sum(amount)", "r")]}, "AmbiguousRelationshipPathError"),
+        "time_dimensions": [td("time_spine")], "metrics": [m("sum(returns.amount)", "r")]}, "AmbiguousRelationshipPathError"),
 }
 
 
@@ -104,7 +104,7 @@ class TestSpineInAnyCase:
         def stages(spelling: str) -> list[SlayerQuery]:
             return [SlayerQuery.model_validate({"name": "monthly", "population": spelling,
                                                 "time_dimensions": [td(spelling)], **sum_orders()}),
-                    SlayerQuery.model_validate({"population": "monthly", "metrics": [m("sum(o)", "t")]})]
+                    SlayerQuery.model_validate({"population": "monthly", "metrics": [m("sum(monthly.o)", "t")]})]
 
         resp = await engine.execute(stages("Time_Spine"))
         assert [num(value(r, "t")) for r in resp.data] == [ORDERS_TOTAL]
@@ -135,8 +135,8 @@ class TestSpineInAnyCase:
 
     async def test_a_stage_named_like_the_spine_wins(self, engine) -> None:
         stages = [SlayerQuery.model_validate({"name": "Time_Spine", "population": "orders",
-                                              "metrics": [m("sum(amount)", "o")]}),
-                  SlayerQuery.model_validate({"population": "TIME_SPINE", "metrics": [m("sum(o)", "t")]})]
+                                              "metrics": [m("sum(orders.amount)", "o")]}),
+                  SlayerQuery.model_validate({"population": "TIME_SPINE", "metrics": [m("sum(TIME_SPINE.o)", "t")]})]
         resp = await engine.execute(stages)
         assert [num(value(r, "t")) for r in resp.data] == [ORDERS_TOTAL]
 
@@ -181,7 +181,7 @@ class TestReservedName:
     @pytest.mark.parametrize("variant_engine", BACKENDS, indirect=True)
     async def test_a_query_reading_the_variant_warns(self, variant_engine) -> None:
         resp = await variant_engine.execute(SlayerQuery.model_validate(
-            {"population": "Time_Spine", "metrics": [m("count(*)", "n")]}))
+            {"population": "Time_Spine", "metrics": [m("count(Time_Spine.*)", "n")]}))
         assert [num(value(r, "n")) for r in resp.data] == [181.0]
         assert warnings_mentioning(resp, "Time_Spine", "time_spine")
 
@@ -206,7 +206,7 @@ class TestReservedName:
 
 
 # --------------------------------------------------------------------------- #
-# A stored join never targets the spine
+# A stored relationship never targets the spine
 # --------------------------------------------------------------------------- #
 @pytest.fixture(params=("yaml", "sqlite"))
 async def storage(request, tmp_path) -> StorageBackend:
@@ -218,7 +218,7 @@ async def storage(request, tmp_path) -> StorageBackend:
 
 def _joined_to(target: str) -> SlayerDataset:
     join = DatasetRelationship(to=target, name="spine_link", from_columns=["order_date"], to_columns=["timestamp"])
-    return orders_dataset(extra_joins=[join])
+    return orders_dataset(extra_relationships=[join])
 
 
 class TestNoStoredJoinToTheSpine:

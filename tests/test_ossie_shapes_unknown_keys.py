@@ -24,7 +24,7 @@ from slayer.core.warnings import SlayerWarning
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._deprecated_input_helpers import errors_in, recorded
 from tests._engine_helpers import owned_query_engine
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store, stored_document
 from tests._stored_upgrade_fixtures import DS
 
@@ -180,22 +180,24 @@ class TestStored:
         storage = await shop_store(backend="yaml", base=str(tmp_path), datasets=[current(shop_customers()), doc])
         async with owned_query_engine(storage=storage) as engine:
             with recorded():
-                response = await engine.execute({"population": "orders", "metrics": ["count(*)"]})
+                response = await engine.execute({"population": "orders", "metrics": ["count(orders.*)"]})
         [entry] = [w for w in response.warnings or [] if getattr(w, "kind", None) == "unknown_stored_key"]
         assert entry.model_dump(mode="json")["paths"] == ["x_owner"]
 
-    async def test_a_migrated_document_is_written_back_without_the_key(self, tmp_path: Path) -> None:
+    async def test_a_migrated_document_is_saved_without_the_key(self, tmp_path: Path) -> None:
         old = {**with_stray(orders(), "field", key="colour"), "version": CURRENT_VERSIONS["SlayerModel"] - 1}
         storage = await shop_store(backend="yaml", base=str(tmp_path), datasets=[current(shop_customers()), old])
         with recorded():
-            assert await storage.get_dataset("orders", data_source=DS) is not None
+            loaded = await storage.get_dataset("orders", data_source=DS)
+            assert loaded is not None
+            await storage.save_dataset(loaded)
         doc = stored_document(backend="yaml", base=str(tmp_path), name="orders")
         assert doc["version"] == CURRENT_VERSIONS["SlayerModel"]
         assert "colour" not in doc["fields"][0]
 
     def test_a_stored_query_backed_dataset_warns_once(self) -> None:
         doc = current({"name": "by_status", "data_source": DS, "x_owner": "team",
-                       "source_queries": [{"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"]}]})
+                       "source_queries": [{"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"]}]})
         with recorded() as caught:
             dataset = SlayerDataset.model_validate(doc)
         assert len(dataset.source_queries or []) == 1

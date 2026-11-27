@@ -1,16 +1,14 @@
-"""SLayer emits only the functional aggregation spelling: importer formulas, tool descriptions, help and docs."""
+"""SLayer emits only the functional aggregation spelling: importer expressions, tool descriptions, help and docs."""
 
 import json
 import re
 import warnings
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-import sqlalchemy as sa
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
-from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.models import SlayerDataset
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import (
     CubeCube,
@@ -37,12 +35,7 @@ from slayer.dbt.models import (
 from slayer.core.syntax import parse_expr
 from slayer.mcp.server import create_mcp_server
 from slayer.memories.help_seed import HELP_TOPICS
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.parser import parse_osi_path
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._engine_helpers import disposable_engine
-from tests._osi_helpers import run_converter
-from tests.test_osi_converter import _SCHEMA
 
 _TESTS = Path(__file__).parent
 _DOCS = _TESTS.parent / "docs"
@@ -56,7 +49,7 @@ _COLON_ANY = re.compile(r"(?<![\w-])(?!memory:|https?:)(?:[A-Za-z_][\w.]*|\*)(?<
 
 
 def _assert_functional(datasets: list[SlayerDataset]) -> None:
-    formulas = [(m.name, mm.name, mm.expression) for m in datasets for mm in m.metrics]
+    formulas = [(m.name, mm.name, mm.text) for m in datasets for mm in m.metrics]
     assert formulas
     for model, measure, formula in formulas:
         assert ":" not in _LITERAL.sub("''", formula), (model, measure, formula)
@@ -147,16 +140,6 @@ def _cube_project() -> CubeProject:
     )
 
 
-@pytest.fixture
-def shop_engine(tmp_path: Path) -> Iterator[sa.Engine]:
-    with disposable_engine(f"sqlite:///{tmp_path}/shop.db") as engine:
-        with engine.connect() as conn:
-            for ddl in _SCHEMA:
-                conn.execute(sa.text(ddl))
-            conn.commit()
-        yield engine
-
-
 def test_dbt_import_is_functional() -> None:
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
@@ -178,28 +161,16 @@ def test_cube_import_is_functional(source: str) -> None:
     _assert_no_spelling_warnings(rec)
 
 
-def test_osi_import_is_functional(shop_engine: sa.Engine) -> None:
-    doc = parse_osi_path(_TESTS / "fixtures" / "osi" / "shop.yaml")[0]
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        result = run_converter(
-            OsiToSlayerConverter(documents=[doc], data_source="ds"),
-            datasource=DatasourceConfig(name="ds", type="sqlite", database=shop_engine.url.database),
-        )
-    _assert_functional(result.datasets)
-    _assert_no_spelling_warnings(rec)
-
-
 def test_cube_emitters_render_functional() -> None:
     result = CubeToSlayerConverter(project=_cube_project(), data_source="ds").convert()
-    formulas = {(m.name, mm.name): mm.expression for m in result.datasets for mm in m.metrics}
+    formulas = {(m.name, mm.name): mm.text for m in result.datasets for mm in m.metrics}
     assert formulas[("orders", "count")] == "count(*)"
     assert formulas[("orders", "count_7d")] == "count(*, window='7d')"
     assert formulas[("orders", "revenue_30d")] == "sum(amount, window='30d')"
     assert formulas[("overview", "count")] == "count(*)"
     assert formulas[("overview", "revenue")] == "sum(amount)"
     assert formulas[("overview", "customers_count")] == "count(customers.*)"
-    assert formulas[("overview", "customers_ltv")] == "sum(customers.ltv_col)"
+    assert formulas[("overview", "customers_ltv")] == "sum(customers.ltv_raw)"
 
 
 @pytest.mark.parametrize(
@@ -225,7 +196,7 @@ async def test_mcp_tool_descriptions_are_functional(tmp_path: Path) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=str(tmp_path)))
     tools = await server.list_tools()
     for tool in tools:
-        text = (tool.description or "") + json.dumps(tool.inputSchema)
+        text = (tool.description or "") + json.dumps(tool.input_schema)
         assert not _COLON_ANY.search(text), (tool.name, _COLON_ANY.findall(text))
     assert not _COLON_ANY.search(server.instructions or "")
     create_model = next(t for t in tools if t.name == "create_dataset")

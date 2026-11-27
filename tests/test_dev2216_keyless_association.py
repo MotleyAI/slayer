@@ -39,8 +39,8 @@ postgresql_proc = factories.postgresql_proc(port=None)
 
 MODES = [pytest.param({}, id="default"), pytest.param({"to_many_handling": "associate"}, id="associate")]
 REV_ROOTLESS = [metric("sum(orders.amount)", "rev")]
-REV_ROOTED = [metric("sum(amount)", "rev")]
-CUSTOMER_MEASURES = [
+REV_ROOTED = [metric("sum(orders.amount)", "rev")]
+CUSTOMER_METRICS = [
     metric("sum(customers.spend)", "sp"),
     metric("wsum(customers.spend)", "ws"),
     metric("weighted_avg(customers.spend, weight=customers.spend)", "wa"),
@@ -76,14 +76,12 @@ def sales_statements(*, nullable: bool, keyed: bool = False) -> list[str]:
 
 
 def sales_query(*, source: str, mode: dict):
-    dimension = "tags.label" if source == "sales" else "label"
-    prefix = "" if source == "sales" else "sales."
     return query(
-        population=source, dimensions=[dimension],
+        population=source, dimensions=["tags.label"],
         metrics=[
-            metric(f"sum({prefix}amount)", "total"),
+            metric("sum(sales.amount)", "total"),
             metric("count(sales.*)", "n"),
-            metric(f"weighted_avg({prefix}amount, weight={prefix}weight)", "weighted"),
+            metric("weighted_avg(sales.amount, weight=sales.weight)", "weighted"),
         ],
         **mode,
     )
@@ -120,7 +118,7 @@ def keyed_sales_datasets() -> list[SlayerDataset]:
 async def count_sql(*, dialect: str, keyed: bool = False, unique: bool = False) -> str:
     models = ossie_datasets(keyed=keyed, unique=unique)
     return await _engine_generate(
-        query=query(population="orders", dimensions=["status"], metrics=[metric("count(customers.*)", "n")]),
+        query=query(population="orders", dimensions=["orders.status"], metrics=[metric("count(customers.*)", "n")]),
         dataset=models[0], extra_datasets=models[1:], dialect=dialect, validate=False,
     )
 
@@ -130,7 +128,7 @@ class TestUnprovenHopAssociatesByDefault:
     async def test_rootless_returns_ossies_numbers(self, dialect, mode) -> None:
         async with ossie_engine(dialect) as engine:
             resp = await engine.execute(query(dimensions=["customers.region"], metrics=REV_ROOTLESS, **mode))
-        assert cells(resp, "region", "rev") == AMOUNT_BY_REGION
+        assert cells(resp, "region", "rev") == AMOUNT_BY_REGION_ROOTED
         assert kinds(resp, "associated")
         assert not kinds(resp, "broadcast")
 
@@ -153,7 +151,7 @@ class TestUnprovenHopAssociatesByDefault:
 class TestKeylessHome:
     @pytest.mark.parametrize("mode", MODES)
     async def test_matches_the_keyed_model(self, dialect, mode) -> None:
-        q = query(population="orders", dimensions=["status"], metrics=CUSTOMER_MEASURES, **mode)
+        q = query(population="orders", dimensions=["orders.status"], metrics=CUSTOMER_METRICS, **mode)
         async with ossie_engine(dialect, datasets=ossie_datasets(keyed=True)) as engine:
             keyed = await engine.execute(q.model_copy(update={"to_many_handling": "associate"}))
         async with ossie_engine(dialect) as engine:
@@ -168,12 +166,12 @@ class TestKeylessHome:
     async def test_explicit_broadcast_still_broadcasts(self, dialect) -> None:
         async with ossie_engine(dialect) as engine:
             resp = await engine.execute(query(
-                population="orders", dimensions=["status"], metrics=[metric("sum(customers.spend)", "sp")],
+                population="orders", dimensions=["orders.status"], metrics=[metric("sum(customers.spend)", "sp")],
                 to_many_handling="broadcast"))
         assert cells(resp, "status", "sp") == {"completed": 100.0, "pending": 100.0}
 
     async def test_error_mode_refuses(self, dialect) -> None:
-        q = query(population="orders", dimensions=["status"], metrics=[metric("sum(customers.spend)", "sp")],
+        q = query(population="orders", dimensions=["orders.status"], metrics=[metric("sum(customers.spend)", "sp")],
                   to_many_handling="error")
         async with ossie_engine(dialect) as engine:
             with pytest.raises(SlayerError):
@@ -202,7 +200,7 @@ class TestRowIdentity:
     async def test_duplicate_rows_count_separately_fan_out_copies_once(self, dialect, mode) -> None:
         async with ossie_engine(dialect, duplicate=True) as engine:
             resp = await engine.execute(query(
-                population="orders", dimensions=["status"], metrics=[metric("count(customers.*)", "n")],
+                population="orders", dimensions=["orders.status"], metrics=[metric("count(customers.*)", "n")],
                 **mode))
         assert cells(resp, "status", "n") == DUP_COUNT_BY_STATUS
 
@@ -210,7 +208,7 @@ class TestRowIdentity:
     async def test_fan_out_under_a_joined_filter_counts_each_row_once(self, dialect, mode) -> None:
         async with ossie_engine(dialect) as engine:
             resp = await engine.execute(query(
-                population="customers", dimensions=["orders.status"], metrics=[metric("sum(spend)", "sp")],
+                population="customers", dimensions=["orders.status"], metrics=[metric("sum(customers.spend)", "sp")],
                 filter=["orders.amount >= 50"], **mode))
         assert cells(resp, "status", "sp") == FILTERED_SPEND_BY_STATUS
 
@@ -220,16 +218,16 @@ class TestRowIdentity:
         models[1].filters = ["spend >= 20"]
         async with ossie_engine(dialect, datasets=models) as engine:
             resp = await engine.execute(query(
-                population="orders", dimensions=["status"], metrics=[metric("sum(customers.spend)", "sp")],
+                population="orders", dimensions=["orders.status"], metrics=[metric("sum(customers.spend)", "sp")],
                 **mode))
         assert cells(resp, "status", "sp") == {"completed": 30.0, "pending": 20.0}
 
     async def test_a_regroup_prefixed_home_column_does_not_shadow_the_row_identity(self, dialect) -> None:
         models = ossie_datasets()
-        models[1].fields = [*models[1].fields, DatasetField(name="__regroup__row_id", sql="id", datatype=DataType.INTEGER)]
+        models[1].fields = [*models[1].fields, DatasetField(name="__regroup__row_id", expression="id", datatype=DataType.INTEGER)]
         async with ossie_engine(dialect, datasets=models) as engine:
             resp = await engine.execute(query(
-                population="orders", dimensions=["status"], metrics=[metric("sum(customers.spend)", "sp")]))
+                population="orders", dimensions=["orders.status"], metrics=[metric("sum(customers.spend)", "sp")]))
         assert cells(resp, "status", "sp") == SPEND_BY_STATUS
 
     def test_no_model_column_can_take_the_row_identity_name(self) -> None:
@@ -239,7 +237,7 @@ class TestRowIdentity:
     async def test_postgres_executes(self, request) -> None:
         async with ossie_engine("postgres", request=request, duplicate=True) as engine:
             resp = await engine.execute(query(
-                population="orders", dimensions=["status"], metrics=[metric("count(customers.*)", "n")]))
+                population="orders", dimensions=["orders.status"], metrics=[metric("count(customers.*)", "n")]))
         assert cells(resp, "status", "n") == DUP_COUNT_BY_STATUS
 
     @pytest.mark.parametrize("target", ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake",
@@ -261,7 +259,7 @@ class TestRowIdentity:
 
 
 class TestPrimaryKeyWithNullableUnique:
-    """A primary key, not a nullable unique column, deduplicates the home."""
+    """A primary key, not a nullable unique field, deduplicates the home."""
 
     async def test_sql_is_not_numbered(self) -> None:
         sales, tags = keyed_sales_datasets()
@@ -294,7 +292,7 @@ class TestAttributableKeylessHome:
             yield engine
 
     async def test_same_values_as_broadcast_without_association(self, engine) -> None:
-        wavg = [metric("weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))",
+        wavg = [metric("weighted_avg(customers.spend, weight=sum(orders.amount, partition_by=customers.regions.name))",
                         "wv")]
         kw = {"population": "orders", "dimensions": ["customers.tier"], "metrics": wavg}
         assoc = await engine.execute(query(**kw, to_many_handling="associate"))

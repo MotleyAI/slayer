@@ -1,15 +1,18 @@
 """Ossie export/import edges: description inversion, nothing to export, duplicate payloads."""
 
 import copy
+import re
 from pathlib import Path
 
 import pytest
 
 from slayer.osi.exporter import OsiExportError
 from slayer.osi.models import OSIAIContextObject, explicit_description, render_description
-from tests._osi_export_fixtures import BASIC_MEASURES, customers, orders
-from tests._osi_export_helpers import convert_document, dataset, export, export_datasets, make_env, mentions, slayer_entries
-from tests._osi_helpers import by_name, ds, f, flat
+from slayer.storage.yaml_storage import YAMLStorage
+from tests._dataset_access_fixtures import mcp_text
+from tests._osi_export_fixtures import BASIC_METRICS, customers, orders
+from tests._osi_export_helpers import dataset, export, export_datasets, make_env, reimport, slayer_entries, stored
+from tests._osi_helpers import ds, f, flat
 
 
 @pytest.fixture
@@ -45,17 +48,21 @@ async def test_unknown_model_raises(env) -> None:
 
 
 async def test_duplicate_slayer_payloads_are_reported_and_ignored(env) -> None:
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, hidden=True))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_METRICS, hidden=True))
     edited = copy.deepcopy(result.document)
     orders_ds = dataset(edited, "orders")
     orders_ds["nonportable_extensions"] = slayer_entries(orders_ds) * 2
-    imported = convert_document(env, edited)
-    assert not by_name(imported)["orders"].hidden
-    assert mentions(imported, "2 SLAYER extensions")
+    imported, _ = await reimport(env, edited)
+    assert not (await stored(imported, "orders")).hidden
+    text = await mcp_text(YAMLStorage(base_dir=str(imported.store)), "inspect",
+                          reference=f"{imported.datasource}.orders", entity_type="dataset", compact=False)
+    assert "slayer" in text.lower()
+    assert re.search(r"several|duplicate|more than one|\b2\b", text, re.IGNORECASE), text
 
 
 async def test_single_field_unique_key_marks_the_column_unique(env) -> None:
     doc = flat([ds("customers", fields=[f("id", "c_custkey"), f("email"), f("segment")], primary_key=["id"],
                    unique_keys=[["email"], ["segment", "email"]])])
-    imported = by_name(convert_document(env, doc))["customers"]
-    assert {c.name: c.unique for c in imported.fields} == {"id": False, "email": True, "segment": False}
+    imported, _ = await reimport(env, doc)
+    customers_ds = await stored(imported, "customers")
+    assert {c.name: c.unique for c in customers_ds.fields} == {"id": False, "email": True, "segment": False}

@@ -1,6 +1,6 @@
 """The reverse hop is a reverse PATH (``_route_via_common_prefix`` with an empty
 host path): each hop's reverse token is the edge name when declared else the
-source model; a one-to-one reverse chain becomes attributable, an ambiguous
+source dataset; a one-to-one reverse chain becomes attributable, an ambiguous
 reverse hop fails closed, single-hop stays byte-identical. Spec:
 queries/cross-model-aggregates — "Producer filter routing"."""
 
@@ -20,9 +20,9 @@ from slayer.engine.cardinality.relationship_safety import (
 )
 
 
-def _m(name, cols, joins=None):
+def _m(name, cols, relationships=None):
     return SlayerDataset(name=name, data_source="ds", sql_table=name,
-                       fields=[DatasetField(name=c) for c in cols], relationships=joins or [])
+                       fields=[DatasetField(name=c) for c in cols], relationships=relationships or [])
 
 
 def _unnamed_two_hop():

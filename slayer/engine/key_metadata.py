@@ -6,90 +6,253 @@ decorate live in ``slayer.ir.prebound``.
 
 from __future__ import annotations
 
-from typing import Callable, Optional, Tuple
+from contextlib import contextmanager
+from contextvars import ContextVar
+from decimal import Decimal
+from types import MappingProxyType
+from typing import Callable, Generator, Mapping, Optional, Tuple
 
-from slayer.core.enums import (
-    BUILTIN_AGGREGATIONS,
-    AggregationValueClass,
-    DataType,
-    classify_aggregation,
-)
+from slayer.core.enums import DataType
+from slayer.core.errors import SlayerError
 from slayer.core.format import NumberFormat
 from slayer.core.keys import (
-    CONDITIONAL_SCALARS,
     AggregateKey,
+    CastKey,
     FieldElementFn,
     FieldKey,
     FieldTypeFn,
     FieldSqlKey,
-    CastKey,
     ListSetKey,
-    ScalarCallKey,
+    LiteralKey,
+    SqlFragmentKey,
     StarKey,
     TimeTruncKey,
     ValueKey,
     aggregation_source_type,
     list_element_type,
     list_valued,
-    temporal_type,
+    prepend_value_key,
     value_type,
+    walk_value_keys,
 )
-from slayer.core.relationship_walker import LIST_ELEMENT_FIELD, dataset_field, dataset_field_element, dataset_field_type
-from slayer.core.models import SlayerDataset
-from slayer.core.scope import DatasetScope, StageSchema
+from slayer.core.relationship_walker import (
+    aggregation_owner,
+    dataset_field,
+    dataset_field_element,
+    dataset_field_type,
+    follow,
+    resolved_terminal,
+)
+from slayer.core.models import (
+    VALUE_PLACEHOLDER,
+    SlayerDataset,
+    aggregation_definition,
+    builtin_semantics,
+    rendered_expression,
+)
+from slayer.core.scope import DatasetScope
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.sql.dialects.reflection import is_exact_numeric_db_type
+from slayer.sql.template_type import TemplateBinding, TypedFragment, template_result_type
+from slayer.engine.param_binding import bind_aggregation_params
 from slayer.engine.response_meta import _infer_aggregated_format
-from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.naming import expression_source_leaf
 
 __all__ = [
-    "aggregated_type",
-    "aggregation_result_type",
-    "dimension_key_metadata",
+    "PlaceholderTypes",
+    "SlotTyping",
+    "minted_placeholders",
+    "dimension_key_format_description",
+    "field_aggregate_type",
     "key_element_type",
     "metric_key_format_description",
     "metric_key_preserves_native_type",
-    "metric_key_type",
     "scope_field_type",
-    "stage_metric_type",
 ]
 
-
-# ---------------------------------------------------------------------------
-# Key -> slot metadata
-# ---------------------------------------------------------------------------
-
-def aggregation_result_type(
-    *, metric_name: Optional[str], aggregation: str, source_type: Optional[DataType],
-) -> Tuple[Optional[DataType], Optional[DataType]]:
-    """``(type, element type)`` via ``classify_aggregation``: COUNT → INT, the float classes → DOUBLE,
-    PRESERVING → ``source_type`` (unknown for a custom aggregation over a boolean, which reads it raw), LIST → a list
-    of ``source_type``."""
-    cls = classify_aggregation(metric_name=metric_name, aggregation=aggregation, source_type=source_type)
-    if cls is AggregationValueClass.COUNT:
-        return DataType.INTEGER, None
-    if cls is AggregationValueClass.LIST:
-        return DataType.ARRAY, source_type or DataType.OPAQUE
-    if cls is AggregationValueClass.PRESERVING:
-        custom_over_boolean = source_type is DataType.BOOLEAN and aggregation not in BUILTIN_AGGREGATIONS
-        return (None if custom_over_boolean else source_type), None
-    return DataType.FLOAT, None
+_NO_PLACEHOLDERS: Mapping[ValueKey, ValueKey] = MappingProxyType({})
+# A minted regroup placeholder's type in the plan that minted it, by leaf.
+PlaceholderTypes = Mapping[str, Callable[[], Optional[DataType]]]
+#: The placeholders minted by each enclosing plan still compiling, innermost last.
+_MINTED: ContextVar[Tuple[PlaceholderTypes, ...]] = ContextVar("_MINTED", default=())
 
 
-def aggregated_type(
-    *,
-    dataset: SlayerDataset,
-    metric_name: Optional[str],
-    aggregation: str,
-) -> Optional[DataType]:
-    """Type for an aggregate over ``dataset``'s field ``metric_name`` (``"*"`` for ``count(*)``)."""
-    col = dataset.get_field(metric_name) if metric_name is not None else None
-    return aggregation_result_type(
-        metric_name=metric_name, aggregation=aggregation, source_type=col.datatype if col is not None else None,
-    )[0]
+@contextmanager
+def minted_placeholders(types: PlaceholderTypes) -> Generator[None]:
+    """Make ``types`` (a live mapping) visible to every plan compiled inside the block."""
+    token = _MINTED.set((*_MINTED.get(), types))
+    try:
+        yield
+    finally:
+        _MINTED.reset(token)
+
+
+def _minted_type(leaf: str) -> Optional[Callable[[], Optional[DataType]]]:
+    for types in reversed(_MINTED.get()):
+        found = types.get(leaf)
+        if found is not None:
+            return found
+    return None
+
+
+class SlotTyping:
+    """The one derivation of a key's type over a scope: field leaves through the bundle (a regroup placeholder by
+    its original key), expression aggregations by their definition."""
+
+    def __init__(
+        self, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+        placeholders: Mapping[ValueKey, ValueKey] = _NO_PLACEHOLDERS,
+    ) -> None:
+        self._base_type = scope_field_type(scope=scope, bundle=bundle)
+        self._base_element = scope_field_element(scope=scope, bundle=bundle)
+        self._placeholders = placeholders
+        self._population = scope.population
+        self._datasets = bundle.datasets_by_name
+        self._dialect = bundle.dialect
+
+    def with_placeholders(self, placeholders: Mapping[ValueKey, ValueKey]) -> "SlotTyping":
+        """This typing, regroup placeholders resolving to their original keys."""
+        typing = object.__new__(SlotTyping)
+        typing.__dict__.update(self.__dict__, _placeholders={**self._placeholders, **placeholders})
+        return typing
+
+    def _original(self, key: object) -> Optional[ValueKey]:
+        """A placeholder's original key, re-anchored at the path it is read through."""
+        if not isinstance(key, FieldKey):
+            return None
+        found = self._placeholders.get(key)
+        if found is None and key.path:
+            local = self._placeholders.get(FieldKey(leaf=key.leaf))
+            found = None if local is None else prepend_value_key(local, host_path=key.path)
+        return found
+
+    def field_type(self, key: object) -> Optional[DataType]:
+        original = self._original(key)
+        if original is not None:
+            return self.value_type(original)
+        minted = _minted_type(key.leaf) if isinstance(key, FieldKey) else None
+        return minted() if minted is not None else self._base_type(key)
+
+    def field_element(self, key: object) -> Optional[DataType]:
+        original = self._original(key)
+        if original is None:
+            return self._base_element(key)
+        return list_element_type(original, field_type=self.field_type, field_element=self.field_element)
+
+    def value_type(self, key: object) -> Optional[DataType]:
+        """``key``'s type (a cast's target, opaque ones included); ``None`` only for NULL or an unresolvable field."""
+        if isinstance(key, CastKey):
+            return key.data_type
+        return value_type(key, field_type=self.field_type, aggregate_type=self.expression_type)
+
+    def _untyped(self, key: object) -> bool:
+        """A field leaf that resolves to a field declaring no type (an untyped document field the probe left unknown)."""
+        if self._population is None:
+            return False
+        try:
+            field = dataset_field(dataset=self._population, datasets_by_name=self._datasets, key=key)
+        except SlayerError:
+            return False
+        return field is not None and field.datatype is None
+
+    def native(self, key: ValueKey) -> bool:
+        """Whether ``key``'s type is the database's own: every field leaf left untyped is a field declaring no type."""
+        if self.value_type(key) is not None:
+            return False
+        unresolved = [k for k in walk_value_keys(key) if isinstance(k, (FieldKey, FieldSqlKey)) and self.field_type(k) is None]
+        return bool(unresolved) and all(self._untyped(k) for k in unresolved)
+
+    def type_of(self, key: ValueKey) -> DataType:
+        """``key``'s slot type: a NULL-only value (no field leaf left unresolved) is INT; a value over untyped fields
+        is ``OPAQUE`` to SLayer, carried with the database's own type (never cast)."""
+        found = self.value_type(key)
+        if found is not None:
+            return found
+        if self.native(key):
+            return DataType.OPAQUE
+        leaves = list(walk_value_keys(key))
+        unresolved = [k for k in leaves if isinstance(k, (FieldKey, FieldSqlKey)) and self.field_type(k) is None]
+        if not unresolved and not any(isinstance(k, SqlFragmentKey) for k in leaves):
+            return DataType.INTEGER
+        if self._population is not None:
+            # The walker's own refusal (an ambiguous or broken hop) names the cause.
+            for k in unresolved:
+                if isinstance(k, FieldKey) and k.path:
+                    follow(root=self._population, path=tuple(k.path), datasets_by_name=self._datasets)
+        raise TypeError(f"no type derives for {key!r}: a field it reads does not resolve")
+
+    def preserves_native_type(self, key: ValueKey, data_type: DataType) -> bool:
+        """Whether a cast would erase ``key``'s database type: a value over untyped fields, or a numeric one reading a
+        field of an exact-numeric database type."""
+        if data_type is DataType.OPAQUE and self.native(key):
+            return True
+        if data_type not in (DataType.DECIMAL, DataType.FLOAT) or self._population is None:
+            return False
+        return any(
+            is_exact_numeric_db_type(getattr(dataset_field(
+                dataset=self._population, datasets_by_name=self._datasets, key=k), "db_type", None))
+            for k in walk_value_keys(key) if isinstance(k, (FieldKey, FieldSqlKey))
+        )
+
+    def element_type_of(self, key: ValueKey, data_type: Optional[DataType]) -> Optional[DataType]:
+        """A list's element type (OPAQUE when it cannot be told); ``None`` for a scalar."""
+        if data_type is not DataType.ARRAY:
+            return None
+        if not list_valued(key, field_type=self.field_type):
+            return DataType.OPAQUE
+        found = list_element_type(key, field_type=self.field_type, field_element=self.field_element)
+        return found or DataType.OPAQUE
+
+    def expression_type(self, key: AggregateKey) -> Optional[DataType]:
+        """An expression aggregation's declared ``datatype``, else its expression's type over the bound call."""
+        owner = aggregation_owner(root=self._population, source=key.source, datasets_by_name=self._datasets)
+        definition = aggregation_definition(owner=owner, agg=key.agg)
+        if definition is not None and definition.datatype is not None:
+            return definition.datatype
+        expression = rendered_expression(agg=key.agg, definition=definition)
+        if expression is None:
+            return None
+        bindings = {VALUE_PLACEHOLDER: self._binding(key.source)}
+        bindings.update((name, self._binding(value)) for name, value in key.kwargs)
+        return template_result_type(template=expression, bindings=bindings, dialect=self._dialect)
+
+    def _binding(self, value: object) -> TemplateBinding:
+        if isinstance(value, SqlFragmentKey):
+            return TypedFragment(template=value.template, ref_types=tuple(self.value_type(r) for r in value.refs))
+        if isinstance(value, LiteralKey):
+            value = value.value
+        if value is None or isinstance(value, (Decimal, bool, str)):
+            return value
+        if isinstance(value, StarKey):
+            return None
+        return self.value_type(value)
+
+
+def field_aggregate_type(*, dataset: SlayerDataset, field_name: str, aggregation: str) -> Optional[DataType]:
+    """The type of ``aggregation`` over ``dataset``'s field ``field_name`` (``"*"``: its rows), dialect-neutral;
+    ``None`` when a parameter default does not bind within ``dataset`` alone (it reads a related dataset)."""
+    definition = aggregation_definition(owner=dataset, agg=aggregation)
+    builtin = builtin_semantics(definition)
+    # As the planner: an expression aggregation's declared datatype wins; a built-in's type is its class's.
+    if not builtin and definition is not None and definition.datatype is not None:
+        return definition.datatype
+    source = StarKey() if field_name == "*" else FieldKey(leaf=field_name)
+    bundle = ResolvedSourceBundle(dialect="", population=dataset)
+    kwargs: tuple = ()
+    if not builtin:
+        try:
+            kwargs = bind_aggregation_params(
+                agg=aggregation, source=source, kwargs=(), bundle=bundle, bind_quoted=_no_quoted)
+        except SlayerError:
+            return None
+    key = AggregateKey(source=source, agg=aggregation, kwargs=kwargs, builtin=builtin)
+    return SlotTyping(scope=DatasetScope(population=dataset), bundle=bundle).value_type(key)
+
+
+def _no_quoted(text: str) -> object:
+    raise AssertionError(f"no query-side argument to bind: {text!r}")
 
 
 def _local_aggregate_source_name(key: ValueKey) -> Optional[str]:
@@ -121,38 +284,13 @@ def _dataset_types(*, dataset: SlayerDataset, bundle: Optional[ResolvedSourceBun
     )
 
 
-def _stage_element(schema: StageSchema, key: ValueKey) -> Optional[DataType]:
-    """The element type for ``L.value`` over a stage's list field ``L``."""
-    if not (isinstance(key, FieldKey) and len(key.path) == 1 and key.leaf == LIST_ELEMENT_FIELD):
-        return None
-    col = schema.get(key.path[0])
-    return (col.element_type or DataType.OPAQUE) if col is not None and col.datatype is DataType.ARRAY else None
-
-
-def stage_field_type(schema: StageSchema) -> FieldTypeFn:
-    """Types of a stage's flat fields and of its lists' elements."""
-    def field_type(key: ValueKey) -> Optional[DataType]:
-        col = schema.get(key.leaf) if isinstance(key, FieldKey) and not key.path else None
-        return col.datatype if col is not None else _stage_element(schema, key)
-    return field_type
-
-
-def stage_field_element(schema: StageSchema) -> FieldElementFn:
-    def field_element(key: ValueKey) -> Optional[DataType]:
-        col = schema.get(key.leaf) if isinstance(key, FieldKey) and not key.path else None
-        return col.element_type if col is not None else None
-    return field_element
-
-
-def scope_field_element(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> FieldElementFn:
-    if isinstance(scope, StageSchema):
-        return stage_field_element(scope)
+def scope_field_element(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> FieldElementFn:
     if scope.population is None:
         return lambda _key: None
     return dataset_field_element(dataset=scope.population, datasets_by_name=bundle.datasets_by_name)
 
 
-def key_element_type(key: ValueKey, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> Optional[DataType]:
+def key_element_type(key: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Optional[DataType]:
     """The element type of a list-valued ``key`` (``UNKNOWN`` when it cannot be told); ``None`` for a scalar."""
     field_type = scope_field_type(scope=scope, bundle=bundle)
     if not list_valued(key, field_type=field_type):
@@ -163,9 +301,7 @@ def key_element_type(key: ValueKey, *, scope: DatasetScope | StageSchema, bundle
     return element or DataType.OPAQUE
 
 
-def scope_field_type(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> FieldTypeFn:
-    if isinstance(scope, StageSchema):
-        return stage_field_type(scope)
+def scope_field_type(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> FieldTypeFn:
     if scope.population is None:
         return lambda _key: None
     return dataset_field_type(dataset=scope.population, datasets_by_name=bundle.datasets_by_name)
@@ -177,67 +313,23 @@ def bundle_dialect(bundle: ResolvedSourceBundle) -> SqlDialect:
     return own if own.sqlglot_name == bundle.dialect else get_dialect(bundle.dialect)
 
 
-def scope_zoned_timestamp(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> Callable[[object], bool]:
-    """Whether a dataset field leaf holds a zoned instant on the bundle's dialect (a stage field already
-    reads naive)."""
+def scope_zoned_timestamp(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Callable[[object], bool]:
+    """Whether a dataset field leaf holds an instant the bundle's dialect reads naive; never under a zone, where every
+    read is that zone's wall clock."""
     dialect = bundle_dialect(bundle)
-    if not dialect.zoned_timestamp_db_types or isinstance(scope, StageSchema) or scope.population is None:
+    if not dialect.naive_instant_reads or bundle.time_zone is not None or scope.population is None:
         return lambda _key: False
     dataset, datasets_by_name = scope.population, bundle.datasets_by_name
-    return lambda key: dialect.is_zoned_db_type(
-        getattr(dataset_field(dataset=dataset, datasets_by_name=datasets_by_name, key=key), "db_type", None))
 
+    def holds(key: object) -> bool:
+        path = tuple(getattr(key, "path", ()))
+        owner = resolved_terminal(root=dataset, path=path, datasets_by_name=datasets_by_name) if path else dataset
+        if owner is None or owner.name in bundle.stage_displays:
+            return False  # a stage's output is already naive
+        field = dataset_field(dataset=dataset, datasets_by_name=datasets_by_name, key=key)
+        return field is not None and dialect.holds_instant(datatype=field.datatype, db_type=field.db_type)
 
-def date_scalar_type(key: ValueKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
-    """INT for ``date_part``/``date_diff``, else the key's DATE/TIMESTAMP type (date functions,
-    temporal conditionals, min/max/first/last of a temporal value); ``None`` otherwise."""
-    if isinstance(key, ScalarCallKey) and key.name in ("date_part", "date_diff"):
-        return DataType.INTEGER
-    return temporal_type(key, field_type=field_type)
-
-
-def _typed_by_value(key: ValueKey) -> bool:
-    """A bare field or a value-returning conditional, typed by its ``value_type``."""
-    return isinstance(key, (FieldKey, FieldSqlKey)) or (
-        isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS)
-
-
-def stage_metric_type(key: ValueKey, *, schema: StageSchema) -> Optional[DataType]:
-    """``type`` for a metric over a stage's flat fields."""
-    field_type = stage_field_type(schema)
-    if list_valued(key, field_type=field_type):
-        return DataType.ARRAY
-    if _typed_by_value(key):
-        return value_type(key, field_type=field_type)
-    date_type = date_scalar_type(key, field_type=field_type)
-    if date_type is not None or not isinstance(key, AggregateKey):
-        return date_type
-    return aggregation_result_type(
-        metric_name="*" if isinstance(key.source, StarKey) else None, aggregation=key.agg,
-        source_type=aggregation_source_type(key.source, field_type=field_type),
-    )[0]
-
-
-def metric_key_type(
-    *, dataset: SlayerDataset, key: ValueKey, bundle: Optional[ResolvedSourceBundle] = None,
-) -> Optional[DataType]:
-    """``type`` for a metric slot, from its bound key alone."""
-    if isinstance(key, CastKey):
-        return key.data_type
-    if list_valued(key, field_type=_dataset_types(dataset=dataset, bundle=bundle)):
-        return DataType.ARRAY
-    if _typed_by_value(key):
-        return value_type(key, field_type=_dataset_types(dataset=dataset, bundle=bundle))
-    date_type = date_scalar_type(key, field_type=_dataset_types(dataset=dataset, bundle=bundle))
-    if date_type is not None:
-        return date_type
-    name = _local_aggregate_source_name(key)
-    if name is None or not isinstance(key, AggregateKey):
-        return None
-    return aggregation_result_type(
-        metric_name=name, aggregation=key.agg,
-        source_type=aggregation_source_type(key.source, field_type=_dataset_types(dataset=dataset, bundle=bundle)),
-    )[0]
+    return holds
 
 
 def metric_key_preserves_native_type(*, dataset: SlayerDataset, key: ValueKey) -> bool:
@@ -272,34 +364,13 @@ def metric_key_format_description(
     return fmt, (col.description if col is not None else None)
 
 
-def dimension_key_metadata(
-    *, dataset: SlayerDataset, key: ValueKey, bundle: ResolvedSourceBundle,
-) -> Tuple[Optional[DataType], Optional[NumberFormat], Optional[str]]:
-    """``(type, format, description)`` for a dimension slot, from its key.
-
-    A LOCAL dimension carries the source field's full display contract; a
-    JOINED one carries only its type. That asymmetry is deliberate and
-    pre-existing: joined refs surface format / description through
-    ``response_meta``, which resolves them against the owning dataset.
-    """
-    if isinstance(key, CastKey):
-        return key.data_type, None, None
+def dimension_key_format_description(
+    *, dataset: SlayerDataset, key: ValueKey,
+) -> Tuple[Optional[NumberFormat], Optional[str]]:
+    """``(format, description)`` for a dimension slot: a LOCAL field's display contract; a JOINED one surfaces its
+    own through ``response_meta``."""
     inner = key.source if isinstance(key, (TimeTruncKey, ListSetKey)) else key
-    if not isinstance(inner, (FieldKey, FieldSqlKey)):
-        date_type = date_scalar_type(key, field_type=_dataset_types(dataset=dataset, bundle=bundle))
-        if date_type is not None:
-            return date_type, None, None
-    path = tuple(getattr(inner, "path", ()) or ())
-    leaf = getattr(inner, "leaf", None) or getattr(inner, "field_name", None)
-    if leaf is None:
-        return None, None, None
-    if not path:
-        col = dataset.get_field(leaf)
-        if col is None:
-            return None, None, None
-        return col.datatype, col.format, col.description
-    terminal = walk_key_path(dataset=dataset, path=path, bundle=bundle)
-    if terminal is None:
-        return None, None, None
-    col = terminal.get_field(leaf)
-    return (col.datatype if col is not None else None), None, None
+    if not isinstance(inner, (FieldKey, FieldSqlKey)) or inner.path:
+        return None, None
+    col = dataset.get_field(inner.leaf if isinstance(inner, FieldKey) else inner.field_name)
+    return (col.format, col.description) if col is not None else (None, None)

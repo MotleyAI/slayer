@@ -1,4 +1,4 @@
-"""Stage 5 (DEV-1450) — stable str() snapshots for the new error / warning classes.
+"""Stable str() snapshots for the new error / warning classes.
 
 The format is fixed so tests can snapshot::
 
@@ -25,7 +25,6 @@ from slayer.core.errors import (
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
     MetricCycleError,
-    MetricNameCollidesWithFieldError,
     MetricRecursionLimitError,
     SlayerError,
     UnknownFunctionError,
@@ -45,8 +44,7 @@ class TestInheritance:
         IllegalScopeReferenceError, IllegalWindowInFilterError,
         AggregationNotAllowedError, UnknownFunctionError,
         MetricRecursionLimitError, MetricCycleError,
-        DuplicateMetricNameError, MetricNameCollidesWithFieldError,
-        CanonicalAliasShadowsFieldError,
+        DuplicateMetricNameError, CanonicalAliasShadowsFieldError,
     ])
     def test_subclasses_slayer_error(self, cls):
         assert issubclass(cls, SlayerError)
@@ -127,8 +125,8 @@ class TestAmbiguousReferenceError:
 
 class TestIllegalScopeReferenceError:
     def test_dunder_in_modelscope(self):
-        # C8: __ in Mode-B ModelScope is illegal (unless it exact-matches
-        # a legacy persisted column literal name).
+        # C8: __ in Mode-B DatasetScope is illegal (unless it exact-matches
+        # a legacy persisted field literal name).
         e = IllegalScopeReferenceError(
             name="customers__regions",
             scope_kind="DatasetScope",
@@ -143,8 +141,7 @@ class TestIllegalScopeReferenceError:
         )
 
     def test_dotted_in_stage_schema(self):
-        # DEV-1449: downstream stages see a flat schema; dotted refs are
-        # illegal.
+        # Downstream stages see a flat schema; dotted refs are illegal.
         e = IllegalScopeReferenceError(
             name="customers.regions.name",
             scope_kind="StageSchema",
@@ -175,7 +172,7 @@ class TestIllegalWindowInFilterError:
         )
 
     def test_filter_naming_windowed_column(self):
-        # Filter references a Column.sql that contains a window function.
+        # Filter references a DatasetField.sql that contains a window function.
         e = IllegalWindowInFilterError(
             filter_expr="rn <= 3",
             source="references Column 'rn' whose sql contains a window function",
@@ -273,16 +270,6 @@ class TestDuplicateMeasureNameError:
             "DuplicateMetricNameError: The metric name is declared more than once.\n"
             "  at metric 'rev'\n"
             "  occurrences: ['measures[0]', 'measures[3]']"
-        )
-
-
-class TestMeasureNameCollidesWithColumnError:
-    def test_basic(self):
-        e = MetricNameCollidesWithFieldError(name="status", dataset="orders")
-        assert str(e) == (
-            "MetricNameCollidesWithFieldError: The declared metric name "
-            "matches a source field on dataset 'orders'.\n"
-            "  at metric 'status'"
         )
 
 

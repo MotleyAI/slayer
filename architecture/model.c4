@@ -71,6 +71,11 @@ model {
       }
       migrations = node 'Migrations'
     }
+    ontology = node 'Ontologies and mappings' {
+      metadata {
+        package 'slayer.ontology'
+      }
+    }
     importers = bucket 'Importers' {
       metadata {
         packages ['slayer.dbt', 'slayer.cube', 'slayer.osi', 'slayer.ingest_report', 'slayer.importers']
@@ -80,6 +85,7 @@ model {
     search = bucket 'Search & embeddings' {
       metadata {
         packages ['slayer.search', 'slayer.embeddings']
+        specs ['search']
       }
     }
     memories = bucket 'Agent memories' {
@@ -114,15 +120,12 @@ model {
 
     core.models -> sql.dialects #legacy
     core.models -> sql.sql_predicate #legacy
-    core.models -> sql.window_detect #legacy
-    core.query -> sql.window_detect #legacy
     core.models -> storage.migrations #legacy
     core.query -> storage.migrations #legacy
     core.models -> core.query #legacy
     core.query -> core.models
     core.query -> core.syntax
     sql.render -> sql.dialects
-    sql.sql_predicate -> sql.window_detect
     engine.binding -> core.syntax
     engine.bind_inputs -> engine.binding
     engine.bind_inputs -> engine.elaborate_env
@@ -201,5 +204,12 @@ model {
     protocols -> otel
     surfaces -> otel
     otel -> core.probes
+    ontology -> core
+    storage -> ontology
+    importers -> ontology
+    surfaces -> ontology
+    engine -> ontology
+    live_schema -> ontology
+    search -> ontology
   }
 }

@@ -65,7 +65,7 @@ class TestSearchLenientValidation:
             name="catalog",
             sql_table="catalog",
             data_source="otherdb",
-            fields=[DatasetField(name="id", sql="id", primary_key=True)],
+            fields=[DatasetField(name="id", expression="id", primary_key=True)],
         ))
         svc = SearchService(storage=storage)
         resp = await svc.search(

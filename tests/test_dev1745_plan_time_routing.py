@@ -1,4 +1,4 @@
-"""DEV-1745 (W3) / DEV-1865 — the plan carries TYPED masks; the one lowering
+"""W3 — the plan carries TYPED masks; the one lowering
 (``_lower_positions``) derives the outer-WHERE routing deterministically from
 them, and every render site consumes that one decision.
 
@@ -28,8 +28,8 @@ from tests._engine_helpers import _engine_generate, _outer_select
 
 
 # --------------------------------------------------------------------------- #
-# A filtered-local isolated aggregate: `eu_amount` carries a Column.filter that
-# crosses into `customers`, so the measure is isolated into a _cm_ CTE with
+# A filtered-local isolated aggregate: `eu_amount` carries a DatasetField.filter that
+# crosses into `customers`, so the metric is isolated into a _cm_ CTE with
 # cte_root_model set, and the AGGREGATE-phase filter on it routes to the outer
 # combined SELECT as a plain WHERE on the joined-back column.
 # --------------------------------------------------------------------------- #
@@ -52,7 +52,7 @@ def _orders() -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="eu_amount", sql="amount",
+            DatasetField(name="eu_amount", expression="amount",
                    filter="customers.tier = 'eu'", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
@@ -71,9 +71,9 @@ def _bundle() -> ResolvedSourceBundle:
 def _outer_where_query() -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": [{"field": "status", "alias": "status"}],
-        "metrics": [{"metric": "sum(eu_amount)", "alias": "eu"}],
-        "filter": ["sum(eu_amount) > 100"],
+        "dimensions": [{"field": "orders.status", "alias": "status"}],
+        "metrics": [{"metric": "sum(orders.eu_amount)", "alias": "eu"}],
+        "filter": ["sum(orders.eu_amount) > 100"],
     })
 
 
@@ -99,15 +99,15 @@ class TestPlanCarriesOuterWhereRouting:
     def test_routing_is_empty_without_an_isolated_aggregate(self) -> None:
         plain = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"field": "status", "alias": "status"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "a"}],
-            "filter": ["sum(amount) > 100"],
+            "dimensions": [{"field": "orders.status", "alias": "status"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "a"}],
+            "filter": ["sum(orders.amount) > 100"],
         })
         planned = plan_query(query=plain, bundle=_bundle())
         assert _lower_positions(planned).outer_where_ids == []
 
     def test_the_isolated_plan_is_the_trigger(self) -> None:
-        """Sanity-pin the shape the routing keys off — DEV-1838 D5: a
+        """Sanity-pin the shape the routing keys off: a
         HOST-rooted regroup producer, its filter routed to the outer WHERE."""
         planned = plan_query(query=_outer_where_query(), bundle=_bundle())
         assert any(
@@ -131,7 +131,7 @@ class TestGeneratorConsumesThePlanVerbatim:
 
     @staticmethod
     def _has_outer_cm_where(sql: str) -> bool:
-        """True iff the OUTERMOST SELECT filters the joined-back ``_cm_`` measure
+        """True iff the OUTERMOST SELECT filters the joined-back ``_cm_`` metric
         ``orders.eu`` with ``> 100`` — the routed outer WHERE. Matched by
         STRUCTURE, not by the generated ``_cm_`` alias spelling, so an
         alias-naming change cannot make the negative assertion pass vacuously."""
@@ -142,7 +142,7 @@ class TestGeneratorConsumesThePlanVerbatim:
             col = gt.this
             if (
                 isinstance(col, exp.Column)
-                and col.name == "orders.eu"
+                and col.name == "eu"
                 and col.table.startswith("_cm_")
                 and gt.expression == exp.Literal.number(100)
             ):
@@ -177,10 +177,10 @@ class TestFrameBoundColumnsStayPlanSide:
 
     def _windowed_query(self) -> SlayerQuery:
         return SlayerQuery.model_validate({"population": "orders", "time_dimensions": [{
-                "field": "created_at",
+                "field": "orders.created_at",
                 "granularity": TimeGranularity.MONTH,
                 "date_range": ["2024-01-01", "2024-12-31"],
-            }], "metrics": [{"metric": "sum(amount)", "alias": "a"}]})
+            }], "metrics": [{"metric": "sum(orders.amount)", "alias": "a"}]})
 
     def test_plan_carries_frame_bound_columns(self) -> None:
         """A DECLARED field, checked the same way as masks.
@@ -189,13 +189,13 @@ class TestFrameBoundColumnsStayPlanSide:
         assert "frame_bound_fields" in PlannedQuery.model_fields
 
     def test_frame_bound_columns_covers_the_time_dimension(self) -> None:
-        """Names the expected column, not just "non-empty" — the query has one
-        time dimension, so a plan carrying some OTHER column would satisfy a
+        """Names the expected field, not just "non-empty" — the query has one
+        time dimension, so a plan carrying some OTHER field would satisfy a
         truthiness check while getting the frame-bound set wrong."""
         planned = plan_query(query=self._windowed_query(), bundle=_bundle())
         leaves = {getattr(k, "leaf", None) for k in planned.frame_bound_fields}
         assert "created_at" in leaves, (
-            f"the time dimension's raw column must be carried on the plan so "
+            f"the time dimension's raw field must be carried on the plan so "
             f"both strip_frame_bounds call sites read the SAME set; got "
             f"{planned.frame_bound_fields!r}"
         )

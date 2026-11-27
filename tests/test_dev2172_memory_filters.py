@@ -58,7 +58,7 @@ async def storage(tmp_path: Path) -> YAMLStorage:
 
 
 async def test_cast_filter_tags_only_the_column(storage: YAMLStorage) -> None:
-    query = SlayerQuery(population="orders", filter=["CAST(amount AS INT) > 1"],
-                        metrics=[QueryMetric(metric="count(*)")])
+    query = SlayerQuery(population="orders", filter=["CAST(orders.amount AS INT) > 1"],
+                        metrics=[QueryMetric(metric="count(orders.*)")])
     result = await extract_entities_from_query(query, storage=storage)
     assert result.canonical_forms == ["mydb.orders", "mydb.orders.amount"]

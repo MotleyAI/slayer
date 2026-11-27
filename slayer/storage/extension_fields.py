@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
+from slayer.core.enums import DataType, stored_datatype
 from slayer.core.errors import AmbiguousReferenceError, UnconvertibleStoredQueryError
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name
@@ -74,7 +75,7 @@ def inline_extension_fields(
             raise UnconvertibleStoredQueryError("an inline population")
     raw_columns = [_extension_fields(stage) for stage in stages]
     with migrating_document(document, stored=True):
-        queries = [SlayerQuery.model_validate(_without_fields(stage)) for stage in stages]
+        queries = [SlayerQuery.model_validate(without_extension_fields(stage)) for stage in stages]
     out: List[SlayerQuery] = []
     for i, query in enumerate(queries):
         if not raw_columns[i]:
@@ -115,7 +116,8 @@ def _extension_fields(stage: dict) -> List[Tuple[dict, List[Any]]]:
     ] if isinstance(extensions, list) else []
 
 
-def _without_fields(stage: dict) -> dict:
+def without_extension_fields(stage: dict) -> dict:
+    """The raw ``stage`` without its extensions' removed ``columns``."""
     extensions = stage.get("extensions")
     if not isinstance(extensions, list):
         return stage
@@ -193,7 +195,8 @@ class _Stage:
         if start is None:
             return None
         prefix, dataset, rest = start
-        resolved = self.scope.resolve(rest, root=dataset) if rest else ((), [])
+        rest_quoted = quoted[len(hops) - len(rest):len(hops)]
+        resolved = self.scope.resolve(rest, root=dataset, quoted=rest_quoted) if rest else ((), [])
         if resolved is None:
             return None
         path, chain = resolved
@@ -202,18 +205,9 @@ class _Stage:
         return ((*prefix, *path), (owner, name)) if name is not None else None
 
     def _field_named(self, owner: str, *, leaf: str, quoted: bool) -> Optional[str]:
-        """The extension field of ``owner`` that ``leaf`` names, matched as the engine matches a field name."""
-        own = [n for o, n in self.fields if o == owner]
-        if not own:
-            return None
-        dataset = self.scope.datasets.get(owner)
-        try:
-            found = match_name(name=leaf, declared=[*own, *(c.name for c in dataset.fields)] if dataset else own,
-                               quoted=quoted)
-        except AmbiguousReferenceError as exc:
-            raise UnconvertibleStoredQueryError(f"a reference {leaf!r} that matches several fields of "
-                                                f"{owner!r}") from exc
-        return found if found in own else None
+        """The extension field of ``owner`` that ``leaf`` names."""
+        return _extension_field_named([n for o, n in self.fields if o == owner], dataset=self.scope.datasets.get(owner),
+                                      leaf=leaf, quoted=quoted)
 
     def _start(
         self, hops: Tuple[str, ...], *, leaf: str, quoted: Tuple[bool, ...], root: Optional[SlayerDataset],
@@ -327,7 +321,7 @@ class _Stage:
         return metric.model_copy(update={"metric": text, "alias": alias})
 
     def _extension_metric(self, metric: DatasetMetric, *, root: Optional[SlayerDataset]) -> DatasetMetric:
-        text = self._text(metric.expression, root=root) if metric.expression else None
+        text = self._text(metric.text, root=root) if metric.text else None
         return metric if text is None else metric.model_copy(update={"expression": text})
 
     def _order(self, item: OrderItem, *, root: Optional[SlayerDataset]) -> OrderItem:
@@ -345,6 +339,42 @@ class _Stage:
             return extension
         root = self.scope.datasets.get(self._owner(extension.dataset))
         return extension.model_copy(update={"metrics": [self._extension_metric(m, root=root) for m in extension.metrics]})
+
+
+def _extension_field_named(
+    own: Sequence[str], *, dataset: Optional[SlayerDataset], leaf: str, quoted: bool,
+) -> Optional[str]:
+    """The one of ``own`` (extension fields of ``dataset``) that ``leaf`` names, matched as the engine matches a field
+    name."""
+    if not own:
+        return None
+    try:
+        found = match_name(name=leaf, declared=[*own, *(c.name for c in dataset.fields)] if dataset else own,
+                           quoted=quoted)
+    except AmbiguousReferenceError as exc:
+        raise UnconvertibleStoredQueryError(f"a reference {leaf!r} that matches several fields of "
+                                            f"{dataset.name if dataset else own[0]!r}") from exc
+    return found if found in own else None
+
+
+def extension_field_type(
+    stage: dict, *, dataset: SlayerDataset, datasets: Mapping[str, SlayerDataset], leaf: str, quoted: bool,
+) -> Optional[DataType]:
+    """The declared type of the stored extension field of ``dataset`` that ``leaf`` names in the raw ``stage``, by the
+    inliner's own lookup; ``None`` when it names none."""
+    declared: Dict[str, dict] = {}
+    for extension, columns in _extension_fields(stage):
+        name = extension.get("dataset")
+        try:
+            owner = match_name(name=name, declared=datasets, quoted=False) if isinstance(name, str) else None
+        except AmbiguousReferenceError:
+            owner = None
+        if owner == dataset.name:
+            declared.update({c["name"]: c for c in columns if isinstance(c, dict) and isinstance(c.get("name"), str)})
+    found = _extension_field_named(list(declared), dataset=dataset, leaf=leaf, quoted=quoted)
+    if found is None:
+        return None
+    return stored_datatype(declared[found].get("type") or declared[found].get("datatype")) or DataType.STRING
 
 
 def _visible(dataset: SlayerDataset, name: str) -> bool:

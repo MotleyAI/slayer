@@ -1,11 +1,10 @@
-"""DEV-1835 union-grain lift (design D9, task 3.7) — a transform-in-dimension
+"""Union-grain lift (design D9) — a transform-in-dimension
 mixing a windowed or first/last inner aggregate with a different-grain sibling
 broadcasts over the union grain, with the windowed axis entering as the query's
 bucketed time dimension.
 
-Strict-xfail until task 3.7 deletes the residual DEV-1839→1835 guard (today
-these raise ``NotImplementedError`` naming the deferred combination); an
-accidental lift XPASSes loudly and flips the module.
+These shapes once raised ``NotImplementedError`` naming the deferred
+combination; the residual guard is deleted.
 
 Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
   A windowed inner aggregate contributes the time bucket   test_windowed_inner…
@@ -36,7 +35,7 @@ from tests._dev1835_fixtures import (
 
 LIFT_XFAIL = pytest.mark.xfail(
     strict=True, raises=NotImplementedError,
-    reason="DEV-1835 task 3.7 — residual windowed/first-last union-grain guard",
+    reason="residual windowed/first-last union-grain guard",
 )
 
 
@@ -55,14 +54,14 @@ class TestUnionGrainBroadcast:
         union-grain rows (diffs -70/0/-25/0/0 → 5/1/4/1/1)."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", {"field": UNION_WM_DIM, "alias": "ur"}],
+            dimensions=["orders.region", {"field": UNION_WM_DIM, "alias": "ur"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         resp = await engine.execute(query)
         got = {
             (r["orders.region"], month_key(r["orders.ordered_at"])):
-                (int(r["orders.ur"]), float(r["orders.m"]))
+                (int(r["ur"]), float(r["m"]))
             for r in resp.data
         }
         assert set(got) == set(REGION_MONTH_TOTAL)
@@ -81,13 +80,13 @@ class TestUnionGrainBroadcast:
         the city total per city (diffs 0/-10/0/-25/0 → 1/4/1/5/1)."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"field": UNION_RK_DIM, "alias": "ur"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            dimensions=["orders.region", "orders.city", {"field": UNION_RK_DIM, "alias": "ur"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         resp = await engine.execute(query)
         got = {
             (r["orders.region"], r["orders.city"]):
-                (int(r["orders.ur"]), float(r["orders.m"]))
+                (int(r["ur"]), float(r["m"]))
             for r in resp.data
         }
         assert set(got) == set(CITY_TOTAL)
@@ -103,11 +102,11 @@ class TestUnionGrainBroadcast:
         self, exec_backend,
     ) -> None:
         """No resolvable time dimension → the same clear time-resolution error
-        as windowed measures (today: the residual union-grain guard instead)."""
+        as windowed metrics (today: the residual union-grain guard instead)."""
         _, engine = exec_backend
         query = q(
-            dimensions=["region", {"field": UNION_WM_DIM, "alias": "ur"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            dimensions=["orders.region", {"field": UNION_WM_DIM, "alias": "ur"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
             await engine.execute(query)

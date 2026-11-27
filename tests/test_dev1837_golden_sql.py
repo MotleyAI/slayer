@@ -23,7 +23,7 @@ from slayer.core.query import QueryMetric
 from tests._dev1837_fixtures import (
     BAND35,
     BARE_DIM,
-    dev1837_models,
+    dev1837_datasets,
     month_td,
     q,
 )
@@ -42,47 +42,47 @@ BAND = {"field": BAND35, "alias": "band"}
 def _cases() -> dict:
     return {
         "lift/band_time_shift_plain": q(
-            dimensions=["region", BAND], time_dimensions=month_td(),
+            dimensions=["orders.region", BAND], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         ),
         "lift/band_part_time_shift_cross": q(
-            dimensions=["region", BAND], time_dimensions=month_td(),
+            dimensions=["orders.region", BAND], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
-                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         ),
         "lift/band_cumsum": q(
-            dimensions=["region", BAND], time_dimensions=month_td(),
+            dimensions=["orders.region", BAND], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="cumsum(sum(amount))", alias="c"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="c"),
             ],
         ),
         "lift/bare_cumsum": q(
-            dimensions=["region", {"field": BARE_DIM, "alias": "ct"}],
+            dimensions=["orders.region", {"field": BARE_DIM, "alias": "ct"}],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="cumsum(sum(amount))", alias="c"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="c"),
             ],
         ),
         "lift/part_time_shift_fixed": q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
-                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         ),
     }
 
 
 async def _generate_one(query, dialect: str):
-    models = dev1837_models()
+    models = dev1837_datasets()
     try:
         return await _engine_generate(
             query=query, dataset=models[0], extra_datasets=models[1:],

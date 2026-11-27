@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from pydantic import Field
@@ -14,12 +16,13 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, TypeKind
 from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastKey, ScalarCallKey
-from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.base import (
     LIST_ELEMENT,
     CONSTANT_INPUT,
     PORTABLE_LIBRARY,
     SET_TRANSACTION_READ_ONLY,
+    TIME_OF_DAY_TEXT,
     IdentifierFolding,
     ReadOnlyEngineArgs,
     TransactionMode,
@@ -37,7 +40,10 @@ from slayer.sql.dialects.base import (
     is_null,
     lit,
     operand_copy,
+    ordinal_elements,
     pad_fill,
+    at_time_zone,
+    iso_text,
 )
 from slayer.sql.dialects.patterns import POSTGRES, RegexFlavour
 from slayer.sql.dialects.reflection import (
@@ -99,6 +105,12 @@ def describe_pg_cursor_column(description_row: Sequence[Any]) -> ResultColumnTyp
 
 #: The first Postgres major version with ``pg_input_is_valid``.
 _PG_INPUT_IS_VALID_SINCE = (16, 0, 0)
+#: The first Postgres major version with ``ANY_VALUE``.
+_PG_ANY_VALUE_SINCE = (16, 0, 0)
+#: The first Postgres major version with ``regexp_count``.
+_PG_REGEXP_COUNT_SINCE = (15, 0, 0)
+#: Functions whose rendering reads the server version.
+_PROFILED_FUNCTIONS = frozenset({"json_value", "regexp_count"})
 #: The array type both lists of ``contains_any`` / ``contains_all`` are read as, by element type.
 #: The element-set subquery's one relation: a fixed name, so every copy of the expression reads alike.
 _SET_RELATION = "__slayer_s"
@@ -107,6 +119,14 @@ _CANONICAL_ARRAYS_BY_KIND = {
     TypeKind.BOOLEAN: "BOOLEAN[]", TypeKind.DATE: "DATE[]", TypeKind.TIMESTAMP: "TIMESTAMP[]",
 }
 _CANONICAL_ARRAYS = {t: _CANONICAL_ARRAYS_BY_KIND[t.kind] for t in DataType if t.kind in _CANONICAL_ARRAYS_BY_KIND}
+
+
+def _mode_value(node: Expression) -> Expression:
+    """``ANY_VALUE(x)`` as ``mode() WITHIN GROUP (ORDER BY x)``: a non-NULL value of any sortable type, arrays included."""
+    if not isinstance(node, exp.AnyValue):
+        return node
+    return exp.WithinGroup(this=exp.Mode(), expression=exp.Order(expressions=[
+        exp.Ordered(this=node.this.copy(), nulls_first=False)]))
 
 
 def _server_version(number: int) -> tuple[int, int, int]:
@@ -134,15 +154,15 @@ def _cast_log_arg_to_numeric(node: Expression) -> Expression:
 
 
 def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
-    """Wrap the first arg of a 2-arg ``ROUND`` in ``CAST(... AS DECIMAL)``.
+    """Wrap the first arg of a 2-arg ``ROUND`` / ``TRUNC`` in ``CAST(... AS DECIMAL)``.
 
     Postgres has no ``round(double precision, integer)`` overload — only
-    ``round(numeric, integer)`` — so a 2-arg round over a DOUBLE expression
+    ``round(numeric, integer)``, and likewise ``trunc`` — so a 2-arg round over a DOUBLE expression
     fails without an explicit numeric cast. 1-arg round (``round(double)``)
     is fine and left alone. Idempotent: skips when the arg is already cast to
     a numeric/decimal type.
     """
-    if not isinstance(node, exp.Round):
+    if not isinstance(node, (exp.Round, exp.Trunc)):
         return node
     decimals = node.args.get("decimals")
     if decimals is None:  # 1-arg round — no overload problem.
@@ -159,13 +179,22 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
     return node
 
 
+def _jsonb_parts(value: Expression, path: JsonPath) -> tuple[Expression, list[Expression]]:
+    """``value`` as JSONB and ``path`` as its key arguments."""
+    already = isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.JSONB)
+    doc = value.copy() if already else exp.Cast(this=value.copy(), to=exp.DataType.build("JSONB"))
+    return doc, [lit(str(step)) for step in path.steps]
+
+
 def _constant(value: Expression) -> bool:
     """The outermost ``TRY_CAST`` input's own tag (``walk`` is breadth-first), so a nested cast's never counts."""
     return next((bool(node.meta[CONSTANT_INPUT]) for node in value.walk() if CONSTANT_INPUT in node.meta), False)
 
 
 class PostgresDialect(SqlDialect):
+    enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "postgres"
+    varchar_cast_truncates: ClassVar[bool] = True
     array_cast_types: ClassVar[bool] = True
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.MONEY})
@@ -191,11 +220,19 @@ class PostgresDialect(SqlDialect):
     database_name: ClassVar[str] = "Postgres"
     native_lists: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
     })
     regex_flavour: ClassVar[Optional[RegexFlavour]] = POSTGRES
     read_only_transaction_sql: ClassVar[str | None] = SET_TRANSACTION_READ_ONLY
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``(v AT TIME ZONE S) AT TIME ZONE Q``; an instant: ``v AT TIME ZONE Q``."""
+        return at_time_zone(value, source=source, target=target)
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"), to=exp.DataType.build("TIMESTAMPTZ"))
 
     def describe_cursor_column(self, description_row: Sequence[Any]) -> ResultColumnType | None:
         return describe_pg_cursor_column(description_row)
@@ -238,9 +275,10 @@ class PostgresDialect(SqlDialect):
             dbapi_connection.autocommit = False
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
-        """``TRY_CAST`` and ``json_value`` check their input with ``pg_input_is_valid`` on 16+."""
+        """``TRY_CAST`` and ``json_value`` check their input with ``pg_input_is_valid`` on 16+; ``regexp_count``
+        needs 15."""
         return any(
-            (isinstance(k, CastKey) and k.try_) or (isinstance(k, ScalarCallKey) and k.name == "json_value")
+            (isinstance(k, CastKey) and k.try_) or (isinstance(k, ScalarCallKey) and k.name in _PROFILED_FUNCTIONS)
             for k in keys
         )
 
@@ -263,6 +301,7 @@ class PostgresDialect(SqlDialect):
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+        time_row: Sequence[Any] | None = None,
     ) -> ServerProfile:
         number = base_row[0] if base_row else None
         try:
@@ -270,6 +309,13 @@ class PostgresDialect(SqlDialect):
         except (TypeError, ValueError):
             version_num = None
         return ServerProfile(version=None if version_num is None else _server_version(version_num))
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """Before Postgres 16, or on an unknown server, ``ANY_VALUE`` reads its most frequent value instead."""
+        version = self.server_profile.version
+        if version is not None and version >= _PG_ANY_VALUE_SINCE:
+            return statement
+        return statement.transform(_mode_value)
 
     def validates_input(self) -> bool:
         """Whether ``pg_input_is_valid`` can check a conversion's input (Postgres 16+)."""
@@ -286,6 +332,15 @@ class PostgresDialect(SqlDialect):
         # A constant input is read through a subquery: Postgres folds a constant cast at plan time, invalid or not.
         read = exp.Subquery(this=exp.select(value.copy())) if _constant(value) else value.copy()
         return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=read, to=to))])
+
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """Postgres 16+ also yields NULL for ``24:00:00``, which its ``time`` accepts and the clock day does not."""
+        cast = super().build_time_cast(value, to, source=source, try_=try_)
+        if source is not None or not try_ or not self.validates_input():
+            return cast
+        return case((self.build_regexp_like(as_text(value), parse_regex(TIME_OF_DAY_TEXT), False), cast))
 
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
         """``pg_input_is_valid`` already accepts only integer text in range."""
@@ -309,18 +364,45 @@ class PostgresDialect(SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement),
                     lit("gi" if case_insensitive else "g"))
 
+    regexp_count_empty_match: ClassVar[bool] = True
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        self.require_version(minimum=_PG_REGEXP_COUNT_SINCE, what="regexp_count()", release="PostgreSQL 15")
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern), *([lit(1), lit("i")] if case_insensitive else []))
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
-        jsonb = exp.DataType.build("JSONB")
-        already = isinstance(value, exp.Cast) and value.to.is_type(exp.DataType.Type.JSONB)
-        doc = value.copy() if already else exp.Cast(this=value.copy(), to=jsonb)
-        keys = [lit(str(step)) for step in path.steps]
+        doc, keys = _jsonb_parts(value, path)
         found = anon("JSONB_EXTRACT_PATH", doc, *keys)
         scalar = exp.In(this=anon("JSONB_TYPEOF", found), expressions=[lit("string"), lit("number"), lit("boolean")])
         read = case((scalar, anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys)))
+        return self._valid_json(value, read, native=native)
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        """The JSON number as a double, read through ``NUMERIC`` so one past the double range (``1e400``) is NULL
+        instead of an overflow error."""
+        doc, keys = _jsonb_parts(value, path)
+        number = exp.EQ(this=anon("JSONB_TYPEOF", anon("JSONB_EXTRACT_PATH", doc, *keys)), expression=lit("number"))
+        exact = exp.Cast(this=anon("JSONB_EXTRACT_PATH_TEXT", doc, *keys), to=exp.DataType.build("DECIMAL"))
+        fits = exp.LT(this=exp.Abs(this=exact.copy()), expression=exp.Literal.number("1e308"))
+        read = exp.Cast(this=exact, to=exp.DataType.build("DOUBLE PRECISION"))
+        return self._valid_json(value, case((exp.And(this=number, expression=fits), read)), native=native)
+
+    def round_half_away(self, value: Expression, digits: int) -> Expression:
+        """``round(double precision)`` breaks a tie to even, and a double reaches ``numeric`` through 15 digits:
+        to an integer, the fraction is compared exactly; to digits, through ``numeric``."""
+        if digits:
+            return exp.Round(this=exp.Cast(this=value.copy(), to=exp.DataType.build("DECIMAL")), decimals=lit(digits))
+        magnitude = exp.Abs(this=value.copy())
+        whole = exp.Floor(this=magnitude.copy())
+        up = case((exp.GTE(this=exp.Sub(this=magnitude, expression=whole.copy()), expression=exp.Literal.number("0.5")),
+                   lit(1)), default=lit(0))
+        return exp.Mul(this=exp.Sign(this=value.copy()), expression=exp.Paren(this=exp.Add(this=whole, expression=up)))
+
+    def _valid_json(self, value: Expression, read: Expression, *, native: bool) -> Expression:
+        """``read`` guarded by the input's JSON validity where the server can check it."""
         if native or not self.validates_input():
             return read
-        valid = anon("PG_INPUT_IS_VALID", as_text(value), lit("jsonb"))
-        return case((valid, read))
+        return case((anon("PG_INPUT_IS_VALID", as_text(value), lit("jsonb")), read))
 
     def build_list_call(
         self, fn: ListFn, args: tuple[Expression, ...], *, each: Optional[DataType] = None,
@@ -335,6 +417,15 @@ class PostgresDialect(SqlDialect):
 
     def list_length(self, values: Expression) -> Expression:
         return anon("CARDINALITY", values)
+
+    def positioned_elements(self, values: Expression) -> exp.Select:
+        """The non-NULL elements ``WITH ORDINALITY``, compacted in list order by ``IS NOT NULL`` (``ARRAY_REMOVE``
+        needs an equality operator ``json`` lacks)."""
+        rows = ordinal_elements(values)
+        value, position = (s.copy() for s in rows.selects)
+        assert isinstance(value, Expression)
+        kept = rows.select(value, append=False).where(is_not_null(value.copy())).order_by(position)
+        return ordinal_elements(exp.Array(expressions=[kept]))
 
     def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
         """``ARRAY(SELECT DISTINCT e FROM UNNEST(x) e … ORDER BY e)``, ``x`` read as its element's canonical array

@@ -30,15 +30,15 @@ def _cases() -> dict:
     cases.update({
         "clock|current_date": "current_date()",
         "clock|now": "now()",
-        "literal|date": "date_diff('day', '2024-01-01', t1)",
+        "literal|date": "date_diff('day', '2024-01-01', dt.t1)",
         "literal|timestamp": "date_add('2024-01-01 10:00:00', 1, 'day')",
-        "literal|in_coalesce": "date_part('year', coalesce(t2, '2024-01-01'))",
+        "literal|in_coalesce": "date_part('year', coalesce(dt.t2, '2024-01-01'))",
     })
     return cases
 
 
 async def _generate_one(expr: str, dialect: str):
-    query = {"population": "dt", "dimensions": ["id", {"field": expr, "alias": "v"}]}
+    query = {"population": "dt", "dimensions": ["dt.id", {"field": expr, "alias": "v"}]}
     try:
         return await _engine_generate(query=[query], dataset=dt_dataset(), dialect=dialect)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
@@ -213,8 +213,8 @@ def _trunc_function(dialect: str) -> str:
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_computed_count_truncates_toward_zero(dialect: str) -> None:
-    computed = await _generate_one("date_add(d1, n, 'day')", dialect)
-    literal = await _generate_one("date_add(d1, 3, 'day')", dialect)
+    computed = await _generate_one("date_add(dt.d1, dt.n, 'day')", dialect)
+    literal = await _generate_one("date_add(dt.d1, 3, 'day')", dialect)
     assert isinstance(computed, str)
     assert isinstance(literal, str)
     fn = _trunc_function(dialect)

@@ -6,7 +6,7 @@ so one direction may be provably to-one while the other fans out."""
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar, cast
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -20,13 +20,18 @@ from slayer.core.relationship_walker import (
     edges_between,
     follow,
     is_product_edge,
+    reaches_spine,
     provably_to_one,
     resolve_hop,
     reverse_token,
+    trusted_to_one,
     unique_key_sets,
 )
-from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET
+from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, axis_field, is_spine
 from slayer.core.keys import (
+    TransformKey,
+    display_token,
+    is_framed_path,
     is_ranked,
     SLOT_COMPOSITE_KINDS,
     AggregateKey,
@@ -46,17 +51,16 @@ from slayer.core.keys import (
 )
 from slayer.core.models import DatasetRelationship, SlayerDataset, relationship_key_error
 from slayer.core.refs import key_display
-from slayer.core.scope import DatasetScope, StageSchema
+from slayer.core.scope import DatasetScope
 from slayer.engine.reference_closure import (
     aggregate_input_closure,
     field_default_key,
     definition_refs,
     key_closure,
 )
-from slayer.engine.elaborate_env import check_partition_key_attributable
-from slayer.engine.cardinality.unrelated import crosses_product_hop
-from slayer.ir.prebound import walk_key_path
+from slayer.engine.elaborate_env import check_inputs_trusted, check_partition_key_analysable
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.terms import AggregateHomes
 from slayer.engine.cardinality.inference import (
     CardinalityVerdict,
     RelationshipCardinalityFinding,
@@ -64,6 +68,10 @@ from slayer.engine.cardinality.inference import (
 )
 
 __all__ = [
+    "is_untrusted_hop",
+    "mixes_untrusted_branch",
+    "untrusted_branch",
+    "refuse_untrusted_inputs",
     "provably_fans",
     "safe_reachable",
     "may_inline_crossing_inputs",
@@ -76,6 +84,97 @@ def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSON
     """Whether a crossing-input local aggregate may stay inline in the host base.
     Hardcoded ``False`` (always a producer); the seam that will flip."""
     return False
+
+
+def is_untrusted_hop(*, edge: OrientedRelationship, target: SlayerDataset) -> bool:
+    """A provably to-one hop that is not trusted: lowered without assuming its arity."""
+    return provably_to_one(edge=edge, target_dataset=target) and not trusted_to_one(edge=edge, target_dataset=target)
+
+
+def untrusted_branch(
+    *, root: SlayerDataset, path: Tuple[str, ...], datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[Tuple[str, ...]]:
+    """``path``'s canonical prefix through its first untrusted to-one hop from ``root``; ``None`` when it crosses none."""
+    try:
+        chain = follow(root=root, path=path, datasets_by_name=datasets_by_name) or []
+    except AmbiguousRelationshipPathError:
+        return None
+    for i, edge in enumerate(chain):
+        target = datasets_by_name.get(edge.to)
+        if target is not None and is_untrusted_hop(edge=edge, target=target):
+            return canonical_path(chain[: i + 1])
+    return None
+
+
+def mixes_untrusted_branch(
+    key: ValueKey, *, root_dataset: SlayerDataset, host_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> bool:
+    """Whether ``key`` reads an untrusted to-one branch together with anything outside it (the root's own fields,
+    another branch, a value attached through a branch column): no distinct projection of one branch evaluates it once
+    per row."""
+    datasets = bundle.datasets_by_name
+    groups: set = set()
+    for r in walk_value_keys(key):
+        if not isinstance(r, (FieldKey, FieldSqlKey, StarKey)):
+            continue
+        closure = key_closure(key=r, anchor_dataset=host_dataset, anchor_relation=host_dataset.name, bundle=bundle)
+        for path in _effective_dependency_paths(closure or (), key_host_path(r)):
+            groups.add(untrusted_branch(root=root_dataset, path=path, datasets_by_name=datasets) if path else None)
+    return len(groups) > 1 and any(g is not None for g in groups)
+
+
+def untrusted_input_hop(
+    *, agg: AggregateKey, host: SlayerDataset, bundle: ResolvedSourceBundle, homes: AggregateHomes,
+) -> Optional[Tuple[str, str]]:
+    """The first provably but untrusted to-one hop ``agg``'s inputs cross from its home, as ``(from, to)``; ``None``
+    when an input also crosses an unproven hop, which every mode refuses."""
+    target_path = homes.of(agg).path if homes.target_rooted(agg) else ()
+    closure = aggregate_input_closure(key=agg, anchor_dataset=host, anchor_relation=host.name, bundle=bundle)
+    datasets = bundle.datasets_by_name
+    try:
+        home_chain = follow(root=host, path=target_path, datasets_by_name=datasets) if target_path else []
+    except AmbiguousRelationshipPathError:
+        return None
+    home = datasets.get(home_chain[-1].to) if home_chain else host
+    if home is None:
+        return None
+    hops = [_path_hops(root=home, path=path[len(target_path):], datasets_by_name=datasets)
+            for path in closure or () if path[:len(target_path)] == target_path and len(path) > len(target_path)]
+    if any(h is None for h in hops):
+        return None
+    return next((h[0] for h in hops if h), None)
+
+
+def _path_hops(
+    *, root: SlayerDataset, path: Tuple[str, ...], datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[List[Tuple[str, str]]]:
+    """``path``'s untrusted to-one hops in order; ``None`` when a hop is unproven or the path is ambiguous."""
+    try:
+        chain = follow(root=root, path=path, datasets_by_name=datasets_by_name) or []
+    except AmbiguousRelationshipPathError:
+        return None
+    out: List[Tuple[str, str]] = []
+    for edge in chain:
+        target = datasets_by_name.get(edge.to)
+        if target is None or not provably_to_one(edge=edge, target_dataset=target):
+            return None
+        if not trusted_to_one(edge=edge, target_dataset=target):
+            out.append((edge.source_dataset, edge.to))
+    return out
+
+
+def refuse_untrusted_inputs(
+    *, roots: Iterable[ValueKey], host: Optional[SlayerDataset], bundle: ResolvedSourceBundle,
+    homes: AggregateHomes,
+) -> None:
+    """Under ``to_many_handling: "error"``, refuse an aggregate reading an input across an untrusted to-one hop."""
+    if host is None:
+        return
+    for root in roots:
+        for k in walk_value_keys(root):
+            if isinstance(k, AggregateKey) and k in homes.by_key:
+                check_inputs_trusted(alias=key_display(k), hop=untrusted_input_hop(
+                    agg=k, host=host, bundle=bundle, homes=homes))
 
 
 def provably_fans(*, edge: OrientedLike, target_dataset: SlayerDataset) -> bool:
@@ -201,7 +300,7 @@ def _edge_finding(
         message = (
             f"Relationship {dataset.name} → {relationship.to} is unproven: "
             f"dimensions across it are associated (cells may overlap; "
-            f"to_many_handling='broadcast' repeats the total instead) and "
+            f"partition_by=[] repeats the total instead) and "
             f"aggregation inputs across it are refused. Remedies: {_UNPROVEN_REMEDY}."
         )
     return RelationshipSafetyFinding(
@@ -283,12 +382,35 @@ def spine_routes(
     )]
 
 
+def fanning_spine_routes(
+    *, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset], cap: int = 2,
+) -> list[list[OrientedRelationship]]:
+    """Up to ``cap`` nearest routes ``dataset → time_spine`` crossing a fanning or unproven hop, never a product hop:
+    its fanning axes (Axiom 15)."""
+    # An axis is another dataset's: the route reaches it before its final hop into the spine.
+    def admit(edge: OrientedRelationship) -> bool:
+        return not edge.product and not (edge.source_dataset == dataset.name and edge.to == TIME_SPINE_DATASET)
+
+    return [list(r.edges) for r in routes(root=dataset, target=TIME_SPINE_DATASET, datasets_by_name=datasets_by_name,
+                                          hop_filter=HopFilter.ALL, cap=cap, shortest_only=True, admit_edge=admit)]
+
+
+def fanning_route_error(*, dataset: str, routes: list[list[OrientedRelationship]]) -> UnresolvableDimensionRelationshipError:
+    """The ambiguous-spine-route error for tied fanning axes, each spelled as its fact's time column."""
+    spelled = [".".join((dataset, *canonical_path(r[:-1]), r[-1].column_pairs[0][0])) for r in routes]
+    return UnresolvableDimensionRelationshipError(
+        reference=f"{dataset}.{TIME_SPINE_FIELD}", root_dataset=TIME_SPINE_DATASET,
+        reason="equal-distance fanning axes to the time spine: " + ", ".join(spelled)
+        + "; query one of them as a time dimension instead of the spine",
+    )
+
+
 def spine_route_error(*, dataset: str, routes: list[list[OrientedRelationship]], leaf: str) -> UnresolvableDimensionRelationshipError:
-    """The ambiguous-spine-route error, naming each tied canonical route."""
+    """The ambiguous-spine-route error, naming each tied route from the spine."""
     return UnresolvableDimensionRelationshipError(
         reference=f"{dataset}.{leaf}", root_dataset=TIME_SPINE_DATASET,
-        reason="equal-length routes to the time spine: " + ", ".join(
-            ".".join((dataset, *canonical_path(r))) for r in routes
+        reason=f"equal-length routes join {dataset} to the time spine: " + ", ".join(
+            ".".join((TIME_SPINE_DATASET, *(display_token(reverse_token(e)) for e in reversed(r)))) for r in routes
         ) + "; give the dataset a default_time_dimension, or query its facts through one of the routes",
     )
 
@@ -300,26 +422,43 @@ def _factor_free(datasets_by_name: Dict[str, SlayerDataset]) -> Dict[str, Slayer
 def _is_product_path(host_path: Tuple[str, ...], *, host_name: Optional[str], datasets_by_name: Dict[str, SlayerDataset]) -> bool:
     """``host_path`` starts at the population's product hop to the spine."""
     host = datasets_by_name.get(host_name) if host_name is not None else None
-    return host is not None and host.population_spine and bool(host_path) and host_path[0] == TIME_SPINE_DATASET
+    return host is not None and _crosses_product(host_path, host=host, datasets_by_name=datasets_by_name)
 
 
-def reads_population_spine(key: ValueKey, *, host: Optional[SlayerDataset]) -> bool:
+def _crosses_product(path: Tuple[str, ...], *, host: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset]) -> bool:
+    """``path`` starts at spine population ``host``'s product hop."""
+    return host.population_spine and reaches_spine(root=host, path=path[:1], datasets_by_name=datasets_by_name)
+
+
+def reads_population_spine(
+    key: ValueKey, *, host: Optional[SlayerDataset], datasets_by_name: Dict[str, SlayerDataset],
+) -> bool:
     """``key`` reads a spine population's product hop (the spine as the population sees it)."""
-    return host is not None and host.population_spine and any(
-        isinstance(r, FieldKey) and r.path[:1] == (TIME_SPINE_DATASET,) for r in walk_value_keys(key)
+    return host is not None and any(
+        isinstance(r, FieldKey) and _crosses_product(r.path, host=host, datasets_by_name=datasets_by_name)
+        for r in walk_value_keys(key)
     )
 
 
 def home_spine_route(
     *, root_dataset: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset], leaf: str = TIME_SPINE_FIELD,
+    fanning: bool = False,
 ) -> Optional[Tuple[str, ...]]:
-    """The home's canonical route to the spine; ``None`` without one; equal-length routes raise."""
-    universe = _factor_free(datasets_by_name)
+    """The home's canonical route to the spine — its nearest to-one one, else (``fanning``) its nearest fanning axis;
+    ``None`` without one; equal distances raise."""
+    universe = {**_factor_free(datasets_by_name)}
     home = universe.get(root_dataset.name, root_dataset.as_population_factor(False))
-    routes = spine_routes(dataset=home, datasets_by_name={**universe, home.name: home})
+    universe[home.name] = home
+    routes = spine_routes(dataset=home, datasets_by_name=universe)
     if len(routes) > 1:
         raise spine_route_error(dataset=home.name, routes=routes, leaf=leaf)
-    return canonical_path(routes[0]) if routes else None
+    # Only a dataset without an axis of its own reaches the spine across a fanning axis.
+    if routes or not fanning or axis_field(home) is not None:
+        return canonical_path(routes[0]) if routes else None
+    fanned = fanning_spine_routes(dataset=home, datasets_by_name=universe)
+    if len(fanned) > 1:
+        raise fanning_route_error(dataset=home.name, routes=fanned)
+    return canonical_path(fanned[0]) if fanned else None
 
 
 def attributable_from_root(
@@ -330,7 +469,7 @@ def attributable_from_root(
     """Is a host-coordinate path attributable from the aggregate's root over provably many-to-one hops only?"""
     tp, hp = tuple(target_path), tuple(host_path)
     if _is_product_path(hp, host_name=host_name, datasets_by_name=datasets_by_name) or (
-        not tp and root_dataset.population_spine and hp[:1] == (TIME_SPINE_DATASET,)
+        not tp and _crosses_product(hp, host=root_dataset, datasets_by_name=datasets_by_name)
     ):
         return home_spine_route(root_dataset=root_dataset, datasets_by_name=datasets_by_name) is not None
     if hp[: len(tp)] == tp:
@@ -420,6 +559,37 @@ def key_broadcast_reason(
     return UNREACHABLE_NO_PATH
 
 
+def _reads_host_spine(field: ValueKey, *, product: bool, host: Optional[SlayerDataset], root_dataset: SlayerDataset) -> bool:
+    """``field`` reads the host's spine: a product hop, or a spine host's own timestamp from a non-spine root."""
+    if not isinstance(field, FieldKey):
+        return False
+    return product or (host is not None and is_spine(host) and not is_spine(root_dataset) and not field.path
+                       and field.leaf == TIME_SPINE_FIELD)
+
+
+def _onto_home_spine(
+    r: ValueKey, field: FieldKey, *, root_dataset: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[ValueKey]:
+    """``r`` re-read through the home's own spine route: its axis, else its fanning axis (Axiom 15)."""
+    route = home_spine_route(root_dataset=root_dataset, datasets_by_name=datasets_by_name, fanning=True)
+    if route is None:
+        return None
+    moved = field.model_copy(update={"path": route})
+    return moved if isinstance(r, FieldKey) else r.model_copy(update={"source": moved})
+
+
+def _resolved_by_root_sibling(
+    *, hp: Tuple[str, ...], via_host: Tuple[str, ...], target_path: Tuple[str, ...], root_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset],
+) -> bool:
+    """The host route is unsafe, but the root reaches the sibling through its own relationship."""
+    if not hp or _common_prefix_len(target_path, hp):
+        return False
+    return not safe_reachable(root=root_dataset, path=via_host, datasets_by_name=datasets_by_name) and safe_reachable(
+        root=root_dataset, path=hp, datasets_by_name=datasets_by_name,
+    )
+
+
 def _reroot_leaf_via_host(
     r: ValueKey, *, target_path: Tuple[str, ...], root_dataset: SlayerDataset,
     datasets_by_name: Dict[str, SlayerDataset], host_name: str,
@@ -429,9 +599,15 @@ def _reroot_leaf_via_host(
     if isinstance(r, TimeTruncKey) and not isinstance(r.source, (FieldKey, FieldSqlKey)):
         return None  # an expression's leaves reroot one by one
     hp = key_host_path(r)
-    if isinstance(r, FieldKey) and _is_product_path(hp, host_name=host_name, datasets_by_name=datasets_by_name):
-        route = home_spine_route(root_dataset=root_dataset, datasets_by_name=datasets_by_name)
-        return r if route is None else r.model_copy(update={"path": route})
+    field = r.source if isinstance(r, TimeTruncKey) else r
+    product = isinstance(field, FieldKey) and _is_product_path(hp, host_name=host_name, datasets_by_name=datasets_by_name)
+    if _reads_host_spine(field, product=product, host=datasets_by_name.get(host_name), root_dataset=root_dataset):
+        moved = _onto_home_spine(r, cast(FieldKey, field), root_dataset=root_dataset,
+                                 datasets_by_name=datasets_by_name)
+        if moved is not None:
+            return moved
+        if product:
+            return r
     if hp[: len(target_path)] == target_path:
         return None  # reroot_value_key strips the prefix
     if target_path and host_name == target_path[0]:
@@ -440,11 +616,8 @@ def _reroot_leaf_via_host(
         host_name=host_name, target_path=target_path, host_path=hp,
         datasets_by_name=datasets_by_name,
     )
-    if not safe_reachable(
-        root=root_dataset, path=via_host, datasets_by_name=datasets_by_name,
-    ) and hp and not _common_prefix_len(target_path, hp) and safe_reachable(
-        root=root_dataset, path=hp, datasets_by_name=datasets_by_name,
-    ):
+    if _resolved_by_root_sibling(hp=hp, via_host=via_host, target_path=target_path, root_dataset=root_dataset,
+                                 datasets_by_name=datasets_by_name):
         return None  # resolved through the root's own relationship to the sibling
     if isinstance(r, TimeTruncKey):
         return r.model_copy(update={
@@ -562,40 +735,42 @@ def broadcast_reason(
     return UNREACHABLE_NO_PATH
 
 
-def assert_partition_key_attributable(
-    *, key: ValueKey, pk: ValueKey, label: str,
-    scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+def assert_partition_key_analysable(
+    *, pk: ValueKey, label: str, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> None:
-    """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
-    # StageSchema binds flat stage outputs — no relationship graph, so no fanning closure exists.
-    host_m = scope.population if isinstance(scope, DatasetScope) else None
+    """An aggregate's partition key fails closed in every mode only when a reference's closure is unanalysable from
+    that reference's anchor (Principle 1); an unattributable one resolves at the mode gate."""
+    host_m = scope.population
     if host_m is None:
         return
-    datasets_by_name = bundle.datasets_by_name
-    hp = key_host_path(pk)
-    if crosses_product_hop(host=host_m, path=hp, datasets_by_name=datasets_by_name):
-        return  # a row-level read across a product hop: the checker refuses it (Axiom 3.1)
-    if not hp:
-        # Path-less derived key: a fan from its own host is a mode-invariant safety
-        # error; a host-safe key's cross-dataset-root concern stays the planner's.
-        root, target, host_name = host_m, (), None
+    universe = {**bundle.datasets_by_name, host_m.name: host_m}
+    for r in _grain_references(pk):
+        spelling = r.anchor if r.anchor is not None else (host_m.name, *r.path)
+        anchor = universe.get(spelling[0])
+        if anchor is None:
+            continue
+        at_anchor = r.model_copy(update={"path": spelling[1:], "anchor": None})
+        check_partition_key_analysable(
+            label=label, pk=pk,
+            analysable=key_closure(
+                key=at_anchor, anchor_dataset=anchor, anchor_relation=anchor.name, bundle=bundle.rerooted(anchor),
+            ) is not None,
+        )
+
+
+def _grain_references(key: ValueKey) -> Iterator[FieldKey | FieldSqlKey]:
+    """A grain key's own references: a nested aggregate contributes its grain keys, never its interior."""
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        yield key
+    elif isinstance(key, AggregateKey):
+        for p in key.partition_keys or ():
+            yield from _grain_references(p)
+    elif isinstance(key, TransformKey):
+        for p in (*key.partition_keys, *((key.time_key,) if key.time_key is not None else ())):
+            yield from _grain_references(p)
     else:
-        target = source_anchor_path(key.source) if isinstance(key, AggregateKey) else ()
-        root = walk_key_path(dataset=host_m, path=target, bundle=bundle) or host_m
-        host_name = host_m.name if target else None
-    attributable = key_attributable_from_root(
-        key=pk, target_path=target, root_dataset=root,
-        datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_m,
-        host_name=host_name,
-    )
-    reason = None if attributable else key_broadcast_reason(
-        key=pk, target_path=target, root_dataset=root,
-        datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_m,
-        host_name=host_name,
-    )
-    check_partition_key_attributable(
-        label=label, pk=pk, attributable=attributable, reason=reason,
-    )
+        for c in key.children():
+            yield from _grain_references(c)
 
 
 def shared_relationship_key_reroot(
@@ -631,23 +806,50 @@ def grain_member_attributable(
     references must be — judged on its dependency closure so a derived
     fanning reference is unattributable; every nested aggregate must be too."""
     saw = False
-    for r in walk_value_keys(key):
-        if isinstance(r, AggregateKey):
-            saw = True
-            if not attributable_from_root(
-                host_path=source_anchor_path(r.source), target_path=target_path,
-                root_dataset=root_dataset, datasets_by_name=datasets_by_name,
-            ):
-                return False
-        elif isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey, StarKey)):
-            saw = True
-            if not key_attributable_from_root(
-                key=r, target_path=target_path, root_dataset=root_dataset,
-                datasets_by_name=datasets_by_name, bundle=bundle,
-                host_dataset=host_dataset, host_name=host_name,
-            ):
-                return False
+    for r in _grain_nodes(key):
+        verdict = _grain_node_attributable(
+            r, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+            bundle=bundle, host_dataset=host_dataset, host_name=host_name,
+        )
+        if verdict is False:
+            return False
+        saw = saw or verdict is True
     return saw
+
+
+def _grain_node_attributable(
+    r: ValueKey, *, target_path: Tuple[str, ...], root_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
+    host_dataset: SlayerDataset, host_name: Optional[str],
+) -> Optional[bool]:
+    """One grain node's verdict; ``None`` for a node that references nothing."""
+    if isinstance(r, AggregateKey) and is_framed_path(source_anchor_path(r.source)):
+        # Read from its own frame, an attached aggregate stands for its grain members (Axiom 2.3).
+        return all(grain_member_attributable(
+            key=p, target_path=target_path, root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+            bundle=bundle, host_dataset=host_dataset, host_name=host_name,
+        ) for p in r.partition_keys or ())
+    if isinstance(r, AggregateKey):
+        return attributable_from_root(
+            host_path=source_anchor_path(r.source), target_path=target_path,
+            root_dataset=root_dataset, datasets_by_name=datasets_by_name,
+        )
+    if isinstance(r, (FieldKey, FieldSqlKey, TimeTruncKey, StarKey)):
+        return key_attributable_from_root(
+            key=r, target_path=target_path, root_dataset=root_dataset,
+            datasets_by_name=datasets_by_name, bundle=bundle,
+            host_dataset=host_dataset, host_name=host_name,
+        )
+    return None
+
+
+def _grain_nodes(key: ValueKey) -> Iterator[ValueKey]:
+    """``key``'s nodes, a framed aggregate's interior skipped (it is read from its own frame)."""
+    yield key
+    if isinstance(key, AggregateKey) and is_framed_path(source_anchor_path(key.source)):
+        return
+    for c in key.children():
+        yield from _grain_nodes(c)
 
 
 def _grain_leaf_name(key: ValueKey) -> Optional[str]:
@@ -832,16 +1034,16 @@ def _path_grain_determined(
 
 
 def crossing_local_root_predicate(
-    *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    *, scope: DatasetScope, bundle: ResolvedSourceBundle, homes: AggregateHomes,
 ) -> Callable[[ValueKey], bool]:
     """Predicate for a LOCAL plain aggregate whose inputs cross a relationship (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
-    host_dataset = scope.population if isinstance(scope, DatasetScope) else None
+    host_dataset = scope.population
 
     def _pred(k: ValueKey) -> bool:
         return (
             isinstance(k, AggregateKey)
-            and k.partition_keys is None
-            and not source_anchor_path(k.source)
+            and k.written_grain is None
+            and not homes.target_rooted(k)
             # A host-locus wrap already compiles inline at the producer grain; its
             # attached parameter's crossing closure must not re-route it onto a
             # host-rooted producer (as ``_local_broadcasts`` excludes).

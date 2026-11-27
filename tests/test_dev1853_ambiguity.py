@@ -1,6 +1,6 @@
-"""DEV-1853 — ambiguous hops fail closed in both directions.
+"""Ambiguous hops fail closed in both directions.
 
-Two or more edges between the same pair of models make a bare model-name hop
+Two or more edges between the same pair of datasets make a bare dataset-name hop
 an error naming every candidate; the silent forward first-match is retired.
 """
 
@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from slayer.core.errors import AmbiguousRelationshipPathError, DerivedFieldAmbiguousError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -35,7 +36,7 @@ class TestParallelEdgesFailClosed:
         self, unnamed_engine,
     ) -> None:
         query = SlayerQuery(
-            population="orders", dimensions=["customers.name"])
+            population="orders", dimensions=["orders.customers.name"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await unnamed_engine.execute(query)
         _assert_names_both_candidates(str(ei.value))
@@ -44,29 +45,29 @@ class TestParallelEdgesFailClosed:
         self, unnamed_engine,
     ) -> None:
         query = SlayerQuery(
-            population="customers", dimensions=["orders.status"])
+            population="customers", dimensions=["customers.orders.status"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await unnamed_engine.execute(query)
         _assert_names_both_candidates(str(ei.value))
 
     async def test_error_carries_the_candidate_edges(self, unnamed_engine) -> None:
         query = SlayerQuery(
-            population="orders", dimensions=["customers.name"])
+            population="orders", dimensions=["orders.customers.name"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await unnamed_engine.execute(query)
         assert len(ei.value.candidates) == 2
 
     async def test_filter_path_fails_closed(self, unnamed_engine) -> None:
         query = SlayerQuery(
-            population="orders", dimensions=["status"],
-            filter=["customers.tier = 'gold'"])
+            population="orders", dimensions=["orders.status"],
+            filter=["orders.customers.tier = 'gold'"])
         with pytest.raises(AmbiguousRelationshipPathError):
             await unnamed_engine.execute(query)
 
     async def test_measure_path_fails_closed(self, unnamed_engine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(customers.spend)", "alias": "s"}],
+            "metrics": [{"metric": "sum(orders.customers.spend)", "alias": "s"}],
         })
         with pytest.raises(AmbiguousRelationshipPathError):
             await unnamed_engine.execute(query)
@@ -81,12 +82,12 @@ class TestModeAAmbiguity:
             assert orders is not None
             orders.fields = [
                 *orders.fields,
-                DatasetField(name="cust_tier", sql="customers.tier"),
+                DatasetField(name="cust_tier", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="customers.tier")])),
             ]
             with pytest.raises(DerivedFieldAmbiguousError):
                 await storage.save_dataset(orders)
             # A definition stored without validation (migration write-back) still fails closed at query time.
             await storage.save_dataset(orders, _validate=False)
-            query = SlayerQuery(population="orders", dimensions=["cust_tier"])
+            query = SlayerQuery(population="orders", dimensions=["orders.cust_tier"])
             with pytest.raises(AmbiguousRelationshipPathError):
                 await engine.execute(query)

@@ -19,8 +19,8 @@ client = SlayerClient(url="http://localhost:5143")
 
 query = {
     "population": "orders",
-    "metrics": ["count(*)", "sum(order_total)"],
-    "dimensions": ["status"],
+    "metrics": ["count(orders.*)", "sum(orders.order_total)"],
+    "dimensions": ["orders.status"],
     "limit": 10,
 }
 
@@ -56,28 +56,30 @@ Pass `client_factory=` to run every database access through your own client — 
 
 - A **dict** — a single query.
 - A **`SlayerQuery`** instance.
-- A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/queries.md#query-lists).
+- A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/saved-and-multistage-queries.md#query-lists).
 - A **string** — runs the backing query of a query-backed dataset by name.
 
 Each also takes `variables=` — runtime values for `{placeholders}`, overriding saved defaults.
 
+`query`, `sql` and `explain` (and their sync twins) take `conformance="ossie-l3"` to run the strict [Ossie Layer 3 binding](../interfaces/ossie-layer-3.md); a refusal raises `OssieQueryError`, in remote mode too.
+
 ```python
 # Multi-stage DAG
 client.query_sync([
-    {"name": "by_customer", "population": "orders", "metrics": ["sum(order_total)"], "dimensions": ["customer_id"]},
-    {"population": "by_customer", "metrics": ["avg(order_total_sum)"]},
+    {"name": "by_customer", "population": "orders", "metrics": ["sum(orders.order_total)"], "dimensions": ["orders.customer_id"]},
+    {"population": "by_customer", "metrics": ["avg(by_customer.order_total_sum)"]},
 ])
 
 # Run-by-name (query-backed dataset), optionally refined
 client.query_sync("rev_by_region")
-client.query_sync("rev_by_region", refine={"dimensions": ["status"]})
+client.query_sync("rev_by_region", refine={"dimensions": ["orders.status"]})
 client.query_sync("rev_by_status", variables={"status": "refunded"})
 
 # Raw rows — opt out of the dim-only auto-dedup. Per-stage in DAG queries.
 client.query_sync({
     "population": "orders",
-    "dimensions": ["status", "order_total"],
-    "filter": ["order_total > 100"],
+    "dimensions": ["orders.status", "orders.order_total"],
+    "filter": ["orders.order_total > 100"],
     "limit": 100,
     "distinct_dimension_values": False,
 })
@@ -101,6 +103,39 @@ datasources = client.list_datasources()
 # Create a datasource
 client.create_datasource({"name": "mydb", "type": "postgres", ...})
 ```
+
+### Semantic models
+
+Async methods, each with a `_sync` twin (`list_semantic_models_sync`, …). See [Semantic models](../concepts/semantic-models.md).
+
+```python
+await client.list_semantic_models(data_source="mydb")          # [{"data_source": "mydb", "name": "sales"}]
+text = await client.get_semantic_model("sales", data_source="mydb")  # the stored text; None when absent
+
+# From an Ossie document (YAML/JSON text or a dict; name defaults to its own), or by moving standalone datasets in
+await client.create_semantic_model(data_source="mydb", content=open("sales.yaml").read())
+await client.create_semantic_model(data_source="mydb", name="sales", datasets=["orders", "customers"])
+
+await client.replace_semantic_model("sales", data_source="mydb", content=new_text)
+await client.delete_semantic_model("sales", data_source="mydb")  # deletes its datasets too; False when absent
+```
+
+### Ontologies and mappings
+
+Async methods, each with a `_sync` twin. See [Ontologies and mappings](../concepts/ontologies.md).
+
+```python
+name = await client.create_ontology(content=open("flights.ontology.yaml").read())   # stored under its own name
+notes = await client.create_ontology_mapping(data_source="flights", content=open("flights.mapping.yaml").read())
+await client.list_ontologies()                                  # [{"name": "Flights"}]
+await client.list_ontology_mappings(data_source="flights")      # [{"data_source": "flights", "name": "flights_mapping"}]
+text = await client.get_ontology("Flights")                     # the stored text; None when absent
+await client.replace_ontology_mapping("flights_mapping", data_source="flights", content=new_text)
+await client.delete_ontology_mapping("flights_mapping", data_source="flights")
+await client.delete_ontology("Flights")                         # refused while a mapping resolves against it
+```
+
+A refused document raises a `ValueError` listing every problem. `create_ontology`, `replace_ontology`, `create_ontology_mapping`, `replace_ontology_mapping`, `create_semantic_model` and `replace_semantic_model` take `warnings_out`, a list receiving the identifier and multiplicity mismatches the save touches (without it they are Python warnings).
 
 ### Inspect
 
@@ -150,7 +185,7 @@ run_sync(client.save_memory(
     learning="Top customers by lifetime spend",
     linked_entities={
         "population": "orders",
-        "metrics": [{"metric": "sum(order_total)", "alias": "lifetime_spend"}],
+        "metrics": [{"metric": "sum(orders.order_total)", "alias": "lifetime_spend"}],
         "dimensions": ["customers.name"],
         "order": [{"field": "lifetime_spend", "direction": "desc"}],
         "limit": 5,
@@ -216,3 +251,6 @@ result = engine.execute(query=query)
 # result.row_count — number of rows
 # result.sql       — generated SQL string
 ```
+
+The response also carries `population`, `population_inferred` and `row_sources`: where its rows came from (see
+[Population](../concepts/queries.md#population)).

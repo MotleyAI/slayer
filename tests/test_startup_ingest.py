@@ -8,14 +8,15 @@ Covers:
   into `create_app` / `create_mcp_server`.
 * `SLAYER_INGEST_ON_STARTUP` env var, truthy/falsy semantics, and the
   "flag wins over env" precedence rule.
-* Programmatic `create_app(ingest_on_startup=True)` and
-  `create_mcp_server(ingest_on_startup=True)` actually trigger the
-  orchestrator (and the negative — `False` does not).
+* Programmatic `create_app(ingest_on_startup=True)` triggers the orchestrator before
+  returning, `create_mcp_server(ingest_on_startup=True)` once the server runs (and the
+  negative — `False` does not).
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import sys
 import tempfile
@@ -24,6 +25,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from mcp.client import Client
 
 from slayer import cli
 from slayer.core.models import DatasourceConfig
@@ -411,7 +413,7 @@ class TestOrchestrator:
     async def test_output_routed_to_stream_not_stdout(self, monkeypatch: pytest.MonkeyPatch, capsys):
         storage = _stub_storage(names=["a"])
         _patch_ingester(
-            monkeypatch, lambda n, ds: _result_with_addition("a_model", "a")
+            monkeypatch, lambda n, ds: _result_with_addition("a_dataset", "a")
         )
         stream = io.StringIO()
 
@@ -428,7 +430,7 @@ class TestOrchestrator:
     async def test_default_stream_is_stderr(self, monkeypatch: pytest.MonkeyPatch, capsys):
         storage = _stub_storage(names=["only"])
         _patch_ingester(
-            monkeypatch, lambda n, ds: _result_with_addition("only_model", "only")
+            monkeypatch, lambda n, ds: _result_with_addition("only_dataset", "only")
         )
 
         # No `stream=` kwarg → defaults to sys.stderr.
@@ -517,6 +519,16 @@ class TestCliFlagPlumbing:
 
         create_app_kwargs = next(c[1] for c in capture if c[0] == "create_app")
         assert create_app_kwargs.get("ingest_on_startup") is True
+
+    def test_serve_host_threads_to_create_app(self, monkeypatch: pytest.MonkeyPatch):
+        """The mounted MCP app's DNS-rebinding rule follows ``--host``."""
+        capture: list = []
+        _patch_serve_dependencies(monkeypatch, capture=capture)
+
+        cli._run_serve(_serve_args(host="0.0.0.0"))  # NOSONAR(S1313) — bind address under test
+
+        create_app_kwargs = next(c[1] for c in capture if c[0] == "create_app")
+        assert create_app_kwargs.get("host") == "0.0.0.0"  # NOSONAR(S1313) — bind address under test
 
     def test_mcp_flag_threads_to_create_mcp_server(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
@@ -648,10 +660,11 @@ class TestDemoIngestOrdering:
         cli._run_mcp(_mcp_args(demo=True, ingest_on_startup=True))
 
         order = [c[0] for c in capture]
-        assert order.index("prepare_demo") < order.index("create_mcp_server")
-        assert order.index("create_mcp_server") < order.index("mcp_run")
+        assert order == ["create_mcp_server", "mcp_run"]
         kwargs = next(c[1] for c in capture if c[0] == "create_mcp_server")
         assert kwargs.get("ingest_on_startup") is True
+        kwargs["demo_setup"]()
+        assert [c[0] for c in capture][-1] == "prepare_demo"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -714,10 +727,10 @@ class TestProgrammaticKwarg:
 
         assert calls == []
 
-    def test_create_mcp_server_with_kwarg_triggers_orchestrator(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_create_mcp_server_with_kwarg_ingests_once_the_server_runs(self, monkeypatch: pytest.MonkeyPatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
+        async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent
             calls.append((storage, stream))
             return StartupIngestSummary()
 
@@ -730,7 +743,9 @@ class TestProgrammaticKwarg:
         storage = _stub_storage(names=[])
         server = create_mcp_server(storage=storage, ingest_on_startup=True)
 
-        assert server is not None
+        assert calls == []
+        async with Client(server, mode="legacy") as client:
+            await client.call_tool("list_datasources", {})
         assert len(calls) == 1
         captured_storage, captured_stream = calls[0]
         assert captured_storage.inner is storage
@@ -766,13 +781,15 @@ class TestProgrammaticKwarg:
         with pytest.raises(RuntimeError, match="storage offline"):
             create_app(storage=storage, ingest_on_startup=True)
 
-    def test_create_mcp_server_propagates_list_datasources_error(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_create_mcp_server_reports_list_datasources_error_on_stderr(self, capsys):
         storage = _stub_storage(
             names=[], list_raises=RuntimeError("storage offline")
         )
 
-        with pytest.raises(RuntimeError, match="storage offline"):
-            create_mcp_server(storage=storage, ingest_on_startup=True)
+        server = create_mcp_server(storage=storage, ingest_on_startup=True, _seed_help=False)
+        async with Client(server, mode="legacy") as client:
+            await asyncio.wait_for(client.call_tool("list_datasources", {}), timeout=30)
+        assert "Ingest-on-startup failed: storage offline" in capsys.readouterr().err
 
 
 # ─────────────────────────────────────────────────────────────────────────────

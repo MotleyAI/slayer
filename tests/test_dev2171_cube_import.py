@@ -16,9 +16,9 @@ from slayer.cube.report import CubeConversionResult
 from slayer.database import engine_factory
 from tests._dev2171_fixtures import (
     collect_over_engine,
-    DS, MASKED, by_id, column, counts_by, cube_issues, cube_report_messages, deletes, drift_entries, has_column,
+    DS, by_id, field_of, counts_by, cube_issues, cube_report_messages, deletes, drift_entries, has_field,
     has_metric,
-    import_cube, datasets_of, run_cli, save_datasource, seed, source_column, stored_dataset, typing_notes,
+    import_cube, datasets_of, run_cli, save_datasource, seed, source_field, stored_dataset, typing_notes,
     unreachable_engine, value, write_yaml,
 )
 
@@ -65,7 +65,6 @@ async def _metric(result: CubeConversionResult, db: Path, name: str, dataset: st
 class TestPhysicalReferences:
     @pytest.mark.parametrize("dims", [[RENAMED_STATUS, STATUS_UPPER], [STATUS_UPPER, RENAMED_STATUS]],
                              ids=["status-first", "derived-first"])
-    @MASKED
     async def test_renamed_dimension_does_not_capture(self, db: Path, dims: list[dict[str, Any]]) -> None:
         result = import_cube([cube(dimensions=dims)], db=db)
         models = result.datasets
@@ -77,17 +76,18 @@ class TestPhysicalReferences:
     @pytest.mark.parametrize("sql", [
         'UPPER({CUBE}."status")', "UPPER({CUBE}.STATUS)", "UPPER({orders}.status)", "UPPER(status)",
     ], ids=["quoted", "case-folded", "own-cube-brace", "bare"])
-    @MASKED
     async def test_every_physical_spelling(self, db: Path, sql: str) -> None:
         result = import_cube([cube(dimensions=[RENAMED_STATUS, dim("status_upper", sql)])], db=db)
         assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="status_upper") == {
             "PAID": 2, "OPEN": 1}
 
-    @MASKED
-    def test_quoting_is_kept_on_the_hidden_base_column(self) -> None:
-        result = import_cube([cube(dimensions=[RENAMED_STATUS, dim("status_upper", 'UPPER({CUBE}."status")')])])
-        hidden = [c for c in datasets_of(result)["orders"].fields if c.hidden and c.physical_name == "status"]
-        assert [c.sql for c in hidden] == ['"status"']
+    async def test_quoting_is_kept_on_the_physical_read(self, db: Path) -> None:
+        result = import_cube([cube(dimensions=[RENAMED_STATUS, dim("status_upper", 'UPPER({CUBE}."status")')])], db=db)
+        dumped = datasets_of(result)["orders"].model_dump(mode="json", exclude_none=True)
+        (upper,) = [f for f in dumped["fields"] if f["name"] == "status_upper"]
+        assert [e["expression"] for e in upper["expression"]["dialects"]] == ['UPPER("status")']
+        assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="status_upper") == {
+            "PAID": 2, "OPEN": 1}
 
     @pytest.mark.parametrize(("sql", "kept"), [
         ("({CUBE}.amount - (SELECT MIN(amount) FROM orders))", "SELECT MIN(amount) FROM orders"),
@@ -97,23 +97,20 @@ class TestPhysicalReferences:
     async def test_nested_scopes_are_left_alone(self, db: Path, sql: str, kept: str) -> None:
         result = import_cube([cube(dimensions=[
             dim("amount", "{CUBE}.amount * 2", type="number"), dim("spread", sql, type="number")])], db=db)
-        assert kept in (column(datasets_of(result)["orders"], "spread").sql or "")
+        assert kept in (field_of(datasets_of(result)["orders"], "spread").definition_sql or "")
         assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="spread") == [5, 15, 0]
 
-    @MASKED
     async def test_measure_filter_reads_the_physical_column(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[RENAMED_STATUS],
                                    metrics=[meas("paid_amount", "sum", "{CUBE}.amount", filters=PAID)])], db=db)
         assert await _metric(result, db, "paid_amount") == 30
 
-    @MASKED
     async def test_segment_reads_the_physical_column(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[RENAMED_STATUS],
                                    segments=[{"name": "is_paid", "sql": "{CUBE}.status = 'paid'"}])], db=db)
         assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="is_paid") == {
             True: 2, False: 1}
 
-    @MASKED
     async def test_case_predicate_reads_the_physical_column(self, db: Path) -> None:
         bucket = {"name": "bucket", "case": {"when": [{"sql": "{CUBE}.status = 'paid'", "label": "P"}],
                                              "else": {"label": "O"}}}
@@ -123,7 +120,7 @@ class TestPhysicalReferences:
     @pytest.mark.parametrize("word", ["select", "from"])
     def test_reserved_word_column_is_dropped_with_a_report(self, word: str) -> None:
         result = import_cube([cube(dimensions=[dim("k", f"{{CUBE}}.{word}")])])
-        assert not has_column(result, "orders", "k")
+        assert not has_field(result, "orders", "k")
         assert [i for i in cube_issues(result, "k") if "reserved word" in i.message], result.report.issues
 
     async def test_quoted_reserved_word_column_is_read(self, tmp_path: Path) -> None:
@@ -132,7 +129,6 @@ class TestPhysicalReferences:
         assert await counts_by(datasets=result.datasets, db=db, dataset="t", dimension="k") == {"x": 2}
 
 
-@MASKED
 class TestSelfNamed:
     async def test_self_named_dimension(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[SELF_NAMED])], db=db)
@@ -147,12 +143,29 @@ class TestSelfNamed:
             "open": 1, "paid": 1, "x": 1}
 
 
+class TestNestedScopesAndViews:
+    async def test_nested_scope_reference_does_not_collide(self, db: Path) -> None:
+        cube = {"name": "orders", "sql_table": "orders", "dimensions": [
+            ID, {"name": "amount", "sql": "{CUBE}.amount * 2", "type": "number"},
+            {"name": "min_amount", "sql": "(SELECT MIN(amount) FROM orders)", "type": "number"}]}
+        result = import_cube([cube], db=db)
+        assert "SELECT MIN(amount) FROM orders" in (field_of(datasets_of(result)["orders"], "min_amount").definition_sql or "")
+        assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="min_amount") == [5, 5, 5]
+
+    async def test_view_over_a_filtered_measure(self, db: Path) -> None:
+        cube = {"name": "orders", "sql_table": "orders", "dimensions": [ID], "measures": [
+            {"name": "paid_sum", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID}]}
+        view = {"name": "orders_view", "cubes": [{"join_path": "orders", "includes": ["id", "paid_sum"]}]}
+        result = import_cube([cube], views=[view], db=db)
+        assert await value(datasets=result.datasets, db=db, dataset="orders_view", expression="paid_sum") == 30
+
+
 class TestFilteredHelpers:
     async def test_filtered_measure_next_to_a_plain_reference(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[dim("amount_x2", "{CUBE}.amount * 2", type="number")],
                                    metrics=[meas("paid_amount", "sum", "{CUBE}.amount", filters=PAID)])], db=db)
         model = datasets_of(result)["orders"]
-        assert source_column(model, "paid_amount").name == "paid_amount_col"
+        assert source_field(model, "paid_amount").name == "paid_amount_col"
         assert all(c.filter is None for c in model.fields if c.name == "amount")
         assert await _metric(result, db, "paid_amount") == 30
         assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="amount_x2") == [20, 40, 10]
@@ -164,8 +177,8 @@ class TestFilteredHelpers:
             meas("open_sum", "sum", "{CUBE}.amount", filters=[{"sql": "{CUBE}.status = 'open'"}]),
         ])])
         model = datasets_of(result)["orders"]
-        assert source_column(model, "paid_sum").name == source_column(model, "paid_avg").name
-        assert source_column(model, "paid_sum").name != source_column(model, "open_sum").name
+        assert source_field(model, "paid_sum").name == source_field(model, "paid_avg").name
+        assert source_field(model, "paid_sum").name != source_field(model, "open_sum").name
 
     def test_helpers_are_hidden(self) -> None:
         result = import_cube([cube(metrics=[
@@ -173,8 +186,8 @@ class TestFilteredHelpers:
             meas("paid_cnt", "number", "SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)"),
         ])])
         model = datasets_of(result)["orders"]
-        assert source_column(model, "paid_sum").hidden
-        assert column(model, "paid_cnt_col").hidden
+        assert source_field(model, "paid_sum").hidden
+        assert field_of(model, "paid_cnt_col").hidden
 
     def test_helpers_differ_by_type(self) -> None:
         result = import_cube([cube(metrics=[
@@ -182,7 +195,7 @@ class TestFilteredHelpers:
             meas("paid_n", "count", "{CUBE}.amount", filters=PAID),
         ])])
         model = datasets_of(result)["orders"]
-        summed, counted = source_column(model, "paid_sum"), source_column(model, "paid_n")
+        summed, counted = source_field(model, "paid_sum"), source_field(model, "paid_n")
         assert (summed.datatype, counted.datatype) == (DataType.FLOAT, DataType.STRING)
         assert summed.name != counted.name
 
@@ -215,24 +228,18 @@ class TestJoinedCubesPhysicalColumn:
         assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="cust_name") == {
             "Ann": 2, "Bo": 1}
 
-    def test_masked_is_dropped_with_a_report(self) -> None:
-        masked = {**CUSTOMERS, "dimensions": [ID, dim("name", "{CUBE}.region")]}
-        result = import_cube([cube(dimensions=[self.CUST_NAME], joins=[self.JOIN]), masked])
-        assert not has_column(result, "orders", "cust_name")
-        assert [i for i in cube_issues(result, "cust_name") if "'name'" in i.message], result.report.issues
-
     def test_cube_not_joined_is_dropped_with_a_report(self) -> None:
         result = import_cube([cube(dimensions=[self.CUST_NAME]), CUSTOMERS])
-        assert not has_column(result, "orders", "cust_name")
+        assert not has_field(result, "orders", "cust_name")
         assert [i for i in cube_issues(result, "cust_name") if "does not join" in i.message], result.report.issues
 
     @pytest.mark.parametrize("ref", ["{customers}.name", "{customers.name}"], ids=["physical", "member"])
     def test_join_dropped_later_drops_its_readers(self, ref: str) -> None:
-        masked_key = dim("customer_id", "{CUBE}.legacy_ref", type="number")
-        result = import_cube([cube(dimensions=[masked_key, dim("cn", ref), dim("cn_upper", "UPPER({cn})")],
-                                   metrics=[meas("n_names", "count_distinct", "{cn}")], joins=[self.JOIN]),
+        inequality = {**self.JOIN, "sql": "{CUBE}.customer_id > {customers}.id"}
+        result = import_cube([cube(dimensions=[dim("cn", ref), dim("cn_upper", "UPPER({cn})")],
+                                   metrics=[meas("n_names", "count_distinct", "{cn}")], joins=[inequality]),
                               CUSTOMERS])
-        assert not any(has_column(result, "orders", c) for c in ("cn", "cn_upper"))
+        assert not any(has_field(result, "orders", c) for c in ("cn", "cn_upper"))
         assert not has_metric(result, "orders", "n_names")
         assert [i for i in cube_issues(result, "cn") if "no relationship" in i.message], result.report.issues
 
@@ -251,13 +258,14 @@ class TestJoinedCubesPhysicalColumn:
         assert not any(has_metric(result, "orders", m) for m in ("tag_total", "double_total"))
         assert [i for i in cube_issues(result, "tag_total") if "list (ARRAY)" in i.message], result.report.issues
 
-    def test_calculated_percentile_over_a_joined_column_refused_by_the_target(self) -> None:
+    def test_calculated_percentile_over_a_joined_column_kept_on_mysql(self) -> None:
         sql = "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY {customers}.id)"
         project = CubeProject.model_validate({"cubes": [
             cube(metrics=[meas("p90", "number", sql)], joins=[self.JOIN]), CUSTOMERS]})
         result = CubeToSlayerConverter(project=project, data_source=DS, target_dialect="mysql").convert()
-        assert not has_metric(result, "orders", "p90")
-        assert [i for i in cube_issues(result, "p90") if "not supported" in i.message], result.report.issues
+        found = datasets_of(result)["orders"].get_metric("p90")
+        assert found is not None
+        assert found.text == "percentile(customers.id, p=0.9)"
 
     def test_filtered_measure_over_a_cube_not_joined_is_dropped(self) -> None:
         result = import_cube([cube(metrics=[meas("m", "sum", "{customers}.id", filters=PAID)]), CUSTOMERS])
@@ -276,12 +284,12 @@ class TestJoinedCubesPhysicalColumn:
 
 class TestCalculatedMeasures:
     @pytest.mark.parametrize(("sql", "dims", "expected"), [
-        pytest.param("SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)", [RENAMED_STATUS], 2, marks=MASKED),
+        ("SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)", [RENAMED_STATUS], 2),
         ("SUM(CASE WHEN {CUBE}.status = 'paid' THEN {CUBE}.amount END)", [], 30),
         ("SUM({CUBE}.amount)", [], 35),
         ("SUM({CUBE}.amount) FILTER (WHERE {CUBE}.status = 'paid') / COUNT(*)", [], 10),
         ("MAX({CUBE}.amount) - MIN({CUBE}.amount)", [], 15),
-        pytest.param("COUNT(DISTINCT {CUBE}.status)", [RENAMED_STATUS], 2, marks=MASKED),
+        ("COUNT(DISTINCT {CUBE}.status)", [RENAMED_STATUS], 2),
         ("AVG({CUBE}.amount * 3)", [dim("amount", "{CUBE}.amount * 2", type="number")], 35),
         ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {CUBE}.amount)", [], 10),
     ], ids=["case-collision", "undeclared-column", "plain", "filter-clause", "arithmetic", "count-distinct",
@@ -301,27 +309,31 @@ class TestCalculatedMeasures:
         model = datasets_of(result)["orders"]
         found = model.get_metric("total")
         assert found is not None
-        parsed = parse_expr(found.expression)
+        parsed = parse_expr(found.text)
         assert isinstance(parsed, AggCall)
         assert parsed.agg.lower() == "sum"
         assert isinstance(parsed.source, Ref)
-        col = column(model, parsed.source.name)
+        col = field_of(model, parsed.source.name)
         assert (col.physical_name, col.filter, col.is_base) == ("amount", None, True)
 
-    @pytest.mark.parametrize("p", ["0.5", "0.9"], ids=["median", "percentile"])
+    @pytest.mark.parametrize(("p", "text"), [("0.5", "median(amount)"), ("0.9", "percentile(amount, p=0.9)")],
+                             ids=["median", "percentile"])
     @pytest.mark.parametrize("target", ["mysql", "mssql"])
-    def test_percentile_refused_by_the_target_is_dropped(self, p: str, target: str) -> None:
+    def test_percentile_is_kept_on_a_target_that_translates_it(self, p: str, text: str, target: str) -> None:
         project = CubeProject.model_validate({"cubes": [cube(metrics=[
             meas("p", "number", f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {{CUBE}}.amount)")])]})
         result = CubeToSlayerConverter(project=project, data_source=DS, target_dialect=target).convert()
-        assert not has_metric(result, "orders", "p")
-        assert [i for i in cube_issues(result, "p") if "not supported" in i.message], result.report.issues
+        found = datasets_of(result)["orders"].get_metric("p")
+        assert found is not None
+        assert found.text == text
 
-    def test_percentile_disc_is_dropped(self) -> None:
-        result = import_cube([cube(metrics=[
+    def test_percentile_disc_is_imported(self) -> None:
+        # Offline, percentile_disc's operand needs a declared type, as min / max's does.
+        result = import_cube([cube(dimensions=[dim("amount", "{CUBE}.amount", type="number")], metrics=[
             meas("p", "number", "PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY {CUBE}.amount)")])])
-        assert not has_metric(result, "orders", "p")
-        assert [i for i in cube_issues(result, "p") if "PERCENTILE_DISC" in i.message], result.report.issues
+        found = datasets_of(result)["orders"].get_metric("p")
+        assert found is not None, result.report.issues
+        assert found.text == "percentile_disc(amount, p=0.9)"
 
     @pytest.mark.parametrize(("sql", "construct"), [
         ("SUM({CUBE}.amount) OVER ()", ""),
@@ -343,7 +355,6 @@ class TestJoinKeys:
     async def _by_customer(self, result: CubeConversionResult, db: Path) -> dict[Any, int]:
         return await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="customers.name")
 
-    @MASKED
     async def test_key_masked_by_a_renamed_dimension(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[dim("customer_id", "{CUBE}.legacy_ref", type="number")],
                                    joins=[self.JOIN]), CUSTOMERS], db=db)
@@ -389,7 +400,6 @@ class TestFilterParams:
 
 # ── views ─────────────────────────────────────────────────────────────────
 
-@MASKED
 class TestViews:
     async def test_view_over_a_self_named_dimension(self, db: Path) -> None:
         view = {"name": "orders_view", "cubes": [{"join_path": "orders", "includes": ["id", "status", "paid_sum"]}]}
@@ -420,7 +430,7 @@ class TestViews:
 class TestTyping:
     async def test_list_measure_source_typed_from_the_database(self, db: Path) -> None:
         result = import_cube([cube(metrics=[meas("tag_cnt", "count", "{CUBE}.tags")])], db=db)
-        col = source_column(datasets_of(result)["orders"], "tag_cnt")
+        col = source_field(datasets_of(result)["orders"], "tag_cnt")
         assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
         assert await _metric(result, db, "tag_cnt") == 2
 
@@ -428,18 +438,18 @@ class TestTyping:
         result = import_cube([cube(dimensions=[dim("tags", "{CUBE}.tags"),
                                                dim("tags_sorted", "list_sort({CUBE}.tags)")])], db=db)
         model = datasets_of(result)["orders"]
-        assert (column(model, "tags").datatype, column(model, "tags").element_type) == (DataType.ARRAY, DataType.STRING)
-        probed = column(model, "tags_sorted")
+        assert (field_of(model, "tags").datatype, field_of(model, "tags").element_type) == (DataType.ARRAY, DataType.STRING)
+        probed = field_of(model, "tags_sorted")
         assert (probed.datatype, probed.element_type) == (DataType.ARRAY, DataType.OPAQUE)
 
     def test_sql_mode_source_is_probed(self, db: Path) -> None:
         result = import_cube([cube(sql="SELECT * FROM orders", dimensions=[dim("tags", "{CUBE}.tags")])], db=db)
-        col = column(datasets_of(result)["orders"], "tags")
+        col = field_of(datasets_of(result)["orders"], "tags")
         assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
 
     def test_offline_count_source(self) -> None:
         result = import_cube([cube(metrics=[meas("tag_cnt", "count", "{CUBE}.tags")])])
-        assert source_column(datasets_of(result)["orders"], "tag_cnt").datatype == DataType.STRING
+        assert source_field(datasets_of(result)["orders"], "tag_cnt").datatype == DataType.STRING
         notes = typing_notes(i.message for i in result.report.issues if i.severity == "info")
         assert len(notes) == 1, result.report.issues
 
@@ -474,7 +484,7 @@ class TestTyping:
     def test_offline_max_over_a_declared_dimension_imports(self) -> None:
         result = import_cube([cube(dimensions=[dim("created_at", "{CUBE}.created_at", type="time")],
                                    metrics=[meas("latest", "max", "{CUBE}.created_at")])])
-        assert source_column(datasets_of(result)["orders"], "latest").datatype == DataType.DATETIME
+        assert source_field(datasets_of(result)["orders"], "latest").datatype == DataType.DATETIME
 
     @pytest.mark.parametrize("agg", ["count_distinct", "min", "max", "sum", "avg"])
     def test_aggregation_refused_over_a_list_is_dropped(self, db: Path, agg: str) -> None:
@@ -510,7 +520,7 @@ class TestCli:
         finally:
             engine_factory.invalidate_engine(DatasourceConfig(name=DS, type="duckdb", database=str(db)))
         assert code == 0
-        col = column(stored_dataset(store, "orders"), "tags")
+        col = field_of(stored_dataset(store, "orders"), "tags")
         assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
         assert typing_notes(i["message"] for i in cube_report_messages(store)) == []
 
@@ -530,7 +540,6 @@ class TestCli:
         assert absent.replace("missing_ds", "") != failed.replace("broken_ds", "")
 
 
-@MASKED
 async def test_query_backed_source_with_a_collision(db: Path) -> None:
     result = import_cube([cube(sql="SELECT * FROM orders", dimensions=[RENAMED_STATUS, STATUS_UPPER])], db=db)
     assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="status_upper") == {

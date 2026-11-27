@@ -2,16 +2,14 @@
 
 Self-contained and **fully offline** (no network, unlike the dbt MetricFlow
 demo's git clone): builds a tiny retail DuckDB with deterministic rows, registers
-it as a SLayer datasource, and converts the committed ``shop.osi.yaml`` OSI
-config into queryable SLayer datasets via
-:class:`~slayer.osi.converter.OsiToSlayerConverter`.
+it as a SLayer datasource, and stores the committed ``shop.osi.yaml`` Ossie
+document natively, as written, via :func:`~slayer.osi.importer.import_osi`.
 
 Everything generated lives under a gitignored ``.cache/`` next to this file, so
 nothing generated is committed and re-runs rebuild it cheaply.
 
-The OSI importer takes column *types* from **live introspection** of the
-datasource (a declared ``datatype`` is only the fallback), so the datasource
-must be saved and reachable *before* :func:`convert_osi_to_slayer` runs.
+The import neither converts nor introspects: the document's datasets,
+relationships and metrics are read from the stored text on every load.
 
 Gold-query helper note: SLayer opens the DuckDB file through SQLAlchemy with a
 read-write engine that DuckDB will not let a second raw connection share under a
@@ -32,10 +30,7 @@ import duckdb
 from slayer.async_utils import run_sync
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.models import DatasourceConfig
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.ingest_report import ConversionResult
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.parser import parse_osi_path
+from slayer.osi.importer import OsiImportResult, import_osi
 from slayer.storage.yaml_storage import YAMLStorage
 
 logger = logging.getLogger(__name__)
@@ -46,10 +41,10 @@ _THIS_DIR = Path(__file__).resolve().parent
 OSI_CONFIG = _THIS_DIR / "shop.osi.yaml"
 CACHE_DIR = _THIS_DIR / ".cache"
 DB_PATH = CACHE_DIR / "shop.duckdb"
-MODELS_DIR = CACHE_DIR / "slayer_models"
+DATASETS_DIR = CACHE_DIR / "slayer_datasets"
 
 # DuckDB DDL for the four tables the OSI config binds to. Mirrors the schema in
-# tests/test_cli_import_osi.py, with DuckDB-native types (DOUBLE / VARCHAR).
+# tests/fixtures/osi/shop.yaml's tables, with DuckDB-native types (DOUBLE / VARCHAR).
 _SCHEMA = [
     "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, customer_id INTEGER, "
     "product_id INTEGER, amount DOUBLE, quantity INTEGER, ordered_at DATE, status VARCHAR)",
@@ -110,43 +105,25 @@ def build_shop_duckdb(db_path: Path = DB_PATH) -> Path:
     return db_path
 
 
-def convert_osi_to_slayer(
+def import_osi_document(
     osi_path: Path = OSI_CONFIG,
-    models_dir: Path = MODELS_DIR,
+    datasets_dir: Path = DATASETS_DIR,
     db_path: Path = DB_PATH,
-) -> ConversionResult:
-    """Convert the OSI config into SLayer datasets and persist them.
+) -> OsiImportResult:
+    """Store the Ossie document natively in a fresh ``YAMLStorage`` rooted at ``datasets_dir``.
 
-    Saves a DuckDB ``DatasourceConfig`` into a fresh ``YAMLStorage`` rooted at
-    ``models_dir`` (the importer introspects it live for column types), parses
-    the OSI documents, runs :class:`OsiToSlayerConverter`, and saves each dataset.
+    Saves a DuckDB ``DatasourceConfig`` the document binds to, then imports ``osi_path``
+    with :func:`~slayer.osi.importer.import_osi`, which stores its text unchanged.
     """
-    # Quieten the converter's benign clean-fail notices so the notebook output
-    # stays focused on the demo.
-    logging.getLogger("slayer.osi").setLevel(logging.ERROR)
+    if datasets_dir.exists():
+        shutil.rmtree(datasets_dir)
 
-    if models_dir.exists():
-        shutil.rmtree(models_dir)
-
-    storage = YAMLStorage(base_dir=str(models_dir))
+    storage = YAMLStorage(base_dir=str(datasets_dir))
     ds = DatasourceConfig(
         name=DATASOURCE_NAME, type="duckdb", database=str(db_path.resolve())
     )
     run_sync(storage.save_datasource(ds))
-
-    documents = parse_osi_path(osi_path)
-    converter = OsiToSlayerConverter(
-        documents=documents,
-        data_source=DATASOURCE_NAME,
-        target_dialect="duckdb",
-    )
-    engine = SlayerQueryEngine(storage=storage)
-    engine.run_sync(converter.collect_metadata(client=engine.client_for(ds)))
-    result = converter.convert()
-
-    for dataset in result.datasets:
-        run_sync(storage.save_dataset(dataset))
-    return result
+    return run_sync(import_osi(storage=storage, path=osi_path, data_source=DATASOURCE_NAME))
 
 
 def fetch_gold(db_path: Path, sql: str) -> List[dict]:
@@ -212,14 +189,14 @@ def compute_gold(db_path: Path = DB_PATH) -> dict:
     }
 
 
-def ensure_osi_demo() -> "tuple[SlayerClient, Path, ConversionResult]":
-    """One-shot convenience: build data, convert OSI, and return a ready client.
+def ensure_osi_demo() -> "tuple[SlayerClient, Path, OsiImportResult]":
+    """One-shot convenience: build data, import the Ossie document, and return a ready client.
 
     Returns ``(client, db_path, result)``. Notebooks that want to show the build
-    and conversion as explicit steps call :func:`build_shop_duckdb` and
-    :func:`convert_osi_to_slayer` separately instead.
+    and import as explicit steps call :func:`build_shop_duckdb` and
+    :func:`import_osi_document` separately instead.
     """
     build_shop_duckdb(DB_PATH)
-    result = convert_osi_to_slayer(OSI_CONFIG, MODELS_DIR, DB_PATH)
-    client = SlayerClient(storage=YAMLStorage(base_dir=str(MODELS_DIR)))
+    result = import_osi_document(OSI_CONFIG, DATASETS_DIR, DB_PATH)
+    client = SlayerClient(storage=YAMLStorage(base_dir=str(DATASETS_DIR)))
     return client, DB_PATH, result

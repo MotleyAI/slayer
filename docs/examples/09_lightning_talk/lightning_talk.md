@@ -33,13 +33,13 @@ The notebook covers each one in two or three cells.
 {
   "population": "orders",
   "metrics": [
-    {"metric": "sum(order_total)", "alias": "revenue"},
-    {"metric": "change_pct(sum(order_total))", "alias": "mom_growth"},
-    {"metric": "sum(order_total) / time_shift(sum(order_total), -1, 'year') - 1", "alias": "yoy_growth"}
+    {"metric": "sum(orders.order_total)", "alias": "revenue"},
+    {"metric": "change_pct(sum(orders.order_total))", "alias": "mom_growth"},
+    {"metric": "sum(orders.order_total) / time_shift(sum(orders.order_total), -1, 'year') - 1", "alias": "yoy_growth"}
   ],
   "dimensions": ["stores.name"],
-  "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
-  "filter": ["change_pct(sum(order_total)) > 0"],
+  "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
+  "filter": ["change_pct(sum(orders.order_total)) > 0"],
   "order": [{"field": "mom_growth", "direction": "desc"}],
   "limit": 10
 }
@@ -76,7 +76,7 @@ Then ask Claude in any project: *"What stores are in jaffle_shop and which one h
 ## Links
 
 - [Notebook](lightning_talk_nb.ipynb) (runnable)
-- [Datasets concept](../../concepts/models.md)
+- [Datasets concept](../../concepts/datasets.md)
 - [Queries concept](../../concepts/queries.md)
 - [Memories concept](../../concepts/memories.md)
 - [Search concept](../../concepts/search.md)

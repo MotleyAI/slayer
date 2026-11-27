@@ -15,6 +15,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.names import qualified_reference
 from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import (
     IntrospectedColumn, _fields_to_dataset, _sql_table_identity, ingest_datasource_idempotent, list_ingestable_objects,
@@ -73,14 +74,14 @@ def test_folded_and_exact_live_spellings_are_ambiguous(dialect: str) -> None:
 
 
 def test_unquoted_mixed_case_reference_reads_the_exact_column_on_postgres() -> None:
-    lower, exact = DatasetField(name="lower", sql="orderamount"), DatasetField(name="exact", sql='"OrderAmount"')
+    lower, exact = DatasetField(name="lower", expression="orderamount"), DatasetField(name="exact", expression='"OrderAmount"')
     index = PhysicalIndex([lower, exact], dialect="postgres", live=["orderamount", "OrderAmount"])
     assert index.reader(exp.to_identifier("OrderAmount")) is exact
     assert index.reader(exp.to_identifier("orderamount")) is lower
 
 
 def test_case_insensitive_dialect_matches_any_case() -> None:
-    col = DatasetField(name="amount", sql="orderamount")
+    col = DatasetField(name="amount", expression="orderamount")
     index = PhysicalIndex([col], dialect="duckdb", live=["orderamount"])
     assert index.reader(exp.to_identifier("OrderAmount")) is col
 
@@ -128,7 +129,7 @@ def test_rendered_name_reads_back_as_its_parts(parts: Sequence[str], dialect: st
 async def _query(storage: YAMLStorage, dataset: str) -> list[dict[str, object]]:
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return (await engine.execute({"population": dataset, "dimensions": ["qty"]})).data
+        return (await engine.execute({"population": dataset, "dimensions": [qualified_reference(dataset, "qty")]})).data
     finally:
         engine.close()
 
@@ -315,10 +316,10 @@ def test_table_location_keeps_the_quoting_of_its_names() -> None:
 
 def _keyed(*, cardinality: RelationshipCardinality) -> list[SlayerDataset]:
     customers = SlayerDataset(name="customers", data_source=DS, sql_table="customers", fields=[
-        DatasetField(name="id", sql='"id"', datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
+        DatasetField(name="id", expression='"id"', datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
         relationships=[DatasetRelationship(to="orders", from_columns=["id"], to_columns=["cust"], cardinality=cardinality)])
     orders = SlayerDataset(name="orders", data_source=DS, sql_table="orders", fields=[
-        DatasetField(name="oid", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="cust", sql='"cust_key"', datatype=DataType.INTEGER),
+        DatasetField(name="oid", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="cust", expression='"cust_key"', datatype=DataType.INTEGER),
         DatasetField(name="status", datatype=DataType.STRING)])
     return [customers, orders]
 
@@ -330,11 +331,11 @@ def _key_columns(sql: str, *, dialect: str) -> set[tuple[str, bool]]:
 
 
 @pytest.mark.parametrize(("cardinality", "query"), [
-    (RelationshipCardinality.ONE_TO_ONE, {"population": "customers", "dimensions": ["name", "orders.status"]}),
-    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
+    (RelationshipCardinality.ONE_TO_ONE, {"population": "customers", "dimensions": ["customers.name", "orders.status"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["customers.name"],
                                    "filter": ["orders.status = 'x'"]}),
-    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
-                                   "filter": ["name = 'a' OR orders.status = 'x'"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["customers.name"],
+                                   "filter": ["customers.name = 'a' OR orders.status = 'x'"]}),
 ])
 @pytest.mark.parametrize("dialect", ["snowflake", "postgres"])
 async def test_quoted_join_keys_stay_quoted(cardinality: RelationshipCardinality, query: dict[str, Any], dialect: str) -> None:
@@ -347,5 +348,5 @@ async def test_quoted_join_keys_stay_quoted(cardinality: RelationshipCardinality
 def test_ingested_quoted_column_reads_itself_exactly() -> None:
     model = _fields_to_dataset(name="t", data_source=DS, sql_table="t", fields=[
         IntrospectedColumn(name="foo", type=DataType.INTEGER, quoted=True), IntrospectedColumn(name="bar", type=DataType.INTEGER)])
-    assert [(c.name, c.sql, c.physical_name, c.physical_quoted) for c in model.fields] == [
+    assert [(c.name, c.expression, c.physical_name, c.physical_quoted) for c in model.fields] == [
         ("foo", '"foo"', "foo", True), ("bar", "bar", "bar", False)]

@@ -9,12 +9,13 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AccessTagsEditError, HiddenContentConflictError, MemoryNotFoundError, SlayerError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.models import Embedding, EntityKind
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     DS,
     FIN_MEMORY,
@@ -82,7 +83,7 @@ async def test_save_warns_about_no_hidden_dependent_it_breaks(store: AccessStore
     await store.storage.save_dataset(pub_link.model_copy(update={"relationships": [*pub_link.relationships, extra]}), _validate=False)
     secret = SlayerDataset(
         name="secret", sql_table="pub_items", data_source=DS, access_tags=["hr"],
-        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="lbl", sql="pub_link.extra.label")],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="lbl", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="pub_link.extra.label"), DialectEntry(dialect="SQLITE", expression="pub_link.extra.label")]))],
         relationships=[DatasetRelationship(to="pub_link", from_columns=["id"], to_columns=["id"])],
     )
     await store.storage.save_dataset(secret, _validate=False)
@@ -114,7 +115,7 @@ class TestMergedModelWrites:
         fin = view(store, "fin")
         model = await must_get(fin, "fin")
         assert model.relationships == []
-        doubled = DatasetField(name="doubled", datatype=DataType.FLOAT, sql="amount * 2")
+        doubled = DatasetField(name="doubled", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * 2"), DialectEntry(dialect="SQLITE", expression="amount * 2")]))
         await save(fin, model.model_copy(update={"fields": [*model.fields, doubled]}), saver=saver)
         stored = await must_get(store.storage, "fin")
         assert stored.get_field("doubled") is not None
@@ -135,37 +136,25 @@ def _new_dataset_named_hr(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
                        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
 
 
-def _edge_named_like_hidden_dataset(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
-    return fin.model_copy(update={"relationships": [DatasetRelationship(to="pub", name="hr", from_columns=["staff_id"], to_columns=["id"])]})
-
-
-def _new_dataset_with_edge_named_like_hidden_dataset(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
-    return SlayerDataset(name="pub_edge", sql_table="pub_items", data_source=DS,
-                       fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
-                       relationships=[DatasetRelationship(to="pub", name="hr", from_columns=["id"], to_columns=["id"])])
-
-
 def _edge_named_like_pruned_edge(_: SlayerDataset, pub_link: SlayerDataset) -> SlayerDataset:
     return pub_link.model_copy(update={"relationships": [DatasetRelationship(to="fin", name=PRUNED_EDGE, from_columns=["id"], to_columns=["id"])]})
 
 
-def _without_key_column(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
+def _without_key_field(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
     return fin.model_copy(update={"fields": [c for c in fin.fields if c.name != "staff_id"]})
 
 
-def _key_column(fin: SlayerDataset, **update) -> SlayerDataset:
+def _key_field(fin: SlayerDataset, **update) -> SlayerDataset:
     columns = [c.model_copy(update=update) if c.name == "staff_id" else c for c in fin.fields]
     return fin.model_copy(update={"fields": columns})
 
 
 CONFLICTS: dict[str, tuple[Callable[[SlayerDataset, SlayerDataset], SlayerDataset], str | None, str]] = {
     "hidden-model-name": (_new_dataset_named_hr, "hr", "hr"),
-    "edge-named-like-hidden-model": (_edge_named_like_hidden_dataset, "hr", "fin"),
-    "new-model-edge-named-like-hidden-model": (_new_dataset_with_edge_named_like_hidden_dataset, "hr", "pub_edge"),
     "edge-named-like-pruned-edge": (_edge_named_like_pruned_edge, None, "pub_link"),
-    "removed-key-column": (_without_key_column, None, "fin"),
-    "expression-key-column": (lambda fin, _: _key_column(fin, sql="id + 0"), None, "fin"),
-    "filtered-key-column": (lambda fin, _: _key_column(fin, filter="staff_id > 0"), None, "fin"),
+    "removed-key-column": (_without_key_field, None, "fin"),
+    "field-reading-key-column": (lambda fin, _: _key_field(fin, expression="fin.id"), None, "fin"),
+    "filtered-key-column": (lambda fin, _: _key_field(fin, filter="staff_id > 0"), None, "fin"),
 }
 
 
@@ -230,7 +219,7 @@ class TestAccessTags:
     async def test_access_tags_error_comes_first(self, store: AccessStore, saver: str) -> None:
         fin = view(store, "fin")
         model = await must_get(fin, "fin")
-        conflicting = _without_key_column(model, model).model_copy(update={"access_tags": ["hr"]})
+        conflicting = _without_key_field(model, model).model_copy(update={"access_tags": ["hr"]})
         with pytest.raises(AccessTagsEditError):
             await save(fin, conflicting, saver=saver)
 

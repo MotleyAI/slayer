@@ -1,7 +1,7 @@
-"""Shared fixtures for DEV-1859 leg C — attached parameters on row-level sources.
+"""Shared fixtures for attached parameters on row-level sources.
 
-Two graphs: the DEV-1840 associate graph (orders→customers→regions) for the
-association shapes, and the DEV-1847 sales graph (with a ``wsum`` custom
+Two graphs: the ``_dev1840_fixtures`` associate graph (orders→customers→regions) for the
+association shapes, and the ``_dev1847_fixtures`` sales graph (with a ``wsum`` custom
 aggregation appended) for the ordinary/ungrained/re-aggregation shapes. Every
 oracle is a reduction over the raw seed rows — the double-entry reference the
 executed suites assert against, runnable standalone.
@@ -28,7 +28,7 @@ from tests._dev1847_fixtures import (
 )
 
 # --------------------------------------------------------------------------- #
-# Models — the sales graph with a ``wsum`` = SUM(value * weight) custom agg.
+# Datasets — the sales graph with a ``wsum`` = SUM(value * weight) custom agg.
 # --------------------------------------------------------------------------- #
 _WSUM = Aggregation(
     name="wsum", expression="SUM({value} * {weight})",
@@ -37,8 +37,8 @@ _WSUM = Aggregation(
 
 
 def sales_wsum_datasets() -> List[SlayerDataset]:
-    """``dev1847_models()`` with ``wsum`` appended to the sales model (weight
-    defaults to the ``amount`` column; every leg-C use passes it explicitly)."""
+    """``dev1847_datasets()`` with ``wsum`` appended to the sales dataset (weight
+    defaults to the ``amount`` field; every leg-C use passes it explicitly)."""
     models = dev1847_datasets()
     next(m for m in models if m.name == "sales").aggregations.append(_WSUM)
     return models
@@ -57,7 +57,7 @@ def customers_wsum_datasets() -> List[SlayerDataset]:
 # --------------------------------------------------------------------------- #
 # Raw-row projections.
 # --------------------------------------------------------------------------- #
-#: region_id -> region name (DEV-1840).
+#: region_id -> region name.
 _REGION_NAME = {rid: name for (rid, name, _pop) in _DEV1840_REGIONS}
 #: customer id -> (region_id, spend).
 _CUST = {c[0]: (c[1], c[4]) for c in _DEV1840_CUSTOMERS}

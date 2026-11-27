@@ -1,25 +1,38 @@
 """MCP server for SLayer."""
 
+import asyncio
+import functools
 import json
 import logging
 import sys
 import weakref
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
+from contextlib import asynccontextmanager
 from inspect import cleandoc
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import Discriminator, Field, Tag, ValidationError
+import anyio
+import anyio.to_thread
+from packaging.specifiers import SpecifierSet
+from packaging.version import InvalidVersion, Version
+from pydantic import (
+    BaseModel, ConfigDict, Discriminator, Field, Tag, TypeAdapter, ValidationError, WrapValidator,
+)
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__, usage_reporting
 from slayer import otel
 from slayer.usage_reporting.payload import USAGE_KEYS
+from slayer.core.enums import Conformance
+from slayer.demo.jaffle_shop import DemoSetupError
 from slayer.core.errors import (
     AmbiguousDatasetError,
+    HiddenContentConflictError,
     MemoryNotFoundError,
     SlayerError,
+    StoredDependentBreakError,
 )
 from slayer.core.models import (
     Aggregation,
@@ -58,6 +71,7 @@ from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine, SlayerR
 from slayer.engine.response_meta import FieldMetadata, ResponseAttributes
 from slayer.database.client import SqlClient, SqlClientError
 from slayer.memories.help_seed import seed_help_memories
+from slayer.ontology.documents import content_text, document_name
 from slayer.inspect.dataset_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
     _escape_md_cell,
@@ -75,6 +89,7 @@ from slayer.inspect.dataset_render import (  # noqa: F401 — re-exported for ba
 from slayer.inspect.collection_render import (
     render_datasource_list,
     render_datasets_summary,
+    with_relationships_as_read,
 )
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
@@ -83,7 +98,10 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import Context, MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
+    from mcp.shared.exceptions import MCPError
+    from mcp.types import CallToolResult, InputRequiredResult
 
 logger = logging.getLogger(__name__)
 
@@ -100,11 +118,15 @@ _MCP_ROW_CAP = 20
 _CAP_HINT = "pass a higher 'limit' to get more rows"
 _DS_LOAD_FAILED = "Failed to load datasource '%s': %s"
 _NESTED_CAP_HINT = "pass a higher 'limit' on the root query to get more rows"
+#: A definition and its deprecated twin: an upsert spelling one replaces the other.
+_DEFINITION_TWINS = (frozenset({"sql", "expression"}), frozenset({"formula", "expression"}))
 
+#: The mcp releases SLayer runs on.
+_MCP_RANGE = ">=2.3,<3"
 # Shared remedy for every mcp-import failure below.
 _MCP_REMEDY = (
-    "Install a supported version: pip install 'mcp>=1.19,<2' "
-    "(or upgrade SLayer, which pins mcp<2: pip install -U motley-slayer)."
+    f"Install a supported version: pip install 'mcp{_MCP_RANGE}' "
+    "(or upgrade SLayer: pip install -U motley-slayer)."
 )
 
 # Claude Code's default cap on each tool description and on the server instructions.
@@ -126,11 +148,42 @@ def _query_form(value: Any) -> str:
     return "stages" if isinstance(value, list) else "object"
 
 
+class _SubmittedQuery(BaseModel):
+    """The ``query`` argument as submitted, beside its native reading or why it has none."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    raw: Any
+    parsed: Any = None
+    error: ValidationError | TypeError | None = None
+
+    def native(self) -> Any:
+        """The native reading; raises the native validation error when there is none."""
+        if self.error is not None:
+            raise self.error
+        return self.parsed
+
+
+def _keep_submitted(value: Any, handler: Callable[[Any], Any]) -> _SubmittedQuery:
+    """The strict binding judges the input as submitted, so native validation is recorded, never raised here."""
+    try:
+        return _SubmittedQuery(raw=value, parsed=handler(value))
+    except (ValidationError, TypeError) as exc:
+        return _SubmittedQuery(raw=value, error=exc)
+
+
 #: Validates only the chosen form, so an error never lists the other forms' mismatches.
-QueryArgument = Annotated[
+_QUERY_FORMS = Annotated[
     Annotated[str, Tag("name")] | Annotated[SlayerQuery, Tag("object")] | Annotated[list[SlayerQuery], Tag("stages")],
     Discriminator(_query_form),
 ]
+_QUERY_ADAPTER: TypeAdapter[Any] = TypeAdapter(_QUERY_FORMS)
+QueryArgument = Annotated[_QUERY_FORMS, WrapValidator(_keep_submitted)]
+
+
+def _submitted(query: Any) -> _SubmittedQuery:
+    """``query`` as the tool receives it: already wrapped by its validator, else (a direct call) wrapped here."""
+    return query if isinstance(query, _SubmittedQuery) else _keep_submitted(query, _QUERY_ADAPTER.validate_python)
 
 
 def _check_budget(*, what: str, text: str) -> None:
@@ -145,41 +198,48 @@ def _agent_description(fn: Callable[..., Any]) -> str:
     return text
 
 
-def _mcp_major(version_str: str) -> int | None:
-    """Best-effort major-version parse; ``None`` when unparseable."""
+def _mcp_supported(version_str: str) -> bool:
+    """Whether ``version_str`` is a PEP 440 version in ``_MCP_RANGE``; pre-releases and unparseable versions are not."""
     try:
-        return int(version_str.split(".", 1)[0].strip())
-    except ValueError:
-        return None
+        return Version(version_str) in SpecifierSet(_MCP_RANGE)
+    except InvalidVersion:
+        return False
 
 
-def _import_fastmcp():
-    """Return the mcp 1.x ``FastMCP`` class, or raise an actionable ImportError.
-
-    Absent package and wrong major (mcp 2.x dropped the module) get different remedies.
-    """
+def _import_mcp_sdk() -> "tuple[type[MCPServer], type[ToolError], type[MCPError]]":
+    """mcp 2.x's ``MCPServer``, ``ToolError`` and ``MCPError``, or an actionable ImportError."""
     try:
-        from mcp.server.fastmcp import FastMCP  # ALLOW(import-not-top): optional-dep probe — must attempt the import at call time to diagnose absent vs wrong-major
+        installed = _pkg_version("mcp")
+    except PackageNotFoundError as exc:
+        raise ImportError(f"MCP package not found. {_MCP_REMEDY}") from exc
+    if not _mcp_supported(installed):
+        raise ImportError(f"mcp {installed} is installed, but SLayer requires mcp{_MCP_RANGE}. {_MCP_REMEDY}")
+    try:
+        from mcp.server.mcpserver import MCPServer  # ALLOW(import-not-top): SDK probe — at build time, so an out-of-range install gets the remedy, not a raw import error
+        from mcp.server.mcpserver.exceptions import ToolError  # ALLOW(import-not-top): SDK probe, as above
+        from mcp.shared.exceptions import MCPError  # ALLOW(import-not-top): SDK probe, as above
     except ImportError as exc:
+        raise ImportError(
+            f"mcp {installed} is installed, but 'mcp.server.mcpserver' could not be imported: {exc} {_MCP_REMEDY}"
+        ) from exc
+    return MCPServer, ToolError, MCPError
+
+
+def _keeping_failure_text(
+    fn: Callable[..., Any], *, tool_error: "type[ToolError]", mcp_error: "type[MCPError]",
+) -> Callable[..., Any]:
+    """``fn`` raising any failure but an MCP one as a ``tool_error`` with its message, which the SDK shows the agent."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
-            installed = _pkg_version("mcp")
-        except PackageNotFoundError:
-            raise ImportError(f"MCP package not found. {_MCP_REMEDY}") from exc
-        major = _mcp_major(installed)
-        if major is not None and major >= 2:
-            detail = (
-                f"mcp {installed} is installed, but SLayer targets the mcp 1.x "
-                f"FastMCP API: mcp 2.x dropped 'mcp.server.fastmcp' (renamed to "
-                f"mcp.server.mcpserver.MCPServer)."
-            )
-        else:
-            # 1.x that failed for another reason — report that, not the rename.
-            detail = (
-                f"mcp {installed} is installed, but 'mcp.server.fastmcp' could "
-                f"not be imported: {exc}"
-            )
-        raise ImportError(f"{detail} {_MCP_REMEDY}") from exc
-    return FastMCP
+            return await fn(*args, **kwargs)
+        except (tool_error, mcp_error):
+            raise
+        except Exception as exc:
+            raise tool_error(str(exc)) from exc
+
+    return wrapper
 
 
 def _tool_operation(bound: Any) -> dict[str, str]:
@@ -199,6 +259,107 @@ _OLD_ARGUMENTS: dict[str, dict[str, str]] = {
     "edit_dataset": {"model_name": "dataset_name", **DATASET_KEYS},
 }
 _OLD_REMOVE_KEYS = {**DATASET_KEYS, "join_edges": "relationship_edges"}
+
+
+_PROGRESS_INTERVAL_S = 1.0
+_PREPARING = "Waiting for SLayer startup preparation (demo setup / startup ingest)"
+
+
+class StartupOutcome(BaseModel):
+    """Where startup preparation stands; only a demo failure fails tool calls."""
+
+    state: Literal["pending", "ready", "demo_failed"] = "pending"
+    reason: str | None = None
+
+
+class StartupPreparation:
+    """Demo setup, then startup ingest, run once in the background on the server's loop; tool calls wait for it."""
+
+    def __init__(
+        self,
+        *,
+        demo_setup: Callable[[], object] | None,
+        ingest: Callable[[], Coroutine[Any, Any, object]] | None,
+    ) -> None:
+        self._demo_setup = demo_setup
+        self._ingest = ingest
+        self._task: asyncio.Task[None] | None = None
+        self._sessions = 0
+        self.outcome = StartupOutcome() if demo_setup or ingest else StartupOutcome(state="ready")
+
+    @asynccontextmanager
+    async def lifespan(self, _app: object) -> AsyncGenerator[None]:
+        """Run preparation while any session is open (mcp enters this per connection); the last one out cancels it."""
+        if self.outcome.state != "pending":
+            yield
+            return
+        self._sessions += 1
+        self._ensure_running()
+        try:
+            yield
+        finally:
+            self._sessions -= 1
+            if self._sessions == 0 and self._task is not None:
+                with anyio.CancelScope(shield=True):
+                    if not self._task.cancelling():  # a repeat cancel would cut the demo-thread drain short
+                        self._task.cancel()
+                    await asyncio.wait({self._task})
+                if self._sessions:  # a session arrived while the cancel was awaited
+                    self._ensure_running()
+
+    def _ensure_running(self) -> None:
+        """Start preparation unless it is running or has finished; a cancelled run starts afresh."""
+        if self.outcome.state == "pending" and (self._task is None or self._task.done()):
+            self._task = asyncio.get_running_loop().create_task(self._run())
+
+    async def _run(self) -> None:
+        if self._demo_setup is not None:
+            try:
+                await self._finish_on_cancel(anyio.to_thread.run_sync(self._demo_setup))
+            except Exception as exc:  # noqa: BLE001 — becomes every tool call's error
+                failure = exc if isinstance(exc, DemoSetupError) else DemoSetupError(str(exc))
+                print(failure, file=sys.stderr, flush=True)
+                self.outcome = StartupOutcome(state="demo_failed", reason=failure.reason)
+                return
+        if self._ingest is not None:
+            try:
+                await self._ingest()
+            except Exception as exc:  # noqa: BLE001 — a startup-ingest failure never blocks tool calls
+                print(f"Ingest-on-startup failed: {exc}", file=sys.stderr, flush=True)
+        self.outcome = StartupOutcome(state="ready")
+
+    @staticmethod
+    async def _finish_on_cancel(work: Coroutine[Any, Any, object]) -> None:
+        """Await ``work``; a cancel waits for it to finish (a thread cannot be stopped) before propagating."""
+        task = asyncio.ensure_future(work)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.wait({task})
+            raise
+
+    async def wait(self, *, report_progress: Callable[[float, str], Coroutine[Any, Any, None]]) -> None:
+        """Hold the calling request until preparation ends, reporting progress; a cancelled caller never cancels it."""
+        tick = 0
+        while (task := self._task) is not None and not task.done():
+            tick += 1
+            try:
+                await report_progress(tick, _PREPARING)
+            except Exception:  # noqa: BLE001 — progress is best-effort
+                logger.debug("MCP progress notification failed", exc_info=True)
+            await asyncio.wait({task}, timeout=_PROGRESS_INTERVAL_S)
+        if self.outcome.state == "demo_failed":
+            raise DemoSetupError(self.outcome.reason or "unknown error")
+        if self.outcome.state == "pending" and self._task is not None:
+            raise RuntimeError("SLayer startup preparation was interrupted; reconnect to retry")
+
+
+
+async def _report_progress(context: "Context | None", progress: float, message: str) -> None:
+    """Progress on ``context``'s request; none without a context."""
+    if context is not None:
+        await context.report_progress(progress, message=message)
+
 
 
 def _respelled(
@@ -235,57 +396,70 @@ def _reported_text(text: str, lines: list[str]) -> str:
     return text + "".join(f"\nWarning: {line}" for line in lines if line not in text)
 
 
-def _with_deprecations(result: Any, renamed: list[DeprecatedInputWarning]) -> Any:
-    """A tool result (content blocks, optionally with structured output) whose first text reports ``renamed``."""
-    if not renamed:
+def _with_deprecations(
+    result: "CallToolResult | InputRequiredResult", renamed: list[DeprecatedInputWarning],
+) -> "CallToolResult | InputRequiredResult":
+    """``result`` whose first text block (and string structured ``result``) reports ``renamed``."""
+    content = getattr(result, "content", None)
+    if not renamed or content is None:
         return result
     lines = [r.human_message() for r in renamed]
-    blocks, structured = result if isinstance(result, tuple) else (result, None)
-    blocks = list(blocks)
+    blocks = list(content)
     first = next((i for i, b in enumerate(blocks) if getattr(b, "type", None) == "text"), None)
     if first is not None:
         blocks[first] = blocks[first].model_copy(update={"text": _reported_text(blocks[first].text, lines)})
+    structured = getattr(result, "structured_content", None)
     if isinstance(structured, dict) and isinstance(structured.get("result"), str):
         structured = {**structured, "result": _reported_text(structured["result"], lines)}
-    return (blocks, structured) if isinstance(result, tuple) else blocks
+    return result.model_copy(update={"content": blocks, "structured_content": structured})
 
 
-def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
-    """``fastmcp_cls`` counting every tool call, and each session's client once."""
+def _counted(
+    server_cls: "type[MCPServer]", *, tool_error: "type[ToolError]", preparation: StartupPreparation,
+) -> "type[MCPServer]":
+    """``server_cls`` counting every tool call, and each session's client once; calls wait for ``preparation``."""
 
-    class CountedFastMCP(fastmcp_cls):
+    class CountedMCPServer(server_cls):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            super().__init__(*args, **kwargs)
+            super().__init__(*args, lifespan=preparation.lifespan, **kwargs)
             self._usage_reporting_sessions: weakref.WeakSet = weakref.WeakSet()
 
         @otel.request(surface="mcp", extract=_tool_operation)
-        async def call_tool(self, name: str, arguments: dict[str, Any]):
-            session = self._observe_session()
+        async def call_tool(
+            self, name: str, arguments: dict[str, Any], context: "Context | None" = None,
+        ) -> "CallToolResult | InputRequiredResult":
+            session = self._observe_session(context)
             with usage_reporting.action() as action:
                 try:
+                    try:
+                        await preparation.wait(report_progress=functools.partial(_report_progress, context))
+                    except Exception as exc:
+                        raise tool_error(str(exc)) from exc
                     # One request is one input document: its pre-2.0 spellings each warn once.
                     with converted_document(stored=False) as (spellings, _):
                         arguments, renamed = _converted_arguments(tool=name, arguments=arguments)
-                        result = await super().call_tool(name, arguments)
+                        result = await super().call_tool(name, arguments, context)
                         result = _with_deprecations(result, [*renamed, *spellings.report()])
                 except BaseException as exc:
                     usage_reporting.record(
-                        surface="mcp", token=name, error=_counted_error(exc), dry_run=action.dry_run, session=session,
+                        surface="mcp", token=name, error=_counted_error(exc, tool_error=tool_error),
+                        dry_run=action.dry_run, session=session,
                     )
                     raise
             usage_reporting.record(surface="mcp", token=name, dry_run=action.dry_run, session=session)
             return result
 
-        def _observe_session(self) -> object | None:
-            """The calling session (counting its client at its first call), or ``None``."""
-            if not usage_reporting.is_active():
+        def _observe_session(self, context: "Context | None") -> object | None:
+            """The calling client connection (counting its client at its first call), or ``None``."""
+            if context is None or not usage_reporting.is_active():
                 return None
             try:
-                session = self.get_context().session
+                # mcp 2.x builds a ServerSession per request and exposes the connection no other way.
+                session = context.session._connection  # pyright: ignore[reportPrivateUsage] -- the only per-connection key
                 if session in self._usage_reporting_sessions:
                     return session
                 self._usage_reporting_sessions.add(session)
-                info = session.client_params.clientInfo if session.client_params else None
+                info = session.client_params.client_info if session.client_params else None
             except Exception:
                 logger.debug("usage reporting: no MCP session to identify", exc_info=True)
                 return None
@@ -294,19 +468,7 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             )
             return session
 
-    return CountedFastMCP
-
-
-def _set_server_version(mcp) -> None:
-    """Stamp SLayer's version onto the lowlevel MCP server (best-effort; cosmetic)."""
-    lowlevel = getattr(mcp, "_mcp_server", None)
-    if lowlevel is None:
-        logger.debug("MCP server exposes no _mcp_server; leaving serverInfo.version")
-        return
-    try:
-        lowlevel.version = __version__
-    except AttributeError:
-        logger.debug("MCP serverInfo.version is read-only; leaving it", exc_info=True)
+    return CountedMCPServer
 
 
 def _ambiguous_with_mcp_hint(exc: AmbiguousDatasetError) -> str:
@@ -329,9 +491,11 @@ def _db_tool_failure(exc: Exception) -> ToolFailure:
     return ToolFailure(_friendly_db_error(exc))
 
 
-def _counted_error(exc: BaseException) -> BaseException:
-    """The failure to count: past FastMCP's ``ToolError`` wrapping and a ``ToolFailure``, to their cause."""
-    error = exc.__cause__ or exc  # FastMCP re-raises a tool's exception as ToolError from the original
+def _counted_error(exc: BaseException, *, tool_error: "type[ToolError]") -> BaseException:
+    """The failure to count: past every ``ToolError`` wrapping and a ``ToolFailure``, to their cause."""
+    error = exc
+    while isinstance(error, tool_error) and error.__cause__ is not None:
+        error = error.__cause__
     if isinstance(error, ToolFailure) and error.__cause__ is not None:
         return error.__cause__
     return error
@@ -541,12 +705,13 @@ async def _render_ingest_result(
     return "\n".join(lines)
 
 
-def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; complexity is the cumulative inline closure body of every @mcp.tool() handler. Splitting would require dependency-injecting the engine/storage/services into a separate module — out of scope for incremental PRs.
+def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory; complexity is the cumulative inline closure body of every @mcp.tool() handler. Splitting would require dependency-injecting the engine/storage/services into a separate module — out of scope for incremental PRs.
     storage: StorageBackend,
     *,
     ingest_on_startup: bool = False,
     always_load_query: bool = False,
     client_factory: ClientFactory | None = None,
+    demo_setup: Callable[[], object] | None = None,
     _seed_help: bool = True,
 ):
     _check_budget(what="MCP server instructions", text=SERVER_INSTRUCTIONS)
@@ -564,26 +729,39 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "SLayer help-memory seeding skipped: %s", exc, exc_info=True
             )
 
+    raw_storage = storage
+
+    async def startup_ingest() -> None:
+        # Its own engine, so no client bound to this job outlives it in the serving engine.
+        prep = SlayerQueryEngine(storage=raw_storage, client_factory=client_factory)
+        try:
+            await engine_ingestion.ingest_all_datasources_idempotent(
+                storage=prep.storage, client_for=prep.client_for, stream=sys.stderr,
+            )
+        finally:
+            try:
+                await prep.aclose()
+            finally:
+                prep.close()
+
+    preparation = StartupPreparation(demo_setup=demo_setup, ingest=startup_ingest if ingest_on_startup else None)
     # Every tool reads datasets, and the live database, through the server's engine.
     storage = engine.storage
-    if ingest_on_startup:
-        engine.run_sync(
-            engine_ingestion.ingest_all_datasources_idempotent(
-                storage=storage, client_for=engine.client_for, stream=sys.stderr,
-            )
-        )
-    FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
+    server_cls, tool_error, mcp_error = _import_mcp_sdk()
 
-    mcp = _counted(FastMCP)("SLayer", instructions=SERVER_INSTRUCTIONS)
-    _set_server_version(mcp)
+    mcp = _counted(server_cls, tool_error=tool_error, preparation=preparation)(
+        "SLayer", instructions=SERVER_INSTRUCTIONS, version=__version__,
+    )
     # Expose the closure engine so callers can dispose per-task pools via
     # mcp._slayer_engine.aclose() (idempotent; leaves the engine reusable).
     # The read-only introspection tools share this same engine.
     mcp._slayer_engine = engine
 
     def tool(**kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """``mcp.tool`` with the budgeted docstring as the description."""
-        return lambda fn: mcp.tool(description=_agent_description(fn), **kwargs)(fn)
+        """``mcp.tool`` with the budgeted docstring as the description, keeping every failure's text."""
+        return lambda fn: mcp.tool(description=_agent_description(fn), **kwargs)(
+            _keeping_failure_text(fn, tool_error=tool_error, mcp_error=mcp_error),
+        )
 
     @tool(meta=_ALWAYS_LOAD_META if always_load_query else None)
     async def query(
@@ -603,6 +781,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         dry_run: Annotated[bool, Field(description="Return the generated SQL without executing it.")] = False,
         explain: Annotated[bool, Field(description="Run the database's EXPLAIN and return the query plan.")] = False,
         format: Annotated[str, Field(description='"markdown" (default), "json" or "csv".')] = "markdown",
+        conformance: Annotated[Literal["slayer", "ossie-l3"], Field(
+            description='"slayer" (default) or "ossie-l3": accept only Ossie Layer 3 queries, refusing others with '
+                        "Ossie's error codes, and name columns by Ossie's output names.",
+        )] = "slayer",
     ) -> str:
         """ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Describe the result you want (metrics, dimensions, filters, order) and SLayer writes the SQL, including the joins. A single query can:
         - put several grains on one row: a group's share of its total or of the grand total, the region total next to each city;
@@ -628,14 +810,22 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # detectable, then slice response-side. A run-by-name string is
             # opaque (its stored SQL can't take a pushed-down limit) — cap
             # response-side only.
-            exec_query, capped, cap_hint = _apply_mcp_row_cap(query)
-            usage_reporting.observe_query(query)
+            strict = conformance == Conformance.OSSIE_L3.value
+            # A strict query is judged as submitted and takes no limit: its rows are capped response-side.
+            exec_query: Any
+            submitted = _submitted(query)
+            if strict:
+                exec_query, capped, cap_hint = submitted.raw, True, _CAP_HINT
+            else:
+                exec_query, capped, cap_hint = _apply_mcp_row_cap(submitted.native())
+            usage_reporting.observe_query(submitted.raw if strict else submitted.parsed)
             result = await engine.execute(
                 query=exec_query,
                 variables=variables,
                 dry_run=dry_run,
                 explain=explain,
                 refine=refine,
+                conformance=conformance,
             )
             usage_reporting.observe_executed(result)
             if dry_run:
@@ -685,18 +875,22 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         # Rendering delegates to the shared renderer (also used by
         # the ``inspect`` dataset collection view) — one code path, no drift.
+        read, inherited_errors = await with_relationships_as_read(matched, engine)
         return render_datasets_summary(
             datasource_name=datasource_name,
-            datasets=matched,
+            datasets=read,
             fmt=fmt,
             compact=compact,
+            inherited_errors=inherited_errors,
+            model_metrics=await storage.list_model_scoped_metrics(datasource_name),
         )
 
     @tool()
     async def inspect(
         entity_type: Annotated[str, Field(
             description=(
-                "Required: datasource, dataset, field, metric, aggregation or memory. Asserts the "
+                "Required: datasource, dataset, field, metric, aggregation, memory, semantic_model, ontology or "
+                "ontology_mapping (<datasource>.<name>). Asserts the "
                 "resolved kind and disambiguates a name shared by, e.g., a field and an aggregation."
             ),
         )],
@@ -729,7 +923,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Inspect one entity by reference and kind, a batch when `reference` is a list, or a whole collection when `reference` is omitted. A point lookup: use `search` to find entities by meaning, with related memories.
 
-        Before using a field as a filter, projection, group-by or join key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a field by its name alone.
+        Before using a field as a filter, projection, group-by or relationship key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a field by its name alone.
 
         Collection: omit `reference` with entity_type "dataset" (every dataset, grouped by datasource) or "datasource".
         Batch: a list of same-kind references returns one block per id in input order (a JSON array in json); a bad id does not sink the batch.
@@ -757,8 +951,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         description: Annotated[str | None, Field(description="What one row of this dataset represents.")] = None,
         fields: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Field definitions: {"name", "sql", "datatype"} with datatype TEXT, INT, DOUBLE, BOOLEAN, '
-                "DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); optional "
+                'Field definitions: {"name", "expression", "datatype"}; expression is SQL over the source '
+                "columns (a bare name reads a source column, dataset.field a field; unset reads the column "
+                "named like the field); datatype String, Integer, Decimal, Float, Boolean, Date, Time, "
+                "DateTime, DateTimeTz, Opaque, or Array with element_type (one of the others); optional "
                 "primary_key, unique (single-field uniqueness other than the primary key), "
                 "allowed_aggregations, filter (a condition masking the field's value "
                 "inside aggregates), granularity (only for a field truly bucketed at that grain), "
@@ -768,14 +964,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Saved metrics, {"name": "aov", "expression": "sum(revenue) / count(*)"} plus optional '
-                'label, description, meta; queries reference them by bare name ("aov").'
+                'label, description, meta; queries reference them by dataset ("orders.aov").'
             ),
         )] = None,
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Custom aggregations, {"name": "sum_sq", "expression": "SUM({value} * {value})", '
-                '"params": [{"name": "weight", "sql": "quantity"}], "description": ...}; the expression '
-                "is SQL with {value} for the aggregated field."
+                '"params": [{"name": "weight", "sql": "quantity"}], "description": ..., "datatype": ...}; the expression '
+                "is SQL with {value} for the aggregated field; datatype (optional) is the result type, else inferred."
             ),
         )] = None,
         query: Annotated[Any | None, Field(
@@ -789,6 +985,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )] = None,
         access_tags: Annotated[list[str] | None, Field(
             description="Access groups allowed to see the dataset; omit for public.",
+        )] = None,
+        semantic_model: Annotated[str | None, Field(
+            description="Add the dataset to this semantic model (an Ossie document of the datasource); omit to store "
+                        "it standalone.",
         )] = None,
     ) -> str:
         """Create a semantic dataset from a database table (sql_table), a SQL query (sql), or a SLayer query (query: the dataset becomes query-backed and its fields come from the result).
@@ -848,6 +1048,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             metrics=metrics,
             aggregations=aggregations,
             access_tags=access_tags,
+            semantic_model=semantic_model,
         )
         try:
             dataset = SlayerDataset.model_validate(data)
@@ -887,6 +1088,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         existing = next((e for e in entity_list if getattr(e, id_field) == entity_id), None)
         if existing is not None:
             merged = existing.model_dump()
+            for twins in _DEFINITION_TWINS:
+                if twins & spec.keys():
+                    for k in twins - spec.keys():
+                        merged.pop(k, None)
             for k, v in spec.items():
                 merged[k] = v
             try:
@@ -940,7 +1145,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             changes.append(f"updated {label}")
         return None
 
-    VALID_REMOVE_KEYS = {"fields", "metrics", "aggregations", "relationships", "relationship_edges"}
+    VALID_REMOVE_KEYS = {"fields", "metrics", "aggregations", "relationships", "relationship_edges", "enforced_keys"}
 
     @tool()
     async def edit_dataset(
@@ -972,10 +1177,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )] = None,
         fields: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Fields to upsert by name; only the given keys change. {"name", "datatype", "element_type", "sql", '
+                'Fields to upsert by name; only the given keys change. {"name", "datatype", "element_type", "expression", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
-                '"label", "granularity"}; datatype TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or '
-                'ARRAY with element_type (one of the others); unique marks '
+                '"label", "granularity"}; datatype String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, '
+                'DateTimeTz, Opaque, or Array with element_type (one of the others); unique marks '
                 "single-field uniqueness other than the primary key (used for relationship cardinality); set "
                 "granularity only for a field truly bucketed at that grain (null clears it)."
             ),
@@ -983,34 +1188,37 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Saved metrics to upsert by name, {"name": "aov", "expression": "sum(revenue) / '
-                'count(*)"} plus optional label, description, meta; queries use them by bare name.'
+                'count(*)"} plus optional label, description, meta; queries use them by dataset (orders.aov).'
             ),
         )] = None,
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Custom aggregations to upsert by name, {"name", "expression" (SQL with {value} and '
-                '{param} placeholders), "params": [{"name", "sql"}], "description", "meta"}.'
+                '{param} placeholders), "params": [{"name", "sql"}], "description", "datatype" (result type; '
+                'omitted: inferred), "meta"}.'
             ),
         )] = None,
         relationships: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Relationships to upsert, {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], '
                 '"name", "cardinality": "many_to_one", "description", "meta"}, matched by name, else '
-                "target and key columns, else the sole relationship to the target; a second relationship to a target needs a name. "
-                "Keys name fields by name; a composite key lists several columns on each side, in pair order. "
+                "target and key fields, else the sole relationship to the target; a second relationship to a target needs a name. "
+                "Keys name fields by name; a composite key lists several fields on each side, in pair order. "
                 "cardinality (one_to_one / one_to_many / many_to_one / many_to_many, read "
-                "source->target) is descriptive only; omit it when unknown."
+                "source->target) decides paths only; omit it when unknown. trusted: true assumes it holds and "
+                "skips de-duplication (wrong on data violating it)."
             ),
         )] = None,
         add_filters: Annotated[list[str] | None, Field(
             description='SQL conditions always applied to the dataset, e.g. ["deleted_at IS NULL"].',
         )] = None,
         remove_filters: Annotated[list[str] | None, Field(description="Dataset filters to remove (exact text).")] = None,
-        remove: Annotated[dict[str, list[str | dict[str, Any]]] | None, Field(
+        remove: Annotated[dict[str, list[str | dict[str, Any] | list[str]]] | None, Field(
             description=(
                 'Entities to delete before the upserts: {"fields": [...], "metrics": [...], '
                 '"aggregations": [...], "relationships": [target dataset or edge name, ...], '
-                '"relationship_edges": [{"to", "name", "from_columns", "to_columns"}, ...]}.'
+                '"relationship_edges": [{"to", "name", "from_columns", "to_columns"}, ...], '
+                '"enforced_keys": [[field, ...], ...]}.'
             ),
         )] = None,
         meta: Annotated[dict[str, Any] | None, Field(
@@ -1018,7 +1226,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description="JSON metadata replacing the dataset's meta; null clears it.",
         )],
     ) -> str:
-        """Edit an existing dataset in one call: metadata, upserts of fields / metrics / aggregations / relationships (by name; only the given keys change), dataset filters, and removals (applied first).
+        """Edit an existing dataset in one call: metadata, upserts of fields / metrics / aggregations / relationships (by name; only the given keys change), dataset filters, and removals (applied first). A dataset of a semantic model is edited in place in its document.
 
         Host a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
@@ -1068,7 +1276,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     f"the existing target first, or move to a different "
                     f"datasource."
                 )
+            try:
+                await storage.guard_dataset_deletion(name=dataset.name, data_source=original_data_source)
+            except (StoredDependentBreakError, HiddenContentConflictError) as exc:
+                return _refusal(f"moving dataset '{dataset.name}'", exc)
             dataset.data_source = new_data_source
+            dataset.enforced_keys = []
             changes.append(
                 f"moved data_source from '{original_data_source}' to '{new_data_source}'"
             )
@@ -1084,27 +1297,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "when editing a dataset — the three source modes are mutually exclusive."
             )
 
-        if sql_table is not None:
-            dataset.sql_table = sql_table
-            dataset.sql = None
-            dataset.source_queries = None
-            dataset_level_change = True
-            changes.append(f"set sql_table to '{sql_table}'")
-        if sql is not None:
-            dataset.sql = sql
-            dataset.sql_table = None
-            dataset.source_queries = None
-            dataset_level_change = True
-            changes.append(f"set sql to '{sql}'")
-        if source_queries is not None:
-            # Switching to query-backed source mode; the cached fields are
-            # refreshed when we save via engine.save_dataset.
-            dataset.source_queries = [SlayerQuery.model_validate(q) for q in source_queries]
-            dataset.sql_table = None
-            dataset.sql = None
-            # Clear the user-managed fields so the cache write succeeds.
-            dataset.fields = []
-            changes.append(f"set source_queries ({len(source_queries)} stage(s))")
         if query_variables is not _UNSET:
             dataset.query_variables = query_variables or {}
             changes.append(
@@ -1166,6 +1358,28 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             if removed:
                 dataset.relationships = without_relationships(dataset=dataset, relationships=removed)
                 dataset_doc_changed = True
+
+            dropped_keys = [sorted(k) for k in remove.get("enforced_keys", []) if isinstance(k, list)]
+            if dropped_keys:
+                dataset.enforced_keys = [k for k in dataset.enforced_keys if sorted(k) not in dropped_keys]
+                changes.append(f"removed enforced keys {dropped_keys}")
+                dataset_level_change = True
+
+        # --- Source switch: after the removals, so the switched dataset is checked without them ---
+        if sql_table is not None:
+            dataset.assign(sql_table=sql_table, sql=None, source_queries=None)
+            dataset_level_change = True
+            changes.append(f"set sql_table to '{sql_table}'")
+        if sql is not None:
+            dataset.assign(sql=sql, sql_table=None, source_queries=None)
+            dataset_level_change = True
+            changes.append(f"set sql to '{sql}'")
+        if source_queries is not None:
+            # Query-backed: the cached fields are cleared here and refreshed by engine.save_dataset.
+            dataset.assign(source_queries=[SlayerQuery.model_validate(q) for q in source_queries],
+                           sql_table=None, sql=None, fields=[])
+            dataset_level_change = True
+            changes.append(f"set source_queries ({len(source_queries)} stage(s))")
 
         # --- Phase 3: Entity upserts ---
         for spec in fields or []:
@@ -1298,7 +1512,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @tool()
     async def create_datasource(
-        name: Annotated[str, Field(description="Unique datasource name.")],
+        name: Annotated[str, Field(description="Unique datasource name.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
         type: Annotated[str, Field(description="Database type: postgres, mysql, sqlite, bigquery, snowflake, ...")],
         host: Annotated[str | None, Field(description="Database host (default localhost).")] = None,
         port: Annotated[int | None, Field(description="Database port, e.g. 5432.")] = None,
@@ -1324,6 +1538,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 'origin + k * multiple * base, e.g. {name: "fiscal_year", base: "year", origin: '
                 '"2000-04-01"}; usable wherever a built-in granularity is.'
             ),
+        )] = None,
+        time_zone: Annotated[str | None, Field(
+            description="IANA zone its DateTime columns are stored in, e.g. 'UTC'; a field's own time_zone wins.",
         )] = None,
     ) -> str:
         """Create a database connection, verify it, and auto-ingest datasets. Use ${ENV_VAR} in credentials to read environment variables.
@@ -1354,7 +1571,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             connection_string=connection_string,
             schema_name=schema_name,
         )
-        ds = DatasourceConfig.model_validate({**data, "granularities": granularities or []})
+        try:
+            ds = DatasourceConfig.model_validate({**data, "granularities": granularities or [], "time_zone": time_zone})
+        except ValueError as exc:
+            return f"Cannot create datasource: {exc}"
         existed = await storage.get_datasource(name) is not None
         try:
             await storage.save_datasource(ds)
@@ -1374,61 +1594,23 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if not auto_ingest:
             return "\n".join(lines)
 
-        # Auto-ingest datasets
         try:
             # Via the module so tests can monkeypatch the seam.
-            ingest_output = await engine_ingestion.ingest_datasource_report_async(
+            result = await engine_ingestion.ingest_datasource_idempotent(
                 datasource=ds,
+                storage=storage,
                 client=client,
                 schema=schema_name or None,
                 schemas=schemas_list,
                 all_schemas=all_schemas,
             )
-        except Exception as e:
-            if isinstance(e, _DB_FAILURES):
-                lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
-                return "\n".join(lines)
-            raise
-        datasets = ingest_output.datasets
+        except _DB_FAILURES as e:
+            lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
+            return "\n".join(lines)
 
-        if ingest_output.schema_description and not ds.description:
-            try:
-                ds = ds.model_copy(
-                    update={"description": ingest_output.schema_description}
-                )
-                await storage.save_datasource(ds)
-                lines.append("Datasource description imported.")
-            except Exception as exc:  # noqa: BLE001 — best-effort
-                lines.append(f"Could not save datasource description: {exc}")
-
-        save_errors: list[str] = []
-        saved_datasets: list[SlayerDataset] = []
-        for dataset in datasets:
-            try:
-                await storage.save_dataset(dataset)
-                saved_datasets.append(dataset)
-            except ValueError as exc:
-                # e.g. quoted case-variant tables — report and continue.
-                save_errors.append(f"- {dataset.name}: {exc}")
-        datasets = saved_datasets
-
-        if not datasets and not save_errors:
-            lines.append("No tables found to ingest.")
-            available = await _get_schemas(client)
-            if available:
-                lines.append(f"Available schemas: {', '.join(available)}")
-        elif datasets:
-            lines.append(f"Ingested {len(datasets)} dataset(s):")
-            for m in datasets:
-                lines.append(f"- {m.name} ({len(m.fields)} fields, {len(m.metrics)} metrics)")
-            lines.append("")
-            lines.append("Use datasets_summary and inspect to explore, then query to fetch data.")
-
-        if save_errors:
-            lines.append(f"Failed to save {len(save_errors)} dataset(s):")
-            lines.extend(save_errors)
-        lines.extend(_render_key_read_failures_section(ingest_output.key_read_failures))
-
+        lines.append(await _render_ingest_result(result, schema_name=schema_name or "", ds=ds, client=client))
+        if any(a.created for a in result.additions):
+            lines.extend(["", "Use datasets_summary and inspect to explore, then query to fetch data."])
         return "\n".join(lines)
 
     @tool()
@@ -1513,6 +1695,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     @tool()
     async def edit_datasource(
         name: Annotated[str, Field(description="Datasource to update.")],
+        *,
         description: Annotated[str | None, Field(description="New datasource description.")] = None,
         granularities: Annotated[list[CustomGranularity] | None, Field(
             description=(
@@ -1520,6 +1703,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "start at origin + k * multiple * base."
             ),
         )] = None,
+        time_zone: Annotated[str | None, Field(
+            default_factory=_unset,
+            description=(
+                "IANA zone its DateTime columns are stored in, e.g. 'UTC'; a field's own time_zone wins. "
+                "null clears it."
+            ),
+        )],
     ) -> str:
         """Update a datasource's metadata."""
         ds = await storage.get_datasource(name)
@@ -1533,6 +1723,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if granularities is not None:
             update["granularities"] = granularities
         ds = ds.model_copy(update=update)
+        if time_zone is not _UNSET:
+            try:
+                ds.time_zone = time_zone
+            except ValueError as exc:
+                return f"Cannot update datasource '{name}': {exc}"
 
         try:
             await storage.save_datasource(ds)
@@ -1577,17 +1772,230 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             deleted = await storage.delete_dataset(name, data_source=data_source)
         except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
+        except (StoredDependentBreakError, HiddenContentConflictError) as exc:
+            return _refusal(f"deleting dataset '{name}'", exc)
         if deleted:
             return f"Dataset '{name}' deleted."
         return f"Dataset '{name}' not found."
+
+    async def _refreshed_documents(data_source: str) -> list[str]:
+        """Best-effort search refresh of the datasource's semantic models after a committed write."""
+        try:
+            return await search_service.refresh_documents(data_source)
+        except Exception as exc:  # noqa: BLE001 — best-effort post-save refresh
+            logger.warning("semantic model search refresh failed for %r: %s", data_source, exc)
+            return [f"search refresh failed: {exc}"]
+
+    @tool()
+    async def create_semantic_model(
+        name: Annotated[str, Field(description="The semantic model's name, unique in its datasource.")],
+        data_source: Annotated[str, Field(description="The datasource it describes (from list_datasources).")],
+        content: Annotated[str | dict[str, Any] | None, Field(
+            description="A whole Ossie 0.3.0.dev0 semantic-model document, as YAML/JSON text or an object.",
+        )] = None,
+        datasets: Annotated[list[str] | None, Field(
+            description="Standalone datasets of the datasource to move into the new semantic model, instead of content.",
+        )] = None,
+    ) -> str:
+        """Create a semantic model: an Ossie document holding datasets, their relationships and model-scoped metrics (metrics a query names bare). Give its Ossie content, or the standalone datasets it takes over (they keep their names)."""
+        notes: list[SlayerWarning] = []
+        try:
+            await storage.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets,
+                                                warnings_out=notes)
+        except Exception as exc:
+            return f"Error creating semantic model '{name}': {type(exc).__name__}: {exc}"
+        return (f"Semantic model '{name}' created." + _warning_lines(notes)
+                + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source)))
+
+    @tool()
+    async def edit_semantic_model(
+        name: Annotated[str, Field(description="Semantic model to edit.")],
+        data_source: Annotated[str, Field(description="Its datasource.")],
+        description: Annotated[str | None, Field(description="New description of the semantic model.")] = None,
+        ai_context: Annotated[str | dict[str, Any] | None, Field(
+            description="New AI context: instructions text, or {instructions, synonyms, examples}.",
+        )] = None,
+        metrics: Annotated[list[dict[str, Any]] | None, Field(
+            description='Model-scoped metrics to add or replace, {"name", "expression", "description", "ai_context"}; '
+                        'the expression reads like a query: qualified fields inside aggregates, AGG(dataset.metric), '
+                        'other model-scoped metrics by bare name.',
+        )] = None,
+        remove_metrics: Annotated[list[str] | None, Field(description="Model-scoped metrics to remove.")] = None,
+        relationships: Annotated[list[dict[str, Any]] | None, Field(
+            description='Relationships to add or replace, {"name", "from", "to", "from_columns", "to_columns"} '
+                        '(many-to-one from "from").',
+        )] = None,
+        remove_relationships: Annotated[list[str] | None, Field(description="Relationships to remove, by name.")] = None,
+        add_datasets: Annotated[list[str] | None, Field(
+            description="Standalone datasets of the datasource to move into the semantic model.",
+        )] = None,
+    ) -> str:
+        """Edit a semantic model in place: its description and AI context, its model-scoped metrics and relationships, and standalone datasets moved into it. Edit its datasets with edit_dataset."""
+        edits = {k: v for k, v in {"description": description, "ai_context": ai_context}.items() if v is not None}
+        notes: list[SlayerWarning] = []
+        try:
+            await storage.edit_semantic_model(
+                name, data_source=data_source, metrics=metrics, remove_metrics=remove_metrics,
+                relationships=relationships, remove_relationships=remove_relationships, add_datasets=add_datasets,
+                warnings_out=notes, **edits,
+            )
+        except Exception as exc:
+            return f"Error editing semantic model '{name}': {type(exc).__name__}: {exc}"
+        return (f"Semantic model '{name}' edited." + _warning_lines(notes)
+                + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source)))
+
+    @tool()
+    async def delete_semantic_model(
+        name: Annotated[str, Field(description="Semantic model to delete.")],
+        data_source: Annotated[str | None, Field(
+            description="Its datasource; required when the name exists in several datasources.",
+        )] = None,
+    ) -> str:
+        """Delete a semantic model together with all its datasets and model-scoped metrics."""
+        try:
+            deleted = await storage.delete_semantic_model(name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
+            return _ambiguous_with_mcp_hint(exc)
+        except (StoredDependentBreakError, HiddenContentConflictError) as exc:
+            return _refusal(f"deleting semantic model '{name}'", exc)
+        return f"Semantic model '{name}' deleted." if deleted else f"Semantic model '{name}' not found."
+
+    def _refusal(action: str, exc: Exception) -> str:
+        return f"Error {action}: {type(exc).__name__}: {exc}"
+
+    async def _refreshed_concepts(data_source: str | None = None) -> str:
+        """Best-effort search refresh of the datasets whose concepts a mapping or ontology change touches."""
+        return "".join(f"\nWarning: {w}" for w in await search_service.refresh_after_concept_change(data_source))
+
+    @tool()
+    async def create_ontology(
+        content: Annotated[str | dict[str, Any], Field(
+            description="A whole Ossie 0.3.0.dev0 ontology document, as YAML/JSON text or an object.",
+        )],
+    ) -> str:
+        """Store an Ossie ontology (concepts, relationships, identifiers, rules) under its own name, replacing one of that name. Its mappings annotate inspect and search; validate_datasets checks the model and data against it."""
+        notes: list[SlayerWarning] = []
+        try:
+            text = content_text(content)
+            name = document_name(text)
+            await storage.save_ontology_text(name=name, text=text, warnings_out=notes)
+        except Exception as exc:
+            return _refusal("creating ontology", exc)
+        return f"Ontology '{name}' stored." + _warning_lines(notes) + await _refreshed_concepts()
+
+    @tool()
+    async def edit_ontology(
+        name: Annotated[str, Field(description="Ontology to edit.")],
+        description: Annotated[str | None, Field(description="New description.")] = None,
+        ai_context: Annotated[str | dict[str, Any] | None, Field(description="New document-level AI context.")] = None,
+        prefixes: Annotated[dict[str, str] | None, Field(description="New QName prefixes, prefix to IRI.")] = None,
+        requires: Annotated[list[str] | None, Field(description="New document-level rule expressions.")] = None,
+        concepts: Annotated[list[dict[str, Any]] | None, Field(
+            description='Whole concepts to add or replace by name, each an ontology component {"concept", "type", ...}.',
+        )] = None,
+        remove_concepts: Annotated[list[str] | None, Field(description="Concepts to remove, by name.")] = None,
+        relationships: Annotated[list[dict[str, Any]] | None, Field(
+            description='Relationships to add or replace by name: {"concept", "relationship": {"name", "roles", ...}}.',
+        )] = None,
+        remove_relationships: Annotated[list[str] | None, Field(
+            description="Relationships to remove, as Concept.name.",
+        )] = None,
+    ) -> str:
+        """Edit an ontology in place; the rest of its text stays as written. Refused when the result is invalid or breaks a stored mapping."""
+        edits = {k: v for k, v in {"description": description, "ai_context": ai_context, "prefixes": prefixes,
+                                   "requires": requires}.items() if v is not None}
+        notes: list[SlayerWarning] = []
+        try:
+            await storage.edit_ontology(name, concepts=concepts, remove_concepts=remove_concepts,
+                                        relationships=relationships, remove_relationships=remove_relationships,
+                                        warnings_out=notes, **edits)
+        except Exception as exc:
+            return _refusal(f"editing ontology '{name}'", exc)
+        return f"Ontology '{name}' edited." + _warning_lines(notes) + await _refreshed_concepts()
+
+    @tool()
+    async def delete_ontology(
+        name: Annotated[str, Field(description="Ontology to delete.")],
+    ) -> str:
+        """Delete an ontology; refused while a stored mapping resolves against it."""
+        try:
+            deleted = await storage.delete_ontology(name)
+        except Exception as exc:
+            return _refusal(f"deleting ontology '{name}'", exc)
+        return f"Ontology '{name}' deleted." + await _refreshed_concepts() if deleted else f"Ontology '{name}' not found."
+
+    @tool()
+    async def create_ontology_mapping(
+        data_source: Annotated[str, Field(description="The datasource whose datasets the mapping reads.")],
+        content: Annotated[str | dict[str, Any], Field(
+            description="A whole Ossie 0.3.0.dev0 mapping document, as YAML/JSON text or an object.",
+        )],
+    ) -> str:
+        """Store an Ossie mapping of a datasource under its own name: it populates a stored ontology's concepts from one semantic model of the datasource (or the datasource itself). Refused unless it resolves."""
+        warnings_out: list[SlayerWarning] = []
+        try:
+            text = content_text(content)
+            name = document_name(text)
+            notes = await storage.save_ontology_mapping_text(data_source=data_source, name=name, text=text,
+                                                             warnings_out=warnings_out)
+        except Exception as exc:
+            return _refusal("creating mapping", exc)
+        return (f"Mapping '{name}' stored in datasource '{data_source}'." + "".join(f"\nNote: {n}" for n in notes)
+                + _warning_lines(warnings_out) + await _refreshed_concepts(data_source))
+
+    @tool()
+    async def edit_ontology_mapping(
+        name: Annotated[str, Field(description="Mapping to edit.")],
+        data_source: Annotated[str, Field(description="Its datasource.")],
+        description: Annotated[str | None, Field(description="New description.")] = None,
+        ontology_ref: Annotated[dict[str, str] | None, Field(description='New ontology reference {"name", "iri"}.')] = None,
+        semantic_model_ref: Annotated[dict[str, str] | None, Field(
+            description='New semantic model reference {"name", "iri"}: a semantic model of the datasource, or the '
+                        "datasource's own name.",
+        )] = None,
+        concept_mappings: Annotated[list[dict[str, Any]] | None, Field(
+            description='Concept mappings to add or replace by concept, each {"concept", "object_mappings", '
+                        '"link_mappings"}.',
+        )] = None,
+        remove_concept_mappings: Annotated[list[str] | None, Field(
+            description="Concept mappings to remove, by concept.",
+        )] = None,
+    ) -> str:
+        """Edit a mapping in place; the rest of its text stays as written. Refused unless the result resolves."""
+        edits = {k: v for k, v in {"description": description, "ontology_ref": ontology_ref,
+                                   "semantic_model_ref": semantic_model_ref}.items() if v is not None}
+        warnings_out: list[SlayerWarning] = []
+        try:
+            notes = await storage.edit_ontology_mapping(name, data_source=data_source,
+                                                        concept_mappings=concept_mappings,
+                                                        remove_concept_mappings=remove_concept_mappings,
+                                                        warnings_out=warnings_out, **edits)
+        except Exception as exc:
+            return _refusal(f"editing mapping '{name}'", exc)
+        return (f"Mapping '{name}' edited." + "".join(f"\nNote: {n}" for n in notes) + _warning_lines(warnings_out)
+                + await _refreshed_concepts(data_source))
+
+    @tool()
+    async def delete_ontology_mapping(
+        name: Annotated[str, Field(description="Mapping to delete.")],
+        data_source: Annotated[str, Field(description="Its datasource.")],
+    ) -> str:
+        """Delete a mapping."""
+        try:
+            deleted = await storage.delete_ontology_mapping(name, data_source)
+        except Exception as exc:
+            return _refusal(f"deleting mapping '{name}'", exc)
+        if not deleted:
+            return f"Mapping '{name}' not found."
+        return f"Mapping '{name}' deleted." + await _refreshed_concepts(data_source)
 
     @tool()
     async def validate_datasets(
         data_source: Annotated[str | None, Field(description="Datasource to validate; omit for all.")] = None,
     ) -> str:
-        """Diff stored datasets against the live database schemas.
+        """Diff stored datasets against the live database schemas, and check them and their data against the stored ontologies.
 
-        Returns, as JSON, the deletes (fields, metrics, relationships, filters, whole datasets) needed to keep the stored datasets valid. Read-only.
+        Returns, as JSON, the deletes (fields, metrics, relationships, filters, whole datasets) needed to keep the stored datasets valid, and report-only ontology findings: identifier (a concept's identifier vs the dataset's keys), multiplicity (vs a relationship's cardinality), constraint and required_link (rows of data violating a requires rule, with samples), and what is not checked (not_checked: each rule, position or mapping SLayer cannot check, with the reason). Read-only.
         """
         if data_source is not None:
             # Fail loudly on an unknown name — an empty result is otherwise
@@ -1763,7 +2171,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Examples:
         save_memory(learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned", linked_entities=["orders.is_returned"])
-        save_memory(learning="Paid revenue by status", linked_entities={"population": "orders", "metrics": ["sum(amount)"], "filter": "status = 'paid'"}, id="kb.paid-revenue")
+        save_memory(learning="Paid revenue by status", linked_entities={"population": "orders", "metrics": ["sum(orders.amount)"], "filter": "orders.status = 'paid'"}, id="kb.paid-revenue")
         """
         try:
             response = await memory_service.save_memory(
@@ -1797,7 +2205,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     @tool()
     async def search(
         entities: Annotated[list[str] | None, Field(
-            description="Entity references; ranks memories tagged with overlapping entities.",
+            description=("Entity references; ranks memories tagged with overlapping entities. concept:<Concept> or "
+                         "concept:<Ontology>.<Concept> selects every field and dataset mapped to that ontology concept "
+                         "or a subtype."),
         )] = None,
         query: Annotated[Any, Field(
             description="A query object whose entities are extracted and searched like entities.",
@@ -1879,19 +2289,25 @@ def _json_metadata(result: SlayerResponse) -> dict[str, Any]:
     attributes = _json_attributes(result.attributes)
     if attributes:
         meta["attributes"] = attributes
-    population = _inferred_population(result)
-    if population is not None:
-        meta["population"] = population
+    if result.population_inferred:
+        if result.population is not None:
+            meta["population"] = result.population
         meta["population_inferred"] = True
+        meta["row_sources"] = list(result.row_sources)
+    if result.time_zone is not None:
+        meta["time_zone"] = result.time_zone
     return meta
 
 
 def _text_envelope(result: SlayerResponse, fmt: str, body: str) -> str:
     """``body`` wrapped in the metadata: leading `#` lines for csv, footers for markdown."""
     population = _inferred_population(result)
+    sources = result.row_sources if result.population_inferred else []
     if fmt == "csv":
         return (
             _population_comment(population)
+            + ("" if not sources else f"# row sources: {', '.join(sources)}\n")
+            + ("" if result.time_zone is None else f"# time zone: {result.time_zone}\n")
             + _csv_attribute_comments(result)
             + _csv_warning_comments(result)
             + body
@@ -1900,6 +2316,8 @@ def _text_envelope(result: SlayerResponse, fmt: str, body: str) -> str:
         body
         + _attributes_footer(result.attributes)
         + _population_footer(population)
+        + _row_sources_footer(sources, after_population=population is not None)
+        + ("" if result.time_zone is None else f"\n\nTime zone: {result.time_zone}")
         + _format_warnings(result)
     )
 
@@ -2006,6 +2424,14 @@ def _format_dry_run(result: SlayerResponse, fmt: str) -> str:
 def _population_footer(population: str | None) -> str:
     """Trailing note naming the inferred population (markdown), or empty."""
     return "" if population is None else f"\n\nPopulation: {population} (inferred)"
+
+
+def _row_sources_footer(sources: list[str], *, after_population: bool) -> str:
+    """Trailing note listing the row sources (markdown), its own paragraph unless it follows the population's."""
+    if not sources:
+        return ""
+    separator = "\n" if after_population else "\n\n"
+    return f"{separator}Row sources: {', '.join(sources)}"
 
 
 def _population_comment(population: str | None) -> str:

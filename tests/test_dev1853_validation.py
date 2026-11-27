@@ -1,7 +1,7 @@
-"""DEV-1853 — ``ModelJoin.name`` rules and save-time join validation.
+"""``DatasetRelationship.name`` rules and save-time relationship validation.
 
-Save-time: edge names must not collide with datasource model names or with
-another edge name incident to either endpoint; unnamed parallel edges warn;
+Save-time: edge names must not collide with another edge name incident to
+either endpoint (an edge may share a dataset's name); unnamed parallel edges warn;
 declaring the exact inverse of an existing edge is rejected (reverse
 traversal is automatic).
 """
@@ -15,14 +15,15 @@ import pytest
 
 from slayer.core.enums import RelationshipCardinality, JoinType
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.relationship_walker import OrientedRelationship, resolve_hop
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _dataset(name: str, cols: list[str], joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _dataset(name: str, cols: list[str], relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="ds", sql_table=name,
         fields=[DatasetField(name=c) for c in cols],
-        relationships=joins or [],
+        relationships=relationships or [],
     )
 
 
@@ -52,8 +53,14 @@ async def _storage(tmpdir: str) -> YAMLStorage:
     return storage
 
 
+async def _resolve(storage: YAMLStorage, *, source: str, token: str) -> OrientedRelationship | None:
+    datasets, _ = await storage.load_datasets(data_source="ds")
+    by_name = {d.name: d for d in datasets}
+    return resolve_hop(current=by_name[source], token=token, datasets_by_name=by_name)
+
+
 class TestSaveTimeEdgeNames:
-    async def test_name_colliding_with_model_rejected(self) -> None:
+    async def test_name_colliding_with_a_dataset_saves(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _storage(d)
             await storage.save_dataset(_dataset("customers", ["id"]))
@@ -62,8 +69,10 @@ class TestSaveTimeEdgeNames:
                 DatasetRelationship(to="customers",
                           from_columns=["customer_id"], to_columns=["id"], name="regions"),
             ])
-            with pytest.raises(ValueError, match="regions"):
-                await storage.save_dataset(orders)
+            await storage.save_dataset(orders)
+            hop = await _resolve(storage, source="orders", token="regions")
+            assert hop is not None
+            assert (hop.name, hop.to) == ("regions", "customers")
 
     async def test_duplicate_name_on_one_model_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -147,11 +156,9 @@ class TestSaveTimeEdgeNames:
                         or "ambiguous" in str(w.message).lower()]
 
 
-class TestModelNameVsEdgeNameCollision:
-    async def test_model_named_like_an_existing_edge_rejected(self) -> None:
-        # The symmetric direction of the edge-name/model-name namespace rule:
-        # once an edge is named "billing", a MODEL named "billing" would make
-        # every "billing" path token resolve to the edge, silently shadowing.
+class TestDatasetNamedLikeAnEdge:
+    async def test_dataset_named_like_an_existing_edge_saves(self) -> None:
+        # No other edge of orders targets billing, so orders.billing is the edge alone.
         with tempfile.TemporaryDirectory() as d:
             storage = await _storage(d)
             await storage.save_dataset(_dataset("customers", ["id"]))
@@ -159,9 +166,11 @@ class TestModelNameVsEdgeNameCollision:
                 DatasetRelationship(to="customers",
                           from_columns=["customer_id"], to_columns=["id"], name="billing"),
             ]))
-            clashing = _dataset("billing", ["id"])
-            with pytest.raises(ValueError, match="billing"):
-                await storage.save_dataset(clashing)
+            await storage.save_dataset(_dataset("billing", ["id"]))
+            assert await storage.get_dataset("billing", data_source="ds") is not None
+            hop = await _resolve(storage, source="orders", token="billing")
+            assert hop is not None
+            assert (hop.name, hop.to) == ("billing", "customers")
 
 
 class TestSaveTimeExactInverse:

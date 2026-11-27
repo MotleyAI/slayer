@@ -1,8 +1,8 @@
-"""DEV-1901 — binding resolves every aggregation parameter once, onto the key.
+"""Binding resolves every aggregation parameter once, onto the key.
 
-Each test binds a formula and asserts the kwargs of the resulting ``AggregateKey``:
+Each test binds an expression and asserts the kwargs of the resulting ``AggregateKey``:
 a non-overridden definition default and an explicit string fragment land there as
-a column key, a scalar, or a ``SqlFragmentKey``; unanalysable text fails at bind.
+a field key, a scalar, or a ``SqlFragmentKey``; unanalysable text fails at bind.
 """
 
 from __future__ import annotations
@@ -19,13 +19,13 @@ from slayer.core.errors import (
     UnanalyzableAggregationParameterError,
     UnknownReferenceError,
 )
-from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, LiteralKey, SqlFragmentKey, walk_value_keys
+from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, LiteralKey, SqlFragmentKey, anchor_token, walk_value_keys
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _first_unattributable_arg_leaf
 from slayer.core.syntax import parse_expr
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from tests._dev1901_fixtures import (
     BAD_DEFAULTS,
     bundle_of,
@@ -163,7 +163,7 @@ class TestDefaultEqualsTwin:
 
 class TestOwners:
     def test_saved_measure_binds_its_defaults(self) -> None:
-        assert _kw("customers.wsaved") == {"weight": FieldKey(path=("customers",), leaf="factor")}
+        assert _kw("customers.wsaved") == {"weight": FieldKey(path=(anchor_token("customers"),), leaf="factor")}
 
     def test_reaggregation_resolves_on_the_host(self) -> None:
         frag = _fragment(_kw("wcase_pop(sum(amount, partition_by=customers.regions.id))")["weight"])
@@ -180,8 +180,9 @@ class TestOwners:
 
 def _stage_key(expression: str) -> AggregateKey:
     models = dev1901_datasets()
-    scope = StageSchema(relation_name="stage1", fields=[StageField(
+    schema = StageSchema(relation_name="stage1", fields=[StageField(
         name="rev", sql_alias="rev", public_alias="rev", datatype=DataType.FLOAT)])
+    scope = DatasetScope(population=dataset_from_stage_schema(name="stage1", schema=schema, data_source="test"))
     key = bind_expr(parse_expr(expression), scope=scope, bundle=ResolvedSourceBundle(
         dialect="postgres", population=None, referenced_datasets=models)).value_key
     assert isinstance(key, AggregateKey), key
@@ -271,7 +272,7 @@ class TestUnanalysableText:
 
     async def test_no_sql_reaches_the_database(self, engine, monkeypatch: pytest.MonkeyPatch) -> None:
         sent = execution_spy(monkeypatch)
-        query = orders_q(metrics=[{"metric": "wbad_agg(amount)", "alias": "w"}])
+        query = orders_q(metrics=[{"metric": "wbad_agg(orders.amount)", "alias": "w"}])
         with pytest.raises(UnanalyzableAggregationParameterError):
             await engine.execute(query)
         assert sent == []

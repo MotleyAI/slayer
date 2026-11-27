@@ -1,5 +1,5 @@
 """``SlayerQuery.population`` is a name or None validated at construction, a legacy
-extension object converting into ``extensions`` and an inline model refused; ``TimeDimension``
+extension object converting into ``extensions`` and an inline dataset refused; ``TimeDimension``
 accepts ``column`` as an alias of ``dimension``.
 
 Spec: queries/population — "A population is named, and typed at construction";
@@ -14,7 +14,7 @@ from typing import Annotated, Any, Union, get_args, get_origin
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
 
 from slayer.api.server import QueryRequest, create_app
@@ -27,25 +27,26 @@ from slayer.ir import source_bundle
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1866_fixtures import make_chain_exec_engine
+from tests._query_input_fixtures import refusal
 from slayer.engine.query_engine import SlayerQueryEngine
 
 EXTENSION = {
     "dataset": "orders",
     "metrics": [{"expression": "sum(amount * 2)", "name": "double_amount"}],
 }
-EXTENSION_WITH_MEASURES = {
+EXTENSION_WITH_METRICS = {
     "dataset": "orders",
     "metrics": [{"expression": "sum(amount)", "name": "rev"}],
 }
 EXTENSION_WITH_FILTERS = {"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}
-INLINE_MODEL = {
+INLINE_DATASET = {
     "name": "ad_hoc",
     "sql_table": "things",
     "data_source": "ds",
-    "fields": [{"name": "x", "sql": "x", "datatype": "Float"}],
+    "fields": [{"name": "x", "expression": "x", "datatype": "Float"}],
 }
-JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
-ONE_MEASURE = [{"metric": "sum(amount)"}]
+RELATIONSHIP_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
+ONE_METRIC = [{"metric": "sum(amount)"}]
 
 
 def _leaf_types(tp) -> set:
@@ -56,10 +57,6 @@ def _leaf_types(tp) -> set:
     if origin in (Union, UnionType):
         return set().union(*(_leaf_types(a) for a in get_args(tp)))
     return {tp}
-
-
-def _error_keys(exc: ValidationError) -> set[tuple[str, str]]:
-    return {(e["type"], str(e["loc"][-1])) for e in exc.errors()}
 
 
 def _query(**raw: Any) -> SlayerQuery:
@@ -114,7 +111,7 @@ class TestSchema:
 
     async def test_mcp_query_tool_carries_the_definitions(self, mcp_server) -> None:
         tools = {t.name: t for t in await mcp_server.list_tools()}
-        defs = tools["query"].inputSchema.get("$defs", {})
+        defs = tools["query"].input_schema.get("$defs", {})
         assert "DatasetExtension" in defs
         assert "SlayerDataset" not in defs
 
@@ -145,30 +142,29 @@ class TestRejection:
                else {"population": "orders", "extensions": [EXTENSION_WITH_FILTERS]})
         with pytest.raises(ValidationError) as ei:
             _query(**raw)
-        assert _error_keys(ei.value) == {("extra_forbidden", "filters")}
+        assert refusal(ei.value)[0].key == "filters"
 
     def test_source_name_plus_model_keys_is_an_extension_never_a_model(self) -> None:
         with pytest.raises(ValidationError) as ei:
             _query(population={
                 "source_name": "orders", "name": "x", "sql_table": "t", "data_source": "ds",
             })
-        assert _error_keys(ei.value) == {
-            ("extra_forbidden", "name"),
-            ("extra_forbidden", "sql_table"),
-            ("extra_forbidden", "data_source"),
-        }
+        err, _ = refusal(ei.value)
+        assert err.key == "name"
+        for key in ("dataset", "metrics", "relationships"):
+            assert f"`{key}`" in str(err), str(err)
 
     def test_nested_stage_boundary_rejects_too(self) -> None:
         with pytest.raises(ValidationError, match="filters"):
             SlayerDataset.model_validate({
                 "name": "qb",
                 "source_queries": [{"population": "orders", "extensions": [EXTENSION_WITH_FILTERS],
-                                    "metrics": ONE_MEASURE}],
+                                    "metrics": ONE_METRIC}],
             })
 
     def test_rest_body_rejects_unknown_extension_key_with_422(self, rest_client) -> None:
         resp = rest_client.post("/query", json={
-            "population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_MEASURE,
+            "population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_METRIC,
             "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
@@ -176,14 +172,14 @@ class TestRejection:
 
     def test_rest_body_rejects_non_spec_value_with_422(self, rest_client) -> None:
         resp = rest_client.post("/query", json={
-            "population": 42, "metrics": ONE_MEASURE, "dry_run": True,
+            "population": 42, "metrics": ONE_METRIC, "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
 
     async def test_mcp_query_tool_rejects_unknown_extension_key(self, mcp_server) -> None:
         with pytest.raises(ToolError, match="filters"):
             await mcp_server.call_tool(name="query", arguments={
-                "query": {"population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_MEASURE},
+                "query": {"population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_METRIC},
                 "dry_run": True,
             })
 
@@ -197,8 +193,8 @@ class TestTypedAtConstruction:
     def test_legacy_extension_object_converts_typed(self) -> None:
         with pytest.warns(FutureWarning, match="extensions"):
             q = _query(population={
-                **EXTENSION_WITH_MEASURES,
-                "joins": [JOIN_TO_CUSTOMERS],
+                **EXTENSION_WITH_METRICS,
+                "joins": [RELATIONSHIP_TO_CUSTOMERS],
             })
         assert q.population == "orders"
         (sm,) = q.extensions or []
@@ -212,20 +208,20 @@ class TestTypedAtConstruction:
 
     def test_inline_model_object_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="(?i)inline"):
-            _query(population=INLINE_MODEL)
+            _query(population=INLINE_DATASET)
 
     def test_string_stays_a_string(self) -> None:
         assert SlayerQuery(population="orders").population == "orders"
 
     def test_model_instance_is_rejected(self) -> None:
-        model = SlayerDataset.model_validate(INLINE_MODEL)
+        model = SlayerDataset.model_validate(INLINE_DATASET)
         with pytest.raises(ValidationError, match="(?i)inline"):
             SlayerQuery(population=model)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
         with pytest.raises(ValidationError, match="(?i)inline"):
             QueryRequest(population=model)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
 
     def test_rest_body_model_types_the_spec_and_feeds_the_query(self) -> None:
-        req = QueryRequest.model_validate({"population": "orders", "extensions": [EXTENSION], "metrics": ["sum(amount)"]})
+        req = QueryRequest.model_validate({"population": "orders", "extensions": [EXTENSION], "metrics": ["sum(orders.amount)"]})
         assert isinstance((req.extensions or [])[0], DatasetExtension)
         q = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert (q.population, q.extensions) == (req.population, req.extensions)
@@ -255,8 +251,8 @@ class TestRoundTrip:
         assert not isinstance(again.population, dict)
 
     def test_exclude_none_dump_is_the_minimal_object(self) -> None:
-        q = _query(population="orders", extensions=[EXTENSION_WITH_MEASURES])
-        assert q.model_dump(exclude_none=True)["extensions"] == [EXTENSION_WITH_MEASURES]
+        q = _query(population="orders", extensions=[EXTENSION_WITH_METRICS])
+        assert q.model_dump(exclude_none=True)["extensions"] == [EXTENSION_WITH_METRICS]
         assert SlayerQuery(population="orders").model_dump(exclude_none=True)["population"] == "orders"
 
 
@@ -281,7 +277,7 @@ class TestSourceModelName:
     async def test_root_qualifier_uses_the_typed_name(self, chain_engine: SlayerQueryEngine) -> None:
         qualified = await chain_engine.execute(_query(
             population="orders", extensions=[EXTENSION], dimensions=["orders.status"]))
-        bare = await chain_engine.execute(_query(population="orders", extensions=[EXTENSION], dimensions=["status"]))
+        bare = await chain_engine.execute(_query(population="orders", extensions=[EXTENSION], dimensions=["orders.status"]))
         assert qualified.sql == bare.sql
         assert qualified.columns == bare.columns == ["orders.status"]
 
@@ -295,18 +291,18 @@ class TestStageOrdering:
     def test_stage_ordering_walks_typed_specs_from_raw_objects(self) -> None:
         a = SlayerQuery(name="a", population="orders")
         c = SlayerQuery(name="c", population="orders")
-        via_join = SlayerQuery.model_validate({
-            "name": "via_join",
+        via_relationship = SlayerQuery.model_validate({
+            "name": "via_relationship",
             "population": "orders",
             "extensions": [{
                 "dataset": "orders",
                 "relationships": [{"to": "c", "from_columns": ["id"], "to_columns": ["id"]}],
             }],
         })
-        assert isinstance((via_join.extensions or [])[0], DatasetExtension)
-        root = SlayerQuery(population="via_join")
-        names = [q.name for q in topologically_order_stages([via_join, a, c, root])]
-        assert names.index("c") < names.index("via_join")
+        assert isinstance((via_relationship.extensions or [])[0], DatasetExtension)
+        root = SlayerQuery(population="via_relationship")
+        names = [q.name for q in topologically_order_stages([via_relationship, a, c, root])]
+        assert names.index("c") < names.index("via_relationship")
 
 
 # ---------------------------------------------------------------------------
@@ -318,12 +314,12 @@ class TestTimeDimensionColumnAlias:
     def test_column_key_validates_and_dumps_as_dimension(self) -> None:
         q = _query(
             population="orders",
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
+            time_dimensions=[{"field": "orders.created_at", "granularity": "month"}],
         )
         assert q.time_dimensions
-        assert q.time_dimensions[0].field == "created_at"
+        assert q.time_dimensions[0].field == "orders.created_at"
         dumped = q.model_dump(mode="json", exclude_none=True)["time_dimensions"][0]
-        assert dumped == {"field": "created_at", "granularity": "month"}
+        assert dumped == {"field": "orders.created_at", "granularity": "month"}
 
     def test_column_key_accepts_a_column_ref_object(self) -> None:
         td = TimeDimension.model_validate({

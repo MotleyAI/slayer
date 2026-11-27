@@ -9,12 +9,14 @@ Defines what a model's `filters` mean: the filtered dataset every read of the mo
 A model's dataset SHALL be its rows passing every entry of its `filters`. Every read of the model SHALL see
 only that dataset, restricted before any join: as a query's or stage's source, as the target of a join hop
 of any join type, as a hop of a filter pushed across a fanning or unproven hop (in every pushdown shape),
-as the root of a cross-model or isolated aggregate, a windowed or time-shifted evaluation, as the parent of
+as the home of any aggregate — cross-model, isolated, windowed or time-shifted —, as the parent of
 a list child, as either side of a product with an unrelated dataset, and as a dataset read by another
 model's filter or derived column. A read reaching no passing row SHALL behave exactly as a read reaching no
 row: a LEFT-joined target null-extends, an INNER-joined target drops the row, a pushed-down filter finds no
 match. Model filters SHALL apply whether the model is table-backed, SQL-backed or query-backed. A model
-without filters SHALL read its rows unchanged.
+without filters SHALL read its rows unchanged. A model's filters SHALL restrict only reads of that model: as
+a query's population they decide which rows exist, and an aggregate whose home reads the model on none of its
+own paths SHALL count every row of its home (`queries/population` › Population may be omitted).
 
 The examples below use `orders(id PK, status, amount)` = (1,'done',100), (2,'done',200), (3,'done',300),
 (4,'open',400) and `returns(id PK, order_id, reason)` = (10,1,'damaged'), (11,1,'late'), (12,2,'damaged'),
@@ -74,10 +76,14 @@ The examples below use `orders(id PK, status, amount)` = (1,'done',100), (2,'don
 - **THEN** the results are those of the root's passing rows, as before this change
 
 #### Scenario: Isolated, windowed and shifted evaluations read the filtered root
-- **WHEN** a query rooted at `done_orders` asks only for an isolated aggregate, a windowed aggregate, a
-  time-shifted aggregate, an aggregate under a `date_range`, or uses spine time dimensions
-- **THEN** every value is computed over orders `1`, `2` and `3` only, and no cell exists for a row the
-  filter excludes
+- **WHEN** a query rooted at `done_orders` asks only for its own windowed aggregate, time-shifted
+  aggregate or aggregate under a `date_range`, or uses spine time dimensions; and separately asks only
+  for the isolated aggregate `count(returns.*)`, once with no dimension and once grouped by
+  `done_orders.id`
+- **THEN** every value of the root's own aggregates is computed over orders `1`, `2` and `3` only, and no
+  cell exists for a row the filter excludes; `count(returns.*)` counts all `4` returns, its home reading no
+  `done_orders` row; grouped by `done_orders.id` the counts are `2`, `1`, `0` for orders `1` to `3`, the
+  home reading `done_orders` on its own path and return `13` landing in the NULL tuple, which is no row
 
 #### Scenario: Row-level security still scopes tables inside a filtered dataset
 - **WHEN** a session policy with a column ruleset or a join ruleset is active, and a query reads a filtered
@@ -118,12 +124,15 @@ they cross is proven to-one, and SHALL return the same rows as the association f
 
 ### Requirement: Filters whose dataset reaches itself are refused
 A model's dataset SHALL depend on the dataset of every model its filters read — every model on every join
-path in the filters' dependency closure, through the derived columns they name. A model whose dataset
-depends on itself SHALL be refused with a filter-cycle error naming the cycle of models in order. Saving a
-model that closes such a cycle through itself SHALL fail at both save doors (the engine and the storage
-backend), leaving the store unchanged. A query reading a model on such a cycle, stored without validation,
-SHALL fail with the same error. A join edge alone, or a filter reading a model whose own filters do not
-lead back, SHALL NOT form a cycle.
+path in the filters' dependency closure, through the derived columns they name — and on the dataset of every
+model owning a windowed column (`models/field-expressions` › A windowed field is a column of its dataset)
+in that closure, a windowed column reading every row of its own model's dataset. A window function written
+in a model's own `filters` is a windowed column of that model, so the model's dataset depends on itself. A model whose dataset
+depends on itself SHALL be refused with a filter-cycle error naming the cycle of models in order, and naming
+the windowed column when the cycle closes through a windowed column reading its own model's dataset. Saving a model that closes such a cycle through itself
+SHALL fail at both save doors (the engine and the storage backend), leaving the store unchanged. A query
+reading a model on such a cycle, stored without validation, SHALL fail with the same error. A join edge
+alone, or a filter reading a model whose own filters do not lead back, SHALL NOT form a cycle.
 
 #### Scenario: Two filters reading each other are refused at save time
 - **WHEN** `a` joins `b` and `b` joins `a`, `a` has filter `b.flag = 1`, and `b` is saved with filter
@@ -135,33 +144,75 @@ lead back, SHALL NOT form a cycle.
 - **WHEN** `b`'s filter reads a derived column of `b` whose `sql` reads `a.flag`, and `a`'s filter reads `b`
 - **THEN** the save closing the cycle fails with the filter-cycle error
 
+#### Scenario: A filter reading its own model's windowed column is refused
+- **WHEN** model `orders_win` declares the windowed column `ranked` (dialect entry
+  `rank() over (order by amount)`) and is saved with the filter `orders_win.ranked > 1`, and separately with
+  the filter `orders_win.rank_plus > 1` where `rank_plus` is the derived column `orders_win.ranked + 0`
+- **THEN** each save fails with the filter-cycle error naming `orders_win → orders_win` and the column
+  `ranked`, through the engine and through the storage backend alike
+
+#### Scenario: A cycle closing through a joined windowed column's definition is refused
+- **WHEN** `a` and `b` join each other many-to-one, `b` declares the windowed column `rn` partitioned by
+  `a.flag`, and `a` is saved with the filter `b.rn = 1`
+- **THEN** the save fails with the filter-cycle error naming `a → b → a`
+
 #### Scenario: A stored cycle fails the query
 - **WHEN** models forming a filter cycle were stored without validation and a query reads one of them
 - **THEN** the query fails with the filter-cycle error
+
+#### Scenario: A stored own windowed filter fails the query
+- **WHEN** `orders_win` with the filter `orders_win.ranked > 1` was stored without validation and a query
+  reads `orders_win`
+- **THEN** the query fails with the filter-cycle error naming the column `ranked`
 
 #### Scenario: Reverse edges without filter recursion are accepted
 - **WHEN** `a` and `b` join each other, `a` has filter `b.flag = 1`, and `b` has no filter or a filter
   reading only its own columns
 - **THEN** both saves succeed and queries reading either model run
 
+#### Scenario: A window written in a model's filters is refused
+- **WHEN** model `orders_top` is saved with the filter `rank() over (order by amount) = 1`, through the engine
+  and through the storage backend, and separately was stored without validation and is read by a query
+- **THEN** each save fails with the filter-cycle error naming `orders_top → orders_top`, leaving the store
+  unchanged, and the query fails with the same error
+
 ### Requirement: Model filters are validated wherever read and at save time
-A model filter referencing a saved measure, or a column whose SQL contains a window function, SHALL be
-refused with the model-filter error — judged for each reference against the model that owns it, including
-qualified references to joined models and references reached through derived columns. Saving such a model
-SHALL fail at both save doors. A query SHALL fail with the same error when it reads, by the query's read
-set, a model whose stored filter is invalid — whether as its source or through any join, filter or
-definition.
+A model filter referencing a saved measure SHALL be refused with the model-filter error — judged for each
+reference against the model that owns it, including qualified references to joined models and references
+reached through derived columns. Saving such a model SHALL fail at both save doors. A query SHALL fail with
+the same error when it reads, by the query's read set, a model whose stored filter is invalid — whether as
+its source or through any join, filter or definition. A model filter reading a joined model's windowed column
+SHALL be accepted and SHALL restrict by that column's computed value, unless it closes a filter cycle
+(Requirement: Filters whose dataset reaches itself are refused).
 
 #### Scenario: Saving a filter on a measure is refused
 - **WHEN** a model is saved with a filter `total > 100` where `total` is one of its saved measures
 - **THEN** the save fails with the model-filter error naming the filter
 
 #### Scenario: Saving a filter on a joined windowed column is refused
-- **WHEN** a model is saved with a filter reading a joined model's column whose SQL contains a window
-  function
-- **THEN** the save fails with the model-filter error
+- **WHEN** a model is saved with a filter reading a joined model's windowed column whose definition reads
+  the filtered model back (a filter cycle)
+- **THEN** the save fails with the filter-cycle error, at both save doors
+
+#### Scenario: A filter on a joined windowed column is accepted and evaluated
+- **WHEN** `ranked_orders` reads table `orders(id, status, amount)` with the windowed column `ranked`
+  (dialect entry `rank() over (order by amount)`), and `returns_ranked` joins it many-to-one and is saved
+  with the filter `ranked_orders.ranked > 1`, through the engine and through the storage backend
+- **THEN** both saves succeed, and a query counting `returns_ranked` rows counts exactly the returns whose
+  order's rank over every order exceeds `1`
 
 #### Scenario: A join target's invalid stored filter fails the query
 - **WHEN** a join target's filter references one of its measures, stored without validation, and a query
   rooted elsewhere reads that target
 - **THEN** the query fails with the model-filter error naming the target's filter
+
+### Requirement: A model filter reads source columns by bare name
+In each entry of a dataset's `filters`, a bare name SHALL read the column of that name of the dataset's own source, whatever fields the dataset declares, and a dotted path from the dataset SHALL read a field (`models/field-expressions` › Inside a row definition a bare name is a source column and a path is a field).
+
+#### Scenario: A filter past a renamed field
+- **WHEN** dataset `orders` over `orders(id, status, state)` with rows (1, 'paid', 'open'), (2, 'paid', 'paid'), (3, 'open', 'x') declares field `status` with `expression: state` and the filter `status = 'paid'`
+- **THEN** a query of `id` returns 1 and 2
+
+#### Scenario: A filter reading a field by path
+- **WHEN** the same dataset's filter is instead `orders.status = 'paid'`
+- **THEN** a query of `id` returns 2

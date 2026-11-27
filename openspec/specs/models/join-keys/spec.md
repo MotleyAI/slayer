@@ -7,11 +7,11 @@ Defines the spelling contract of a join's key columns: how `from_columns` / `to_
 
 ### Requirement: Join keys name model columns
 
-Each entry of a join's `from_columns` and `to_columns` SHALL name a column of the model on its side by that column's `name` — never by its physical `sql` spelling — and SHALL obey the column-name rules (no `.` or `:`, no reserved prefix). Each named column MUST be a base column: its `sql` is unset or a single identifier (optionally double-quoted), and it carries no `filter`. A model whose join names an undeclared, expression-valued, or filtered source-side column SHALL be rejected when the model is constructed, with an error naming the model, the join target, the column and the remedy; the same check SHALL apply to joins added by a query-level model extension. A join whose target-side key is not a declared base column of the target model SHALL be rejected at save time with a typed error, and model validation SHALL report such a join on an already-stored model with the remedy.
+Each entry of a join's `from_columns` and `to_columns` SHALL name a column of the model on its side by that column's `name` — never by its physical spelling — and SHALL obey the column-name rules (no `.` or `:`, no reserved prefix). Each named column MUST be a declared field without a `filter` whose expression reads only its own dataset's source columns: a physical reader (`models/field-expressions`), or a computed field, as Ossie allows relationship keys to name any declared field. A model whose join names an undeclared or filtered source-side column, or a source-side column whose expression reads another dataset, SHALL be rejected when the model is constructed, with an error naming the model, the join target, the column and the remedy; the same check SHALL apply to joins added by a query-level model extension. A join whose target-side key is not such a field of the target model SHALL be rejected at save time with a typed error, and model validation SHALL report such a join on an already-stored model with the remedy.
 
 #### Scenario: A renamed source key is written by its column name
 
-- **WHEN** a model declares `DatasetField(name="region_id", sql="region_fk")` and a join with `from_columns: ["region_id"]` and `to_columns: ["id"]`
+- **WHEN** a model declares `DatasetField(name="region_id", expression="region_fk")` and a join with `from_columns: ["region_id"]` and `to_columns: ["id"]`
 - **THEN** the model saves, and queries crossing the join execute against the physical column `region_fk`
 
 #### Scenario: An undeclared source key is rejected at construction
@@ -21,8 +21,13 @@ Each entry of a join's `from_columns` and `to_columns` SHALL name a column of th
 
 #### Scenario: An expression source key is rejected at construction
 
-- **WHEN** a model's join names a source-side column whose `sql` is an expression (`CAST(id AS INT)`)
-- **THEN** construction fails with an error naming the column and the remedy to key on a base column
+- **WHEN** a model's join names a source-side column whose `expression` reads a field of another dataset (`customers.region_id`)
+- **THEN** construction fails with an error naming the column and the remedy to key on a field of the model's own source
+
+#### Scenario: A computed source key joins on its expression
+
+- **WHEN** a model declares `DatasetField(name="customer_key", expression="CAST(cust_fk AS INT)")` and a join with `from_columns: ["customer_key"]` to the target's `id`
+- **THEN** the model saves, and a query crossing the join executes with the ON clause comparing `CAST(cust_fk AS INT)` to the target key, returning the hand-computed values
 
 #### Scenario: A filtered source key is rejected at construction
 
@@ -36,7 +41,7 @@ Each entry of a join's `from_columns` and `to_columns` SHALL name a column of th
 
 #### Scenario: An expression target key is rejected at save time
 
-- **WHEN** a model is saved whose join names a target-side column whose `sql` is an expression on the target model
+- **WHEN** a model is saved whose join names a target-side column whose `expression` reads another dataset on the target model
 - **THEN** the save fails with a typed join-key error naming the target model, the column and the remedy
 
 #### Scenario: Model validation reports an undeclared target key
@@ -51,16 +56,16 @@ Each entry of a join's `from_columns` and `to_columns` SHALL name a column of th
 
 ### Requirement: The physical spelling is applied once, at emission
 
-Join-graph reasoning — provable arity, grain determination, the entity and foreign-key seeds, the association kernel's entity keys — SHALL compare key columns, grain members and unique-key sets by column `name`. The physical spelling (the column's bare `sql` identifier, unquoted, else its `name`) SHALL be applied only where a key becomes SQL: the join ON clause, the semi-join correlation spine, and cardinality profiling. A mixed-case physical identifier SHALL be quoted exactly as any other emitted column identifier of the dialect. Emission SHALL fail closed with a typed error rather than emit an identifier for a key it cannot resolve to a declared base column.
+Join-graph reasoning — provable arity, grain determination, the entity and foreign-key seeds, the association kernel's entity keys — SHALL compare key fields, grain members and unique-key sets by field `name`. The physical spelling (the source column a physical reader reads, unquoted, else the field's `name`; `models/field-expressions` › A physical reader is a bare source column without a filter) SHALL be applied only where a key becomes SQL: the join ON clause, the semi-join correlation spine, and cardinality profiling; a computed key SHALL be emitted at those same places as its expression over its own dataset's source. A mixed-case physical identifier SHALL be quoted exactly as any other emitted column identifier of the dialect. Emission SHALL fail closed with a typed error rather than emit SQL for a key it cannot resolve to a declared field of its own dataset.
 
 #### Scenario: A renamed source foreign key executes
 
-- **WHEN** `orders` joins `customers` on `DatasetField(name="customer_id", sql="cust_fk")` → `id` and a query rooted at `orders` groups a measure by `customers.name`
+- **WHEN** `orders` joins `customers` on the field `customer_id` with `expression: cust_fk` → `id` and a query rooted at `orders` groups a measure by `customers.name`
 - **THEN** the query executes on SQLite and DuckDB with the hand-computed per-customer values, joining on `cust_fk`
 
 #### Scenario: A renamed target primary key proves the hop and executes
 
-- **WHEN** `customers` declares `DatasetField(name="id", sql="customer_pk", primary_key=True)` and `orders` joins it with `from_columns: ["customer_id"]` and `to_columns: ["id"]` and no cardinality declaration
+- **WHEN** `customers` declares the field `id` with `expression: customer_pk` and `primary_key: true`, and `orders` joins it on `customer_id` → `id` with no cardinality declaration
 - **THEN** the hop is provably many-to-one, the dimension keeps exact attributed values with no broadcast warning, and the query executes with the hand-computed values
 
 #### Scenario: Renames on both sides across two hops execute
@@ -70,8 +75,8 @@ Join-graph reasoning — provable arity, grain determination, the entity and for
 
 #### Scenario: Association over a renamed primary-key root executes
 
-- **WHEN** the aggregation's home model declares its primary key as `DatasetField(name="id", sql="customer_pk", primary_key=True)` and the query runs in associate mode over an unattributable dimension
-- **THEN** the query executes with the distinct-entity values, the entity key referenced by its column name
+- **WHEN** the aggregation's home dataset declares its primary key as the field `id` with `expression: customer_pk` and `primary_key: true`, and the query runs in associate mode over an unattributable dimension
+- **THEN** the query executes with the distinct-entity values, the entity key referenced by its field name
 
 #### Scenario: Population pushdown over renamed keys executes
 
@@ -80,22 +85,27 @@ Join-graph reasoning — provable arity, grain determination, the entity and for
 
 #### Scenario: Cardinality detection profiles renamed keys
 
-- **WHEN** cardinality detection runs over a join whose keys are renamed base columns on both sides
+- **WHEN** cardinality detection runs over a join whose keys are renamed physical readers on both sides
 - **THEN** it profiles the physical columns and detects `many_to_one` for a unique target key
 
 #### Scenario: A mixed-case physical key is quoted at every emitter
 
-- **WHEN** a join key's physical spelling is mixed-case (`sql="CustPK"`)
+- **WHEN** a join key's physical spelling is mixed-case (`expression: '"CustPK"'`)
 - **THEN** the ON clause, the semi-join spine and the cardinality-profiling SQL all quote it, per the dialect's quoting of any other emitted column
+
+#### Scenario: A computed key correlates a pushed-down restriction
+
+- **WHEN** a row filter restricts the population across a hop keyed on a computed field, so the restriction is pushed as a correlated semi-join
+- **THEN** the spine correlates on the computed key's expression and the query returns the correctly restricted population
 
 #### Scenario: An unresolvable target key fails closed at emission
 
-- **WHEN** a stored model's join names a target-side column that is not a declared base column and a query crosses that join
+- **WHEN** a stored dataset's relationship names a target-side field that is not a declared field of the target and a query crosses that relationship
 - **THEN** planning fails with the typed join-key error, and no SQL is generated
 
 ### Requirement: Stored physical spellings are canonicalised on load
 
-WHEN a stored model below the current schema version carries a `join_pairs` entry that names no declared column of its side but equals exactly one declared base column's unquoted `sql` rename, THEN the entry SHALL be rewritten to that column's `name` on load. The source side is matched against this model's columns, the target side against the target model's stored columns, and the model SHALL be written back at the current version. An entry naming a declared column SHALL be left untouched.
+WHEN a stored model below the current schema version carries a `join_pairs` entry that names no declared column of its side but equals exactly one declared base column's unquoted `sql` rename, THEN the entry SHALL be rewritten to that column's `name` on load. The source side is matched against this model's columns, the target side against the target model's stored columns, and the model SHALL be persisted at the current version only by a save or `slayer storage upgrade`. An entry naming a declared column SHALL be left untouched.
 
 An entry that matches no declared column and no rename, and that is a valid column name, SHALL become a declared hidden base column of its own side's model when that side's document is loaded below the current schema version:
 - a source-side key is added to the loading model;
@@ -108,7 +118,7 @@ The canonicalisation SHALL precede exact-inverse join deduplication, and the cou
 #### Scenario: A source-side physical spelling is rewritten on load
 
 - **WHEN** a v10 stored model declares `DatasetField(name="customer_id", sql="cust_fk")` and its join carries `join_pairs: [["cust_fk", "id"]]`
-- **THEN** after loading, the join carries `[["customer_id", "id"]]` and the stored document is at the current version with the rewritten entry, on both the YAML and the SQLite backends
+- **THEN** after loading, the join carries `[["customer_id", "id"]]`, and `slayer storage upgrade` stores the document at the current version with the rewritten entry, on both the YAML and the SQLite backends
 
 #### Scenario: A target-side physical spelling is rewritten on load
 
@@ -128,7 +138,7 @@ The canonicalisation SHALL precede exact-inverse join deduplication, and the cou
 #### Scenario: An undeclared source-side key becomes a hidden column
 
 - **WHEN** a v10 stored `orders` declares columns `order_id, status, ordered_at, amount` and joins `customers` on `[["customer_id", "id"]]`, as SLayer 0.10.2's Cube importer wrote it for a cube without a `customer_id` dimension
-- **THEN** `orders` loads with a hidden base column `customer_id` and is written back at the current version, on both the YAML and the SQLite backends
+- **THEN** `orders` loads with a hidden base column `customer_id`, and `slayer storage upgrade` persists it at the current version, on both the YAML and the SQLite backends
 - **AND** a query of `customers.region` by `sum(amount)` returns the rows SLayer 0.10.2 returned, with a join condition carrying no casts
 - **AND** loading it again changes nothing, and re-saving it passes save-time validation
 
@@ -144,38 +154,38 @@ The canonicalisation SHALL precede exact-inverse join deduplication, and the cou
 
 ### Requirement: Drift and refinement resolve base columns by their physical spelling
 
-Schema drift and type refinement SHALL treat a column whose `sql` is a double-quoted bare identifier as a base column and SHALL compare it against the live schema by its unquoted identifier.
+Schema drift and type refinement SHALL treat exactly the physical readers (`models/field-expressions` › A physical reader is a bare source column without a filter) as base fields, a double-quoted bare identifier included, and SHALL compare each against the live schema by the unquoted source column it reads. A field whose definition reads another field by path SHALL NOT be compared against the live schema as a base field.
 
 #### Scenario: A quoted self-name column present in the live table is not drift
 
-- **WHEN** a model declares `DatasetField(name="legalEntityType", sql="\"legalEntityType\"")` and the live table has the column `legalEntityType`
+- **WHEN** a dataset declares the field `legalEntityType` with `expression: '"legalEntityType"'` and the live table has the column `legalEntityType`
 - **THEN** schema drift reports no missing column and keeps a join keyed on it
 
 #### Scenario: A quoted base column is type-refined
 
-- **WHEN** a stored `DOUBLE` column with a double-quoted `sql` names a live integer column
-- **THEN** type refinement on load narrows it exactly as it would an unquoted base column
+- **WHEN** a stored `DOUBLE` field whose expression is a double-quoted bare identifier names a live integer column
+- **THEN** type refinement on load narrows it exactly as it would an unquoted base field
 
 ### Requirement: Importers emit logical key names
 
-Every importer SHALL emit `from_columns` / `to_columns` in column-`name` spelling naming declared base columns on both sides. The Cube importer SHALL keep join keys as member names, SHALL synthesise a hidden base column for an ON operand that names no member of its cube (on the cube's model and on any view facade carrying the join), and SHALL drop a join, with a conversion-report warning, when an ON operand names a member whose `sql` is not a base column. The dbt importer SHALL synthesise a hidden base column for a foreign entity that no dimension of the model covers, and SHALL skip, with a warning, a join whose entity `expr` is not a single identifier. The OSI importer SHALL check both sides of a relationship against the contract before adding it and SHALL skip a violating relationship with its existing warning. Auto-ingestion SHALL apply its column renaming to join keys so a generated join always names the generated column.
+Every importer SHALL emit `from_columns` / `to_columns` in field-`name` spelling naming declared physical readers on both sides (`models/field-expressions` › A physical reader is a bare source column without a filter). An importer SHALL key a join on a physical column through a physical reader of that column, added as a hidden field when none exists (`importers/meaning-preservation` › One hidden reader per physical column), on the dataset and on any view facade carrying the join, whichever members or dimensions hold the column's name. The Cube importer SHALL keep join keys as member names where the member is a physical reader, and SHALL drop a join, with a conversion-report warning, when an ON operand is a member reference whose definition is not a physical reader. The dbt importer SHALL skip, with a warning, a join whose entity `expr` is not a single identifier. The OSI importer SHALL check both sides of a relationship against the contract before adding it and SHALL skip a violating relationship with its existing warning. Auto-ingestion SHALL apply its field renaming to join keys so a generated join always names the generated field.
 
 #### Scenario: Cube join keys are member names
 
 - **WHEN** a Cube join's ON is `{CUBE}.customer_id = {customers.id}` and the `id` member's `sql` is `{CUBE}.cust_pk`
-- **THEN** the imported join carries `[["customer_id", "id"]]` and the imported `id` column carries `sql: cust_pk`
+- **THEN** the imported relationship carries `from_columns: ["customer_id"]` and `to_columns: ["id"]`, and the imported `id` field carries `expression: cust_pk`
 
 #### Scenario: A Cube ON operand naming no member synthesises a hidden key column
 
 - **WHEN** a Cube join's ON references a target column that is not a declared member of the target cube
-- **THEN** the joined model carries a hidden base column named by the operand and the join keys name it
+- **THEN** the joined dataset carries a hidden physical reader of that column and the relationship keys name it
 
 #### Scenario: dbt synthesises a hidden foreign-key column
 
-- **WHEN** a dbt semantic model declares a foreign entity whose `expr` no dimension covers
-- **THEN** the converted model carries a hidden base column named by that `expr` and the join keys name it
+- **WHEN** a dbt semantic model declares a foreign entity whose `expr` no physical reader covers
+- **THEN** the converted dataset carries a hidden physical reader of that column and the relationship keys name it
 
 #### Scenario: Ingestion's column rename applies to join keys
 
 - **WHEN** an ingested table has a foreign-key column named `_count`
-- **THEN** the generated column and the generated join key are both spelled `count_col`
+- **THEN** the generated field and the generated relationship key are both spelled `count_col`

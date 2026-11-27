@@ -1,6 +1,6 @@
 """Unrelated-dataset seeds, engines, row helpers and the emitted-SQL product-hop checker.
 
-Main seed (datasource ``test``), with no join path between ``customers`` and ``events``::
+Main seed (datasource ``test``), with no relationship path between ``customers`` and ``events``::
 
     customers (id, city, tenant): 1 A t1 | 2 A t1 | 3 B t2
     events    (id, amount, created_at, kind, user_id, tenant):
@@ -73,8 +73,8 @@ def main_tables(*, event_rows: Optional[list[tuple]] = None) -> list[TableSpec]:
     return [CUSTOMERS, events_table(event_rows), USERS, ORGS]
 
 
-def _many_to_one(target: str, column: str) -> DatasetRelationship:
-    return DatasetRelationship(to=target, from_columns=[column], to_columns=["id"], cardinality=RelationshipCardinality.MANY_TO_ONE)
+def _many_to_one(target: str, field: str) -> DatasetRelationship:
+    return DatasetRelationship(to=target, from_columns=[field], to_columns=["id"], cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
 def customers_dataset(**extra: Any) -> SlayerDataset:
@@ -93,7 +93,7 @@ def events_dataset() -> SlayerDataset:
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="amount", datatype=DataType.FLOAT),
-            DatasetField(name="amount_x2", datatype=DataType.FLOAT, sql="amount * 2"),
+            DatasetField(name="amount_x2", datatype=DataType.FLOAT, expression="amount * 2"),
             DatasetField(name="created_at", datatype=DataType.DATE),
             DatasetField(name="kind", datatype=DataType.STRING),
             DatasetField(name="user_id", datatype=DataType.INTEGER),
@@ -189,13 +189,13 @@ async def wide_engine(backend: str) -> AsyncGenerator[SlayerQueryEngine]:
 
 def wide_metrics() -> list[dict[str, str]]:
     """Two aggregates per unrelated dataset, three cross-dataset expressions, and ``count(*)``."""
-    out = [m("count(*)", "n_customers")]
+    out = [m("count(customers.*)", "n_customers")]
     for name in WIDE_DATASETS:
         out += [m(f"sum({name}.v)", f"{name}_sum"), m(f"count({name}.id)", f"{name}_n")]
     out += [
         m("sum(big.v) + sum(small.v)", "big_plus_small"),
         m("count(big.id) + count(small.id) + count(empty.id)", "all_rows"),
-        m("count(small.id) / count(*)", "small_per_customer"),
+        m("count(small.id) / count(customers.*)", "small_per_customer"),
     ]
     return out
 
@@ -208,8 +208,8 @@ def m(expression: str, name: str) -> dict[str, str]:
     return {"metric": expression, "alias": name}
 
 
-RATIO = m("count(events.id) / count(*)", "events_per_customer")
-GROUPED = [m("count(*)", "n_customers"), m("count(events.id)", "n_events")]
+RATIO = m("count(events.id) / count(customers.*)", "events_per_customer")
+GROUPED = [m("count(customers.*)", "n_customers"), m("count(events.id)", "n_events")]
 
 
 def query(**fields: Any) -> SlayerQuery:
@@ -221,7 +221,7 @@ def ratio_query(**extra: Any) -> SlayerQuery:
 
 
 def grouped_query(**extra: Any) -> SlayerQuery:
-    return query(**{"dimensions": ["city"], "metrics": GROUPED, **extra})
+    return query(**{"dimensions": ["customers.city"], "metrics": GROUPED, **extra})
 
 
 def stages(*raw: dict[str, Any]) -> list[SlayerQuery]:

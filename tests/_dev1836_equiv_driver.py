@@ -1,7 +1,7 @@
-"""DEV-1836 semantic-equivalence driver.
+"""Cross-dataset semantic-equivalence driver.
 
 Seeds RANDOM data (respecting PK/FK/arity so join fan-out is exercised) into
-each cross-model golden suite's fixture schema, executes EVERY case query
+each cross-dataset golden suite's fixture schema, executes EVERY case query
 through the engine against SQLite, and dumps {module::case: {status, rows}} to
 JSON. Run in the pre-change worktree AND the current worktree, then diff:
 
@@ -55,18 +55,8 @@ _SQLITE_TYPE = {
 
 
 def _physical_columns(dataset: SlayerDataset) -> list[DatasetField]:
-    """Only bare/identity columns are real table columns; a ``sql`` expression
-    (derived/filtered) or a filter-bearing column is computed by the query."""
-    out: list[DatasetField] = []
-    for c in dataset.fields:
-        sql = getattr(c, "sql", None)
-        if getattr(c, "filter", None) is not None:
-            # a filtered column's PHYSICAL backing (its sql) is a separate col;
-            # only include if sql is a bare identifier equal-ish and not already present
-            continue
-        if sql is None or sql.strip() == c.name:
-            out.append(c)
-    return out
+    """Only unfiltered base fields are real table columns; the rest are computed by the query."""
+    return [c for c in dataset.fields if c.is_physical_reader]
 
 
 def _rand_value(dtype, rng: random.Random):
@@ -112,7 +102,7 @@ def seed_sqlite(datasets: list[SlayerDataset], db_path: str, *, seed: int = 2024
             cols = _physical_columns(m)
             if not cols:
                 continue
-            coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.datatype, "TEXT")}' for c in cols)
+            coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.datatype, "TEXT") if c.datatype else "TEXT"}' for c in cols)
             con.execute(f'CREATE TABLE "{m.sql_table}" ({coldefs})')
             colnames = {c.name for c in cols}
             # FK columns: source-side join cols sample from the target's target-col values.

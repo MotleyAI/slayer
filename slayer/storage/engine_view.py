@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Hashable
+from collections.abc import Awaitable, Hashable, Iterable
 from typing import Any, TypeVar
 
+from slayer.core.errors import BrokenDependent
+from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import OntologyMismatchWarning, SlayerWarning
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
+from slayer.ontology.use import StoredUse
 from slayer.storage.base import CLIENT_SOURCE, ClientSource, StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
+from slayer.storage.ontology_documents import StoredMapping
 
 _T = TypeVar("_T")
 
 
 class EngineStorage(StorageBackend):
     """``inner`` as one query engine reads it; closing the view never closes ``inner``."""
+
+    _delegates_documents = True
 
     def __init__(self, inner: StorageBackend, *, client_source: ClientSource) -> None:
         # Another engine's view is unwrapped: a view always reads its own engine's clients.
@@ -69,6 +76,9 @@ class EngineStorage(StorageBackend):
     async def delete_dataset(self, name: str, data_source: str | None = None) -> bool:
         return await self._sourced(self._inner.delete_dataset(name, data_source=data_source))
 
+    async def guard_dataset_deletion(self, *, name: str, data_source: str) -> list[BrokenDependent]:
+        return await self._sourced(self._inner.guard_dataset_deletion(name=name, data_source=data_source))
+
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         await self._sourced(self._inner.save_datasource(datasource))
 
@@ -105,6 +115,97 @@ class EngineStorage(StorageBackend):
         await self._sourced(self._inner.delete_memory(memory_id))
 
     # ---- datasets -----------------------------------------------------------
+
+    # ---- semantic-model documents (the inner store's) ------------------------
+
+    async def list_semantic_models(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        return await self._inner.list_semantic_models(data_source=data_source)
+
+    async def get_semantic_model_text(self, name: str, data_source: str | None = None) -> str | None:
+        return await self._inner.get_semantic_model_text(name, data_source=data_source)
+
+    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str,
+                                       warnings_out: list[SlayerWarning] | None = None) -> None:
+        await self._sourced(self._inner.save_semantic_model_text(data_source=data_source, name=name, text=text,
+                                                                 warnings_out=warnings_out))
+
+    async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
+        return await self._inner.delete_semantic_model(name, data_source=data_source)
+
+    async def semantic_model_owner(self, name: str, data_source: str) -> str | None:
+        return await self._inner.semantic_model_owner(name, data_source=data_source)
+
+    async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
+        await self._sourced(self._inner.save_dataset_extensions(dataset))
+
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str],
+                                   warnings_out: list[SlayerWarning] | None = None) -> None:
+        await self._sourced(self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text,
+                                                             replacing=replacing, warnings_out=warnings_out))
+
+    async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
+                                    datasets: list[str] | None = None,
+                                    warnings_out: list[SlayerWarning] | None = None) -> None:
+        await self._sourced(self._inner.create_semantic_model(data_source=data_source, name=name, content=content,
+                                                              datasets=datasets, warnings_out=warnings_out))
+
+    async def edit_semantic_model(self, name: str, *, data_source: str,
+                                  warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> None:
+        await self._sourced(self._inner.edit_semantic_model(name, data_source=data_source, warnings_out=warnings_out,
+                                                            **edits))
+
+    async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
+        return await self._inner.list_model_scoped_metrics(data_source)
+
+    async def list_ontologies(self) -> list[str]:
+        return await self._inner.list_ontologies()
+
+    async def get_ontology_text(self, name: str) -> str | None:
+        return await self._inner.get_ontology_text(name)
+
+    async def save_ontology_text(self, *, name: str, text: str,
+                                 warnings_out: list[SlayerWarning] | None = None) -> None:
+        await self._sourced(self._inner.save_ontology_text(name=name, text=text, warnings_out=warnings_out))
+
+    async def delete_ontology(self, name: str) -> bool:
+        return await self._sourced(self._inner.delete_ontology(name))
+
+    async def edit_ontology(self, name: str, *, warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> None:
+        await self._sourced(self._inner.edit_ontology(name, warnings_out=warnings_out, **edits))
+
+    async def list_ontology_mappings(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        return await self._inner.list_ontology_mappings(data_source)
+
+    async def get_ontology_mapping_text(self, name: str, data_source: str) -> str | None:
+        return await self._inner.get_ontology_mapping_text(name, data_source)
+
+    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str,
+                                         warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        return await self._sourced(self._inner.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                                          text=text, warnings_out=warnings_out))
+
+    async def edit_ontology_mapping(self, name: str, *, data_source: str,
+                                    warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> list[str]:
+        return await self._sourced(self._inner.edit_ontology_mapping(name, data_source=data_source,
+                                                                     warnings_out=warnings_out, **edits))
+
+    async def delete_ontology_mapping(self, name: str, data_source: str) -> bool:
+        return await self._inner.delete_ontology_mapping(name, data_source)
+
+    async def ontology_mapping_problems(self, name: str, data_source: str) -> list[str]:
+        return await self._sourced(self._inner.ontology_mapping_problems(name, data_source))
+
+    async def load_ontology_mappings(self, *, data_source: str | None = None) -> Loaded[StoredMapping]:
+        return await self._sourced(self._inner.load_ontology_mappings(data_source=data_source))
+
+    async def ontology_use(self, data_source: str) -> StoredUse:
+        return await self._sourced(self._inner.ontology_use(data_source))
+
+    async def ontology_mismatches(self, *, data_source: str | None = None, mapping: str | None = None,
+                                  ontology: str | None = None,
+                                  datasets: Iterable[str] | None = None) -> list[OntologyMismatchWarning]:
+        return await self._sourced(self._inner.ontology_mismatches(data_source=data_source, mapping=mapping,
+                                                                   ontology=ontology, datasets=datasets))
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         return await self._sourced(self._inner.get_dataset(name, data_source=data_source))

@@ -13,16 +13,15 @@ from slayer.core.relationship_walker import dataset_field_type
 from slayer.core.keys import FieldKey, ValueKey, boolean_valued, numeric_valued
 from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import stage_field_type
 from slayer.core.syntax import parse_expr
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 
 from tests._dev2046_fixtures import customers_dataset, orders_dataset
 
 ORDERS = orders_dataset()
 CUSTOMERS = customers_dataset()
 BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[CUSTOMERS])
-COLUMN_TYPE = dataset_field_type(dataset=ORDERS, datasets_by_name={"orders": ORDERS, "customers": CUSTOMERS})
+FIELD_TYPE = dataset_field_type(dataset=ORDERS, datasets_by_name={"orders": ORDERS, "customers": CUSTOMERS})
 
 
 def _bind(text: str) -> ValueKey:
@@ -32,7 +31,7 @@ def _bind(text: str) -> ValueKey:
 
 
 @pytest.mark.parametrize("text,expected", [
-    # columns: base, derived, joined
+    # fields: base, derived, joined
     ("flag", True),
     ("big_order", True),
     ("customers.vip", True),
@@ -84,7 +83,7 @@ def _bind(text: str) -> ValueKey:
     ("iif(flag, amount, 0) * 2", False),
 ])
 def test_recognition(text: str, expected: bool) -> None:
-    assert boolean_valued(_bind(text), field_type=COLUMN_TYPE) is expected
+    assert boolean_valued(_bind(text), field_type=FIELD_TYPE) is expected
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -109,16 +108,17 @@ def test_recognition(text: str, expected: bool) -> None:
     ("lower(status)", False),
 ])
 def test_numeric_recognition(text: str, expected: bool) -> None:
-    assert numeric_valued(_bind(text), field_type=COLUMN_TYPE) is expected
+    assert numeric_valued(_bind(text), field_type=FIELD_TYPE) is expected
 
 
 def test_stage_column() -> None:
-    """A stage's BOOLEAN column is boolean-valued through the stage's column types."""
+    """A stage's BOOLEAN field is boolean-valued through the stage's field types."""
     schema = StageSchema(relation_name="s1", fields=[
         StageField(name="fm", sql_alias="fm", datatype=DataType.BOOLEAN),
         StageField(name="fs", sql_alias="fs", datatype=DataType.INTEGER),
     ])
-    column_type = stage_field_type(schema)
+    column_type = dataset_field_type(
+        dataset=dataset_from_stage_schema(name="s1", schema=schema, data_source="test"), datasets_by_name={})
     assert boolean_valued(FieldKey(leaf="fm"), field_type=column_type) is True
     assert boolean_valued(FieldKey(leaf="fs"), field_type=column_type) is False
 

@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-2046 — boolean aggregation inputs.
+"""Shared fixtures for boolean aggregation inputs.
 
 Underscore-prefixed so pytest skips collection. ``orders.customer_id →
 customers.id`` is many-to-one; ``big_order`` is the derived ``amount > 15``.
@@ -14,7 +14,7 @@ customers (id, name, vip, score):  100 A true NULL | 200 B false NULL | 300 C NU
 flag: sum 2, avg 0.5, min false, max true, count 4, count_distinct 2.
 By region: east sum 2 / avg 2/3 / min false / max true; west sum 0 / avg 0 / min false / max false.
 amount > 15 (= big_order): sum 2, avg 2/3, count 3.  status in ('ok', 'hold'): sum 4.
-By customer: 100 sum 2 / max true; 200 sum 0 / max false; 300 sum NULL (cross-model).
+By customer: 100 sum 2 / max true; 200 sum 0 / max false; 300 sum NULL (cross-dataset).
 By month (Jan rows 1, 3; Feb 2, 4; Mar 5): sum 1 / 1 / 0, cumsum 1 / 2 / 2.
 Trailing 90d by month (bucket end exclusive): Jan 1, Feb 2, Mar 2.
 count(amount) per customer: 100 → 2, 200 → 1.
@@ -39,7 +39,7 @@ from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 def orders_dataset(*, data_source: str = "test", flag_format: Optional[NumberFormat] = None) -> SlayerDataset:
     return SlayerDataset(
@@ -53,7 +53,7 @@ def orders_dataset(*, data_source: str = "test", flag_format: Optional[NumberFor
             DatasetField(name="ordered_at", datatype=DataType.DATE),
             DatasetField(name="amount", datatype=DataType.INTEGER),
             DatasetField(name="flag", datatype=DataType.BOOLEAN, format=flag_format),
-            DatasetField(name="big_order", datatype=DataType.BOOLEAN, sql="amount > 15"),
+            DatasetField(name="big_order", datatype=DataType.BOOLEAN, expression="amount > 15"),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
@@ -88,7 +88,7 @@ def orders_q(**kw) -> SlayerQuery:
 
 
 def month_td() -> List[TimeDimension]:
-    return [TimeDimension(field="ordered_at", granularity=TimeGranularity.MONTH)]
+    return [TimeDimension(field="orders.ordered_at", granularity=TimeGranularity.MONTH)]
 
 
 # --------------------------------------------------------------------------- #
@@ -105,7 +105,7 @@ GT15_TOTALS = {"sum": 2, "avg": 2 / 3, "count": 3}
 STATUS_IN_SUM = 4
 FLAG_SUM_BY_CUSTOMER = {100: 2, 200: 0}
 FLAG_MAX_BY_CUSTOMER = {100: True, 200: False}
-CROSS_MODEL_FLAG_SUM_BY_NAME = {"A": 2, "B": 0, "C": None}
+CROSS_DATASET_FLAG_SUM_BY_NAME = {"A": 2, "B": 0, "C": None}
 JAN, FEB, MAR = "2025-01", "2025-02", "2025-03"
 FLAG_SUM_BY_MONTH = {JAN: 1, FEB: 1, MAR: 0}
 FLAG_CUMSUM_BY_MONTH = {JAN: 1, FEB: 2, MAR: 2}
@@ -203,18 +203,18 @@ def as_bool(value) -> Optional[bool]:
 
 
 def by_dim(resp, dim: str, name: str = "v", *, dataset: str = "orders") -> dict:
-    out = {r[f"{dataset}.{dim}"]: r[f"{dataset}.{name}"] for r in resp.data}
+    out = {r[f"{dataset}.{dim}"]: r[name] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {dim}"
     return out
 
 
 def by_month(resp: SlayerResponse, name: str = "v") -> dict:
     tkey = next(k for k in resp.columns if "ordered_at" in k)
-    out = {month_key(r[tkey]): r[f"orders.{name}"] for r in resp.data}
+    out = {month_key(r[tkey]): r[name] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one month"
     return out
 
 
 def single(resp, name: str = "v", *, dataset: str = "orders"):
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{dataset}.{name}"]
+    return resp.data[0][name]

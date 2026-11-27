@@ -1,13 +1,13 @@
-"""Shared fixtures for DEV-1839 — grain-union broadcasting for different-grain
+"""Shared fixtures for grain-union broadcasting for different-grain
 aggregates.
 
-Reuses the DEV-1739/1824 models, dataset, and execution harness verbatim
+Reuses the ``_dev1739``/``_dev1824`` fixtures' datasets, seed data, and execution harness verbatim
 (``tests/_dev1824_fixtures.py``) and adds hand-computed oracles for the
 union-grain scenarios, chosen so union-grain evaluation and any misgrained
 evaluation differ visibly.
 
-Oracle derivations (from the DEV-1739 rows; totals in ``_dev1824_fixtures``)
-----------------------------------------------------------------------------
+Oracle derivations (from the ``_dev1739_fixtures`` rows; totals in ``_dev1824_fixtures``)
+-----------------------------------------------------------------------------------------
 REGION_TOTAL   North=100 South=50 NULL=60; GRAND_TOTAL=210.
 CITY_TOTAL     (N,CityA)=30 (N,CityB)=40 (N,NULL)=30 (S,CityC)=50 (NULL,CityD)=60
                (city values are region-unique, so partition_by=city matches).
@@ -29,9 +29,6 @@ NESTED_RANK    rank(cumsum(region_month_total) - city_total, direction='desc') o
                (S,CityC,Mar)=0 (NULL,CityD,Mar)=0 → ranks 3 / 2 / 1 / 6 / 3 / 3.
 EXPLICIT_PART  MIXED_RANK re-partitioned by region: North diffs 70/70/60 →
                1/1/3; single South and NULL-region rows → 1.
-DUAL_MEASURE   MIXED_RANK's expression as a MEASURE at the (region, city,
-               channel) query grain: broadcast diffs 70×3, 60, 0×3 →
-               ranks 1/1/1/4/5/5/5.
 SAMEGRAIN_RANK rank(amount_region + ok_region, direction='desc'): 200 / 75 / 120 →
                North=1 NULL=2 South=3 (ok_amount region totals 100 / 25 / 60).
 MEASURE_DIFF   region_total - city_total per (region, city) row: 70/60/70/0/0.
@@ -52,7 +49,7 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
-    dev1824_models,
+    dev1824_datasets,
     gen,
     make_exec_engine,
     month_key,
@@ -61,30 +58,30 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     rows_by,
 )
 
-dev1839_models = dev1824_models
+dev1839_datasets = dev1824_datasets
 
 # --------------------------------------------------------------------------- #
 # Dimension expressions under test.
 # --------------------------------------------------------------------------- #
-MIXED_RANK = "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
-KEYLESS_RANK = "rank(sum(amount, partition_by=region) / sum(amount, partition_by=[]), direction='desc')"
+MIXED_RANK = "rank(sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), direction='desc')"
+KEYLESS_RANK = "rank(sum(orders.amount, partition_by=orders.region) / sum(orders.amount, partition_by=[]), direction='desc')"
 SUBSET_RANK = (
-    "rank(sum(amount, partition_by=[region, city]) - sum(amount, partition_by=region), direction='desc')"
+    "rank(sum(orders.amount, partition_by=[orders.region, orders.city]) - sum(orders.amount, partition_by=orders.region), direction='desc')"
 )
 NESTED_RANK = (
-    "rank(cumsum(sum(amount, partition_by=[region, ordered_at])) - "
-    "sum(amount, partition_by=city), direction='desc')"
+    "rank(cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at])) - "
+    "sum(orders.amount, partition_by=orders.city), direction='desc')"
 )
 EXPLICIT_PART_RANK = (
-    "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), "
-    "partition_by=region, direction='desc')"
+    "rank(sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), "
+    "partition_by=orders.region, direction='desc')"
 )
 SAMEGRAIN_RANK = (
-    "rank(sum(amount, partition_by=region) + sum(ok_amount, partition_by=region), direction='desc')"
+    "rank(sum(orders.amount, partition_by=orders.region) + sum(orders.ok_amount, partition_by=orders.region), direction='desc')"
 )
-MEASURE_DIFF = "sum(amount, partition_by=region) - sum(amount, partition_by=city)"
+METRIC_DIFF = "sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city)"
 SAMEGRAIN_DIFF = (
-    "sum(amount, partition_by=region) - sum(ok_amount, partition_by=region)"
+    "sum(orders.amount, partition_by=orders.region) - sum(orders.ok_amount, partition_by=orders.region)"
 )
 
 # --------------------------------------------------------------------------- #
@@ -130,26 +127,19 @@ RCC_TOTAL = {
     ("South", "CityC", "web"): 25.0, ("South", "CityC", "app"): 25.0,
     (None, "CityD", "web"): 60.0,
 }
-#: MIXED_RANK's expression as a measure at the (region, city, channel) grain.
-DUAL_MEASURE_RANK_OF = {
-    ("North", "CityA", "web"): 1, ("North", "CityA", "app"): 1,
-    ("North", "CityB", "web"): 4, ("North", None, "web"): 1,
-    ("South", "CityC", "web"): 5, ("South", "CityC", "app"): 5,
-    (None, "CityD", "web"): 5,
-}
 SAMEGRAIN_RANK_OF = {"North": 1, None: 2, "South": 3}
 SAMEGRAIN_DIFF_OF = {"North": 0.0, "South": 25.0, None: 0.0}
 OK_REGION_TOTAL = {"North": 100.0, "South": 25.0, None: 60.0}
 
 
 __all__ = [
-    "CITY_TOTAL", "FieldRef", "DUAL_MEASURE_RANK_OF", "EXPLICIT_PART_RANK",
+    "CITY_TOTAL", "FieldRef", "EXPLICIT_PART_RANK",
     "EXPLICIT_PART_RANK_OF", "GRAND_TOTAL", "KEYLESS_RANK", "KEYLESS_RANK_OF",
-    "MEASURE_DIFF", "MIXED_DIFF_OF", "MIXED_RANK", "MIXED_RANK_OF",
+    "METRIC_DIFF", "MIXED_DIFF_OF", "MIXED_RANK", "MIXED_RANK_OF",
     "DatasetMetric", "NESTED_RANK", "NESTED_RANK_OF", "OK_REGION_TOTAL",
     "RCC_TOTAL", "RCM_GROUPS", "RCM_TOTAL", "RC_GROUPS", "REGION_CUMSUM",
     "REGION_MONTH_TOTAL", "REGION_TOTAL", "SAMEGRAIN_DIFF", "SAMEGRAIN_DIFF_OF",
     "SAMEGRAIN_RANK", "SAMEGRAIN_RANK_OF", "SUBSET_RANK", "SUBSET_RANK_OF",
-    "SlayerQuery", "TimeDimension", "TimeGranularity", "dev1839_models", "gen",
+    "SlayerQuery", "TimeDimension", "TimeGranularity", "dev1839_datasets", "gen",
     "make_exec_engine", "month_key", "month_td", "q", "rows_by",
 ]

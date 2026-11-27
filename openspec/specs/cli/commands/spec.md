@@ -8,10 +8,14 @@ debug flags, the search and sample-refresh command shapes, and how query results
 
 ### Requirement: CLI errors are one line on stderr
 When any `slayer` command fails with an exception, the CLI SHALL print exactly one line to stderr
-and exit with status 1, printing no traceback. A SLayer error SHALL print as `Error: <message>`; any
-other exception SHALL print as `Error: <exception class>: <message> (rerun with --debug for the
-traceback)`. Every error message a command prints SHALL go to stderr, never stdout. An interrupt or an
-explicit exit SHALL keep its own behaviour.
+and exit with status 1, printing no traceback. A SLayer error SHALL print as `Error: <message>`. A
+validation error SHALL print as `Error: <count> validation error(s) for <model>: <location>: <reason>`,
+listing every failing field as `<location>: <reason>` separated by `; ` — the location's parts joined by
+dots, list positions included — up to ten fields followed by `…and <n> more` when there are more; an entry
+with no location (a refusal of the whole object, such as an unknown key) SHALL print as its reason alone; it
+SHALL NOT echo the rejected input values. Any other exception SHALL print as `Error: <exception class>:
+<message> (rerun with --debug for the traceback)`. Every error message a command prints SHALL go to
+stderr, never stdout. An interrupt or an explicit exit SHALL keep its own behaviour.
 
 #### Scenario: A failing query prints one line
 - **WHEN** `slayer query` runs a query whose dimension no join path reaches
@@ -22,6 +26,24 @@ explicit exit SHALL keep its own behaviour.
 - **WHEN** a command fails with a database driver error
 - **THEN** stderr holds one line naming the exception class, its message and `--debug`, and the exit
   status is 1
+
+#### Scenario: A validation error names its fields
+- **WHEN** `slayer query '{"population": "orders", "metrics": ["count(orders.*)"], "limit": "ten", "offset": "two"}'` runs
+- **THEN** stderr holds one line naming `limit` and `offset`, each with the reason it failed, and the exit
+  status is 1
+
+#### Scenario: An unknown key names the key
+- **WHEN** `slayer query '{"populaton": "orders", "metrics": ["count(orders.*)"]}'` runs
+- **THEN** stderr holds one line naming `populaton` and the keys a query takes, with no empty location, and
+  the exit status is 1
+
+#### Scenario: A nested validation error names its path
+- **WHEN** a query fails validation inside its second metric
+- **THEN** the error line names the failing field by its dotted path including the list position
+
+#### Scenario: Rejected values are not echoed
+- **WHEN** a query fails validation on a field whose value is a secret-looking string
+- **THEN** the error line names the field and the reason but not the value
 
 ### Requirement: --debug shows the traceback
 Every `slayer` command SHALL accept `--debug`, written before or after the command and its
@@ -79,12 +101,135 @@ other cells as their plain value. `--format json` output SHALL carry the raw val
 - **THEN** the table cell shows `$193.65K` and the JSON output carries the unformatted value
 
 ### Requirement: export-osi writes an Ossie document
-`slayer export-osi --datasource X --out <file>` SHALL write the datasource's models as an Ossie document to `<file>`, as JSON when the file name ends in `.json` and as YAML otherwise, and SHALL print the export report. `--datasets` SHALL limit the export to the named models, and `--no-extensions` SHALL omit the `SLAYER` extensions. An unknown datasource or an unknown model name SHALL fail as a CLI error and write no file.
+`slayer export-osi --datasource X --out <file>` SHALL write the datasource's semantic model as one Ossie document to `<file>` (`importers/osi-export`), as JSON when the file name ends in `.json` and as YAML otherwise, and SHALL print the export report. `--datasets` SHALL limit the export to the named datasets, and `--no-extensions` SHALL omit the `SLAYER` extensions. An unknown datasource or an unknown dataset name SHALL fail as a CLI error and write no file.
 
 #### Scenario: Export to YAML
 - **WHEN** `slayer export-osi --datasource jaffle_shop --out shop.osi.yaml` runs
-- **THEN** `shop.osi.yaml` holds a YAML Ossie document of the datasource's models, the report is printed, and the exit status is 0
+- **THEN** `shop.osi.yaml` holds a YAML Ossie document of the datasource's semantic model, the report is printed, and the exit status is 0
 
 #### Scenario: Unknown model
 - **WHEN** `slayer export-osi --datasource jaffle_shop --datasets nope --out shop.osi.yaml` runs
 - **THEN** stderr holds one `Error: ` line naming `nope`, no file is written, and the exit status is 1
+
+### Requirement: datasources create --ingest runs the idempotent ingest
+`slayer datasources create <url> --ingest` SHALL ingest the new datasource exactly as `slayer ingest` would with the same scope flags (`--schema`, `--all-schemas`, `--include`, `--exclude`, `--no-views`, `--surface-internals`): it SHALL create missing datasets and additively merge existing ones, never overwriting a stored dataset's user metadata, and SHALL NOT ask before touching stored datasets. It SHALL print the result as `slayer ingest` does (`Created:` / `Updated:` lines, then the description, drift, skipped, skipped-schema, key-read-failure, hidden, broken-dependent and error sections). Once the datasource is saved, it SHALL exit 0 whatever the ingest reports — skipped objects, per-dataset errors, or nothing ingested. An exception raised by the ingest SHALL print one `Ingestion failed: <message>` error and exit 1, the datasource staying created. `slayer datasources create demo --ingest` SHALL print its ingest result the same way and follow the same exit rules.
+
+#### Scenario: Fresh create
+- **WHEN** `slayer datasources create sqlite:///app.db --ingest` runs against a database with tables `a` and `b`
+- **THEN** datasets `a` and `b` are stored, the output has `Created: a` and `Created: b` lines, and the exit status is 0
+
+#### Scenario: Re-create keeps dataset edits
+- **WHEN** dataset `a` of datasource `app` is stored with a user-written description, and `slayer datasources create sqlite:///app.db --name app --ingest --yes` runs again
+- **THEN** dataset `a` keeps its user-written description, no prompt mentions overwriting datasets, and the exit status is 0
+
+#### Scenario: Skipped object
+- **WHEN** `slayer datasources create <url> --ingest` runs and one object cannot be modelled
+- **THEN** the output lists it under `Skipped`, and the exit status is 0
+
+#### Scenario: Ingest raises
+- **WHEN** the ingest raises after the datasource is saved
+- **THEN** stderr has one `Ingestion failed:` error line, the exit status is 1, and the datasource is stored
+
+#### Scenario: Demo create prints like any ingest
+- **WHEN** `slayer datasources create demo --ingest` runs on empty storage
+- **THEN** the output has a `Created: <dataset>` line for each demo dataset, no `Ingested:` line, and the exit status is 0
+
+#### Scenario: Demo ingest output matches slayer ingest
+- **WHEN** the same ingest result is printed by `slayer datasources create demo --ingest`, `slayer datasources create <url> --ingest`, `slayer ingest` and the MCP startup ingest
+- **THEN** all four print the same `Created:` / `Updated:` lines and report sections
+
+### Requirement: The empty-ingest message needs an empty result
+`slayer ingest` and `slayer datasources create --ingest` SHALL print the "No tables or views found" message only when the ingest reports nothing at all: no live objects, no dataset changes, no drift, no skipped objects or schemas, no failed key reads, no hidden internals, no broken dependents, no errors and no imported description. Otherwise they SHALL print the result's sections. `slayer ingest` SHALL keep exiting 1 on an empty result or on any skip or error.
+
+#### Scenario: Every requested schema skipped
+- **WHEN** `slayer ingest --datasource ds --schema missing` runs and the requested schema is skipped with a reason
+- **THEN** the output lists `missing` under `Skipped schemas` with its reason, and does not say "No tables or views found"
+
+#### Scenario: Truly empty
+- **WHEN** `slayer ingest` runs against a schema with no tables or views
+- **THEN** the output says "No tables or views found" and the exit status is 1
+
+### Requirement: semantic-models lists, shows and deletes documents
+`slayer semantic-models list [--datasource X]` SHALL print each stored document's datasource, name and datasets; `slayer semantic-models show <name> --datasource X` SHALL print the document's stored text; `slayer semantic-models delete <name> --datasource X` SHALL delete the document and its datasets after a confirmation prompt that `--yes` skips. An unknown document SHALL fail as a CLI error.
+
+#### Scenario: Show prints the stored text
+- **WHEN** `slayer semantic-models show sales --datasource shop` runs
+- **THEN** stdout holds the stored text of document `sales` and the exit status is 0
+
+#### Scenario: Unknown document
+- **WHEN** `slayer semantic-models delete nope --datasource shop --yes` runs
+- **THEN** stderr holds one `Error: ` line naming `nope` and the exit status is 1
+
+### Requirement: ossie-roundtrip imports and exports one document
+`slayer ossie-roundtrip <in> <out>` SHALL import the Ossie document `<in>` natively into scratch storage under a scratch datasource, export that datasource to `<out>` (JSON when `<out>` ends in `.json`, YAML otherwise), leave the user's storage untouched, and exit non-zero with the import's reasons when `<in>` is refused.
+
+#### Scenario: A valid document round-trips unchanged
+- **WHEN** `slayer ossie-roundtrip m4_cross_dataset.ossie.yaml out.yaml` runs
+- **THEN** `out.yaml` equals the input text, the configured storage is unchanged, and the exit status is 0
+
+### Requirement: slayer query takes a conformance
+`slayer query` SHALL accept `--conformance` with the values `slayer` (the default) and `ossie-l3`, and SHALL run the query under that conformance exactly as the engine does (`queries/ossie-l3-binding`). A strict refusal SHALL print as the command's one error line, starting with `OssieQueryError: <code>`; any other value SHALL be refused by the argument parser.
+
+#### Scenario: A strict refusal through the CLI
+- **WHEN** `slayer query '{"dimensions": ["customers.region"], "metrics": ["orders.total_revenue", "tickets.ticket_count"]}' --conformance ossie-l3` runs on the Appendix B retail model
+- **THEN** it exits non-zero with one stderr line starting `OssieQueryError: E_PARTIAL_DIMENSION_REACHABILITY`, naming `customers.region` and `tickets.ticket_count`
+
+#### Scenario: Output names through the CLI
+- **WHEN** `slayer query '{"dimensions": ["customers.region"], "metrics": ["orders.total_revenue"]}' --conformance ossie-l3` runs on the same model
+- **THEN** the output's columns are `region` and `total_revenue`
+
+### Requirement: The CLI prints each deprecation once
+Within one `slayer` command, each deprecation SHALL reach the operator as exactly one line. A deprecation shown as its `Deprecated: …` line SHALL NOT be printed again from the command's response warnings, and identical deprecation lines from the response warnings SHALL print once. A deprecation carried only on the response — because it emits no Python warning, or because the Python warning was filtered out or already shown earlier in the process — SHALL still print once. A deprecation's Python warning and its structured response warning SHALL carry the same text. This SHALL hold for the lines `slayer query`, `slayer memory save` and `slayer search` (text output) print; warnings that are not deprecations SHALL print as before, and structured JSON output and `slayer inspect`'s rendered document SHALL keep every warning they carry.
+
+#### Scenario: A query with several deprecated forms prints each once
+- **WHEN** `slayer query` runs a query using `source_model`, `measures`, `filters`, `to_many_handling: "broadcast"` and the `==` comparison
+- **THEN** stderr carries exactly one line per deprecation
+
+#### Scenario: A deprecation carried only on the response prints once
+- **WHEN** `slayer query` runs by name a saved query stored with `to_many_handling: "broadcast"` on two stages
+- **THEN** stderr carries the broadcast deprecation exactly once
+
+#### Scenario: memory save prints each deprecation once
+- **WHEN** `slayer memory save --query` is given a query using `source_model` and `measures`
+- **THEN** the output carries each deprecation exactly once
+
+#### Scenario: search prints a renamed label once
+- **WHEN** `slayer search` runs with a `--cypher-filter` using the pre-2.0 label `:Model`
+- **THEN** the text output carries the label's deprecation exactly once
+
+#### Scenario: search JSON keeps its warnings
+- **WHEN** `slayer search --format json` runs with a `--cypher-filter` using `:Model`
+- **THEN** the JSON response's `warnings` carries the label's deprecation
+
+#### Scenario: Filtered Python warnings still leave one line
+- **WHEN** a deprecated query runs with Python's warnings filtered out, or runs a second time in the same process
+- **THEN** each deprecation still prints exactly once
+
+#### Scenario: A warning that is not a deprecation still prints
+- **WHEN** a query's response carries a warning that is not a deprecation
+- **THEN** the CLI prints it
+
+#### Scenario: A spelling deprecation has one wording
+- **WHEN** a query uses a deprecated Mode-B spelling
+- **THEN** its Python warning's text equals its structured response warning's text
+
+### Requirement: storage upgrade is a storage command
+
+`slayer storage upgrade` SHALL run the store upgrade of `models/stored-upgrade` › slayer storage upgrade persists the current format on the store `--storage` names (the default store otherwise), and SHALL take:
+- `--data-source NAME`, which limits the upgrade to one datasource's documents;
+- `--dry-run`, which prints each document's difference and writes no document (opening the store still performs its one-time layout moves);
+- `--datasource-type NAME=TYPE`, repeatable, which supplies the dialect of a datasource the store holds no config for.
+
+It SHALL print one line per upgraded, unchanged-but-checked, refused or conflicting document. It SHALL exit 0 when every document is current or was upgraded, and 1 when any was refused or conflicted.
+
+#### Scenario: Upgrading one datasource
+- **WHEN** `slayer storage upgrade --data-source warehouse` runs on a store with two datasources holding v15 datasets
+- **THEN** only `warehouse`'s documents are upgraded and the command exits 0
+
+#### Scenario: A malformed type option
+- **WHEN** `slayer storage upgrade --datasource-type warehouse` runs
+- **THEN** the command fails with a one-line error naming the expected `NAME=TYPE` form, and nothing is written
+
+#### Scenario: A dry run on a pre-v4 store
+- **WHEN** `slayer storage upgrade --dry-run` runs on a YAML store in the pre-v4 flat layout
+- **THEN** the store's files move into the per-datasource layout, no document's content changes beyond that move, and the command prints each document's difference

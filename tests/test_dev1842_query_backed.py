@@ -1,10 +1,10 @@
-"""DEV-1842 task 1.8 — saved measures on query-backed models fail closed.
+"""Saved metrics on query-backed datasets fail closed.
 
-A query-backed model (non-empty ``source_queries``) that also declares
-``measures`` directly is rejected at validation with a message naming the model
-and the remedy (BREAKING, user-approved). Measures supplied by a
-``ModelExtension`` over a query-backed base keep working, and a same-named
-extension measure is rejected (loud duplicate error, never a silent shadow).
+A query-backed dataset (non-empty ``source_queries``) that also declares
+``metrics`` directly is rejected at validation with a message naming the dataset
+and the remedy (BREAKING, user-approved). Metrics supplied by a
+``DatasetExtension`` over a query-backed base keep working, and a same-named
+extension metric is rejected (loud duplicate error, never a silent shadow).
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ class TestQueryBackedFailClosed:
     def test_direct_measures_on_query_backed_model_rejected(self) -> None:
         backing = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
         dead = DatasetMetric(name="dead", expression="sum(amount)")
         with pytest.raises(ValidationError):
@@ -46,8 +46,8 @@ class TestQueryBackedFailClosed:
     def test_rejection_names_model_and_remedy(self) -> None:
         backing = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
         dead = DatasetMetric(name="dead", expression="sum(amount)")
         with pytest.raises(ValidationError) as ei:
@@ -56,14 +56,14 @@ class TestQueryBackedFailClosed:
         message = str(ei.value)
         assert "qb_named" in message
         # The remedy names BOTH escape hatches: the backing query's final stage
-        # and a ModelExtension.
+        # and a DatasetExtension.
         low = message.lower()
         assert "stage" in low
         assert "extension" in low
 
     def test_table_backed_model_with_measures_still_allowed(self) -> None:
-        """The rejection is scoped to query-backed models — an ordinary
-        table-backed model keeps declaring measures."""
+        """The rejection is scoped to query-backed datasets — an ordinary
+        table-backed dataset keeps declaring metrics."""
         m = SlayerDataset(
             name="ok", data_source="ds", sql_table="ok",
             fields=[DatasetField(name="amount", datatype=DataType.FLOAT)],
@@ -74,7 +74,7 @@ class TestQueryBackedFailClosed:
 
 class TestExtensionMeasuresOverQueryBacked:
     async def test_extension_measure_over_query_backed_base_resolves(self) -> None:
-        """A ``ModelExtension`` adds a measure onto a query-backed base; a query
+        """A ``DatasetExtension`` adds a metric onto a query-backed base; a query
         referencing it resolves and renders (overlay re-applied post-expansion)."""
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -92,8 +92,8 @@ class TestExtensionMeasuresOverQueryBacked:
                 name="qb_base", data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
-                    "dimensions": ["status"],
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "dimensions": ["orders.status"],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                 })],
             ))
             engine = SlayerQueryEngine(storage=storage)
@@ -103,16 +103,16 @@ class TestExtensionMeasuresOverQueryBacked:
                     metrics=[DatasetMetric(name="doubled",
                                            expression="sum(amount_sum) * 2")],
                 )],
-                "dimensions": ["status"],
-                "metrics": [{"metric": "doubled", "alias": "r"}],
+                "dimensions": ["qb_base.status"],
+                "metrics": [{"metric": "qb_base.doubled", "alias": "r"}],
             })
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
 
     async def test_extension_new_measure_uses_its_formula(self) -> None:
-        """An extension-supplied measure (a NEW name) resolves to its own
-        formula end-to-end — the overlay measure participates in binder
-        resolution exactly like a model measure."""
+        """An extension-supplied metric (a NEW name) resolves to its own
+        expression end-to-end — the overlay metric participates in binder
+        resolution exactly like a dataset metric."""
         base = SlayerDataset(
             name="t", data_source="ds", sql_table="t",
             fields=[DatasetField(name="amount", datatype=DataType.FLOAT)],
@@ -122,7 +122,7 @@ class TestExtensionMeasuresOverQueryBacked:
                 dataset="t",
                 metrics=[DatasetMetric(name="scaled", expression="sum(amount) * 100")],
             )],
-            "metrics": [{"metric": "scaled", "alias": "r"}],
+            "metrics": [{"metric": "t.scaled", "alias": "r"}],
         })
         sql = await _engine_generate(
             query=query, dataset=base, dialect="duckdb", validate=False,
@@ -130,9 +130,9 @@ class TestExtensionMeasuresOverQueryBacked:
         assert "100" in sql
 
     async def test_extension_measure_may_be_dotted(self) -> None:
-        """An extension-supplied measure whose formula is a DOTTED cross-model
-        reference resolves — extension measures participate in dotted resolution
-        exactly like model measures (task 1.8, 'bare and dotted alike')."""
+        """An extension-supplied metric whose expression is a DOTTED cross-dataset
+        reference resolves — extension metrics participate in dotted resolution
+        exactly like dataset metrics (task 1.8, 'bare and dotted alike')."""
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(
@@ -147,15 +147,15 @@ class TestExtensionMeasuresOverQueryBacked:
                     metrics=[DatasetMetric(name="ext_aov", expression="customers.aov")],
                 )],
                 "dimensions": ["customers.tier"],
-                "metrics": [{"metric": "ext_aov", "alias": "r"}],
+                "metrics": [{"metric": "orders.ext_aov", "alias": "r"}],
             })
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
 
 
 class TestSameNameExtensionRejected:
-    """User decision (corrects D1): a ``ModelExtension`` measure reusing a model
-    measure's name is rejected by the DEV-1443 duplicate-name guard — a loud
+    """User decision (corrects D1): a ``DatasetExtension`` metric reusing a dataset
+    metric's name is rejected by the duplicate-name guard — a loud
     error, never a silent last-wins shadow."""
 
     async def test_same_name_overlay_is_rejected(self) -> None:
@@ -169,7 +169,7 @@ class TestSameNameExtensionRejected:
                 dataset="t",
                 metrics=[DatasetMetric(name="sh", expression="sum(amount) * 100")],
             )],
-            "metrics": [{"metric": "sh", "alias": "r"}],
+            "metrics": [{"metric": "t.sh", "alias": "r"}],
         })
         with pytest.raises(ValueError, match=r"duplicate metric names"):
             await _engine_generate(
@@ -179,8 +179,8 @@ class TestSameNameExtensionRejected:
 
 class TestOverlayNamespaceDisjoint:
     """The overlay re-runs the FULL namespace check (``model_copy`` bypasses the
-    validator): duplicate columns and column/measure collisions are loud errors,
-    not just duplicate measures."""
+    validator): duplicate fields and field/metric collisions are loud errors,
+    not just duplicate metrics."""
 
     def test_overlay_measure_colliding_with_base_column_rejected(self) -> None:
         base = SlayerDataset(
@@ -198,7 +198,7 @@ class TestOverlayNamespaceDisjoint:
 
 
 class TestStageExtensionMeasuresOverQueryBacked:
-    """A non-root stage may extend a query-backed model with measures."""
+    """A non-root stage may extend a query-backed dataset with metrics."""
 
     async def test_stage_extension_measures_over_query_backed_build(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -217,8 +217,8 @@ class TestStageExtensionMeasuresOverQueryBacked:
                 name="qb_base", data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
-                    "dimensions": ["status"],
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "dimensions": ["orders.status"],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                 })],
             ))
             stage = SlayerQuery.model_validate({
@@ -227,10 +227,10 @@ class TestStageExtensionMeasuresOverQueryBacked:
                     metrics=[DatasetMetric(name="doubled",
                                            expression="sum(amount_sum) * 2")],
                 )],
-                "dimensions": ["status"],
-                "metrics": [{"metric": "doubled", "alias": "r"}],
+                "dimensions": ["qb_base.status"],
+                "metrics": [{"metric": "qb_base.doubled", "alias": "r"}],
             })
-            root = SlayerQuery(population="orders", dimensions=["status"])
+            root = SlayerQuery(population="orders", dimensions=["orders.status"])
             bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
                 query=root, storage=storage, data_source="ds",
                 named_queries={"s1": stage},

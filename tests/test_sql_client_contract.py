@@ -48,7 +48,7 @@ from tests._gateway_harness import (
     shop_storage,
 )
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 
 
 class Shop(BaseModel):
@@ -156,7 +156,7 @@ class TestTypedFailures:
             policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="acme")),
         )
         response = await engine.execute(COUNT_ORDERS)
-        assert response.data[0]["orders.n"] == 3
+        assert response.data[0]["n"] == 3
         assert "reflect_columns" in factory.clients[0].ops()
 
     async def test_a_database_error_reaches_the_caller_unchanged(self, shop: Shop) -> None:

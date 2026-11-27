@@ -31,21 +31,21 @@ def _ev_dataset() -> SlayerDataset:
     )
 
 
-def _query(granularity: str, *measures) -> dict:
+def _query(granularity: str, *metrics) -> dict:
     return {
         "population": "ev",
-        "time_dimensions": [{"field": "ts", "granularity": granularity}],
-        "metrics": list(measures),
+        "time_dimensions": [{"field": "ev.ts", "granularity": granularity}],
+        "metrics": list(metrics),
     }
 
 
 def _shift(granularity: TimeGranularity, offset: int, *, bucket: TimeGranularity | None = None) -> dict:
-    return _query((bucket or granularity).value, "sum(v)", {
-        "metric": f"time_shift(sum(v), {offset}, '{granularity.value}')", "alias": "x"})
+    return _query((bucket or granularity).value, "sum(ev.v)", {
+        "metric": f"time_shift(sum(ev.v), {offset}, '{granularity.value}')", "alias": "x"})
 
 
 def _window(duration: str, bucket: str) -> dict:
-    return _query(bucket, {"metric": f"sum(v, window='{duration}')", "alias": "x"})
+    return _query(bucket, {"metric": f"sum(ev.v, window='{duration}')", "alias": "x"})
 
 
 def _cases() -> dict:
@@ -54,7 +54,7 @@ def _cases() -> dict:
     }
     cases.update({
         "shift|day_on_month|-1": _shift(TG.DAY, -1, bucket=TG.MONTH),
-        "trunc|week_sunday": _query("week_sunday", "sum(v)"),
+        "trunc|week_sunday": _query("week_sunday", "sum(ev.v)"),
         "window|1m|day": _window("1m", "day"),
         "window|90d|month": _window("90d", "month"),
         "window|2w|week": _window("2w", "week"),
@@ -146,7 +146,7 @@ async def test_time_shift_uses_date_add(spy, dialect: str, granularity: TimeGran
 @pytest.mark.parametrize("dialect", [d for d in TIER1 if d != "bigquery"])
 async def test_sunday_week_truncation_uses_date_add(spy, dialect: str) -> None:
     calls = spy(dialect)
-    await _engine_generate(query=[_query("week_sunday", "sum(v)")], dataset=_ev_dataset(), dialect=dialect)
+    await _engine_generate(query=[_query("week_sunday", "sum(ev.v)")], dataset=_ev_dataset(), dialect=dialect)
     assert ("days", 1) in calls, calls
     assert ("days", -1) in calls, calls
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re as _re
 from collections.abc import Callable, Sequence
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from urllib.parse import quote
 
@@ -16,14 +18,20 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.errors import WindowFunctionError
+from slayer.core.keys import WindowKey
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
-    LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
+    LIST_POSITION, LIST_VALUE, PORTABLE_LIBRARY, ExtremumFn, IdentifierFolding, NativeFn, TransactionMode, ListRelation, SqlDialect, TextFn, anon, as_text,
     case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
+    iso_text,
+    trimmed_fraction,
+    zone_name,
 )
+from slayer.sql.dialects._ordered_set_split import marked_ranked, ranked_unless_numeric, split_percentile_selects
 from slayer.sql.dialects.patterns import POSIX, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 from slayer.sql.dialects.reflection import (
@@ -46,10 +54,9 @@ def _semi_structured(values: Expression) -> Expression:
     return exp.Cast(this=values.copy(), to=exp.DataType.build("ARRAY"))
 
 
-def _typed_elements(values: Expression, element: Optional[DataType], distinct: bool = False) -> Expression:
+def _typed_elements(values: Expression, element: Optional[DataType]) -> Expression:
     """The non-NULL elements as a structured ``ARRAY(T)``, whose elements read as ``T``."""
     kept = anon("ARRAY_COMPACT", _semi_structured(values))
-    kept = anon("ARRAY_DISTINCT", kept) if distinct else kept
     if element is None or element.is_opaque:
         return kept
     return exp.Cast(this=kept, to=exp.DataType.build(f"ARRAY<{element.kind.value}>"))
@@ -76,7 +83,8 @@ _FIELD_TYPE_NAMES: dict[int, str] = {
 
 
 # snowflake-sqlalchemy has no ``connection_name=`` knob, so this sentinel routes via ``creator=``.
-_CONNECTION_NAME_PREFIX = "snowflake://?connection_name="
+_SCHEME = "snowflake://"
+_CONNECTION_NAME_PREFIX = f"{_SCHEME}?connection_name="
 
 _CONNECTOR_MODULE = "snowflake.connector"
 
@@ -102,7 +110,7 @@ def _validate_unquoted_identifier(*, field: str, value: str) -> str:
 
 def _is_connection_name_sentinel(connection_string: str) -> bool:
     """True iff the URL is the sentinel with ``connection_name`` as its only non-empty param."""
-    if not connection_string.startswith("snowflake://"):
+    if not connection_string.startswith(_SCHEME):
         return False
     try:
         url = _sa_url.make_url(connection_string)
@@ -152,9 +160,13 @@ def _snowflake_path(path: JsonPath) -> str:
 
 class SnowflakeDialect(SqlDialect):
     """Snowflake dialect."""
+    enforces_unique_keys: ClassVar[bool] = False
+    windowed_holistic: ClassVar[frozenset[str]] = frozenset({"count_distinct", "median", "percentile_cont"})
 
     sqlglot_name: str = "snowflake"
-    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT})
+    aliased_integer_types: ClassVar[frozenset[DType]] = frozenset({
+        exp.DataType.Type.TINYINT, exp.DataType.Type.SMALLINT, exp.DataType.Type.INT, exp.DataType.Type.BIGINT,
+    })
     array_cast_types: ClassVar[bool] = True
     ilike_native: ClassVar[bool] = True
     identifier_folding: ClassVar[IdentifierFolding] = "upper"
@@ -169,12 +181,53 @@ class SnowflakeDialect(SqlDialect):
     log2_native: bool = False
     max_identifier_bytes: int | None = 255
     approx_count_distinct_native: bool = True
+    approx_percentile_native: bool = True
     row_number_needs_order: bool = True
     url_scheme: str | None = "snowflake"
     install_extra: str | None = "snowflake"
 
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:
+        """``MEDIAN`` / ``PERCENTILE_CONT`` take only ``PARTITION BY``; an ordered ``LAST_VALUE`` / ``NTH_VALUE`` with no
+        frame states the standard running one (Snowflake's default is the whole partition)."""
+        if key.function in ("median", "percentile_cont") and (key.order or key.frame is not None):
+            raise WindowFunctionError(
+                summary=f"{key.function.upper()} under OVER on Snowflake takes only PARTITION BY, not ORDER BY or a "
+                f"frame.",
+                suggestion="Drop the ORDER BY and frame, or run the query on a database that windows it.",
+            )
+        if key.function in ("last_value", "nth_value") and key.order and key.frame is None:
+            window.set("spec", exp.WindowSpec(kind="RANGE", start="UNBOUNDED", start_side="PRECEDING",
+                                              end="CURRENT ROW"))
+        return window
+
+    def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
+        """``CONVERT_TIMEZONE(S, Q, v)``; an instant: ``CONVERT_TIMEZONE(Q, v)::TIMESTAMP_NTZ``."""
+        if source is not None:
+            return exp.ConvertTimezone(source_tz=zone_name(source), target_tz=zone_name(target), timestamp=value)
+        converted = exp.ConvertTimezone(target_tz=zone_name(target), timestamp=value)
+        return exp.Cast(this=converted, to=exp.DataType.build("TIMESTAMP_NTZ", dialect="snowflake"))
+
+    def instant_literal(self, value: datetime) -> Optional[Expression]:
+        return exp.Cast(this=exp.Literal.string(f"{iso_text(value)}+00:00"),
+                        to=exp.DataType.build("TIMESTAMP_TZ", dialect="snowflake"))
+
     def normalize_reflected_name(self, name: str) -> str:
         return name.lower() if name == name.upper() else name
+
+    def naive_timestamp_type(self) -> exp.DataType:
+        """``TIMESTAMP_NTZ``: a bare ``TIMESTAMP`` follows the session's ``TIMESTAMP_TYPE_MAPPING``."""
+        return exp.DataType.build("TIMESTAMPNTZ")
+
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """Native over a number; ranked otherwise (Snowflake's ``PERCENTILE_DISC`` orders numbers only)."""
+        node = super().build_percentile_disc(p=p, col_expr=col_expr, input_type=input_type)
+        return ranked_unless_numeric(node, input_type=input_type) if isinstance(node, exp.WithinGroup) else node
+
+    def rewrite_statement(self, statement: Expression) -> Expression:
+        """A ``PERCENTILE_DISC`` over a non-number is ranked in a subquery."""
+        return split_percentile_selects(statement.copy(), columns=marked_ranked)
 
     def column_comments_query(self, location: TableLocation) -> exp.Select:
         return info_schema_comments_query(
@@ -186,11 +239,19 @@ class SnowflakeDialect(SqlDialect):
         DatePart.ISO_YEAR: "YEAROFWEEKISO", DatePart.WEEK: "WEEKISO",
         DatePart.DAY_OF_WEEK: "DAYOFWEEKISO", DatePart.DAY_OF_YEAR: "DAYOFYEAR",
     }
+    _SUBSECOND_FIELD: ClassVar[tuple[str, int]] = ("NANOSECOND", 1_000_000)
     regex_flavour: ClassVar[Optional[RegexFlavour]] = POSIX
     json_db_types: ClassVar[frozenset[str]] = frozenset({"VARIANT", "OBJECT", "ARRAY"})
     database_name: ClassVar[str] = "Snowflake"
     native_lists: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
+    # A bare ``TIME`` is ``TIME(9)`` here.
+    time_of_day_precision: ClassVar[Optional[int]] = 6
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """A fixed format: a plain cast follows the session's ``TIME_OUTPUT_FORMAT``."""
+        return trimmed_fraction(anon("TO_CHAR", value, lit("HH24:MI:SS.FF6")))
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "SPLIT_PART", "PI", "CBRT",
     })
@@ -244,11 +305,17 @@ class SnowflakeDialect(SqlDialect):
 
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], leading: bool,
-        distinct: bool = False,
+        positioned: bool = False,  # NOSONAR(S1172) — FLATTEN always exposes INDEX
     ) -> ListRelation:
         """``FLATTEN`` of the list cast to ``ARRAY(T)``, so ``value`` is typed; no correlated subquery reads it."""
-        rows = exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=_typed_elements(values, element, distinct)))
+        rows = exp.Explode(this=exp.Kwarg(this=exp.var("INPUT"), expression=_typed_elements(values, element)))
         return ListRelation(relation=exp.TableFromRows(this=rows, alias=exp.TableAlias(this=alias.copy())))
+
+    def read_column(self, column: Expression, *, zoned: bool) -> Expression:
+        """A list element's position reads as FLATTEN's own ``INDEX``."""
+        if isinstance(column, exp.Column) and column.name == LIST_POSITION:
+            return exp.Column(this=exp.to_identifier("INDEX"), table=column.args.get("table"))
+        return super().read_column(column, zoned=zoned)
 
     def list_exists(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,
@@ -302,12 +369,20 @@ class SnowflakeDialect(SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement), lit(1),
                     lit(0), _parameters(case_insensitive))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern), lit(1), _parameters(case_insensitive))
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """``GET_PATH`` on the VARIANT (text parsed with ``TRY_PARSE_JSON``); objects, arrays and null are NULL."""
         document = value.copy() if native else anon("TRY_PARSE_JSON", anon("TO_VARCHAR", value))
         found = anon("GET_PATH", document, lit(_snowflake_path(path)))
         not_scalar = either(anon("IS_OBJECT", found), anon("IS_ARRAY", found.copy()), anon("IS_NULL_VALUE", found.copy()))
         return case((not_scalar, exp.Null()), default=anon("TO_VARCHAR", found.copy()))
+
+    def json_fraction(self, value: Expression, path: JsonPath, native: bool) -> Optional[Expression]:
+        document = value.copy() if native else anon("TRY_PARSE_JSON", anon("TO_VARCHAR", value))
+        found = anon("GET_PATH", document, lit(_snowflake_path(path)))
+        return case((either(anon("IS_DOUBLE", found), anon("IS_DECIMAL", found.copy())), anon("TO_DOUBLE", found.copy())))
 
     def _second_gap(self, *, start: Expression, end: Expression) -> Expression:
         """No interval type: ``DATEDIFF`` of second-aligned timestamps is exact."""
@@ -374,7 +449,7 @@ class SnowflakeDialect(SqlDialect):
         connection_string: str,
     ) -> sa.Engine | None:
         """Route the sentinel URL through ``creator=``; None for the default engine path."""
-        if connection_string.startswith("snowflake://"):
+        if connection_string.startswith(_SCHEME):
             try:
                 parsed = _sa_url.make_url(connection_string)
             except sa.exc.ArgumentError:
@@ -403,8 +478,8 @@ class SnowflakeDialect(SqlDialect):
             sf = import_driver(_CONNECTOR_MODULE, datasource=datasource, dialect=self)
             return sf.connect(connection_name=name)
 
-        return sa.create_engine("snowflake://", **connection_policy.engine_kwargs(
-            url="snowflake://", dialect=self, datasource=datasource, creator=_create_snowflake_connection,
+        return sa.create_engine(_SCHEME, **connection_policy.engine_kwargs(
+            url=_SCHEME, dialect=self, datasource=datasource, creator=_create_snowflake_connection,
         ))
 
     def deferred_driver_modules(self, connection_string: str) -> tuple[str, ...]:

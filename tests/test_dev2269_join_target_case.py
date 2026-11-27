@@ -1,4 +1,4 @@
-"""A stored join target names its model's exact spelling: refused at save, repaired on load, fail-closed at query time
+"""A stored relationship target names its dataset's exact spelling: refused at save, repaired on load, fail-closed at query time
 (spec: queries/identifier-case)."""
 
 from __future__ import annotations
@@ -44,12 +44,12 @@ PRE_REPAIR = 24
 #: Orders per customer name in the shop seed.
 ORDERS_BY_NAME = {"Ann": 2, "Bob": 2, "Cid": 2}
 NAME_QUERY = {"population": "orders", "dimensions": ["customers.name"],
-              "metrics": [{"metric": "count(*)", "alias": "n"}]}
-REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(amount)"]}
+              "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
+REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(orders.amount)"]}
 
 
 # --------------------------------------------------------------------------- #
-# Fixtures and models
+# Fixtures and datasets
 # --------------------------------------------------------------------------- #
 @pytest.fixture(params=STORAGES)
 async def storage(request, tmp_path) -> StorageBackend:
@@ -227,10 +227,9 @@ class TestStoredUpgrade:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_stored_case_only_target_is_repaired_on_load(self, tmp_path, shop_ds, backend) -> None:
         storage = await _store(tmp_path, backend=backend, ds=shop_ds, docs=[_orders_doc(), _customers_doc()])
+        before = stored_bytes(backend=backend, base=str(tmp_path / "store"), name="orders")
         assert await _targets(storage, "orders") == ["Customers"]
-        doc = await raw_doc(storage, "orders")
-        assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert [j["to"] for j in doc["relationships"]] == ["Customers"]
+        assert stored_bytes(backend=backend, base=str(tmp_path / "store"), name="orders") == before
         resp = await run(storage, NAME_QUERY)
         assert {k: int(v) for k, v in by_dimension(resp, dim_suffix="name").items()} == ORDERS_BY_NAME
         written = stored_bytes(backend=backend, base=str(tmp_path / "store"), name="orders")
@@ -275,7 +274,7 @@ class TestStoredUpgrade:
         assert model is not None
         assert (model.filters, [j.to for j in model.relationships]) == (
             ["customers.addr.region = 'North'"], ["Customers"])
-        resp = await run(storage, {"population": "orders", "metrics": ["sum(amount)"]})
+        resp = await run(storage, {"population": "orders", "metrics": ["sum(orders.amount)"]})
         assert [float(v) for r in resp.data for v in r.values()] == [AMOUNT_BY_REGION["North"]]
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -305,10 +304,10 @@ async def test_an_ambiguous_stored_target_fails_closed_at_query_time(tmp_path, s
 
 
 # --------------------------------------------------------------------------- #
-# A stored join to the spine is dropped on load
+# A stored relationship to the spine is dropped on load
 # --------------------------------------------------------------------------- #
-def _ev_doc(*, joins: list[dict]) -> dict:
-    """No time axis: two temporal columns and no declared default."""
+def _ev_doc(*, relationships: list[dict]) -> dict:
+    """No time axis: two temporal fields and no declared default."""
     return {
         "version": PRE_REPAIR, "name": "ev", "sql_table": "orders", "data_source": DS,
         "columns": [
@@ -317,7 +316,7 @@ def _ev_doc(*, joins: list[dict]) -> dict:
             {"name": "ordered_at", "type": "TIMESTAMP"},
             {"name": "ordered_day", "sql": "ordered_at", "type": "TIMESTAMP"},
         ],
-        "joins": joins,
+        "joins": relationships,
     }
 
 
@@ -332,17 +331,17 @@ SPINE_QUERY = {
 @pytest.mark.parametrize("target", ["time_spine", "TIME_SPINE"])
 async def test_a_stored_join_to_the_spine_is_dropped_on_load(tmp_path, shop_ds, backend, target) -> None:
     spine_join = {"target_model": target, "name": "spine_link", "join_pairs": [["ordered_at", "timestamp"]]}
-    storage = await _store(tmp_path, backend=backend, ds=shop_ds, docs=[_ev_doc(joins=[spine_join])])
+    storage = await _store(tmp_path, backend=backend, ds=shop_ds, docs=[_ev_doc(relationships=[spine_join])])
     with recorded_warnings() as caught:
         model = await storage.get_dataset("ev", data_source=DS)
     assert model is not None
     assert model.relationships == []
     assert [w for w in messages(caught, "spine_link") if "ev" in w]
     doc = await raw_doc(storage, "ev")
-    assert (doc["version"], doc.get("joins") or []) == (mig.CURRENT_VERSIONS["SlayerModel"], [])
+    assert [j["name"] for j in doc.get("joins") or []] == ["spine_link"]
     resp = await run(storage, SPINE_QUERY)
-    plain = await _store(tmp_path, backend=backend, ds=shop_ds, base="plain", docs=[_ev_doc(joins=[])])
+    plain = await _store(tmp_path, backend=backend, ds=shop_ds, base="plain", docs=[_ev_doc(relationships=[])])
     expected = await run(plain, SPINE_QUERY)
-    assert {str(r["time_spine.timestamp"])[:7]: float(r["time_spine.s"]) for r in resp.data} == {
+    assert {str(r["time_spine.timestamp"])[:7]: float(r["s"]) for r in resp.data} == {
         "2024-01": 210.0, "2024-02": 210.0, "2024-03": 210.0}
     assert sorted(map(str, resp.data)) == sorted(map(str, expected.data))

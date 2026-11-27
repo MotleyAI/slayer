@@ -1,4 +1,4 @@
-"""A plain facade projection returns one row per record; DISTINCT, GROUP BY, HAVING, aggregates and measure
+"""A plain facade projection returns one row per record; DISTINCT, GROUP BY, HAVING, aggregates and metric
 references group (spec: facade/projection)."""
 
 from __future__ import annotations

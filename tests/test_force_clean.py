@@ -1,7 +1,4 @@
-"""Tests for ``apply_drift_deletes`` + ``slayer validate-models --force-clean``.
-
-See DEV-1356 stage 4.
-"""
+"""Tests for ``apply_drift_deletes`` + ``slayer validate-datasets --force-clean``."""
 
 from __future__ import annotations
 
@@ -70,8 +67,8 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", expression="region", datatype=DataType.STRING),
             ],
         )
     )
@@ -81,11 +78,11 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
                 DatasetField(
-                    name="customer_id", sql="customer_id", datatype=DataType.FLOAT
+                    name="customer_id", expression="customer_id", datatype=DataType.FLOAT
                 ),
             ],
         )
@@ -114,7 +111,7 @@ class TestApplyDriftDeletes:
         assert len(result.applied) == 1
         assert result.applied[0].dataset_name == "orders"
         assert result.errors == []
-        # Persisted model now lacks 'status'
+        # Persisted dataset now lacks 'status'
         loaded = await engine.storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
         assert not any(c.name == "status" for c in loaded.fields)
@@ -131,7 +128,7 @@ class TestApplyDriftDeletes:
         result = await engine.apply_drift_deletes(deletes)
         assert len(result.applied) == 1
         assert result.applied[0].tool == "delete_dataset"
-        # Persisted model gone
+        # Persisted dataset gone
         assert await engine.storage.get_dataset("orders", data_source="ds") is None
 
     async def test_arbitrary_input_order(self, workspace: Path) -> None:
@@ -190,7 +187,7 @@ class TestApplyDriftDeletes:
 
         # Apply only the orders.status drop (which doesn't exist as drift —
         # but the test purpose is residual after apply, not the drift
-        # itself). Arrange: pre-drop "status" persisted column to make
+        # itself). Arrange: pre-drop "status" persisted field to make
         # apply meaningful.
         deletes = [
             EditDatasetDelete(
@@ -206,13 +203,13 @@ class TestApplyDriftDeletes:
 
 
 # ---------------------------------------------------------------------------
-# CLI integration — slayer validate-models --force-clean
+# CLI integration — slayer validate-datasets --force-clean
 # ---------------------------------------------------------------------------
 
 
 def _run_cli(args, *, input_text: str = "", workspace: Path) -> subprocess.CompletedProcess:
-    # DEV-1815: retained as the one end-to-end subprocess smoke (state-writing +
-    # interactive stdin); the non-interactive validate-models tests below run
+    # Retained as the one end-to-end subprocess smoke (state-writing +
+    # interactive stdin); the non-interactive validate-datasets tests below run
     # in-process. Keeps coverage of the console-script/process boundary.
     return subprocess.run(
         [sys.executable, "-m", "slayer.cli", *args, "--storage", str(workspace / "storage")],
@@ -258,7 +255,7 @@ class TestForceCleanCLI:
              "--storage", storage_arg]
         )
         assert result.returncode == 0
-        # After apply, the diff is empty — re-run validate-models and confirm.
+        # After apply, the diff is empty — re-run validate-datasets and confirm.
         follow_up = run_cli_in_process(
             ["validate-datasets", "--datasource", "ds", "--storage", storage_arg]
         )
@@ -276,7 +273,7 @@ class TestForceCleanCLI:
             workspace=cli_workspace,
         )
         assert result.returncode == 0, result.stderr
-        # Aborted — region should still be on the persisted model
+        # Aborted — region should still be on the persisted dataset
         async def _check():
             engine = SlayerQueryEngine(
                 storage=YAMLStorage(base_dir=str(cli_workspace / "storage"))
@@ -285,5 +282,5 @@ class TestForceCleanCLI:
 
         loaded = run_sync(_check())
         assert loaded is not None
-        # The region column is still persisted (apply was aborted).
+        # The region field is still persisted (apply was aborted).
         assert any(c.name == "region" for c in loaded.fields)

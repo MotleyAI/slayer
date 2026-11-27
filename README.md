@@ -14,6 +14,8 @@
 
 An expressive, embeddable semantic layer for AI agents and humans.
 
+> **Upgrading from 1.x?** See [Upgrading to 2.0](https://docs.motley.ai/slayer/upgrading/2.0/) for every breaking change and how to migrate.
+
 SLayer enables AI-powered data analytics on top of your warehouse. Agents get a governed, shared surface through which they access your data and metrics and give you reliable answers.
 
 SLayer handles database connectivity (read-only), SQL translation, common data transformations, and row-level security, so LLMs and humans don't have to. Adapt it to your workflows, not the other way around. Manage definitions easily with an agent or by yourself.
@@ -28,7 +30,7 @@ Traditionally, semantic layers were a part of the BI stack, where every metric a
 had to be predefined. Agents need more flexibility because users ask questions that involve metric combinations (like ratios), transforms (like time shifts), or different aggregations
 of the same metric (like average instead of sum).
 
-SLayer allows to define a field `revenue` once and query it using [expressions](https://docs.motley.ai/slayer/concepts/formulas/) like `sum(revenue)`, `avg(revenue)`, `sum(revenue) / count(*)`, `time_shift(sum(revenue), -1, 'year')` etc.; [multi-stage queries](https://docs.motley.ai/slayer/examples/06_multistage_queries/multistage_queries/) are also supported.
+SLayer allows to define a field `revenue` once and query it using [expressions](https://docs.motley.ai/slayer/concepts/expressions/) like `sum(revenue)`, `avg(revenue)`, `sum(revenue) / count(*)`, `time_shift(sum(revenue), -1, 'year')` etc.; [multi-stage queries](https://docs.motley.ai/slayer/examples/06_multistage_queries/multistage_queries/) are also supported.
 
 SLayer is focused on the common agentic **search → inspect → query** flow. It has a [search](https://docs.motley.ai/slayer/concepts/search/) tool for efficient discovery and a [memory store](https://docs.motley.ai/slayer/concepts/memories/) for linking the relevant business context.
 
@@ -44,7 +46,7 @@ Question (run on the built-in demo Jaffle Shop database): **"show monthly revenu
 
 Side by side, here's LLM-generated SQL and the equivalent SLayer query.
 
-![A 17-line SQL query with a CTE, a join and two LAG window functions, next to the SLayer query {"population": "orders", "metrics": ["sum(order_total)", "change_pct(sum(order_total))"], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"]}](https://raw.githubusercontent.com/MotleyAI/slayer/main/docs/images/sql-vs-slayer.png)
+![A 17-line SQL query with a CTE, a join and two LAG window functions, next to the SLayer query {"population": "orders", "metrics": ["sum(orders.order_total)", "change_pct(sum(orders.order_total))"], "dimensions": ["stores.name", "date_trunc('month', orders.ordered_at)"]}](https://raw.githubusercontent.com/MotleyAI/slayer/main/docs/images/sql-vs-slayer.png)
 
 ## Quickstart
 

@@ -1,7 +1,7 @@
-"""DEV-1842 task 2.1 — migration of the pre-bind pass's unit suites.
+"""Migration of the pre-bind pass's unit suites.
 
 ``slayer/engine/measure_expansion.py`` (and its ``expand_model_measures`` /
-``_ExpandCtx``) is deleted; all saved-measure resolution moves into the binder.
+``_ExpandCtx``) is deleted; all saved-metric resolution moves into the binder.
 The eligibility matrix, cycle, and depth scenarios that
 ``test_measure_expansion.py`` / ``test_model_measure_expansion.py`` pinned at the
 pass level are re-expressed here against the real binder path (through the
@@ -9,7 +9,7 @@ engine), importing nothing from the deleted module.
 
 Positive bare-name resolution (root / arithmetic / transform / chained) is
 already covered end-to-end by ``test_named_measures.py``; this suite pins the
-NEGATIVE eligibility edges (a measure in an aggregation source / arg / kwarg is
+NEGATIVE eligibility edges (a metric in an aggregation source / arg / kwarg is
 NOT expanded), plus cycle-chain naming and the depth cap — the rules the unit
 suites uniquely covered.
 """
@@ -25,15 +25,15 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    IllegalScopeReferenceError,
     MetricCycleError,
     MetricRecursionLimitError,
+    UnresolvableDimensionRelationshipError,
 )
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import StageField, StageSchema
+from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from slayer.core.syntax import parse_expr
 
 from tests._engine_helpers import _engine_generate
@@ -66,63 +66,63 @@ _GRP = DatasetMetric(name="grp", expression="status")
 
 
 class TestPositiveResolutionThroughBinder:
-    """Every eligible operand position expands the bare measure — behaviour the
+    """Every eligible operand position expands the bare metric — behaviour the
     deleted pass's matrix covered, now through the binder."""
 
     async def test_root_measure_equals_inline(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "rev") == await _gen(_dataset([]), "sum(amount)")
+        assert await _gen(model, "orders.rev") == await _gen(_dataset([]), "sum(orders.amount)")
 
     async def test_arithmetic_operand_expanded(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "rev + 1") == await _gen(_dataset([]), "sum(amount) + 1")
+        assert await _gen(model, "orders.rev + 1") == await _gen(_dataset([]), "sum(orders.amount) + 1")
 
     async def test_comparison_operand_expanded(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "rev > 100") == await _gen(
-            _dataset([]), "sum(amount) > 100")
+        assert await _gen(model, "orders.rev > 100") == await _gen(
+            _dataset([]), "sum(orders.amount) > 100")
 
     async def test_unary_operand_expanded(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "-rev") == await _gen(_dataset([]), "-sum(amount)")
+        assert await _gen(model, "-orders.rev") == await _gen(_dataset([]), "-sum(orders.amount)")
 
     async def test_boolean_operands_expanded(self) -> None:
         model = _dataset([_REV, _CNT])
-        assert await _gen(model, "rev > 100 and cnt > 0") == await _gen(
-            _dataset([]), "sum(amount) > 100 and count(*) > 0")
+        assert await _gen(model, "orders.rev > 100 and orders.cnt > 0") == await _gen(
+            _dataset([]), "sum(orders.amount) > 100 and count(orders.*) > 0")
 
     async def test_scalar_arg_expanded(self) -> None:
         model = _dataset([_REV])
-        assert await _gen(model, "nullif(rev, 0)") == await _gen(
-            _dataset([]), "nullif(sum(amount), 0)")
+        assert await _gen(model, "nullif(orders.rev, 0)") == await _gen(
+            _dataset([]), "nullif(sum(orders.amount), 0)")
 
     async def test_transform_input_expanded(self) -> None:
         model = _dataset([_REV])
-        td = [{"field": "created_at", "granularity": "month"}]
-        assert await _gen(model, "cumsum(rev)", time_dimensions=td) == await _gen(
-            _dataset([]), "cumsum(sum(amount))", time_dimensions=td)
+        td = [{"field": "orders.created_at", "granularity": "month"}]
+        assert await _gen(model, "cumsum(orders.rev)", time_dimensions=td) == await _gen(
+            _dataset([]), "cumsum(sum(orders.amount))", time_dimensions=td)
 
 
 class TestAggregationScopeNotExpanded:
-    """A saved-measure name inside an aggregation's source / arg / kwarg is
-    column-level by contract and is NOT expanded — the binder rejects it."""
+    """A saved-metric name inside an aggregation's source / arg / kwarg is
+    field-level by contract and is NOT expanded — the binder rejects it."""
 
     async def test_agg_source_not_expanded(self) -> None:
         model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
-            await _gen(model, "sum(rev)")
+            await _gen(model, "sum(orders.rev)")
         assert "saved metric" in str(ei.value).lower()
 
     async def test_agg_positional_arg_not_expanded(self) -> None:
         model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
-            await _gen(model, "last(amount, rev)")
+            await _gen(model, "last(orders.amount, orders.rev)")
         assert "saved metric" in str(ei.value).lower()
 
     async def test_agg_kwarg_not_expanded(self) -> None:
         model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
-            await _gen(model, "weighted_avg(amount, weight=rev)")
+            await _gen(model, "weighted_avg(orders.amount, weight=orders.rev)")
         assert "saved metric" in str(ei.value).lower()
 
 
@@ -130,7 +130,7 @@ class TestCycleAndDepthThroughBinder:
     async def test_direct_self_cycle(self) -> None:
         model = _dataset([DatasetMetric(name="aov", expression="aov + 1")])
         with pytest.raises((MetricCycleError, ValueError)) as ei:
-            await _gen(model, "aov")
+            await _gen(model, "orders.aov")
         assert "aov" in str(ei.value)
 
     async def test_cycle_names_the_chain(self) -> None:
@@ -139,7 +139,7 @@ class TestCycleAndDepthThroughBinder:
             DatasetMetric(name="b", expression="a"),
         ])
         with pytest.raises((MetricCycleError, ValueError)) as ei:
-            await _gen(model, "a")
+            await _gen(model, "orders.a")
         message = str(ei.value).lower()
         assert "a" in message
         assert "b" in message
@@ -152,7 +152,7 @@ class TestCycleAndDepthThroughBinder:
         model = _dataset(measures)
         with mock.patch.dict(os.environ, {"SLAYER_METRIC_EXPANSION_DEPTH": "2"}):
             with pytest.raises(MetricRecursionLimitError) as ei:
-                await _gen(model, "m1")
+                await _gen(model, "orders.m1")
             assert ei.value.limit == 2
 
     async def test_within_depth_resolves(self) -> None:
@@ -160,14 +160,14 @@ class TestCycleAndDepthThroughBinder:
         for i in range(4, 0, -1):
             measures.append(DatasetMetric(name=f"m{i}", expression=f"m{i + 1}"))
         model = _dataset(measures)
-        assert await _gen(model, "m1") == await _gen(_dataset([]), "sum(amount)")
+        assert await _gen(model, "orders.m1") == await _gen(_dataset([]), "sum(orders.amount)")
 
 
 class TestTransformArgEligibilityDropped:
-    """D2 — a transform's ``partition_by`` (and scalar args) DROP measure
+    """D2 — a transform's ``partition_by`` (and scalar args) DROP metric
     eligibility. This is a deliberate change from the deleted pass, which
     expanded transform kwargs. With ``status`` a real query dimension, the ONLY
-    variable is whether ``grp`` (a measure whose formula is the bare dimension
+    variable is whether ``grp`` (a metric whose expression is the bare dimension
     ``status``) expands: under D2 ``grp`` is not expanded in a transform's
     ``partition_by`` and the reference is rejected (the deleted pass substituted
     ``status`` and the query succeeded)."""
@@ -175,25 +175,26 @@ class TestTransformArgEligibilityDropped:
     async def test_transform_partition_by_measure_not_expanded(self) -> None:
         model = _dataset([_REV, _GRP])
         with pytest.raises(ValueError):
-            await _gen(model, "rank(sum(amount), partition_by=grp, direction='desc')",
-                       dimensions=["status"],
-                       time_dimensions=[{"field": "created_at",
+            await _gen(model, "rank(sum(orders.amount), partition_by=orders.grp, direction='desc')",
+                       dimensions=["orders.status"],
+                       time_dimensions=[{"field": "orders.created_at",
                                          "granularity": "month"}])
 
 
 class TestStageSchemaScope:
-    """A dotted saved-measure reference is illegal in a downstream ``StageSchema``
-    scope — the measure feature never leaks into stage scopes (task 1.5)."""
+    """A dotted saved-metric reference from a downstream stage fails as from a stored root."""
 
     def test_dotted_ref_in_stage_schema_is_rejected(self) -> None:
-        stage = StageSchema(
+        schema = StageSchema(
             relation_name="s",
-            fields=[StageField(name="aov", sql_alias="aov", datatype=DataType.FLOAT)],
+            fields=[StageField(name="aov", sql_alias="orders.aov", datatype=DataType.FLOAT)],
         )
+        stage = dataset_from_stage_schema(name="s", schema=schema, data_source="ds")
         parsed = parse_expr("customers.aov")
-        bundle = ResolvedSourceBundle(dialect="duckdb")
-        with pytest.raises(IllegalScopeReferenceError):
-            bind_expr(parsed, scope=stage, bundle=bundle)
+        bundle = ResolvedSourceBundle(dialect="duckdb", population=stage)
+        scope = DatasetScope(population=stage)
+        with pytest.raises(UnresolvableDimensionRelationshipError):
+            bind_expr(parsed, scope=scope, bundle=bundle)
 
 
 class TestDeletedPassNotImported:

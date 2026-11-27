@@ -1,7 +1,7 @@
-"""DEV-1747 D8 — the LOCAL transform chain's WITH clause, assembled as AST.
+"""D8 — the LOCAL transform chain's WITH clause, assembled as AST.
 
-PR 3 (DEV-1746) built one WITH assembler (``slayer/sql/render/cte_assembly.py``)
-and adopted it on the cross-model sites, deferring the LOCAL single-model
+PR 3 built one WITH assembler (``slayer/sql/render/cte_assembly.py``)
+and adopted it on the cross-dataset sites, deferring the LOCAL single-dataset
 transform chain to this PR — its two near-identical sites still splice out of
 f-strings::
 
@@ -20,8 +20,6 @@ public alias round-trips through text as a MULTI-PART reference on BigQuery
 (``_base."orders_x.status"`` came back as ``` `_base___orders_x`.`status` ```),
 and this path is full of dotted ``<relation>.<alias>`` names — so a parse seam
 here would silently corrupt exactly the identifiers it carries.
-
-Refs: DEV-1747 (D8), DEV-1746 handoff, DEV-1742 §5.6.
 """
 from __future__ import annotations
 
@@ -42,17 +40,17 @@ from slayer.sql.generator import SQLGenerator
 from slayer.sql.render import cte_assembly
 import inspect
 
-#: A LOCAL (single-model) transform chain — no cross-model measure, so it takes
-#: the f-string splice path rather than the cross-model one PR 3 already fixed.
+#: A LOCAL (single-dataset) transform chain — no cross-dataset metric, so it takes
+#: the f-string splice path rather than the cross-dataset one PR 3 already fixed.
 _CHAIN_QUERY = SlayerQuery(
     population="orders",
     time_dimensions=[TimeDimension(
-        field="created_at",
+        field="orders.created_at",
         granularity=TimeGranularity.MONTH,
     )],
     metrics=[
-        {"metric": "sum(amount)", "alias": "rev"},
-        {"metric": "cumsum(sum(amount))", "alias": "cs"},
+        {"metric": "sum(orders.amount)", "alias": "rev"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "cs"},
     ],
 )
 
@@ -61,13 +59,13 @@ _CHAIN_QUERY = SlayerQuery(
 _MULTI_STEP_QUERY = SlayerQuery(
     population="orders",
     time_dimensions=[TimeDimension(
-        field="created_at",
+        field="orders.created_at",
         granularity=TimeGranularity.MONTH,
     )],
     metrics=[
-        {"metric": "sum(amount)", "alias": "rev"},
-        {"metric": "cumsum(sum(amount))", "alias": "cs"},
-        {"metric": "change(sum(amount))", "alias": "ch"},
+        {"metric": "sum(orders.amount)", "alias": "rev"},
+        {"metric": "cumsum(sum(orders.amount))", "alias": "cs"},
+        {"metric": "change(sum(orders.amount))", "alias": "ch"},
     ],
 )
 
@@ -134,9 +132,9 @@ class TestWithChainAssembly:
         """The chain's outer wrap is where ORDER BY / LIMIT land; D8 must not
         disturb that while replacing the splice."""
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="desc")], "limit": 2}))
+            )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="desc")], "limit": 2}))
         assert order_by_text(sql), f"chain lost its ORDER BY:\n{sql}"
         assert "LIMIT" in sql.upper() or "TOP" in sql.upper()
 
@@ -227,14 +225,14 @@ class TestChainSemanticsPreserved:
         """A hidden order-only slot has to be carried through every step; the
         carry lists are plan-ordered (B8, PR 3) and must stay that way."""
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="status", direction="desc")]}))
+            )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "order": [OrderItem(field="orders.status", direction="desc")]}))
         assert order_by_text(sql)
 
     async def test_post_phase_filter_still_wraps_the_chain(self) -> None:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "filter": ["cs > 5"]}))
+            )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "filter": ["cs > 5"]}))
         assert "WHERE" in sql.upper()

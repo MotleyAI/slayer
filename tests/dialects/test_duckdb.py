@@ -11,6 +11,8 @@ import tomllib
 from pathlib import Path
 
 import sqlglot
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
@@ -33,8 +35,8 @@ def test_duckdb_log_native_flags() -> None:
 
 def test_duckdb_build_date_trunc_month() -> None:
     d = DuckdbDialect()
-    col = sqlglot.parse_one("created_at", dialect="duckdb")
-    out = d.build_date_trunc(col, TimeGranularity.MONTH)
+    col = exp.column("created_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.MONTH, operand=DataType.DATETIME)
     sql = out.sql(dialect="duckdb").upper()
     assert "DATE_TRUNC" in sql
     assert "MONTH" in sql
@@ -44,8 +46,8 @@ def test_duckdb_build_date_trunc_week_sunday_shift() -> None:
     """WEEK_SUNDAY reuses DuckDB's native (Monday) DATE_TRUNC('week')
     with the +1d / -1d shift. DuckDB emits unquoted ``INTERVAL 1 DAY``."""
     d = DuckdbDialect()
-    col = sqlglot.parse_one("ordered_at", dialect="duckdb")
-    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY)
+    col = exp.column("ordered_at")
+    out = d.build_date_trunc(col_expr=col, granularity=TimeGranularity.WEEK_SUNDAY, operand=DataType.DATETIME)
     up = out.sql(dialect="duckdb").upper()
     assert "DATE_TRUNC('WEEK'" in up
     assert "+ INTERVAL 1 DAY" in up
@@ -87,5 +89,6 @@ def test_duckdb_build_date_add_quarter_normalizes_to_3_month() -> None:
 def test_duckdb_floor_has_every_catalog_column_reflection_reads() -> None:
     """``duckdb_constraints().referenced_table`` (foreign keys) first ships in DuckDB 1.1."""
     pyproject = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
-    floor = pyproject["tool"]["poetry"]["dependencies"]["duckdb"].removeprefix(">=")
-    assert tuple(int(p) for p in floor.split(".")) >= (1, 1)
+    spec = SpecifierSet(pyproject["tool"]["poetry"]["dependencies"]["duckdb"])
+    [floor] = [s.version for s in spec if s.operator == ">="]
+    assert Version(floor) >= Version("1.1")

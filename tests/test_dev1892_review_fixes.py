@@ -1,4 +1,4 @@
-"""DEV-1892 review-round regressions: CR4 renamed-key seeding, CR5 picked-param
+"""Review-round regressions: CR4 renamed-key seeding, CR5 picked-param
 filter, CR3 parse-based expression-default extraction."""
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def _customers_dataset(*, key_sql: str | None) -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="prod", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INTEGER, sql=key_sql, primary_key=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, expression=key_sql, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
@@ -78,7 +78,7 @@ def _fk_hop_datasets(*, fk_sql: str | None) -> tuple[SlayerDataset, dict[str, Sl
         name="customers", data_source="prod", sql_table="customers",
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INTEGER, sql=fk_sql),
+            DatasetField(name="region_id", datatype=DataType.INTEGER, expression=fk_sql),
         ],
         relationships=[DatasetRelationship(
             to="regions", from_columns=["region_id"], to_columns=["id"],
@@ -129,14 +129,14 @@ class TestPickedParamDoesNotInheritSourceFilter:
     async def test_picked_weight_not_masked_by_source_filter(self) -> None:
         # ``north_spend`` is filtered on regions.name='North'. Only the VALUE (_v)
         # carries that CASE mask; the picked weight ``customers.spend`` (_p0) is NOT
-        # masked by the source's filter (DEV-1832: a parameter is masked only by its
-        # own column's filter, never the source's).
+        # masked by the source's filter (a parameter is masked only by its
+        # own field's filter, never the source's).
         models = toone_filter_datasets()
         orders = next(m for m in models if m.name == "orders")
         extra = [m for m in models if m.name != "orders"]
         sql = await _engine_generate(
             query=assoc_q(
-                dimensions=["channel"],
+                dimensions=["orders.channel"],
                 metrics=[QueryMetric(
                     metric="weighted_avg(customers.north_spend, weight=customers.spend)",
                     alias="w")]),
@@ -231,18 +231,18 @@ class TestExprDefaultQualifiedRefs:
         # Was silent 0.0: ``regions.pop * 2`` extracted no owner token, so the
         # default was neither lifted nor rejected.
         resp = await qual_expr_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum6(customers.spend)", alias="w")]))
-        vals = _status_vals(resp, "orders.w")
+        vals = _status_vals(resp, "w")
         for status, expected in ASSOC_WSUM6_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
     async def test_mixed_expr_default(self, mixed_expr_engine):
         # ``spend * regions.pop``: owner and qualified refs in one expression.
         resp = await mixed_expr_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum7(customers.spend)", alias="w")]))
-        vals = _status_vals(resp, "orders.w")
+        vals = _status_vals(resp, "w")
         for status, expected in ASSOC_WSUM7_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -250,27 +250,27 @@ class TestExprDefaultQualifiedRefs:
         # ``customers.spend * 1`` on customers: the owner-name qualifier is a
         # self-reference, not a hop (and not opaque) — SUM(spend * spend).
         resp = await self_qual_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum8(customers.spend)", alias="w")]))
-        vals = _status_vals(resp, "orders.w")
+        vals = _status_vals(resp, "w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
     async def test_derived_local_ref_in_expr_default(self, derived_local_engine):
-        # ``double_spend * regions.pop``: a DERIVED local column expands through
+        # ``double_spend * regions.pop``: a DERIVED local field expands through
         # the owner-anchored entry alongside the qualified ref.
         resp = await derived_local_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wsum9(customers.spend)", alias="w")]))
-        vals = _status_vals(resp, "orders.w")
+        vals = _status_vals(resp, "w")
         for status, expected in ASSOC_WSUM9_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
     async def test_unmodeled_physical_ref_fails_closed(self, phys_expr_engine):
-        # ``tier`` is physical-only (removed from the model): a default names only
-        # model columns, exactly as its explicit spelling must.
+        # ``tier`` is physical-only (removed from the dataset): a default names only
+        # dataset fields, exactly as its explicit spelling must.
         q = assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wphys(customers.spend)", alias="w")])
         with pytest.raises(UnknownReferenceError, match="tier"):
             await phys_expr_engine.execute(q)
@@ -280,8 +280,8 @@ class TestExprDefaultQualifiedRefs:
         # operand grain (customer_id pins the to-one customers row).
         resp = await qual_reagg_engine.execute(chain_q(
             metrics=[QueryMetric(
-                metric="cwavg(sum(amount, partition_by=customer_id))", alias="w")]))
-        got = float(resp.data[0]["corders.w"])
+                metric="cwavg(sum(corders.amount, partition_by=corders.customer_id))", alias="w")]))
+        got = float(resp.data[0]["w"])
         assert got == pytest.approx(CORDERS_GLOBAL_WAVG)
         assert got != pytest.approx(CORDERS_GLOBAL_UNWEIGHTED)
 
@@ -289,26 +289,26 @@ class TestExprDefaultQualifiedRefs:
 class TestExprDefaultLiteralsAndResidue:
     async def test_string_literal_is_not_a_dependency(self, lit_reagg_engine):
         # Was a spurious typed error: the literal ``'amount'`` read as the
-        # ``amount`` column. Weight is constant 2.0 -> the unweighted average.
+        # ``amount`` field. Weight is constant 2.0 -> the unweighted average.
         resp = await lit_reagg_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric="wlit(sum(amount, partition_by=[city, region]))",
+                metric="wlit(sum(sales.amount, partition_by=[sales.city, sales.region]))",
                 alias="w")]))
-        vals = {k[0]: v["sales.w"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["w"] for k, v in region_key(resp).items()}
         for region, expected in UNWEIGHTED_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
         assert vals["Void"] is None  # its only cell total is NULL
 
     async def test_literal_only_default_rides_plain_machinery(self, lit_only_engine):
-        # Zero column refs (parsed, not opaque) -> not lifted, constant weight
+        # Zero field refs (parsed, not opaque) -> not lifted, constant weight
         # 2.0 -> the unweighted average. Was a spurious ``amount`` dependency.
         resp = await lit_only_engine.execute(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(
-                metric="wconst(sum(amount, partition_by=[city, region]))",
+                metric="wconst(sum(sales.amount, partition_by=[sales.city, sales.region]))",
                 alias="w")]))
-        vals = {k[0]: v["sales.w"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["w"] for k, v in region_key(resp).items()}
         for region, expected in UNWEIGHTED_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
         assert vals["Void"] is None
@@ -317,15 +317,15 @@ class TestExprDefaultLiteralsAndResidue:
         # An operand grain that pins nothing about customers -> the one-rule
         # typed error (was silent invalid SQL).
         q = chain_q(metrics=[QueryMetric(
-            metric="cwavg(sum(amount, partition_by=amount))", alias="w")])
+            metric="cwavg(sum(corders.amount, partition_by=corders.amount))", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await qual_reagg_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
 
     async def test_opaque_qualifier_fails_closed(self, opaque_expr_engine):
-        # ``nosuch.col`` resolves no join walk -> the default fails at binding.
+        # ``nosuch.col`` resolves no relationship walk -> the default fails at binding.
         q = assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wopq(customers.spend)", alias="w")])
         with pytest.raises(UnresolvableDimensionRelationshipError, match="nosuch.col"):
             await opaque_expr_engine.execute(q)
@@ -334,27 +334,27 @@ class TestExprDefaultLiteralsAndResidue:
         # ``)((( bad`` does not parse: a typed error at binding, never a raw
         # level-2 render, and never the parser's own diagnostics.
         q = assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(metric="wugly(customers.spend)", alias="w")])
         with pytest.raises(UnanalyzableAggregationParameterError, match="weight") as ei:
             await unparseable_engine.execute(q)
         assert "\x1b" not in str(ei.value)
 
     async def test_root_named_expr_default_widens_to_root(self, root_named_expr_engine):
-        # DEV-1931 (Reading A): the default ``orders.amount + 0`` names the query
+        # Reading A: the default ``orders.amount + 0`` names the query
         # root, so it resolves root-local and widens the home to orders —
         # identical to spelling the weight explicitly. A genuinely fanning
         # definition default still fails closed
         # (tests/test_dev1931_default_home.py::TestFanningDefinitionDefaultFailsClosed).
         resp = await root_named_expr_engine.execute(assoc_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
                 QueryMetric(metric="wroot(customers.spend)", alias="w"),
                 QueryMetric(
                     metric="sum(customers.spend * (orders.amount + 0))", alias="oracle"),
             ]))
-        default_vals = _status_vals(resp=resp, metric="orders.w")
-        oracle_vals = _status_vals(resp=resp, metric="orders.oracle")
+        default_vals = _status_vals(resp=resp, metric="w")
+        oracle_vals = _status_vals(resp=resp, metric="oracle")
         assert default_vals
         for status, expected in oracle_vals.items():
             assert float(default_vals[status]) == pytest.approx(float(expected))

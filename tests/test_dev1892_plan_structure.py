@@ -1,8 +1,8 @@
-"""DEV-1892 task 1.3 — plan-structure pins for the lifted parameter: the kernel
+"""Plan-structure pins for the lifted parameter: the kernel
 carries ``picked_params``; a weight aggregate's partition keys need not be query
 dimensions (the combined-consumer exemption extends to args/kwargs); the operand
 carrier is one producer; the emitted SQL is scope-closed; adding the weighted
-measure is cardinality-neutral.
+metric is cardinality-neutral.
 
 Spec: queries/partitioned-aggregates — "Parameter partition keys need not be
 query dimensions"; queries/semantics — "Aggregation parameters are typed by the
@@ -33,7 +33,7 @@ from tests._dev1847_fixtures import (
 )
 from tests._dev1892_fixtures import weighted_sales_datasets
 
-_WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
+_WEIGHT_COUNT = "weight=count(sales.id, partition_by=[sales.city, sales.region])"
 _WAVG_REAGG = f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})"
 
 
@@ -61,7 +61,7 @@ async def reagg_engine(request):
 class TestKernelCarriesPickedParams:
     def test_reaggregation_kernel_picks_the_weight(self) -> None:
         planned = plan_query(
-            query=sales_q(dimensions=["region"],
+            query=sales_q(dimensions=["sales.region"],
                           metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]),
             bundle=_sales_bundle())
         [attach] = _association_attaches(planned)
@@ -70,7 +70,7 @@ class TestKernelCarriesPickedParams:
 
     def test_association_kernel_picks_the_weight(self) -> None:
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[QueryMetric(
+            query=assoc_q(dimensions=["orders.status"], metrics=[QueryMetric(
                 metric="weighted_avg(customers.spend, weight=customers.spend)",
                 alias="w")]),
             bundle=_orders_bundle())
@@ -85,7 +85,7 @@ class TestCombinedConsumerExemption:
         which is not a query dimension; planning must not raise the
         combined-consumer partition-key error (the exemption covers kwargs)."""
         planned = plan_query(
-            query=sales_q(dimensions=["region"],
+            query=sales_q(dimensions=["sales.region"],
                           metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]),
             bundle=_sales_bundle())
         assert _association_attaches(planned)
@@ -94,10 +94,10 @@ class TestCombinedConsumerExemption:
         """A re-aggregation nested inside another, carrying a weight, plans."""
         formula = (
             f"avg(weighted_avg({INNER_CRP}, "
-            "weight=count(id, partition_by=[city, region, product]), "
-            "partition_by=[region, product]))")
+            "weight=count(sales.id, partition_by=[sales.city, sales.region, sales.product]), "
+            "partition_by=[sales.region, sales.product]))")
         planned = plan_query(
-            query=sales_q(dimensions=["product"],
+            query=sales_q(dimensions=["sales.product"],
                           metrics=[QueryMetric(metric=formula, alias="d")]),
             bundle=_sales_bundle())
         assert _association_attaches(planned)
@@ -106,7 +106,7 @@ class TestCombinedConsumerExemption:
 class TestEmittedShape:
     async def test_operand_carrier_is_one_producer_and_scope_closed(self) -> None:
         sql = await gen(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))
         # value (amount:sum) and weight (id:count) ride ONE operand carrier.
         ctes = re.findall(r"(_cm_\w+) AS \(", sql)
@@ -117,7 +117,7 @@ class TestEmittedShape:
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb", "postgres", "bigquery"])
     async def test_no_placeholder_leak(self, dialect) -> None:
         sql = await gen(sales_q(
-            dimensions=["region"],
+            dimensions=["sales.region"],
             metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]), dialect=dialect)
         assert "__regroup__" not in sql, sql
 
@@ -127,14 +127,14 @@ class TestCardinalityInvariant:
         self, reagg_engine,
     ) -> None:
         base = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         withw = await reagg_engine.execute(sales_q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+            dimensions=["sales.region"],
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       QueryMetric(metric=_WAVG_REAGG, alias="w")]))
-        a = {k: v["sales.tot"] for k, v in region_key(base).items()}
-        b = {k: v["sales.tot"] for k, v in region_key(withw).items()}
+        a = {k: v["tot"] for k, v in region_key(base).items()}
+        b = {k: v["tot"] for k, v in region_key(withw).items()}
         assert set(a) == set(b)
         for k in a:
             assert a[k] == b[k]

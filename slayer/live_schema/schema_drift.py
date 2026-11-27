@@ -33,16 +33,15 @@ from slayer.core.models import (
     DatasetRelationship,
     DatasetMetric,
     SlayerDataset,
-    is_base_field_sql,
-    physical_column_sql,
 )
 from slayer.core.query import QueryDimension, SlayerQuery, extension_dataset_names
 from slayer.core.refs import IDENTIFIER_RE
-from slayer.core.vocabulary import name_twins
+from slayer.core.time_spine import default_time_field
+from slayer.core.vocabulary import attribute_used, name_twins, old_keywords
 from slayer.core.warnings import BrokenDependentWarning
-from slayer.sql.dialects.reflection import TableKeyReadFailure
+from slayer.sql.dialects.reflection import TableKeyReadFailure, info_schema_list_element
 from slayer.sql.sql_predicate import parse_sql_predicate
-from slayer.live_schema.introspect_utils import reflect_columns
+from slayer.live_schema.introspect_utils import reflect_columns, reflect_table_keys
 from slayer.live_schema.schema_scope import (
     UNREACHABLE,
     SchemaEnumerationError,
@@ -73,6 +72,7 @@ from slayer.core.syntax import (
     walk_parsed_refs,
 )
 from slayer.database import sqlite_introspect
+from slayer.ontology.findings import OntologyFinding
 from slayer.database.client import SqlClient, render_type_probe
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
@@ -104,11 +104,40 @@ class RemoveSpec(BaseModel):
     # Edge references of the dropped relationships that have one; ``relationship_edges`` addresses each exactly.
     relationships: list[str] = Field(default_factory=list)
     relationship_edges: list[RelationshipEdgeRef] = Field(default_factory=list)
+    # Enforced key sets the database no longer enforces; only the enforcement record is removed.
+    enforced_keys: list[list[str]] = Field(default_factory=list)
 
     def add_relationship(self, *, dataset: SlayerDataset, relationship: DatasetRelationship) -> None:
         if is_addressable(dataset=dataset, relationship=relationship):
             self.relationships.append(edge_reference(dataset=dataset, relationship=relationship))
         self.relationship_edges.append(RelationshipEdgeRef.of(relationship))
+
+    @property
+    @deprecated("columns is deprecated; use fields", category=None)
+    def columns(self) -> list[str]:
+        attribute_used(self, old="columns", new="fields")
+        return self.fields
+
+    @property
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self) -> list[str]:
+        attribute_used(self, old="measures", new="metrics")
+        return self.metrics
+
+    @property
+    @deprecated("join_edges is deprecated; use relationship_edges", category=None)
+    def join_edges(self) -> list[_JoinEdge]:
+        attribute_used(self, old="join_edges", new="relationship_edges (a different edge shape: see the upgrade guide, "
+                                                  "Integrators reading SLayer objects)")
+        return [_JoinEdge(target_model=e.to, name=e.name, join_pairs=e.column_pairs) for e in self.relationship_edges]
+
+
+class _JoinEdge(BaseModel):
+    """A dropped relationship as the pre-2.0 drift result spelled it."""
+
+    target_model: str
+    name: str | None = None
+    join_pairs: list[tuple[str, str]]
 
 
 #: Dataset name → exact references of its relationships dropped so far.
@@ -125,6 +154,12 @@ class EditDatasetDelete(BaseModel):
     remove_filters: list[str] = Field(default_factory=list)
     reasons: list[DeleteReason] = Field(default_factory=list)
 
+    @property
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self) -> str:
+        attribute_used(self, old="model_name", new="dataset_name")
+        return self.dataset_name
+
 
 class WholeDatasetDelete(BaseModel):
     """Whole-dataset removal. Replays as ``delete_dataset``."""
@@ -136,6 +171,12 @@ class WholeDatasetDelete(BaseModel):
     # "invalid_sql": dataset's own SQL fails though its tables/columns exist;
     # "unloadable": the stored document itself cannot be loaded.
     cause: Literal["schema_drift", "invalid_sql", "unloadable"] = "schema_drift"
+
+    @property
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self) -> str:
+        attribute_used(self, old="model_name", new="dataset_name")
+        return self.dataset_name
 
 
 ToDeleteEntry = Annotated[
@@ -202,15 +243,62 @@ class RetypeFinding(BaseModel):
         return (f"Field '{self.dataset_name}.{self.field}' is stored as {self.stored_type.value} but its live "
                 f"column is {live}; {self.remedy}.")
 
+    @property
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self) -> str:
+        attribute_used(self, old="model_name", new="dataset_name")
+        return self.dataset_name
+
+    @property
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self) -> str:
+        attribute_used(self, old="column", new="field")
+        return self.field
+
     @classmethod
     def of(
         cls, *, dataset: SlayerDataset, field: DatasetField, live_type: DataType, live_db_type: str | None,
         remedy_kind: RemedyKind,
     ) -> "RetypeFinding":
+        if field.datatype is None:
+            raise ValueError(f"field {field.name!r} is untyped: an untyped field is an UntypedFinding, not a retype")
         return cls(
             dataset_name=dataset.name, data_source=dataset.data_source, field=field.name, stored_type=field.datatype,
             live_type=live_type, live_db_type=live_db_type, remedy_kind=remedy_kind,
         )
+
+
+class UntypedFinding(BaseModel):
+    """A semantic-model document field that declares no datatype, and the live type cleanup writes into it."""
+
+    finding: Literal["untyped"] = "untyped"
+    dataset_name: str
+    data_source: str
+    semantic_model: str
+    field: str
+    live_type: DataType
+    live_element_type: DataType | None = None
+    live_db_type: str | None = None
+
+    @computed_field
+    @property
+    def summary(self) -> str:
+        live = f"{self.live_db_type} ({self.live_type.value})" if self.live_db_type else self.live_type.value
+        return (f"Field '{self.dataset_name}.{self.field}' of semantic model '{self.semantic_model}' declares no "
+                f"datatype; its live type is {live}. `slayer validate-datasets --force-clean` writes it in.")
+
+
+def untyped_finding(
+    *, dataset: SlayerDataset, field: DatasetField, live_type: DataType, live_db_type: str | None,
+    element_type: DataType | None = None,
+) -> UntypedFinding | None:
+    """The untyped finding of a document dataset's undeclared field; ``None`` off a document or when typed."""
+    if field.datatype is not None or dataset.semantic_model is None:
+        return None
+    element = element_type or (info_schema_list_element(live_db_type) if live_type is DataType.ARRAY else None)
+    return UntypedFinding(dataset_name=dataset.name, data_source=dataset.data_source,
+                          semantic_model=dataset.semantic_model, field=field.name, live_type=live_type,
+                          live_element_type=element, live_db_type=live_db_type)
 
 
 def touches(reads: StatementReads, entry: Any) -> bool:
@@ -248,11 +336,12 @@ class NarrowedAccessFinding(BaseModel):
     narrowed_by: list[str]
 
 
-#: Validation entries that report rather than delete.
-REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding)
+#: Validation entries that report rather than delete (cleanup writes an untyped finding in).
+REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding, UntypedFinding, OntologyFinding)
 
 #: One entry of a ``validate_datasets`` report.
-DriftReportEntry = EditDatasetDelete | WholeDatasetDelete | NarrowedAccessFinding | RetypeFinding
+DriftReportEntry = (EditDatasetDelete | WholeDatasetDelete | NarrowedAccessFinding | RetypeFinding | UntypedFinding
+                    | OntologyFinding)
 
 
 def unloadable_dataset_delete(*, error: StoredDocumentLoadError) -> WholeDatasetDelete:
@@ -374,6 +463,8 @@ class LiveTable(BaseModel):
     db_types: dict[str, str] = Field(default_factory=dict)
     # Listed but its metadata read failed: present, yet no drift evidence.
     readable: bool = True
+    # The primary-key and unconditional unique key sets the database enforces; ``None`` = not read.
+    key_sets: list[list[str]] | None = None
 
 
 # Type-bucket comparison
@@ -393,10 +484,10 @@ def data_type_bucket(dt: DataType) -> str:
 
 
 def _type_buckets_conflict(*, persisted: DataType, live: DataType, temporal_text: bool) -> bool:
-    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP over live TEXT is the dialect's own date storage."""
+    """True when persisted vs live types are incompatible; opacity is one-way (live-opaque + operable-persisted conflicts, persisted-opaque never does); a non-list over a live list is a re-type finding, never a conflict; ``temporal_text``: a DATE/TIMESTAMP/TIME over live TEXT is the dialect's own storage of it."""
     if live is DataType.ARRAY and persisted is not DataType.ARRAY:
         return False
-    if temporal_text and live is DataType.STRING and persisted in TEMPORAL_DATATYPES:
+    if temporal_text and live is DataType.STRING and (persisted in TEMPORAL_DATATYPES or persisted.is_time_of_day):
         return False
     if live.is_opaque:
         return not persisted.is_opaque
@@ -410,40 +501,64 @@ def _retyped(*, persisted: DataType, live: DataType, temporal_text: bool) -> boo
         persisted=persisted, live=live, temporal_text=temporal_text)
 
 
+def _field_finding(
+    *, dataset: SlayerDataset, field: DatasetField, live_type: DataType, live_db_type: str | None,
+    temporal_text: bool, element_type: DataType | None = None,
+) -> RetypeFinding | UntypedFinding | None:
+    """The one field's untyped or re-type finding against its live column type, if any."""
+    if field.datatype is None:
+        return untyped_finding(dataset=dataset, field=field, live_type=live_type, live_db_type=live_db_type,
+                               element_type=element_type)
+    if not _retyped(persisted=field.datatype, live=live_type, temporal_text=temporal_text):
+        return None
+    # Re-ingest re-types a list column, and a time-of-day column under any stored type but a list or the time axis.
+    axis = default_time_field(dataset)
+    reingest = live_type is DataType.ARRAY or (
+        live_type is DataType.TIME and field.datatype is not DataType.ARRAY
+        and (axis is None or axis.name != field.name))
+    return RetypeFinding.of(
+        dataset=dataset, field=field, live_type=live_type, live_db_type=live_db_type,
+        remedy_kind="reingest" if reingest else "set_type",
+    )
+
+
+@old_keywords({"model": "dataset"})
 def retype_findings(
     *, dataset: SlayerDataset, live_table: LiveTable | None, temporal_text: bool = False,
-) -> list[RetypeFinding]:
-    """One finding per stored base field whose live column's type conflicts; a live list re-ingests."""
+) -> list[RetypeFinding | UntypedFinding]:
+    """One finding per stored base field whose live column's type conflicts (a live list re-ingests), or that a
+    document leaves untyped."""
     if live_table is None:
         return []
-    out: list[RetypeFinding] = []
+    out: list[RetypeFinding | UntypedFinding] = []
     for col in dataset.fields:
-        if not _field_is_base(col.sql):
+        if not col.reads_physical_column:
             continue
-        name = physical_column_sql(sql=col.sql, name=col.name)
+        name = col.physical_name
         live = live_table.columns.get(name)
-        if live is not None and _retyped(persisted=col.datatype, live=live, temporal_text=temporal_text):
-            out.append(RetypeFinding.of(
-                dataset=dataset, field=col, live_type=live, live_db_type=live_table.db_types.get(name),
-                remedy_kind="reingest" if live is DataType.ARRAY else "set_type",
-            ))
+        if live is None:
+            continue
+        if finding := _field_finding(dataset=dataset, field=col, live_type=live,
+                                     live_db_type=live_table.db_types.get(name), temporal_text=temporal_text):
+            out.append(finding)
     return out
 
 
 def sql_dataset_retype_findings(
     *, dataset: SlayerDataset, live_columns: dict[str, ResultColumnType] | None, temporal_text: bool = False,
-) -> list[RetypeFinding]:
-    """One finding per field of a sql-mode dataset whose result column's type conflicts."""
-    out: list[RetypeFinding] = []
+) -> list[RetypeFinding | UntypedFinding]:
+    """One finding per field of a sql-mode dataset whose result column's type conflicts, or that a document leaves
+    untyped."""
+    out: list[RetypeFinding | UntypedFinding] = []
     for col in dataset.fields:
         live = (live_columns or {}).get(col.name)
-        if live is None and col.sql is not None:
-            live = (live_columns or {}).get(col.sql.strip())
-        if live is not None and _retyped(persisted=col.datatype, live=live.type, temporal_text=temporal_text):
-            out.append(RetypeFinding.of(
-                dataset=dataset, field=col, live_type=live.type, live_db_type=live.db_type,
-                remedy_kind="reingest" if live.type is DataType.ARRAY else "set_type",
-            ))
+        if live is None and col.is_base:
+            live = (live_columns or {}).get(col.physical_name)
+        if live is None:
+            continue
+        if finding := _field_finding(dataset=dataset, field=col, live_type=live.type, live_db_type=live.db_type,
+                                     temporal_text=temporal_text, element_type=live.element_type):
+            out.append(finding)
     return out
 
 
@@ -451,11 +566,6 @@ def _is_bare_identifier(s: str | None) -> bool:
     if not s:
         return False
     return IDENTIFIER_RE.match(s.strip()) is not None
-
-
-def _field_is_base(col_sql: str | None) -> bool:
-    """A base field claims a live column (see ``is_base_field_sql``)."""
-    return is_base_field_sql(col_sql)
 
 
 # Pure diff functions
@@ -468,10 +578,10 @@ def _diff_sql_table_columns(
     dropped: list[str] = []
     reasons: list[DeleteReason] = []
     for col in dataset.fields:
-        # Base fields only; derived handled by cascade.
-        if not _field_is_base(col.sql):
+        # Physical readers only; derived handled by cascade.
+        if not col.reads_physical_column:
             continue
-        bare_name = physical_column_sql(sql=col.sql, name=col.name)
+        bare_name = col.physical_name
         if bare_name not in live_table.columns:
             dropped.append(col.name)
             reasons.append(
@@ -497,7 +607,7 @@ def _diff_sql_table_relationships(
         missing_locals = [
             lc for lc in local_cols
             if (col := dataset.get_field(lc)) is None
-            or physical_column_sql(sql=col.sql, name=col.name) not in live_table.columns
+            or (col.physical_name if col.is_base else col.name) not in live_table.columns
         ]
         if missing_locals:
             dropped.append(relationship)
@@ -525,11 +635,35 @@ def _diff_sql_table_relationships(
     return dropped, reasons
 
 
+def _vanished_enforced_keys(
+    *, dataset: SlayerDataset, live_table: LiveTable, enforces_keys: bool,
+) -> tuple[list[list[str]], list[DeleteReason]]:
+    """Each enforced key set the live table no longer enforces (every one where the database enforces none)."""
+    if enforces_keys and live_table.key_sets is None:
+        return [], []
+    live = [sorted(k) for k in live_table.key_sets or []] if enforces_keys else []
+    vanished: list[list[str]] = []
+    reasons: list[DeleteReason] = []
+    for key in dataset.enforced_keys:
+        fields = [dataset.get_field(n) for n in key]
+        spelled = sorted(f.physical_name if f.is_base else f.name for f in fields if f is not None)
+        if len(spelled) == len(key) and spelled in live:
+            continue
+        vanished.append(list(key))
+        why = "the database does not enforce unique keys" if not enforces_keys else (
+            "the live table no longer carries it as a primary or unique key")
+        reasons.append(DeleteReason(target=f"enforced_key:{','.join(key)}",
+                                    reason=f"Enforced key {list(key)} is not enforced: {why}"))
+    return vanished, reasons
+
+
+@old_keywords({"model": "dataset", "available_models_in_ds": "available_datasets_in_ds"})
 def diff_sql_table_dataset(
     *,
     dataset: SlayerDataset,
     live_table: LiveTable | None,
     available_datasets_in_ds: set[str],
+    enforces_keys: bool = True,
 ) -> tuple[ToDeleteEntry | None, set[str]]:
     """Diff a sql_table-mode dataset against live introspection → ``(entry_or_None, dropped_column_names)``; ``live_table is None`` → WholeDatasetDelete."""
     if live_table is None:
@@ -557,10 +691,12 @@ def diff_sql_table_dataset(
         available_datasets_in_ds=available_datasets_in_ds,
     )
 
-    if not dropped_cols and not dropped_relationships:
+    vanished_keys, key_reasons = _vanished_enforced_keys(
+        dataset=dataset, live_table=live_table, enforces_keys=enforces_keys)
+    if not dropped_cols and not dropped_relationships and not vanished_keys:
         return None, set()
-    reasons = col_reasons + relationship_reasons
-    remove = RemoveSpec(fields=dropped_cols)
+    reasons = col_reasons + relationship_reasons + key_reasons
+    remove = RemoveSpec(fields=dropped_cols, enforced_keys=vanished_keys)
     for relationship in dropped_relationships:
         remove.add_relationship(dataset=dataset, relationship=relationship)
 
@@ -610,10 +746,10 @@ def _diff_sql_dataset_fields(
     dropped_cols: list[str] = []
     reasons: list[DeleteReason] = []
     for col in dataset.fields:
-        # Cursor exposes alias names: match col.name, fall back to col.sql.
-        if col.name not in live_columns and (col.sql is None or col.sql.strip() not in live_columns):
-            # Base/aliased-base only; derived expressions handled by cascade.
-            if _field_is_base(col.sql) or col.sql == col.name:
+        # Cursor exposes alias names: match col.name, fall back to the column it reads.
+        if col.name not in live_columns and not (col.is_base and col.physical_name in live_columns):
+            # Physical readers only; derived expressions handled by cascade.
+            if col.reads_physical_column:
                 dropped_cols.append(col.name)
                 reasons.append(
                     DeleteReason(
@@ -888,7 +1024,11 @@ _FramedRef = tuple[str | None, str]
 def _resolved(ref: str, *, scope: QueryScope, root: str | None) -> tuple[str, list[OrientedRelationship]] | None:
     """The dataset ``ref``'s hops reach from ``root`` (default: the stage source) and the edges walked, or None."""
     start = scope.datasets.get(root) if root is not None else scope.host
-    resolved = scope.resolve(ref.split(".")[:-1], root=start) if start is not None else None
+    hops = ref.split(".")[:-1]
+    if root is None:
+        resolved = scope.resolve_reference(hops)
+    else:
+        resolved = scope.resolve(hops, root=start) if start is not None else None
     if start is None or resolved is None:
         return None
     chain = resolved[1]
@@ -930,8 +1070,8 @@ def _dimension_refs(dimension: QueryDimension) -> list[str]:
 def _definition_refs(field: DatasetField | DatasetMetric) -> list[str]:
     """The refs ``field``'s definition reads, spelled from its own dataset."""
     if isinstance(field, DatasetMetric):
-        return sorted(_metric_expression_refs(field.expression))
-    sqls = [s for s in (field.sql, field.filter) if s is not None]
+        return sorted(_metric_expression_refs(field.text))
+    sqls = [s for s in (field.definition_sql, field.filter) if s is not None]
     return [f"{q}.{c}" if q else c for sql in sqls for q, c in _extract_field_refs_from_sql(sql)]
 
 
@@ -1077,6 +1217,7 @@ def _stage_cascade_state(*, stage: SlayerQuery, scope: QueryScope, state: _Casca
         dropped_metrics={name: set(metrics) for name, metrics in state.dropped_metrics.items()},
         dropped_relationships={name: list(refs) for name, refs in state.dropped_relationships.items()},
         pk_per_dataset=state.pk_per_dataset,
+        vanished=state.vanished,
     )
     extended = [scope.datasets[e.dataset] for e in stage.extensions if e.dataset in scope.datasets]
     changed = True
@@ -1128,6 +1269,7 @@ class _CascadeState:
         "dropped_metrics",
         "dropped_relationships",
         "pk_per_dataset",
+        "vanished",
     )
 
     def __init__(
@@ -1140,6 +1282,7 @@ class _CascadeState:
         dropped_metrics: dict[str, set[str]],
         dropped_relationships: _DroppedRelationships,
         pk_per_dataset: dict[str, set[str]],
+        vanished: dict[str, set[str]] | None = None,
     ) -> None:
         self.datasets_by_name = datasets_by_name
         self.edit_entries = edit_entries
@@ -1148,6 +1291,8 @@ class _CascadeState:
         self.dropped_metrics = dropped_metrics
         self.dropped_relationships = dropped_relationships
         self.pk_per_dataset = pk_per_dataset
+        #: Per dataset, the fields the base diffs dropped because the column they read is gone.
+        self.vanished = vanished or {}
 
     def cascadable(self, name: str) -> set[str]:
         """Cascadable field drops on ``name`` (excludes PKs — rule 7)."""
@@ -1162,7 +1307,12 @@ def _field_ref_targets_dropped(
     state: _CascadeState,
 ) -> tuple[bool, SlayerDataset | None]:
     """Whether one ``(table_alias, ref_col)`` ref resolves to a dropped field → ``(is_dropped, resolved_target_dataset)``."""
-    if table_alias is None or table_alias == dataset.name:
+    if table_alias is None:
+        dropped = state.cascadable(dataset.name)
+        vanished = state.vanished.get(dataset.name, set())
+        return any(c.name in dropped and c.reads_physical_column and c.physical_name == ref_col
+                   and (c.is_physical_reader or c.name in vanished) for c in dataset.fields), dataset
+    if table_alias == dataset.name:
         return ref_col in state.cascadable(dataset.name), dataset
     target = _walk_alias_to_target_dataset(
         source_dataset=dataset,
@@ -1174,7 +1324,7 @@ def _field_ref_targets_dropped(
     return ref_col in state.cascadable(target.name), target
 
 
-def _first_dropped_sql_column_ref(
+def _first_dropped_sql_field_ref(
     *, col: DatasetField, dataset: SlayerDataset, state: _CascadeState
 ) -> tuple[SlayerDataset, str] | None:
     """``(target_dataset, ref_col)`` for the first ref in ``col``'s derived sql or filter resolving to a dropped field,
@@ -1193,8 +1343,8 @@ def _first_dropped_sql_column_ref(
 
 
 def _field_definition_sqls(col: DatasetField) -> list[str]:
-    """The SQL ``col``'s definition reads: its derived sql, then its filter."""
-    derived = None if col.sql is None or is_base_field_sql(col.sql) else col.sql
+    """The SQL ``col``'s definition reads: its derived definition, then its filter."""
+    derived = None if col.is_base else col.definition_sql
     return [s for s in (derived, col.filter) if s is not None]
 
 
@@ -1208,7 +1358,7 @@ def _cascade_derived_fields(
     for col in dataset.fields:
         if col.name in dropped_set:
             continue
-        hit = _first_dropped_sql_column_ref(col=col, dataset=dataset, state=state)
+        hit = _first_dropped_sql_field_ref(col=col, dataset=dataset, state=state)
         if hit is None:
             continue
         target, ref_col = hit
@@ -1263,7 +1413,7 @@ def _cascade_metrics(*, dataset: SlayerDataset, state: _CascadeState) -> bool:
     for metric in dataset.metrics:
         if metric.name is None or metric.name in dropped_set:
             continue
-        refs = _metric_expression_refs(metric.expression)
+        refs = _metric_expression_refs(metric.text)
         cause = _first_dropped_cause(refs=refs, dataset=dataset, state=state)
         if cause is None:
             continue
@@ -1400,6 +1550,7 @@ def _cascade_one_pass(
     dropped_metrics: dict[str, set[str]],
     dropped_relationships: _DroppedRelationships,
     pk_per_dataset: dict[str, set[str]],
+    vanished: dict[str, set[str]],
 ) -> bool:
     """Run one cascade pass; True if anything new was added."""
     state = _CascadeState(
@@ -1410,6 +1561,7 @@ def _cascade_one_pass(
         dropped_metrics=dropped_metrics,
         dropped_relationships=dropped_relationships,
         pk_per_dataset=pk_per_dataset,
+        vanished=vanished,
     )
 
     changed = False
@@ -1505,6 +1657,7 @@ def _collapse_entries(
     return final
 
 
+@old_keywords({"models": "datasets"})
 def compute_datasource_drops(
     *,
     datasets: list[SlayerDataset],
@@ -1530,6 +1683,8 @@ def compute_datasource_drops(
     )
 
     pk_per_dataset = {m.name: _pk_fields(m) for m in datasets}
+    vanished = {name: {r.target.removeprefix("field:") for r in entry.reasons if r.target.startswith("field:")}
+                for name, entry in edit_entries.items()}
 
     # Iterate to fixed point — safety bound, DAGs converge in <10 passes.
     for _ in range(100):
@@ -1542,6 +1697,7 @@ def compute_datasource_drops(
             dropped_metrics=dropped_metrics,
             dropped_relationships=dropped_relationships,
             pk_per_dataset=pk_per_dataset,
+            vanished=vanished,
         ):
             break
 
@@ -1927,7 +2083,18 @@ async def _introspect_one_table(*, client: SqlClient, table_name: str, ref: Sche
     return LiveTable(
         columns={c.name: c.narrowed_type for c in cols},
         db_types={c.name: c.type_name for c in cols if c.type_name},
+        key_sets=await _live_key_sets(client=client, table_name=table_name, ref=ref),
     )
+
+
+async def _live_key_sets(*, client: SqlClient, table_name: str, ref: SchemaRef | None) -> list[list[str]] | None:
+    """The table's enforced key sets by live column name; ``None`` when unread or the database enforces none."""
+    if not dialect_for_ds_type(client.datasource.type).enforces_unique_keys:
+        return None
+    keys = await reflect_table_keys(client=client, table_name=table_name, ref=ref)
+    if keys.failed_reads:
+        return None
+    return ([keys.primary_key] if keys.primary_key else []) + [list(k) for k in keys.unique_key_sets]
 
 
 async def _live_columns_for_sql_dataset(
@@ -1985,7 +2152,7 @@ def _add_using_relationship_fields(
     if not any(join.args.get("using") for join in joins):
         return False
     args = scope.expression.args
-    from_expr = args.get("from_") or args.get("from")  # key renamed in sqlglot 30
+    from_expr = args.get("from_")
     operands = [from_expr.this] if from_expr else []
     cannot_verify = False
     for join in joins:
@@ -2197,8 +2364,10 @@ async def _sqlite_probe_int_drift_for_dataset(
 
     drifts: list[RetypeFinding] = []
     for col in dataset.fields:
-        physical = physical_column_sql(sql=col.sql, name=col.name)
-        if col.datatype is not DataType.INTEGER or not _field_is_base(col.sql) or live.columns.get(physical) is not DataType.INTEGER:
+        if col.datatype is not DataType.INTEGER or not col.reads_physical_column:
+            continue
+        physical = col.physical_name
+        if live.columns.get(physical) is not DataType.INTEGER:
             continue
         verdict = await _probe_validate_datasets_field(
             client=client, dataset=dataset, col=col, physical=physical,
@@ -2247,6 +2416,7 @@ def _diff_one_sql_table_dataset(
         dataset=dataset,
         live_table=live,
         available_datasets_in_ds=available_in_ds,
+        enforces_keys=dialect.enforces_unique_keys,
     )
 
 
@@ -2273,7 +2443,7 @@ async def _collect_sql_table_diffs(
     sql_table_datasets: list[SlayerDataset],
     available_in_ds: set[str],
     snapshot: DriftSnapshot | None = None,
-    findings: list[RetypeFinding] | None = None,
+    findings: list[RetypeFinding | UntypedFinding] | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Introspect live and diff each sql_table-mode dataset; re-type findings (SQLite's affinity probe's
     included) append to ``findings``."""
@@ -2359,7 +2529,7 @@ async def _collect_sql_diffs(
     sql_datasets: list[SlayerDataset],
     client: SqlClient,
     snapshot: DriftSnapshot | None = None,
-    findings: list[RetypeFinding] | None = None,
+    findings: list[RetypeFinding | UntypedFinding] | None = None,
 ) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Trial-execute each sql-mode dataset concurrently and produce its diff; re-type findings append to
     ``findings``."""
@@ -2396,7 +2566,7 @@ async def validate_datasource(
     client: SqlClient,
     available_in_ds: set[str] | None = None,
     snapshot: DriftSnapshot | None = None,
-    findings_out: list[RetypeFinding] | None = None,
+    findings_out: list[RetypeFinding | UntypedFinding] | None = None,
 ) -> list[ToDeleteEntry]:
     """Validate ``datasets`` (all one DS) against the live schema through ``client``. Read-only.
 

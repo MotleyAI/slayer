@@ -1,0 +1,21 @@
+document:
+  ontology:
+  - concept: Item
+    type: EntityType
+    relationships:
+    - name: offers_in
+      roles:
+      - concept: Store
+      verbalizes:
+      - '{Item} is offered for sale in {Store}'
+      - '{Store} offers sale of {Item}'
+    - name: total_sales_in
+      roles:
+      - concept: Store
+      - concept: Amount
+      verbalizes:
+      - '{Item} sold for cumulative {Amount} in {Store}'
+      requires:
+      - Amount > 0.0
+      - Item.offers_in(Store)
+files: {}

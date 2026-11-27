@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1892 — column-reference / aggregate-valued parameters
+"""Shared fixtures for field-reference / aggregate-valued parameters
 lifted onto the two-level kernel (association + re-aggregation).
 
 Builds on ``_dev1841_fixtures`` (orders→customers graph, associate mode) and
@@ -54,7 +54,7 @@ def _customers(datasets: List[SlayerDataset]) -> SlayerDataset:
 
 
 # --------------------------------------------------------------------------- #
-# Helper model variants.
+# Helper dataset variants.
 # --------------------------------------------------------------------------- #
 def shared_default_name_datasets() -> List[SlayerDataset]:
     """Host and target both carry ``spend``; ``wsum`` on customers defaults ``weight`` to bare ``spend`` — must bind customers.spend (43400/34100), not the host's."""
@@ -64,8 +64,8 @@ def shared_default_name_datasets() -> List[SlayerDataset]:
                     params=[AggregationParam(name="weight", sql="spend")]),
     )
     orders = next(m for m in models if m.name == "orders")
-    # A host column also named ``spend`` — host-anchoring would weight by this.
-    orders.fields.append(DatasetField(name="spend", datatype=DataType.FLOAT, sql="amount"))
+    # A host field also named ``spend`` — host-anchoring would weight by this.
+    orders.fields.append(DatasetField(name="spend", datatype=DataType.FLOAT, expression="amount"))
     return models
 
 
@@ -84,7 +84,7 @@ def toone_filter_datasets() -> List[SlayerDataset]:
     models = dev1840_datasets()
     cust = _customers(models)
     cust.fields.append(
-        DatasetField(name="north_spend", datatype=DataType.FLOAT, sql="spend",
+        DatasetField(name="north_spend", datatype=DataType.FLOAT, expression="spend",
                filter="regions.name = 'North'"),
     )
     cust.aggregations.append(
@@ -100,7 +100,7 @@ def toone_filter_datasets() -> List[SlayerDataset]:
 
 
 def toone_default_datasets() -> List[SlayerDataset]:
-    """``wsum3`` weight default is a to-one path (``regions.pop``) — joins customers→regions per entity."""
+    """``wsum3`` weight default is a to-one path (``regions.pop``) — walks customers→regions per entity."""
     models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum3", expression="SUM({value} * {weight})",
@@ -110,10 +110,10 @@ def toone_default_datasets() -> List[SlayerDataset]:
 
 
 def derived_default_datasets() -> List[SlayerDataset]:
-    """``wsum5`` default is a to-one path to a DERIVED column (``regions.derived_pop`` = ``pop * 2``) — must expand its SQL."""
+    """``wsum5`` default is a to-one path to a DERIVED field (``regions.derived_pop`` = ``pop * 2``) — must expand its SQL."""
     models = dev1840_datasets()
     next(m for m in models if m.name == "regions").fields.append(
-        DatasetField(name="derived_pop", datatype=DataType.FLOAT, sql="pop * 2"),
+        DatasetField(name="derived_pop", datatype=DataType.FLOAT, expression="pop * 2"),
     )
     _customers(models).aggregations.append(
         Aggregation(name="wsum5", expression="SUM({value} * {weight})",
@@ -126,7 +126,7 @@ def fanning_derived_source_datasets() -> List[SlayerDataset]:
     """customers gains ``bad_spend`` = ``spend + orders.amount`` — a derived source crossing the fanning customers→orders hop, must fail closed."""
     models = dev1840_datasets()
     _customers(models).fields.append(
-        DatasetField(name="bad_spend", datatype=DataType.FLOAT, sql="spend + orders.amount"),
+        DatasetField(name="bad_spend", datatype=DataType.FLOAT, expression="spend + orders.amount"),
     )
     return models
 
@@ -142,7 +142,7 @@ def qualified_expr_default_datasets() -> List[SlayerDataset]:
 
 
 def mixed_expr_default_datasets() -> List[SlayerDataset]:
-    """``wsum7`` weight default mixes an owner column with a qualified ref (``spend * regions.pop``)."""
+    """``wsum7`` weight default mixes an owner field with a qualified ref (``spend * regions.pop``)."""
     models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum7", expression="SUM({value} * {weight})",
@@ -153,7 +153,7 @@ def mixed_expr_default_datasets() -> List[SlayerDataset]:
 
 def root_named_expr_default_datasets() -> List[SlayerDataset]:
     """``wroot`` on customers: weight default ``orders.amount + 0`` names the query
-    root, so it resolves root-local and widens the home to orders (DEV-1931)."""
+    root, so it resolves root-local and widens the home to orders."""
     models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wroot", expression="SUM({value} * {weight})",
@@ -173,11 +173,11 @@ def self_qualified_expr_default_datasets() -> List[SlayerDataset]:
 
 
 def derived_local_expr_default_datasets() -> List[SlayerDataset]:
-    """``wsum9`` weight default mixes a DERIVED local column with a qualified ref (``double_spend * regions.pop``)."""
+    """``wsum9`` weight default mixes a DERIVED local field with a qualified ref (``double_spend * regions.pop``)."""
     models = dev1840_datasets()
     cust = _customers(models)
     cust.fields.append(
-        DatasetField(name="double_spend", datatype=DataType.FLOAT, sql="spend * 2"),
+        DatasetField(name="double_spend", datatype=DataType.FLOAT, expression="spend * 2"),
     )
     cust.aggregations.append(
         Aggregation(name="wsum9", expression="SUM({value} * {weight})",
@@ -188,7 +188,7 @@ def derived_local_expr_default_datasets() -> List[SlayerDataset]:
 
 
 def literal_only_reagg_datasets() -> List[SlayerDataset]:
-    """``wconst`` on sales: expr default referencing NO columns, only literals —
+    """``wconst`` on sales: expr default referencing NO fields, only literals —
     must ride the plain default machinery, never a false ``amount`` dependency."""
     models = dev1847_datasets()
     sales = next(m for m in models if m.name == "sales")
@@ -202,7 +202,7 @@ def literal_only_reagg_datasets() -> List[SlayerDataset]:
 
 
 def unmodeled_physical_expr_default_datasets() -> List[SlayerDataset]:
-    """``wphys`` weight default references ``tier`` after it is REMOVED from the model — a physical-only column, so the default fails closed."""
+    """``wphys`` weight default references ``tier`` after it is REMOVED from the dataset — a physical-only column, so the default fails closed."""
     models = dev1840_datasets()
     cust = _customers(models)
     cust.fields = [c for c in cust.fields if c.name != "tier"]
@@ -236,7 +236,7 @@ def opaque_expr_default_datasets() -> List[SlayerDataset]:
 
 
 def literal_collision_reagg_datasets() -> List[SlayerDataset]:
-    """``wlit`` expr default whose string literal equals a non-grain column name (``'amount'``) — must not read as a dependency."""
+    """``wlit`` expr default whose string literal equals a non-grain field name (``'amount'``) — must not read as a dependency."""
     models = dev1847_datasets()
     sales = next(m for m in models if m.name == "sales")
     sales.aggregations.append(
@@ -267,13 +267,13 @@ def weighted_source_queries_dataset() -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name="cr_wtotals", population="sales",
-                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
-                metrics=[QueryMetric(metric="sum(amount)", alias="ct"),
-                          QueryMetric(metric="count(id)", alias="cc")]),
+                dimensions=[QueryDimension(field="sales.region"), QueryDimension(field="sales.city")],
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="ct"),
+                          QueryMetric(metric="count(sales.id)", alias="cc")]),
             SlayerQuery(
                 population="cr_wtotals",
-                dimensions=[QueryDimension(field="region")],
-                metrics=[QueryMetric(metric="weighted_avg(ct, weight=cc)",
+                dimensions=[QueryDimension(field="cr_wtotals.region")],
+                metrics=[QueryMetric(metric="weighted_avg(cr_wtotals.ct, weight=cr_wtotals.cc)",
                                        alias="w")]),
         ])
 
@@ -288,7 +288,7 @@ def weighted_sales_datasets() -> List[SlayerDataset]:
 ASSOC_WAVG_SPEND_BY_STATUS = {"ok": 43400.0 / 420.0, "new": 34100.0 / 290.0}
 #: naive join-multiplied ``ok`` (c1 counted twice: +100^2 numerator, +100 denom).
 ASSOC_WAVG_OK_FAN_DEFECT = 53400.0 / 520.0
-#: wsum default (weight defaults to the spend column) = SUM(spend^2) per cell.
+#: wsum default (weight defaults to the spend field) = SUM(spend^2) per cell.
 ASSOC_WSUM_BY_STATUS = {"ok": 43400.0, "new": 34100.0}
 #: weighted_avg(spend, weight=customers.regions.pop): ok=56000/700; new drops
 #: c4's NULL-weight term, denom NULLIF -> 25000/200.

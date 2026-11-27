@@ -4,7 +4,7 @@
 per-path transform; ``strip`` (existing, byte-identical) and the new ``prepend``
 are thin wrappers over it. ``prepend_value_key(key, *, host_path)`` is the
 inverse of ``reroot_value_key(key, target_path=host_path)``: it prefixes every
-embedded join path with ``host_path``, re-anchoring a target-local bound tree
+embedded relationship path with ``host_path``, re-anchoring a target-local bound tree
 into the host's coordinate system.
 
 Strip cases pin today (``reroot_value_key`` exists); prepend cases fail until
@@ -38,6 +38,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    WindowKey,
     reroot_value_key,
     SqlFragmentKey,
 )
@@ -85,6 +86,10 @@ def _samples() -> dict:
         CastKey: CastKey(source=FieldKey(path=(), leaf="spend"), type_text="INT", data_type=DataType.INTEGER),
         ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
         ListSetKey: ListSetKey(source=FieldKey(path=(), leaf="tags")),
+        WindowKey: WindowKey(
+            function="row_number", order=(FieldKey(path=(), leaf="spend"),),
+            descending=(False,), nulls_first=(False,),
+        ),
     }
 
 

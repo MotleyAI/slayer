@@ -1,10 +1,10 @@
 """Unit tests for the pure route resolver
 ``slayer/engine/population/dimension_routing.py``: ``short_form_route_or_none`` (executable
 hop-token path for a uniquely-routable target, else ``None``, never raises),
-``route_dotted_target`` (same but raises ``UnresolvableDimensionJoinError`` with a
+``route_dotted_target`` (same but raises ``UnresolvableDimensionRelationshipError`` with a
 route-aware ``suggested_path`` on ambiguous/unreachable), and ``_safe_hops`` (the
-oriented provably-to-one addressable hops off a model, ``join_search.addressable_hops``
-with ``HopFilter.TO_ONE``, as ``(token, target_model)`` pairs).
+oriented provably-to-one addressable hops off a dataset, ``relationship_search.addressable_hops``
+with ``HopFilter.TO_ONE``, as ``(token, target_dataset)`` pairs).
 """
 
 from __future__ import annotations
@@ -23,30 +23,30 @@ from slayer.engine.population.dimension_routing import (
 
 
 def _pk() -> DatasetField:
-    return DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)
+    return DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True)
 
 
 def _d(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.FLOAT)
+    return DatasetField(name=name, expression=name, datatype=DataType.FLOAT)
 
 
 def _t(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.STRING)
+    return DatasetField(name=name, expression=name, datatype=DataType.STRING)
 
 
 def _dataset(
-    name: str, cols: list[DatasetField], joins: list[DatasetRelationship] | None = None
+    name: str, cols: list[DatasetField], relationships: list[DatasetRelationship] | None = None
 ) -> SlayerDataset:
     return SlayerDataset(
-        name=name, sql_table=name, data_source="ds", fields=cols, relationships=joins or []
+        name=name, sql_table=name, data_source="ds", fields=cols, relationships=relationships or []
     )
 
 
-def _by_name(*models: SlayerDataset) -> dict[str, SlayerDataset]:
-    return {m.name: m for m in models}
+def _by_name(*datasets: SlayerDataset) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in datasets}
 
 
-def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
+def _relationship(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
     return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], **kw)
 
 
@@ -62,9 +62,9 @@ def _safe_hops(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerData
 def _linear() -> dict[str, SlayerDataset]:
     """A → B → C → D, every hop onto the target PK (all fan-out-free)."""
     d = _dataset("D", [_pk(), _t("name")])
-    c = _dataset("C", [_pk(), _d("d_id")], [_join("D", [["d_id", "id"]])])
-    b = _dataset("B", [_pk(), _d("c_id")], [_join("C", [["c_id", "id"]])])
-    a = _dataset("A", [_pk(), _d("b_id")], [_join("B", [["b_id", "id"]])])
+    c = _dataset("C", [_pk(), _d("d_id")], [_relationship("D", [["d_id", "id"]])])
+    b = _dataset("B", [_pk(), _d("c_id")], [_relationship("C", [["c_id", "id"]])])
+    a = _dataset("A", [_pk(), _d("b_id")], [_relationship("B", [["b_id", "id"]])])
     return _by_name(a, b, c, d)
 
 
@@ -85,14 +85,14 @@ class TestUniqueRoute:
 
     def test_route_through_reverse_declared_hop(self) -> None:
         """B–C declared on C (reverse from A's side): still one route,
-        same model-name tokens."""
+        same dataset-name tokens."""
         d = _dataset("D", [_pk(), _t("name")])
         c = _dataset(
             "C", [_pk(), _d("b_id"), _d("d_id")],
-            [_join("B", [["b_id", "id"]]), _join("D", [["d_id", "id"]])],
+            [_relationship("B", [["b_id", "id"]]), _relationship("D", [["d_id", "id"]])],
         )
         b = _dataset("B", [_pk()])
-        a = _dataset("A", [_pk(), _d("b_id")], [_join("B", [["b_id", "id"]])])
+        a = _dataset("A", [_pk(), _d("b_id")], [_relationship("B", [["b_id", "id"]])])
         models = _by_name(a, b, c, d)
         route = short_form_route_or_none(
             root=models["A"], target_dataset="D", datasets_by_name=models
@@ -105,17 +105,17 @@ class TestFanoutTieBreak:
         """A reaches D via a safe branch Bs and a second branch Cs.
 
         ``second_safe`` toggles whether Cs → D lands on the PK (safe) or on the
-        non-unique ``grp`` column (fan-out).
+        non-unique ``grp`` field (fan-out).
         """
         d = _dataset("D", [_pk(), _t("grp"), _t("name")])
-        bs = _dataset("Bs", [_pk(), _d("d_id")], [_join("D", [["d_id", "id"]])])
+        bs = _dataset("Bs", [_pk(), _d("d_id")], [_relationship("D", [["d_id", "id"]])])
         cs_pair = [["d_id", "id"]] if second_safe else [["d_grp", "grp"]]
         cs_cols = [_pk(), _d("d_id")] if second_safe else [_pk(), _t("d_grp")]
-        cs = _dataset("Cs", cs_cols, [_join("D", cs_pair)])
+        cs = _dataset("Cs", cs_cols, [_relationship("D", cs_pair)])
         a = _dataset(
             "A",
             [_pk(), _d("b_id"), _d("c_id")],
-            [_join("Bs", [["b_id", "id"]]), _join("Cs", [["c_id", "id"]])],
+            [_relationship("Bs", [["b_id", "id"]]), _relationship("Cs", [["c_id", "id"]])],
         )
         return _by_name(a, bs, cs, d)
 
@@ -142,12 +142,12 @@ class TestFanoutTieBreak:
 
     def test_zero_fanout_free_routes_are_ambiguous_with_suggestion(self) -> None:
         d = _dataset("D", [_pk(), _t("grp"), _t("name")])
-        c1 = _dataset("C1", [_pk(), _t("d_grp")], [_join("D", [["d_grp", "grp"]])])
-        c2 = _dataset("C2", [_pk(), _t("d_grp")], [_join("D", [["d_grp", "grp"]])])
+        c1 = _dataset("C1", [_pk(), _t("d_grp")], [_relationship("D", [["d_grp", "grp"]])])
+        c2 = _dataset("C2", [_pk(), _t("d_grp")], [_relationship("D", [["d_grp", "grp"]])])
         a = _dataset(
             "A",
             [_pk(), _d("c1_id"), _d("c2_id")],
-            [_join("C1", [["c1_id", "id"]]), _join("C2", [["c2_id", "id"]])],
+            [_relationship("C1", [["c1_id", "id"]]), _relationship("C2", [["c2_id", "id"]])],
         )
         models = _by_name(a, c1, c2, d)
         assert (
@@ -166,14 +166,14 @@ class TestFanoutTieBreak:
         """Two fan-out-free 3-hop routes are ambiguous; the suggestion is the shortest
         fan-out-free path even though a shorter (2-hop) fan-out route exists."""
         d = _dataset("D", [_pk(), _t("grp"), _t("name")])
-        u = _dataset("U", [_pk(), _t("d_grp")], [_join("D", [["d_grp", "grp"]])])
-        x = _dataset("X", [_pk(), _d("d_id")], [_join("D", [["d_id", "id"]])])
-        s1 = _dataset("S1", [_pk(), _d("x_id")], [_join("X", [["x_id", "id"]])])
-        s2 = _dataset("S2", [_pk(), _d("x_id")], [_join("X", [["x_id", "id"]])])
+        u = _dataset("U", [_pk(), _t("d_grp")], [_relationship("D", [["d_grp", "grp"]])])
+        x = _dataset("X", [_pk(), _d("d_id")], [_relationship("D", [["d_id", "id"]])])
+        s1 = _dataset("S1", [_pk(), _d("x_id")], [_relationship("X", [["x_id", "id"]])])
+        s2 = _dataset("S2", [_pk(), _d("x_id")], [_relationship("X", [["x_id", "id"]])])
         a = _dataset(
             "A", [_pk(), _d("u_id"), _d("s1_id"), _d("s2_id")],
-            [_join("U", [["u_id", "id"]]), _join("S1", [["s1_id", "id"]]),
-             _join("S2", [["s2_id", "id"]])],
+            [_relationship("U", [["u_id", "id"]]), _relationship("S1", [["s1_id", "id"]]),
+             _relationship("S2", [["s2_id", "id"]])],
         )
         models = _by_name(a, u, x, s1, s2, d)
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
@@ -187,14 +187,14 @@ class TestFanoutTieBreak:
         executable fan-out route alongside it is ambiguous — rejected, but the
         suggestion is the executable path (never the inexecutable parallel one)."""
         d = _dataset("D", [_pk(), _t("grp"), _t("name")])
-        a = _dataset("A", [_pk(), _t("d_grp")], [_join("D", [["d_grp", "grp"]])])
+        a = _dataset("A", [_pk(), _t("d_grp")], [_relationship("D", [["d_grp", "grp"]])])
         b = _dataset(
             "B", [_pk(), _d("d_id"), _d("d_id2")],
-            [_join("D", [["d_id", "id"]]), _join("D", [["d_id2", "id"]])],
+            [_relationship("D", [["d_id", "id"]]), _relationship("D", [["d_id2", "id"]])],
         )
         root = _dataset(
             "Root", [_pk(), _d("a_id"), _d("b_id")],
-            [_join("A", [["a_id", "id"]]), _join("B", [["b_id", "id"]])],
+            [_relationship("A", [["a_id", "id"]]), _relationship("B", [["b_id", "id"]])],
         )
         models = _by_name(root, a, b, d)
         assert short_form_route_or_none(
@@ -244,10 +244,10 @@ class TestSafeHops:
             "A",
             [_pk(), _d("b_id"), _t("c_grp"), _t("d_x"), _t("e_y")],
             [
-                _join("B", [["b_id", "id"]]),
-                _join("C", [["c_grp", "grp"]]),
-                _join("D", [["d_x", "x"]], cardinality=RelationshipCardinality.MANY_TO_ONE),
-                _join("E", [["e_y", "y"]], cardinality=RelationshipCardinality.ONE_TO_MANY),
+                _relationship("B", [["b_id", "id"]]),
+                _relationship("C", [["c_grp", "grp"]]),
+                _relationship("D", [["d_x", "x"]], cardinality=RelationshipCardinality.MANY_TO_ONE),
+                _relationship("E", [["e_y", "y"]], cardinality=RelationshipCardinality.ONE_TO_MANY),
             ],
         )
         return _by_name(a, b, c, d, e)
@@ -277,8 +277,8 @@ class TestSafeHops:
             "Mid",
             [_pk(), _d("leaf_id"), _t("leaf_grp")],
             [
-                _join("Leaf", [["leaf_id", "id"]], name="by_id"),
-                _join("Leaf", [["leaf_grp", "grp"]], name="by_grp"),
+                _relationship("Leaf", [["leaf_id", "id"]], name="by_id"),
+                _relationship("Leaf", [["leaf_grp", "grp"]], name="by_grp"),
             ],
         )
         models = _by_name(named, leaf)
@@ -289,8 +289,8 @@ class TestSafeHops:
             "Mid",
             [_pk(), _d("leaf_id"), _t("leaf_grp")],
             [
-                _join("Leaf", [["leaf_id", "id"]]),
-                _join("Leaf", [["leaf_grp", "grp"]]),
+                _relationship("Leaf", [["leaf_id", "id"]]),
+                _relationship("Leaf", [["leaf_grp", "grp"]]),
             ],
         )
         models = _by_name(unnamed, leaf)
@@ -298,7 +298,7 @@ class TestSafeHops:
 
     def test_edge_name_shadowing_a_model_makes_it_unreachable(self) -> None:
         """An edge named ``Leaf`` (pointing at ``Other``) captures the ``Leaf`` token
-        by name-priority, so the bare edge to the real ``Leaf`` model is
+        by name-priority, so the bare edge to the real ``Leaf`` dataset is
         unaddressable and drops — even though both hops are PK-safe."""
         leaf = _dataset("Leaf", [_pk(), _t("x")])
         other = _dataset("Other", [_pk(), _t("y")])
@@ -306,8 +306,8 @@ class TestSafeHops:
             "Mid",
             [_pk(), _d("leaf_id"), _d("other_id")],
             [
-                _join("Leaf", [["leaf_id", "id"]]),
-                _join("Other", [["other_id", "id"]], name="Leaf"),
+                _relationship("Leaf", [["leaf_id", "id"]]),
+                _relationship("Other", [["other_id", "id"]], name="Leaf"),
             ],
         )
         models = _by_name(mid, leaf, other)
@@ -323,8 +323,8 @@ class TestSafeHops:
             "Mid",
             [_pk(), _d("leaf_id"), _d("other_id")],
             [
-                _join("Leaf", [["leaf_id", "id"]], name="dup"),
-                _join("Other", [["other_id", "id"]], name="dup"),
+                _relationship("Leaf", [["leaf_id", "id"]], name="dup"),
+                _relationship("Other", [["other_id", "id"]], name="dup"),
             ],
         )
         models = _by_name(mid, leaf, other)

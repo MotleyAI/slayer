@@ -1,7 +1,7 @@
-"""Shared fixtures for DEV-1743 — the dotted-canonical `__` flip.
+"""Shared fixtures for the dotted-canonical `__` flip.
 
-Model shapes exercising the four corners of the flip. Every model is built by a
-FUNCTION, never a module-level constant: constructing a ``__``-named model
+Dataset shapes exercising the four corners of the flip. Every dataset is built by a
+FUNCTION, never a module-level constant: constructing a ``__``-named dataset
 raises today (the ban this issue lifts), so importing this module must stay
 safe — the feature-missing failure belongs inside the test that calls the
 builder, not at collection time.
@@ -11,18 +11,18 @@ Underscore-prefixed so pytest skips collection here (like
 
 The scenarios:
 
-* :func:`chain_models` — plain ``orders → customers → regions``. Dotted-canonical
-  Mode-A resolution and registry byte-stability (no ``__`` in any model name).
-* :func:`dunder_target_models` — ``orders`` with a DIRECT join to a model
-  literally named ``customer__region``. The headline: a ``__``-named model is a
-  legal exact-match join target in both modes.
-* :func:`ambiguity_impossible_models` — ``orders`` joins BOTH a model literally
-  named ``a__b`` (direct) AND a chain ``a → b`` reaching a column. Mode-A
-  ``a__b.val`` is the direct model; ``a.b.val`` is the chain. Both resolve, no
+* :func:`chain_datasets` — plain ``orders → customers → regions``. Dotted-canonical
+  Mode-A resolution and registry byte-stability (no ``__`` in any dataset name).
+* :func:`dunder_target_datasets` — ``orders`` with a DIRECT relationship to a dataset
+  literally named ``customer__region``. The headline: a ``__``-named dataset is a
+  legal exact-match relationship target in both modes.
+* :func:`ambiguity_impossible_datasets` — ``orders`` relates to BOTH a dataset literally
+  named ``a__b`` (direct) AND a chain ``a → b`` reaching a field. Mode-A
+  ``a__b.val`` is the direct dataset; ``a.b.val`` is the chain. Both resolve, no
   conflict — the demonstration that ambiguity is structurally impossible, and
-  the registry collision case (path ``(a, b)`` alias ``a__b`` vs direct model
+  the registry collision case (path ``(a, b)`` alias ``a__b`` vs direct dataset
   ``a__b``) must mint DISTINCT emitted aliases.
-* :func:`long_chain_models` — a 4-hop chain of long model names whose naive
+* :func:`long_chain_datasets` — a 4-hop chain of long dataset names whose naive
   ``__`` alias exceeds Postgres's 63-byte identifier limit.
 """
 
@@ -85,7 +85,7 @@ def chain_datasets() -> List[SlayerDataset]:
 
 
 # --------------------------------------------------------------------------- #
-# Scenario 2 — a ``__``-named model as a DIRECT join target.
+# Scenario 2 — a ``__``-named dataset as a DIRECT relationship target.
 # --------------------------------------------------------------------------- #
 def dunder_target() -> SlayerDataset:
     """A denormalised dim literally named ``customer__region``.
@@ -118,7 +118,7 @@ def dunder_target_datasets() -> List[SlayerDataset]:
 
 
 # --------------------------------------------------------------------------- #
-# Scenario 3 — ambiguity is impossible: direct ``a__b`` model AND a chain a→b.
+# Scenario 3 — ambiguity is impossible: direct ``a__b`` dataset AND a chain a→b.
 # --------------------------------------------------------------------------- #
 def ai_b() -> SlayerDataset:
     return SlayerDataset(
@@ -136,7 +136,7 @@ def ai_a() -> SlayerDataset:
 
 
 def ai_a__b() -> SlayerDataset:
-    """A model literally named ``a__b`` — collides in SPELLING with the alias the
+    """A dataset literally named ``a__b`` — collides in SPELLING with the alias the
     chain ``a → b`` mints (``a__b``), but is a different relation."""
     return SlayerDataset(
         name="a__b", data_source=DS, sql_table="a_b_direct",
@@ -151,12 +151,12 @@ def ai_host() -> SlayerDataset:
             _col("id", DataType.INTEGER, pk=True),
             _col("a_id", DataType.INTEGER),
             _col("ab_id", DataType.INTEGER),
-            # Distinctly-named derived columns so a query can project BOTH the
-            # chain leaf and the direct model in one SELECT without tripping the
+            # Distinctly-named derived fields so a query can project BOTH the
+            # chain leaf and the direct dataset in one SELECT without tripping the
             # (orthogonal) flat public-name namespace — isolating the D4
             # join-alias-distinctness concern.
-            DatasetField(name="chain_val", datatype=DataType.STRING, sql="a.b.val"),
-            DatasetField(name="direct_val", datatype=DataType.STRING, sql="a__b.val"),
+            DatasetField(name="chain_val", datatype=DataType.STRING, expression="a.b.val"),
+            DatasetField(name="direct_val", datatype=DataType.STRING, expression="a__b.val"),
         ],
         relationships=[
             DatasetRelationship(to="a", from_columns=["a_id"], to_columns=["id"]),

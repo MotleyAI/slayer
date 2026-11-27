@@ -2,7 +2,7 @@
 
 Asserts the typed-plan-derived ``attributes`` + ``expected_columns`` match
 what the legacy enriched-query path produced: result keys read straight from
-the statement's projection, dimensions vs measures split by phase, measure format
+the statement's projection, dimensions vs metrics split by phase, metric format
 inferred (currency inheritance, count→integer), labels propagated.
 """
 
@@ -79,8 +79,8 @@ def _meta_for(query: SlayerQuery):
 def test_expected_columns_match_rendered_result_keys():
     q = SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": ["status"],
-        "metrics": [{"metric": "sum(amount)"}],
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "sum(orders.amount)"}],
     })
     _attrs, cols, _sql = _meta_for(q)
     assert set(cols) == {"orders.status", "orders.amount_sum"}
@@ -89,18 +89,18 @@ def test_expected_columns_match_rendered_result_keys():
 def test_dimension_vs_measure_split_and_label():
     q = SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": ["status"],
-        "metrics": [{"metric": "sum(amount)"}],
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "sum(orders.amount)"}],
     })
     attrs, _cols, _sql = _meta_for(q)
     assert "orders.status" in attrs.dimensions
     assert "orders.amount_sum" in attrs.metrics
-    # Dimension label flows from the Column.label.
+    # Dimension label flows from the DatasetField.label.
     assert attrs.dimensions["orders.status"].label == "Order status"
 
 
 def test_sum_inherits_currency_format():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
     attrs, _cols, _sql = _meta_for(q)
     fm = attrs.metrics["orders.amount_sum"]
     assert fm.format is not None
@@ -109,7 +109,7 @@ def test_sum_inherits_currency_format():
 
 
 def test_star_count_is_integer():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)"}]})
     attrs, cols, _sql = _meta_for(q)
     assert "orders._count" in cols
     fm = attrs.metrics["orders._count"]
@@ -117,53 +117,53 @@ def test_star_count_is_integer():
 
 
 def test_renamed_measure_result_key_and_format():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "rev"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]})
     attrs, cols, _sql = _meta_for(q)
-    assert cols == ["orders.rev"]
-    assert "orders.rev" in attrs.metrics
+    assert cols == ["rev"]
+    assert "rev" in attrs.metrics
 
 
 def test_joined_dimension_result_key_full_path():
     q = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.name"],
-        "metrics": [{"metric": "sum(amount)"}],
+        "metrics": [{"metric": "sum(orders.amount)"}],
     })
     _attrs, cols, _sql = _meta_for(q)
-    assert "orders.customers.name" in cols
+    assert "customers.name" in cols
 
 
 def test_cross_model_aggregate_format_integer_for_count():
     q = SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": ["status"],
+        "dimensions": ["orders.status"],
         "metrics": [{"metric": "sum(customers.revenue)"}],
     })
     attrs, cols, _sql = _meta_for(q)
-    assert "orders.customers.revenue_sum" in cols
-    fm = attrs.metrics["orders.customers.revenue_sum"]
-    # sum inherits the target column's currency format.
+    assert "customers.revenue_sum" in cols
+    fm = attrs.metrics["customers.revenue_sum"]
+    # sum inherits the target field's currency format.
     assert fm.format is not None
     assert fm.format.type == NumberFormatType.CURRENCY
     assert fm.format.symbol == "$"
 
 
 # ---------------------------------------------------------------------------
-# DEV-1788: stat/parametric aggregation display format through the full
+# Stat/parametric aggregation display format through the full
 # response-metadata path (query → plan → build_response_metadata → attributes).
 # ---------------------------------------------------------------------------
 
 
 def test_float_plain_aggregation_is_plain_float():
     # var_samp is in squared units — the source currency is NOT inherited.
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "var_samp(amount)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "var_samp(orders.amount)"}]})
     attrs, _cols, _sql = _meta_for(q)
     fm = attrs.metrics["orders.amount_var_samp"]
     assert fm.format.type == NumberFormatType.FLOAT
 
 
 def test_avg_inherits_currency_format():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(amount)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(orders.amount)"}]})
     attrs, _cols, _sql = _meta_for(q)
     fm = attrs.metrics["orders.amount_avg"]
     assert fm.format.type == NumberFormatType.CURRENCY
@@ -171,7 +171,7 @@ def test_avg_inherits_currency_format():
 
 
 def test_avg_unformatted_measure_is_plain_float():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(quantity)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(orders.quantity)"}]})
     attrs, _cols, _sql = _meta_for(q)
     fm = attrs.metrics["orders.quantity_avg"]
     assert fm.format.type == NumberFormatType.FLOAT
@@ -180,7 +180,7 @@ def test_avg_unformatted_measure_is_plain_float():
 def test_preserving_unformatted_measure_omits_format_entry():
     # quantity:sum has no source format and no label → no attributes entry,
     # though the column is still projected in expected_columns.
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(quantity)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.quantity)"}]})
     attrs, cols, _sql = _meta_for(q)
     assert "orders.quantity_sum" in cols
     assert "orders.quantity_sum" not in attrs.metrics

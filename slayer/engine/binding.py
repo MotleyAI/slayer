@@ -1,5 +1,5 @@
 """ExpressionBinder + FilterBinder: bind a ``ParsedExpr`` against a scope
-(``DatasetScope`` / ``StageSchema``) into a typed ``BoundExpr`` / ``BoundFilter``."""
+(``DatasetScope``) into a typed ``BoundExpr`` / ``BoundFilter``."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import os
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, time
 from decimal import Decimal
 from functools import partial
 from typing import Any, Callable, Dict, Final, List, Mapping, Optional, Tuple, TypeGuard, cast
@@ -17,6 +17,10 @@ from typing import Any, Callable, Dict, Final, List, Mapping, Optional, Tuple, T
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
+    AggArgumentError,
+    AmbiguousRelationshipPathError,
+    SlayerError,
+    UnevaluableEntityError,
     ScalarArgumentError,
     ScalarOperandTypeError,
     AggregationArgumentError,
@@ -27,8 +31,6 @@ from slayer.core.errors import (
     CallArgumentError,
     CircularRelationshipPathError,
     GranularityCallError,
-    IllegalScopeReferenceError,
-    IllegalWindowInFilterError,
     MetricCycleError,
     MetricRecursionLimitError,
     PartitionKeyError,
@@ -40,10 +42,10 @@ from slayer.core.errors import (
     UnknownReferenceError,
     UnresolvableDimensionRelationshipError,
     UnresolvedPlaceholderError,
+    WindowFunctionError,
 )
 from slayer.core.enums import (
     ALL_TRANSFORMS,
-    AMBIGUOUS_WEEKDAY_NAMES,
     BUILTIN_AGGREGATIONS,
     BUILTIN_AGGREGATION_PARAM_ORDER,
     DATE_PART_ALIASES,
@@ -56,7 +58,6 @@ from slayer.core.enums import (
     RANKED_AGGREGATIONS,
     RESERVED_NAMES,
     TEMPORAL_DATATYPES,
-    ambiguous_weekday_message,
     normalize_aggregation_name,
 )
 from slayer.core.direction import rank_direction, with_direction_kwarg
@@ -64,9 +65,11 @@ from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
 from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
-from slayer.core.keys import FieldTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
+from slayer.core.keys import FieldTypeFn, anchor_token, compose_frame, framed_aggregate, interior_unanchored, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, DIGITS_SCALARS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, integer_valued, list_valued, numeric_valued, WindowFrameSpec, WindowKey, SPINE_TOKEN, value_type
 from slayer.core.relationship_walker import (
-    LIST_ELEMENT_FIELD,
+    canonical_token,
+    observe_read,
+    resolve_hop,
     resolved_terminal,
     aggregation_owner,
     canonical_path,
@@ -76,7 +79,7 @@ from slayer.core.relationship_walker import (
     walk_miss,
     walk_terminal,
 )
-from slayer.core.names import match_name, match_path
+from slayer.core.names import match_name, match_path, spelled_name
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
     Aggregation,
@@ -86,14 +89,29 @@ from slayer.core.models import (
     is_identifier,
     reserved_value_param_message,
     shadows_library_function,
+    source_reader,
 )
-from slayer.core.warnings import LibraryNameShadowWarning
+from slayer.core.deprecation import scheduled_notice
+from slayer.core.warnings import ChangedReferenceWarning, LibraryNameShadowWarning
 from slayer.engine.population import dimension_routing
+from slayer.engine.population.anchors import (
+    anchor_route,
+    edge_first_refusal,
+    find_anchor,
+    source_frame,
+    to_one_route,
+    unknown_dataset,
+    unknown_metric,
+    unqualified_count,
+)
 from slayer.engine.key_metadata import bundle_dialect, scope_field_type
-from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params
+from slayer.core.time_zones import check_bucketed_zones
+from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params, check_percentile_fraction
 from slayer.core.query import TimeDimension
-from slayer.core.scope import DatasetScope, StageSchema, peek_dataset_field, resolve_generated_field, root_spelling
-from slayer.core.time_points import is_time_point, parse_temporal_value
+from slayer.core.scope import DatasetScope, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
+from slayer.core.time_points import TIME_OF_DAY_FORMS, is_time_point, parse_temporal_value, parse_time_of_day
+from slayer.core.time_zones import CIVIL
+from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
     AggCall,
@@ -116,6 +134,9 @@ from slayer.core.syntax import (
     TransformCall,
     TupleLit,
     UnaryOp,
+    WINDOW_FUNCTION_ARITIES,
+    WindowCall,
+    unwindowable_function,
     aggregation_reading,
     canonical_metric_text,
     classify_arguments,
@@ -123,10 +144,13 @@ from slayer.core.syntax import (
     dotted_quoting,
     drop_root_qualifier,
     keyword_spelling,
+    map_refs,
+    unknown_call_hint,
     parse_bound_expr,
     parse_expr,
     placeholder_names,
     walk_parsed,
+    walk_parsed_refs,
     positional_hint,
 )
 from slayer.core.scalar_args import (
@@ -141,7 +165,7 @@ from slayer.core.scalar_args import (
     slot_name,
 )
 from slayer.sql.dialects.base import LIBRARY_FUNCTIONS, is_list_fn, require_library
-from slayer.sql.sql_expr import build_cast_type, cast_slayer_type, has_window_function, native_json_type
+from slayer.sql.sql_expr import build_cast_type, cast_slayer_type, native_json_type
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
 from slayer.core.models import DatasetField
@@ -162,6 +186,7 @@ class BindRecords(BaseModel):
 
     metrics: Dict[Tuple[str, str], None] = {}
     shadows: Dict[Tuple[str, str, str], LibraryNameShadowWarning] = {}
+    notices: Dict[str, ChangedReferenceWarning] = {}
 
 
 _bind_records: ContextVar[Optional[BindRecords]] = ContextVar("slayer_bind_records", default=None)
@@ -237,7 +262,7 @@ def _fmt_metric_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
 def bind_expr(
     parsed: ParsedExpr,
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     allow_metrics: bool = False,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -268,9 +293,12 @@ def bind_expr(
 
 def bind_dataset_expression(
     expression: str, *, dataset: SlayerDataset, datasets: Sequence[SlayerDataset], dialect: str,
+    granularities: Optional[Mapping[str, CustomGranularity]] = None,
 ) -> ValueKey:
-    """``expression`` bound on ``dataset`` (saved metrics inlined) against the ``datasets`` graph, reading no database."""
-    bundle = ResolvedSourceBundle(dialect=dialect, population=dataset, referenced_datasets=list(datasets))
+    """``expression`` bound on ``dataset`` (saved metrics inlined) against the ``datasets`` graph, reading no database;
+    ``granularities`` are the datasource's custom granularities, keyed by ``granularity_key``."""
+    bundle = ResolvedSourceBundle(dialect=dialect, population=dataset, referenced_datasets=list(datasets),
+                                  granularities=dict(granularities or {}))
     return bind_expr(
         parse_expr(expression), scope=DatasetScope(population=dataset), bundle=bundle, allow_metrics=True,
     ).value_key
@@ -294,11 +322,11 @@ def spelled_aggregate_key(
 def bind_time_dimension(
     td: TimeDimension,
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     granularity: Optional[Granularity] = None,
 ) -> BoundTimeDimension:
-    """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the facts the checker judges (a field's type; every bucketed temporal leaf's recorded granularity — from a ``StageField`` or a ``DatasetField``). A field resolves like a Mode-B identifier ref against a ``DatasetScope`` (relationships) or a flat ``StageSchema``, any other text binds as a Mode-B expression; the row-level / temporal / re-bucketing rules are the checker's (P9)."""
+    """Bind a ``TimeDimension`` into a ``BoundTimeDimension``: a ``BoundExpr`` carrying a ``TimeTruncKey`` plus the facts the checker judges (a field's type; every bucketed temporal leaf's recorded granularity, from its ``DatasetField``). A field resolves like a Mode-B identifier ref against the ``DatasetScope``, any other text binds as a Mode-B expression; the row-level / temporal / re-bucketing rules are the checker's (P9)."""
     text = td.field
     resolved = granularity or resolve_granularity(td.granularity, defined=bundle.granularities)
     if resolved is None:
@@ -309,24 +337,27 @@ def bind_time_dimension(
         return BoundTimeDimension(
             bound=BoundExpr(value_key=TimeTruncKey(source=source, granularity=resolved)),
             bucketed_leaves=_bucketed_leaves(source, scope=scope, bundle=bundle),
+            bucketed_zones=_bucketed_zones(source, scope=scope, bundle=bundle),
             is_expression=True,
         )
     bound_col = _resolve_field_ref(parsed, scope=scope, bundle=bundle)
     field_type, upstream = _field_facts(bound_col, scope=scope, bundle=bundle)
     routed = _canonical_if_routed(parsed=parsed, value_key=bound_col)
+    zone = _bucket_zone(bound_col, scope=scope, bundle=bundle) if upstream is not None else None
     return BoundTimeDimension(
         bound=BoundExpr(value_key=TimeTruncKey(source=bound_col, granularity=resolved), routed_dotted=routed),
         field_type=field_type,
         bucketed_leaves=() if upstream is None else ((text, upstream),),
+        bucketed_zones=() if zone is None else ((text, zone),),
     )
 
 
 def _resolve_field_ref(
-    parsed: Ref | DottedRef, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    parsed: Ref | DottedRef, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> FieldKey | FieldSqlKey:
-    """A time dimension's field against ``scope``: a stage ref is a flat ``StageField`` (dotted → illegal-scope, unknown → unknown-reference); a dataset ref walks relationships."""
+    """A time dimension's field against ``scope``, walking relationships."""
     full = parsed.name if isinstance(parsed, Ref) else ".".join(parsed.parts)
-    if isinstance(scope, DatasetScope) and scope.population is None:
+    if scope.population is None:
         raise UnknownReferenceError(
             name=full,
             scope_kind="DatasetScope",
@@ -347,17 +378,9 @@ def _resolve_field_ref(
 
 
 def _field_facts(
-    col: FieldKey | FieldSqlKey, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    col: FieldKey | FieldSqlKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> Tuple[Optional[DataType], Optional[Granularity]]:
-    """A field's (type, recorded bucket granularity): a flat ``StageField`` on a stage, else the terminal ``DatasetField`` its path reaches."""
-    if isinstance(scope, StageSchema):
-        stage_col = scope.get(field_leaf(col))
-        assert stage_col is not None  # binding already validated existence
-        upstream = (
-            None if stage_col.granularity is None
-            else resolve_granularity(stage_col.granularity, defined=bundle.granularities)
-        )
-        return stage_col.datatype, upstream
+    """A field's (type, recorded bucket granularity): the terminal ``DatasetField`` its path reaches."""
     terminal = _terminal_dataset_for_path(path=field_path(col), scope=scope, bundle=bundle)
     if terminal is None:
         # Defensive: _resolve_ref / _resolve_dotted would already have raised.
@@ -376,7 +399,7 @@ def _field_facts(
 
 
 def _bucketed_leaves(
-    source: ValueKey, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    source: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> Tuple[Tuple[str, Granularity], ...]:
     """Every temporal field leaf of ``source`` that carries a recorded bucket granularity, by its dotted name."""
     out: Dict[str, Granularity] = {}
@@ -386,6 +409,32 @@ def _bucketed_leaves(
         field_type, upstream = _field_facts(leaf, scope=scope, bundle=bundle)
         if upstream is not None and field_type in TEMPORAL_DATATYPES:
             out.setdefault(".".join((*field_path(leaf), field_leaf(leaf))), upstream)
+    return tuple(out.items())
+
+
+def _bucket_zone(col: FieldKey | FieldSqlKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Optional[str]:
+    """The zone a bucketed timestamp field's buckets are in: its own (a stage's zone state), else, on a dataset of the
+    datasource, the datasource's; ``None``: civil or undeclared."""
+    terminal = _terminal_dataset_for_path(path=field_path(col), scope=scope, bundle=bundle)
+    found = terminal.get_field(field_leaf(col)) if terminal is not None else None
+    if found is None or found.datatype is not DataType.DATETIME:
+        return None
+    zone = found.time_zone
+    if zone is None and terminal is not None and terminal.name not in bundle.stage_displays:
+        zone = bundle.datasource_time_zone
+    return None if zone == CIVIL else zone
+
+
+def _bucketed_zones(
+    source: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Tuple[Tuple[str, str], ...]:
+    """``(leaf, zone)`` of every bucketed timestamp leaf of ``source`` in a zone."""
+    out: Dict[str, str] = {}
+    for leaf in walk_value_keys(source):
+        if isinstance(leaf, (FieldKey, FieldSqlKey)) and _field_facts(leaf, scope=scope, bundle=bundle)[1] is not None:
+            zone = _bucket_zone(leaf, scope=scope, bundle=bundle)
+            if zone is not None:
+                out.setdefault(".".join((*field_path(leaf), field_leaf(leaf))), zone)
     return tuple(out.items())
 
 
@@ -425,15 +474,14 @@ def _terminal_dataset_for_path(
 def bind_filter(
     parsed: ParsedExpr,
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     dimension_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> BoundFilter:
     """Bind a parsed filter predicate + classify its phase.
 
-    Walks the bound tree to gather every referenced ``ValueKey``; raises
-    ``IllegalWindowInFilterError`` if a referenced ``DatasetField.sql`` is windowed.
+    Walks the bound tree to gather every referenced ``ValueKey``.
     ``alias_map`` maps a stage's declared-metric names to their bound
     ``ValueKey`` so a bare ref matching an alias interns onto that slot rather
     than resolving against dataset fields (the aggregate and its alias share one slot).
@@ -448,7 +496,6 @@ def bind_filter(
         (k.phase for k in refs),
         default=value_key.phase,
     )
-    _reject_windowed_field_sql(refs, scope=scope, bundle=bundle, parsed=parsed)
     return BoundFilter(
         value_key=value_key, phase=phase, referenced_keys=refs,
     )
@@ -457,7 +504,7 @@ def bind_filter(
 def _bind(
     parsed: ParsedExpr,
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -476,9 +523,10 @@ def _bind(
         metric_ctx=metric_ctx, dim_alias_map=dim_alias_map,
     )
     if isinstance(parsed, Cast):
-        return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
+        return _bind_cast_node(parsed, sub=sub, scope=scope, bundle=bundle, alias_map=alias_map,
+                               metric_ctx=metric_ctx, dim_alias_map=dim_alias_map)
     if isinstance(parsed, DateTrunc):
-        return _bind_date_trunc(parsed, source=sub(parsed.value), bundle=bundle)
+        return _bind_date_trunc(parsed, source=sub(parsed.value), scope=scope, bundle=bundle)
     if isinstance(parsed, NamedArg):
         raise CallArgumentError(f"`{canonical_metric_text(parsed)}` is only an argument of a call.")
     if isinstance(parsed, AggCall):
@@ -510,9 +558,127 @@ def _bind(
         return ArithmeticKey(op=parsed.op, operands=tuple(sub(v) for v in parsed.operands))
     if isinstance(parsed, ArrayLit):
         return _bind_array_literal(parsed, sub=sub)
+    if isinstance(parsed, WindowCall):
+        return _bind_window(parsed, sub=sub, scope=scope, bundle=bundle)
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
     )
+
+
+def _bind_cast_node(
+    parsed: Cast, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]], metric_ctx: Optional[MetricResolutionCtx],
+    dim_alias_map: Optional[Dict[str, "ValueKey"]],
+) -> ValueKey:
+    """A cast, or the aggregation a cast spells when its owner defines one."""
+    reading = aggregation_reading(parsed)
+    if reading is not None and _owner_definition(
+        reading, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+    ) is not None:
+        return _bind_agg_call(
+            reading, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+            dim_alias_map=dim_alias_map,
+        )
+    return _bind_cast(parsed, source=sub(parsed.source), scope=scope, bundle=bundle)
+
+
+def _bind_window(
+    parsed: WindowCall, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> WindowKey:
+    """``function(args) OVER (…)``: an Ossie ranking, offset or aggregation call, its keys and frame bound."""
+    refused = unwindowable_function(parsed)
+    if refused is not None:
+        raise WindowFunctionError(
+            summary=f"`{refused}` cannot run under OVER: a window applies a ranking or offset function "
+            f"(ROW_NUMBER, RANK, LAG, …) or an Ossie aggregation (SUM, COUNT, AVG, MIN, MAX, …).",
+            location=f"`{canonical_metric_text(parsed.function)}`",
+            suggestion="Use one of those functions, or a SLayer transform over a metric.",
+        )
+    function, args, condition = _window_function(parsed.function, sub=sub, scope=scope, bundle=bundle)
+    frame = parsed.frame
+    key = WindowKey(
+        function=function, args=args, filter=condition,
+        partition=tuple(sub(p) for p in parsed.partition),
+        order=tuple(sub(item.value) for item in parsed.order),
+        descending=tuple(item.descending for item in parsed.order),
+        nulls_first=tuple(item.nulls == "first" for item in parsed.order),
+        frame=None if frame is None else WindowFrameSpec(unit=frame.unit, start=frame.start, end=frame.end),
+    )
+    if not key.row_level:
+        return key
+    return key.model_copy(update={"anchor": _window_anchor(key, parsed=parsed, scope=scope, bundle=bundle)})
+
+
+def _window_function(
+    node: ParsedExpr, *, sub: Callable[[ParsedExpr], ValueKey], scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Tuple[str, Tuple[ValueKey, ...], Optional[ValueKey]]:
+    """``(function, args, filter)`` of an Ossie call under ``OVER``."""
+    if isinstance(node, ScalarCall) and node.name in WINDOW_FUNCTION_ARITIES:
+        return node.name, tuple(sub(a) for a in node.args), None
+    assert isinstance(node, AggCall)
+    agg = node.agg.lower()
+    source = node.source
+    if isinstance(source, StarSource):
+        value: ValueKey = _bare_star(scope=scope)
+    elif isinstance(source, DottedRef) and source.parts[-1] == "*":
+        value = _resolve_dotted_star(source.parts, scope=scope, bundle=bundle, quoted=dotted_quoting(source))
+    else:
+        value = sub(source)
+    args = (value, *(sub(a.value if isinstance(a, NamedArg) else a) for a in node.args))
+    if agg == "percentile":
+        agg = "percentile_cont"
+    return agg, args, None if node.filter is None else sub(node.filter)
+
+
+def _window_anchor(
+    key: WindowKey, *, parsed: WindowCall, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[str, ...]]:
+    """The route from the reading dataset to the one a row-level window's references meet at: the common prefix of
+    each bound reference's route to its anchor (an alias's is its definition's; a dotted star's is its spelling's,
+    which its key does not keep); ``None`` when it names no dataset (a time-spine reference names none)."""
+    reader = scope.population
+    if reader is None:
+        return None
+    routes = [route for leaf in walk_value_keys(key)
+              if isinstance(leaf, (FieldKey, FieldSqlKey)) or (isinstance(leaf, StarKey) and not leaf.path)
+              for route in (_anchor_route(leaf),) if route is not None]
+    routes += [route for node in walk_parsed(parsed) if isinstance(node, DottedRef) and node.parts[-1] == "*"
+               for route in (_star_anchor_route(node, reader=reader, scope=scope, bundle=bundle),) if route is not None]
+    if not routes:
+        return None
+    prefix = routes[0]
+    for route in routes[1:]:
+        n = 0
+        while n < min(len(prefix), len(route)) and prefix[n] == route[n]:
+            n += 1
+        prefix = prefix[:n]
+    return prefix
+
+
+def _anchor_route(leaf: FieldKey | FieldSqlKey | StarKey) -> Optional[Tuple[str, ...]]:
+    """The route from the reader to the dataset ``leaf`` is anchored at; ``None`` for a time-spine reference."""
+    path = tuple(leaf.path or ())
+    if path and path[0] in (TIME_SPINE_DATASET, SPINE_TOKEN):  # NOSONAR(S6466) — guarded by `path and`
+        return None
+    anchor = getattr(leaf, "anchor", None)
+    if anchor is None:
+        return ()
+    return path[:max(0, len(path) - (len(anchor) - 1))]
+
+
+def _star_anchor_route(
+    node: DottedRef, *, reader: SlayerDataset, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[Tuple[str, ...]]:
+    """The route from ``reader`` to the dataset a dotted star is anchored at; ``None`` for the time spine."""
+    quoted = dotted_quoting(node)
+    anchor = find_anchor(node.parts[0], quoted=bool(quoted) and quoted[0], reader=reader,
+                         datasets_by_name=bundle.datasets_by_name)
+    if anchor is None or anchor.name == reader.name:
+        return ()
+    if is_spine(anchor):
+        return None
+    path = _resolve_dotted_star(node.parts, scope=scope, bundle=bundle, quoted=quoted).path
+    return tuple(path[:max(0, len(path) - (len(node.parts) - 2))])
 
 
 def _bind_array_literal(parsed: ArrayLit, *, sub: Callable[[ParsedExpr], ValueKey]) -> ArrayLiteralKey:
@@ -536,7 +702,7 @@ def _bind_array_literal(parsed: ArrayLit, *, sub: Callable[[ParsedExpr], ValueKe
 def _bind_leaf(
     parsed: ParsedExpr,
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]],
     metric_ctx: Optional[MetricResolutionCtx],
@@ -545,11 +711,16 @@ def _bind_leaf(
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
     if isinstance(parsed, TemporalLiteral):
-        return LiteralKey(value=_temporal_literal_value(parsed))
+        value = _temporal_literal_value(parsed)
+        if isinstance(value, time):
+            bundle_dialect(bundle).time_of_day_type()  # refused where the database has no time of day
+        return LiteralKey(value=value)
     if isinstance(parsed, StarSource):
-        return StarKey()
+        return _bare_star(scope=scope)
     if not isinstance(parsed, (Ref, DottedRef)):
         return None
+    if parsed.evaluated:
+        return _bind_evaluated(parsed, scope=scope, bundle=bundle, metric_ctx=metric_ctx)
     try:
         if isinstance(parsed, Ref):
             return _resolve_ref(
@@ -564,11 +735,27 @@ def _bind_leaf(
         raise _with_hint(e, hint=_QUOTE_HINT.format(name=e.name)) if parsed.quoted else e
 
 
+def _bind_evaluated(
+    parsed: Ref | DottedRef,
+    *,
+    scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+    metric_ctx: Optional[MetricResolutionCtx],
+) -> ValueKey:
+    """``AGG(ref)``: the dataset metric ``ref`` names, bound as the reference itself; anything else is refused."""
+    plain = parsed.model_copy(update={"evaluated": False})
+    key = _bind_leaf(plain, scope=scope, bundle=bundle, alias_map=None, metric_ctx=metric_ctx)
+    if key is None or isinstance(key, (FieldKey, FieldSqlKey)):
+        raise AggArgumentError(expression=canonical_metric_text(parsed),
+                               reason=f"{canonical_metric_text(plain)!r} is a field")
+    return key
+
+
 def _bind_cmp(
     parsed: Cmp,
     *,
     sub: Callable[[ParsedExpr], ValueKey],
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]],
@@ -603,7 +790,15 @@ def _with_hint(error: UnknownReferenceError, *, hint: str) -> UnknownReferenceEr
 
 
 def _temporal_literal_value(parsed: TemporalLiteral):
-    """A ``DATE '…'`` / ``TIMESTAMP '…'`` literal's value, checked like an ISO literal in a date position."""
+    """A ``DATE '…'`` / ``TIMESTAMP '…'`` / ``TIME '…'`` literal's value, checked like an ISO literal in its position."""
+    if parsed.kind == "time":
+        moment = parse_time_of_day(parsed.text)
+        if moment is None:
+            raise TimeLiteralError(
+                summary=f"TIME '{parsed.text}' is not a valid time literal.",
+                suggestion=f"write a time of day: {TIME_OF_DAY_FORMS}.",
+            )
+        return moment
     value = parse_temporal_value(parsed.text)
     if parsed.kind == "date" and isinstance(value, datetime):
         value = None
@@ -617,15 +812,15 @@ def _temporal_literal_value(parsed: TemporalLiteral):
     return value
 
 
-def _try_cast_source(source: ValueKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
-    """What a ``TRY_CAST`` reads ``source`` as: integer text (``INT``), another number (``DOUBLE``), else text."""
+def _cast_source(source: ValueKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
+    """What a cast reads ``source`` as: integer text (``INT``), another number (``DOUBLE``), else text."""
     if integer_text_valued(source, field_type=field_type):
         return DataType.INTEGER
     return DataType.FLOAT if numeric_valued(source, field_type=field_type) else None
 
 
 def _bind_cast(
-    parsed: Cast, *, source: ValueKey, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    parsed: Cast, *, source: ValueKey, scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> CastKey:
     if parsed.try_ and cast_type_parts(parsed.type_text).array_rank:
         raise CastTypeError(
@@ -638,13 +833,44 @@ def _bind_cast(
         raise CastTypeError(summary=str(e), suggestion="cast to a type this database has.") from None
     data_type, element_type = cast_slayer_type(parsed.type_text, dialect=bundle.dialect)
     field_type = scope_field_type(scope=scope, bundle=bundle)
+    temporal_source = _time_cast_source(parsed, source=source, data_type=data_type, field_type=field_type)
     if parsed.try_ and data_type in NUMERIC_DATATYPES and boolean_valued(source, field_type=field_type):
         source = CastKey(source=source, type_text="INT", data_type=DataType.INTEGER)  # a boolean reads as its 1 / 0
     return CastKey(
         source=source, type_text=parsed.type_text, data_type=data_type, try_=parsed.try_,
         element_type=element_type,
-        numeric_source=_try_cast_source(source, field_type=field_type) if parsed.try_ else None,
+        numeric_source=_cast_source(source, field_type=field_type),
+        temporal_source=temporal_source,
     )
+
+
+#: What converts to a time of day: text (or an untyped value), a timestamp, a time of day.
+_TIME_CAST_SOURCES = frozenset({DataType.STRING, DataType.DATETIME, DataType.DATETIME_TZ, DataType.TIME, DataType.OPAQUE})
+
+
+def _time_cast_source(
+    parsed: Cast, *, source: ValueKey, data_type: DataType, field_type: FieldTypeFn,
+) -> Optional[DataType]:
+    """The source type a cast to or from a time of day converts by (``None``: text, or no time of day involved);
+    refuses a source that names no time of day, and a time of day cast to anything but text."""
+    source_type = value_type(source, field_type=field_type)
+    written = canonical_metric_text(parsed)
+    if data_type is DataType.TIME:
+        if source_type is not None and source_type not in _TIME_CAST_SOURCES:
+            raise CastTypeError(
+                summary=f"`{written}` casts a {source_type.value} value to a time of day.",
+                suggestion="cast text ('HH:MM:SS'), a timestamp or a time of day.",
+            )
+        return source_type if source_type in (DataType.DATETIME, DataType.DATETIME_TZ, DataType.TIME) else None
+    if source_type is not DataType.TIME:
+        return None
+    if data_type is not DataType.STRING:
+        raise CastTypeError(
+            summary=f"`{written}` casts a time of day (Time) to {parsed.type_text}.",
+            suggestion="a time of day casts to TIME or to a character type; read its parts with hour(), minute() "
+            "and second().",
+        )
+    return DataType.TIME
 
 
 def _reject_placeholders(parsed: ParsedExpr, *, text: Optional[str] = None) -> None:
@@ -688,7 +914,7 @@ def _time_point_comparison(
 def _bind_in(
     parsed: Cmp,
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -718,7 +944,8 @@ def _bind_in(
         )
     field = _bind(parsed.left, **ctx)
     values = tuple(
-        LiteralKey(value=normalize_scalar(elt.value))
+        LiteralKey(value=_temporal_literal_value(elt) if isinstance(elt, TemporalLiteral)
+                   else normalize_scalar(elt.value))
         for elt in parsed.right.elements
     )
     # SQL three-valued logic makes NULL in the list a silent trap:
@@ -773,7 +1000,7 @@ def _name_suggestion(*, name: str, dataset: "SlayerDataset") -> str | None:
 def _resolve_ref(
     name: str,
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     metric_ctx: Optional[MetricResolutionCtx] = None,
@@ -787,22 +1014,9 @@ def _resolve_ref(
     alias = match_name(name=name, declared=alias_map, quoted=quoted) if alias_map else None
     if alias_map and alias is not None:
         return alias_map[alias]
+    if is_anchored(scope):
+        raise unknown_metric(name, datasets=_visible_datasets(scope=scope, bundle=bundle))
 
-    if isinstance(scope, StageSchema):
-        col = scope.resolve_flat_name(name, quoted=quoted)
-        if col is None:
-            raise UnknownReferenceError(
-                name=name,
-                scope_kind="StageSchema",
-                scope_summary=(
-                    f"{scope.label} fields: "
-                    f"{[c.name for c in scope.fields]}"
-                ),
-                suggestion=None,
-            )
-        return FieldKey(path=(), leaf=col.name)
-
-    assert isinstance(scope, DatasetScope)
     if scope.population is None:
         raise UnknownReferenceError(
             name=name,
@@ -815,6 +1029,7 @@ def _resolve_ref(
     # A ``__``-bearing name is not special: it resolves like any other name.
     col = resolve_generated_field(dataset=dataset, name=name, quoted=quoted)
     if col is not None:
+        _check_evaluable(col, dataset=dataset)
         if col.needs_expansion:
             return FieldSqlKey(path=(), dataset=dataset.name, field_name=col.name)
         return FieldKey(path=(), leaf=col.name)
@@ -829,12 +1044,133 @@ def _resolve_ref(
     raise UnknownReferenceError(
         name=name,
         scope_kind="DatasetScope",
-        scope_summary=(
-            f"dataset {dataset.spelling!r} fields: "
-            f"{[c.name for c in dataset.fields]}"
-        ),
+        scope_summary=f"{_dataset_label(dataset, bundle=bundle)} fields: {[c.name for c in dataset.fields]}",
         suggestion=_name_suggestion(name=name, dataset=dataset),
     )
+
+
+def _check_evaluable(entity: "DatasetField | DatasetMetric", *, dataset: SlayerDataset) -> None:
+    """Refuse reading a document entity SLayer loads but cannot evaluate yet."""
+    if entity.load_warning is not None:
+        kind = "Field" if isinstance(entity, DatasetField) else "Metric"
+        raise UnevaluableEntityError(entity=f"{kind} '{dataset.spelling}.{entity.name}'", reason=entity.load_warning)
+
+
+def _visible_datasets(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> List[SlayerDataset]:
+    """The datasets a bare name's suggestions may name: the bundle's, the reading dataset included."""
+    found = dict(bundle.datasets_by_name)
+    if scope.population is not None:
+        found.setdefault(scope.population.name, scope.population)
+    return [d for d in found.values() if d.name != TIME_SPINE_DATASET]
+
+
+def _anchor_of(parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+               quoted: Tuple[bool, ...]) -> SlayerDataset:
+    """The dataset a query reference ``parts`` is anchored at."""
+    host = scope.population
+    assert host is not None
+    datasets = bundle.datasets_by_name
+    anchor = find_anchor(parts[0], quoted=quoted[0], reader=host, datasets_by_name=datasets)
+    if anchor is None:
+        raise edge_first_refusal(parts, datasets_by_name={**datasets, host.name: host}) or unknown_dataset(parts)
+    return anchor
+
+
+def _anchored_parts(
+    parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle, quoted: Tuple[bool, ...],
+) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[bool, ...]]:
+    """``(route, rest, flags)``: the reading dataset's canonical route to ``parts``' anchor, then the written rest and
+    its quoting."""
+    host = scope.population
+    assert host is not None
+    datasets = bundle.datasets_by_name
+    anchor = _anchor_of(parts, scope=scope, bundle=bundle, quoted=quoted)
+    reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=datasets, rest=parts[1:])
+    if anchor.name != host.name:
+        _announce_changed_reference(parts, host=host, anchor=anchor, route=reached.route, datasets=datasets,
+                                    quoted=quoted[0])
+    return tuple(reached.route), tuple(parts[1:]), tuple(quoted[1:])
+
+
+def _with_anchor(key: ValueKey, *, anchor: SlayerDataset, rest: Tuple[str, ...], host: SlayerDataset) -> ValueKey:
+    """A query reference keyed by its anchor and canonical route when the reading dataset is not its anchor
+    (Principle 1)."""
+    if anchor.name == host.name or is_spine(anchor) or not isinstance(key, (FieldKey, FieldSqlKey)):
+        return key
+    return key.model_copy(update={"anchor": (anchor.name, *rest)})
+
+
+def _anchored_saved_metric(
+    parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+    metric_ctx: Optional[MetricResolutionCtx], quoted: Tuple[bool, ...],
+) -> Optional[ValueKey]:
+    """A query reference naming a saved metric off the reading dataset, bound from its declaring dataset: the reader's
+    route to it is asked only for what is not an aggregation's interior."""
+    host = scope.population
+    assert host is not None
+    if len(parts) < 2:
+        return None
+    datasets = {**bundle.datasets_by_name, host.name: host}
+    anchor = _anchor_of(parts, scope=scope, bundle=bundle, quoted=quoted)
+    observe_read(anchor.name)
+    try:
+        walked = walk_terminal(root=anchor, path=parts[1:-1], datasets_by_name=datasets, quoted=quoted[1:-1])
+    except SlayerError:
+        return None
+    if walked is None or walked[0].name == host.name:
+        return None
+    terminal = walked[0]
+    if peek_dataset_field(dataset=terminal, name=parts[-1], quoted=quoted[-1]) is not None:
+        return None
+    metric = terminal.get_metric(parts[-1], quoted=quoted[-1])
+    if metric is None:
+        return None
+
+    def host_path() -> Tuple[str, ...]:
+        route, rest, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+        return _walk_relationship_chain(
+            via=route, hop_path=rest[:-1], host=host, bundle=bundle, parts=parts, leaf=rest[-1], quoted=flags,
+            routes_short_form=False,
+        )[1]
+
+    return _resolve_saved_metric(
+        metric=metric, terminal_dataset=terminal, scope=scope, bundle=bundle, metric_ctx=metric_ctx,
+        ref_text=".".join(parts), host_path=host_path,
+    )
+
+
+def _announce_changed_reference(
+    parts: Tuple[str, ...], *, host: SlayerDataset, anchor: SlayerDataset, route: Tuple[str, ...],
+    datasets: Dict[str, SlayerDataset], quoted: bool,
+) -> None:
+    """Record the notice of a dataset-first reference whose direct relationship from ``host`` is not its path."""
+    records = _bind_records.get()
+    if records is None:
+        return
+    try:
+        direct = resolve_hop(current=host, token=parts[0], datasets_by_name={**datasets, host.name: host},
+                             quoted=quoted)
+    except AmbiguousRelationshipPathError:
+        return
+    if direct is None or direct.to != anchor.name or route == (canonical_token(direct),):
+        return
+    reference = ".".join(parts)
+    path = " → ".join((host.spelling, *route))
+    spelling = ".".join((host.spelling, canonical_token(direct), *parts[1:]))
+    message = scheduled_notice(
+        f"`{reference}` reads {anchor.spelling!r} along {path}, its only to-one path; before 2.0 it read the direct "
+        f"relationship, which `{spelling}` names.",
+        removal="3.0",
+    )
+    records.notices.setdefault(message, ChangedReferenceWarning(
+        reference=reference, path=path, spelling=spelling, message=message,
+    ))
+
+
+def _dataset_label(dataset: SlayerDataset, *, bundle: ResolvedSourceBundle) -> str:
+    """How messages name ``dataset``: a stage by its user spelling, else the dataset."""
+    display = bundle.stage_displays.get(dataset.name)
+    return display.label if display is not None else f"dataset {dataset.spelling!r}"
 
 
 def _walk_relationship_chain(
@@ -847,9 +1183,12 @@ def _walk_relationship_chain(
     original_parts: Optional[Tuple[str, ...]] = None,
     quoted: Tuple[bool, ...] = (),
     original_quoted: Tuple[bool, ...] = (),
+    routes_short_form: bool = True,
+    anchor: Optional[str] = None,
+    via: Tuple[str, ...] = (),
 ):
-    """Walk ``hop_path`` relationship hops from ``host`` through the shared bidirectional
-    walker; returns ``(terminal_dataset, canonical effective_hop_path)``. Each token
+    """Walk ``hop_path`` relationship hops from ``host``, after its canonical route ``via``, through the shared
+    bidirectional walker; returns ``(terminal_dataset, canonical effective_hop_path)``. Each token
     resolves as an edge name then a neighbour dataset, in either orientation.
 
     When a token resolves to no incident edge, a bare ``Target`` short form
@@ -862,7 +1201,8 @@ def _walk_relationship_chain(
     remaining tokens spell a flat field raises the flat-spelling refusal instead.
     ``parts`` is the full dotted ref, for error messages; ``quoted`` flags each of
     its segments; ``original_parts`` (pre-self-prefix-strip, defaulting to
-    ``parts``) spells the reference in full, ``original_quoted`` flagging its segments."""
+    ``parts``) spells the reference in full, ``original_quoted`` flagging its segments; ``anchor`` is an anchored
+    reference's written anchor."""
     datasets_by_name = bundle.datasets_by_name
     datasets_by_name.setdefault(host.name, host)
     spelled = parts if original_parts is None else original_parts
@@ -871,11 +1211,11 @@ def _walk_relationship_chain(
         _quoted_segment(t, quoted=q) for t, q in zip(spelled[:len(spelled) - len(parts)], original_quoted)
     )
     refusal = partial(
-        _flat_spelling_refusal, host=host, hop_path=hop_path, leaf=leaf, spelled=spelled,
-        written=written, quoted=quoted, datasets_by_name=datasets_by_name,
+        _flat_spelling_refusal, host=host, via=via, hop_path=hop_path, leaf=leaf, spelled=spelled,
+        written=written, quoted=quoted, datasets_by_name=datasets_by_name, anchor=anchor,
     )
     try:
-        walked = walk_terminal(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted)
+        walked = walk_terminal(root=host, path=hop_path, via=via, datasets_by_name=datasets_by_name, quoted=hop_quoted)
     except CircularRelationshipPathError as e:
         raise refusal() or CircularRelationshipPathError(
             reference=".".join(spelled), root_dataset=host.spelling,
@@ -884,28 +1224,35 @@ def _walk_relationship_chain(
         ) from None
     if walked is not None:
         return walked
-    miss = walk_miss(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted)
+    miss = walk_miss(root=host, path=hop_path, via=via, datasets_by_name=datasets_by_name, quoted=hop_quoted)
     assert miss is not None
     if miss.kind == "unloaded":
         assert miss.target is not None
         match_name(name=miss.target, declared=datasets_by_name, quoted=False)  # raises when several match by case
         raise _target_not_in_bundle(parts=parts, target=miss.target)
-    broken = len(hop_path) != 1
+    broken = len(via) + len(hop_path) != 1 or not routes_short_form
     flat = refusal() if broken else None
     if flat is not None:
         raise flat
     _reject_opaque_elements(
-        host=host, hop_path=hop_path, index=miss.index, parts=parts, datasets_by_name=datasets_by_name, quoted=hop_quoted,
+        host=host, via=via, hop_path=hop_path, index=miss.index, parts=parts, datasets_by_name=datasets_by_name,
+        quoted=hop_quoted,
     )
     if broken:
         raise _broken_chain_error(
-            host=host, hop_path=hop_path, leaf=leaf, parts=parts, miss=miss, datasets_by_name=datasets_by_name,
+            host=host, via=via, hop_path=hop_path, leaf=leaf, parts=parts, miss=miss, datasets_by_name=datasets_by_name,
             quoted=hop_quoted,
         )
-    return _route_edgeless_hop(
-        host=host, hop=miss.token, leaf=leaf, parts=parts,
-        datasets_by_name=datasets_by_name, quoted=bool(hop_quoted) and hop_quoted[0],
-    )
+    try:
+        return _route_edgeless_hop(
+            host=host, hop=miss.token, leaf=leaf, parts=parts,
+            datasets_by_name=datasets_by_name, quoted=bool(hop_quoted) and hop_quoted[0],
+        )
+    except UnresolvableDimensionRelationshipError:
+        flat = refusal()
+        if flat is not None:
+            raise flat from None
+        raise
 
 
 def _dataset_spelling(name: str, *, datasets_by_name: Dict[str, SlayerDataset]) -> str:
@@ -917,6 +1264,16 @@ def _quoted_segment(name: str, *, quoted: bool) -> str:
     return f'"{name}"' if quoted else name
 
 
+def _walk_prefix(
+    *, host: SlayerDataset, via: Tuple[str, ...], hop_path: Tuple[str, ...], k: int,
+    datasets_by_name: Dict[str, SlayerDataset], quoted: Tuple[bool, ...],
+) -> Optional[Tuple[SlayerDataset, Tuple[str, ...]]]:
+    """:func:`walk_terminal` of the first ``k`` hops of the route ``via`` then ``hop_path``."""
+    n = min(k, len(via))
+    return walk_terminal(root=host, via=via[:n], path=hop_path[:k - n], datasets_by_name=datasets_by_name,
+                         quoted=quoted[:k - n])
+
+
 def _flat_spelling_refusal(
     *,
     host: SlayerDataset,
@@ -926,22 +1283,32 @@ def _flat_spelling_refusal(
     written: Tuple[str, ...],
     quoted: Tuple[bool, ...],
     datasets_by_name: Dict[str, SlayerDataset],
+    anchor: Optional[str] = None,
+    via: Tuple[str, ...] = (),
 ) -> Optional[UnknownReferenceError]:
     """The refusal of a failed walk whose remaining tokens, joined with ``__``, name a field of a dataset on its walked
-    prefix (nearest the root first); ``written`` is the dropped root qualifier, if any."""
-    tokens = (*hop_path, leaf)
-    for k in range(len(hop_path)):
+    prefix (nearest the root first); ``written`` is the dropped root qualifier, if any; ``anchor`` is an anchored
+    reference's written anchor, reached by the route ``via``, which the hint spells as written."""
+    full = (*via, *hop_path)
+    flags = (*(False for _ in via), *quoted)
+    tokens = (*full, leaf)
+    for k in range(len(full)):
         try:
-            walked = walk_terminal(root=host, path=hop_path[:k], datasets_by_name=datasets_by_name, quoted=quoted[:k])
+            walked = _walk_prefix(host=host, via=via, hop_path=hop_path, k=k, datasets_by_name=datasets_by_name,
+                                  quoted=quoted)
         except CircularRelationshipPathError:
             return None
         if walked is None:
             return None
         dataset = walked[0]
-        exact = any(quoted[k:])
+        exact = any(flags[k:])
         col = peek_dataset_field(dataset=dataset, name="__".join(tokens[k:]), quoted=exact)
         if col is not None:
-            prefix = (*written, *(_quoted_segment(t, quoted=q) for t, q in zip(hop_path[:k], quoted)))
+            segments = tuple(_quoted_segment(t, quoted=q) for t, q in zip(full[:k], flags))
+            if anchor is None:
+                prefix = (*written, *segments)
+            else:
+                prefix = (anchor, *segments[len(via):]) if k >= len(via) else (spelled_name(dataset.spelling),)
             flat = ".".join((*prefix, _quoted_segment(col.name, quoted=exact)))
             reference = ".".join(spelled)
             return UnknownReferenceError(
@@ -953,13 +1320,15 @@ def _flat_spelling_refusal(
 
 
 def _reject_opaque_elements(
-    *, host: SlayerDataset, hop_path: Tuple[str, ...], index: int, parts: Tuple[str, ...],
+    *, host: SlayerDataset, via: Tuple[str, ...], hop_path: Tuple[str, ...], index: int, parts: Tuple[str, ...],
     datasets_by_name: Dict[str, SlayerDataset], quoted: Tuple[bool, ...],
 ) -> None:
-    """A hop naming a list of opaque elements: they have no element access."""
-    walked = walk_terminal(root=host, path=hop_path[:index], datasets_by_name=datasets_by_name, quoted=quoted[:index])
-    hop_quoted = index < len(quoted) and quoted[index]
-    field = walked[0].get_field(hop_path[index], quoted=hop_quoted) if walked is not None else None
+    """A hop (``index`` into ``via`` then ``hop_path``) naming a list of opaque elements: they have no element access."""
+    walked = _walk_prefix(host=host, via=via, hop_path=hop_path, k=index, datasets_by_name=datasets_by_name,
+                          quoted=quoted)
+    flags = (*(False for _ in via), *quoted)
+    hop_quoted = index < len(flags) and flags[index]
+    field = walked[0].get_field((*via, *hop_path)[index], quoted=hop_quoted) if walked is not None else None
     if field is not None and field.datatype is DataType.ARRAY:
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="DatasetScope",
@@ -991,7 +1360,7 @@ def _route_edgeless_hop(
     terminal = datasets_by_name.get(hop)
     if terminal is None:
         raise _target_not_in_bundle(parts=parts, target=hop)
-    chain = walk(root=host, path=tuple(route), datasets_by_name=datasets_by_name)
+    chain = walk(root=host, path=(), via=tuple(route), datasets_by_name=datasets_by_name)
     assert chain is not None  # a safe route walks by construction
     return terminal, canonical_path(chain)
 
@@ -1006,6 +1375,7 @@ def _target_not_in_bundle(*, parts: Tuple[str, ...], target: str) -> UnknownRefe
 def _broken_chain_error(
     *,
     host: SlayerDataset,
+    via: Tuple[str, ...],
     hop_path: Tuple[str, ...],
     leaf: str,
     parts: Tuple[str, ...],
@@ -1013,32 +1383,42 @@ def _broken_chain_error(
     datasets_by_name: Dict[str, SlayerDataset],
     quoted: Tuple[bool, ...],
 ) -> UnresolvableDimensionRelationshipError:
-    """A multi-hop dotted chain with an unresolvable hop — rejected, never
+    """A multi-hop dotted chain (the route ``via`` then ``hop_path``) with an unresolvable hop — rejected, never
     auto-repaired. Names the dataset the hop leaves and its fields; suggests the short form ``Target.leaf`` when its
-    target (``hop_path[-1]``) is itself uniquely routable."""
-    target = hop_path[-1]
+    target (its last hop) is itself uniquely routable."""
+    full = (*via, *hop_path)
+    target = full[-1]
     routable = dimension_routing.short_form_route_or_none(
         root=host, target_dataset=target, datasets_by_name=datasets_by_name,
     )
-    left = walk_terminal(
-        root=host, path=hop_path[:miss.index], datasets_by_name=datasets_by_name, quoted=quoted[:miss.index],
-    )
+    left = _walk_prefix(host=host, via=via, hop_path=hop_path, k=miss.index, datasets_by_name=datasets_by_name,
+                        quoted=quoted)
     assert left is not None  # the walk reached the failing hop
     return UnresolvableDimensionRelationshipError(
         reference=".".join(parts),
         root_dataset=host.spelling,
         reason=(
-            f"'{'.'.join(hop_path)}' is not a valid relationship chain: hop {miss.token!r} does not resolve from dataset "
+            f"'{'.'.join(full)}' is not a valid relationship chain: hop {miss.token!r} does not resolve from dataset "
             f"{left[0].spelling!r}, whose fields are {[c.name for c in left[0].fields]}."
         ),
         suggested_path=f"{target}.{leaf}" if routable is not None else None,
     )
 
 
+def _source_column_key(
+    parts: Tuple[str, ...], *, scope: DatasetScope, quoted: Tuple[bool, ...],
+) -> FieldSqlKey | None:
+    """The key of the runtime reader ``source.column`` names on the scope's population, else ``None``."""
+    if scope.population is None or len(parts) != 2:
+        return None
+    reader = source_reader(scope.population, qualifier=parts[0], column=parts[1], quoted=quoted[1:2] == (True,))
+    return None if reader is None else FieldSqlKey(path=(), dataset=scope.population.name, field_name=reader.name)
+
+
 def _resolve_dotted(
     parts: Tuple[str, ...],
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     metric_ctx: Optional[MetricResolutionCtx] = None,
@@ -1046,10 +1426,18 @@ def _resolve_dotted(
 ) -> ValueKey:
     """Resolve a dotted ref against the scope; ``quoted`` flags each double-quoted segment, matched exactly.
 
-    Resolution order: root qualifier dropped → declared alias (dotted text) → relationship walk
-    → leaf field → saved metric (re-anchored into host coords, eligible position)."""
+    Resolution order: the ``source`` qualifier's source column → root qualifier dropped → declared alias (dotted text)
+    → relationship walk → leaf field → saved metric (re-anchored into host coords, eligible position). An anchored
+    scope reads the first segment as the reference's anchor instead (``queries/references``)."""
     original_parts = parts
     original_quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
+    if is_anchored(scope):
+        return _resolve_anchored(
+            parts, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx, quoted=original_quoted,
+        )
+    source_key = _source_column_key(parts, scope=scope, quoted=original_quoted)
+    if source_key is not None:
+        return source_key
     parts = drop_root_qualifier(parts, root_spelling(scope), quoted=original_quoted)
     quoted = original_quoted[len(original_parts) - len(parts):]
     if alias_map:
@@ -1065,10 +1453,6 @@ def _resolve_dotted(
             metric_ctx=metric_ctx, quoted=quoted[0],
         )
 
-    if isinstance(scope, StageSchema):
-        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf=LIST_ELEMENT_FIELD, quoted=quoted)
-
-    assert isinstance(scope, DatasetScope)
     if scope.population is None:
         raise UnknownReferenceError(
             name=".".join(parts),
@@ -1094,29 +1478,51 @@ def _resolve_dotted(
     )
 
 
-def _stage_list_scope(
-    parts: Tuple[str, ...], *, scope: StageSchema, bundle: ResolvedSourceBundle, leaf: str, quoted: Tuple[bool, ...],
-) -> DatasetScope:
-    """The stage's dataset scope for ``L.value`` / ``L.*`` over its list field ``L``; any other dotted ref is illegal."""
-    element_shaped = len(parts) == 2 and match_name(name=parts[1], declared=[leaf], quoted=quoted[1]) is not None
-    head = scope.resolve_flat_name(parts[0], quoted=quoted[0]) if element_shaped else None
-    flat = scope.peek_flat_name("__".join(parts), quoted=any(quoted))
-    if element_shaped and head is None and flat is None:
+def _resolve_anchored(
+    parts: Tuple[str, ...],
+    *,
+    scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]],
+    metric_ctx: Optional[MetricResolutionCtx],
+    quoted: Tuple[bool, ...],
+) -> ValueKey:
+    """A query's dotted reference: an alias by its text, else anchored at its first segment."""
+    if alias_map:
+        alias = match_path(parts=parts, declared=alias_map, quoted=quoted)
+        if alias is not None:
+            return alias_map[alias]
+    if scope.population is None:
         raise UnknownReferenceError(
-            name=".".join(parts), scope_kind="StageSchema",
-            scope_summary=f"{scope.label} fields: {[c.name for c in scope.fields]}", suggestion=None,
+            name=".".join(parts), scope_kind="DatasetScope", scope_summary=_NO_ANCHOR_SCOPE_SUMMARY, suggestion=None,
         )
-    if head is None or head.datatype != DataType.ARRAY or bundle.population is None:
-        raise IllegalScopeReferenceError(
-            name=".".join(parts),
-            scope_kind="StageSchema",
-            reason=(
-                "downstream stages see a flat schema — dotted refs are not legal "
-                "bar a list field's elements (L.value, L.*). Use the flat field name"
-                + ("." if flat is None else f" {_quoted_segment(flat.name, quoted=any(quoted))!r}.")
-            ),
+    host = scope.population
+    metric = _anchored_saved_metric(parts, scope=scope, bundle=bundle, metric_ctx=metric_ctx, quoted=quoted)
+    if metric is not None:
+        return metric
+    anchor = _anchor_of(parts, scope=scope, bundle=bundle, quoted=quoted)
+    route, rest, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+    leaf = rest[-1]
+    if not route and len(rest) == 1:
+        return _resolve_terminal_leaf(
+            current=host, leaf=leaf, hop_path=(), original_parts=parts, scope=scope, bundle=bundle,
+            metric_ctx=metric_ctx, quoted=flags[-1],
         )
-    return DatasetScope(population=bundle.population)
+    current, effective_hop_path = _walk_relationship_chain(
+        via=route, hop_path=rest[:-1], host=host, bundle=bundle, parts=parts, leaf=leaf, quoted=flags,
+        routes_short_form=False, anchor=_quoted_segment(parts[0], quoted=quoted[0]),
+    )
+    if is_spine(current) and len(effective_hop_path) > len(route):  # hops after the anchor's route reach the spine
+        raise UnresolvableDimensionRelationshipError(
+            reference=".".join(parts), root_dataset=host.spelling,
+            reason=f"a route never crosses {TIME_SPINE_DATASET!r}, which is read only as an anchor.",
+            suggested_path=f"{TIME_SPINE_DATASET}.{leaf}",
+        )
+    key = _resolve_terminal_leaf(
+        current=current, leaf=leaf, hop_path=effective_hop_path, original_parts=parts, scope=scope,
+        bundle=bundle, metric_ctx=metric_ctx, quoted=flags[-1],
+    )
+    return _with_anchor(key, anchor=anchor, rest=tuple(effective_hop_path[len(route):]), host=host)
 
 
 def _resolve_terminal_leaf(
@@ -1134,6 +1540,7 @@ def _resolve_terminal_leaf(
     → saved metric (re-anchored into host coords) → unresolved error."""
     col = resolve_generated_field(dataset=current, name=leaf, quoted=quoted)
     if col is not None:
+        _check_evaluable(col, dataset=current)
         if col.needs_expansion:
             # Derived / filtered field on a joined dataset — path is part of the
             # key so the cross-dataset planner can route via the relationship graph.
@@ -1148,7 +1555,7 @@ def _resolve_terminal_leaf(
             metric_ctx=metric_ctx, ref_text=".".join(original_parts),
             host_path=tuple(hop_path),
         )
-    raise _unresolved_dotted_error(parts=original_parts, terminal_dataset=current)
+    raise _unresolved_dotted_error(parts=original_parts, terminal_dataset=current, bundle=bundle)
 
 
 _METRIC_LEGAL_POSITIONS = (
@@ -1174,16 +1581,18 @@ def _ineligible_saved_metric_error(
 
 
 def _unresolved_dotted_error(
-    *, parts: Tuple[str, ...], terminal_dataset: SlayerDataset,
+    *, parts: Tuple[str, ...], terminal_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
 ) -> UnknownReferenceError:
     """Error: a dotted leaf matching neither field nor saved metric; names
     both namespaces and offers close matches."""
     dotted = ".".join(parts)
     fields = [c.name for c in terminal_dataset.fields]
     metrics = [m.name for m in terminal_dataset.metrics if m.name]
+    # A list child's identity is minted: name it by the list path the user wrote.
+    label = ".".join(parts[:-1]) if terminal_dataset.list_of is not None else terminal_dataset.spelling
     detail = (
         f"{dotted!r} is neither a field nor a saved metric on "
-        f"{terminal_dataset.spelling!r}. Fields: {fields}; saved metrics: {metrics}."
+        f"{label!r}. Fields: {fields}; saved metrics: {metrics}."
     )
     match = _name_suggestion(name=parts[-1], dataset=terminal_dataset)
     if match:
@@ -1191,7 +1600,8 @@ def _unresolved_dotted_error(
     return UnknownReferenceError(
         name=dotted,
         scope_kind="DatasetScope",
-        scope_summary=f"dataset {terminal_dataset.spelling!r}",
+        scope_summary=(f"dataset {label!r}" if terminal_dataset.list_of is not None
+                       else _dataset_label(terminal_dataset, bundle=bundle)),
         suggestion=detail,
     )
 
@@ -1216,12 +1626,13 @@ def _resolve_saved_metric(
     bundle: ResolvedSourceBundle,
     metric_ctx: Optional[MetricResolutionCtx],
     ref_text: str,
-    host_path: Tuple[str, ...],
+    host_path: Tuple[str, ...] | Callable[[], Tuple[str, ...]],
 ) -> ValueKey:
     """Resolve a saved ``DatasetMetric`` into a bound ``ValueKey``. ``host_path``
     is the host→terminal relationship path (``()`` for bare/local); a cross-dataset
-    metric binds against the target then prepends ``host_path``. Raises the
-    ineligible-position error when ``metric_ctx`` is None."""
+    metric binds against the target, its aggregations read from it (semantics Axiom 2.6), any other reference
+    through ``host_path``. Raises the ineligible-position error when ``metric_ctx`` is None."""
+    _check_evaluable(metric, dataset=terminal_dataset)
     if metric_ctx is None:
         raise _ineligible_saved_metric_error(
             ref_text=ref_text, dataset_name=terminal_dataset.spelling,
@@ -1240,49 +1651,49 @@ def _resolve_saved_metric(
     records = _bind_records.get()
     if records is not None:
         records.metrics[(terminal_dataset.name, metric.name)] = None
-    parsed = parse_bound_expr(metric.expression, metric.bound_variables)
-    _reject_placeholders(parsed, text=metric.expression)
+    parsed = parse_bound_expr(metric.text, metric.bound_variables)
+    _reject_placeholders(parsed, text=metric.text)
     if metric.name not in terminal_dataset.query_local_names:
         # A stored definition never sees a query's extensions.
         bundle = bundle.definition_view()
         terminal_dataset = terminal_dataset.definition_view()
         if scope.population is not None:
             scope = DatasetScope(population=scope.population.definition_view())
-    if not host_path:
+    elif scope.anchored:
+        scope = DatasetScope(population=scope.population)
+    if host_path == ():
         # Bare/local: metric lives on the host; bind inline at this scope.
         return _bind(
             parsed, scope=scope, bundle=bundle, in_filter=False, metric_ctx=child,
         )
-    # Cross-dataset: bind against the target, then prepend into host coordinates.
-    host_dataset = scope.population
-    assert host_dataset is not None
+    # Cross-dataset: bind against the target, then read it from the host.
     target_scope = DatasetScope(population=terminal_dataset)
     target_bundle = _rerooted_bundle(bundle=bundle, target=terminal_dataset)
     bound = _bind(
         parsed, scope=target_scope, bundle=target_bundle, in_filter=False,
         metric_ctx=child,
     )
-    return prepend_value_key(bound, host_path=host_path)
+    route = host_path if callable(host_path) else (lambda: cast(Tuple[str, ...], host_path))
+    return compose_frame(bound, frame=terminal_dataset.name, host_path=route)
 
 
 def _resolve_dotted_star(
     parts: Tuple[str, ...],
     *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     quoted: Tuple[bool, ...],
 ) -> StarKey:
     """Resolve a dotted star (``customers.*``) to a ``StarKey`` whose ``path`` is
     the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
+    if is_anchored(scope):
+        return _resolve_anchored_star(parts, scope=scope, bundle=bundle, quoted=quoted)
     original_parts = parts
     parts = drop_root_qualifier(parts, root_spelling(scope), quoted=quoted)
     quoted = quoted[len(original_parts) - len(parts):]
     if parts == ("*",):
         return StarKey()
-    if isinstance(scope, StageSchema):
-        scope = _stage_list_scope(parts, scope=scope, bundle=bundle, leaf="*", quoted=quoted)
-    assert isinstance(scope, DatasetScope)
     host = scope.population
     if host is None:
         raise UnknownReferenceError(
@@ -1300,9 +1711,62 @@ def _resolve_dotted_star(
     return StarKey(path=tuple(effective_hop_path))
 
 
+def _resolve_anchored_star(
+    parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle, quoted: Tuple[bool, ...],
+) -> StarKey:
+    """A query's ``<anchor>[.<route>].*``."""
+    quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
+    host = scope.population
+    if host is None:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="DatasetScope", scope_summary=_NO_ANCHOR_SCOPE_SUMMARY, suggestion=None,
+        )
+    route, rest, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+    if not route and len(rest) == 1:
+        return StarKey()
+    _, effective_hop_path = _walk_relationship_chain(
+        via=route, hop_path=rest[:-1], host=host, bundle=bundle, parts=parts, leaf="*", quoted=flags,
+        routes_short_form=False,
+    )
+    return StarKey(path=tuple(effective_hop_path))
+
+
+def _bare_star(*, scope: DatasetScope) -> StarKey:
+    """A bare ``*``: refused in a query's own scope, where a row count names its dataset."""
+    if is_anchored(scope):
+        raise unqualified_count(root_spelling(scope))
+    return StarKey()
+
+
+def _grain_bundle(*, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ResolvedSourceBundle:
+    """``bundle`` rooted where ``scope``'s grain references bind."""
+    host = scope.grain_scope.population
+    return bundle if scope.grain is None or host is None else bundle.rerooted(host)
+
+
+def _anchored_grain_key(
+    parsed: ParsedExpr, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[ValueKey]:
+    """A grain reference the query's population reaches by no single route, keyed by its anchor alone: only the homes
+    that group by it read it (each by its own route); ``None`` when it names no one anchor."""
+    host = scope.population
+    if not scope.anchored or host is None:
+        return None
+    anchors = {a.name: a for node in walk_parsed_refs(parsed) if isinstance(node, DottedRef)
+               if (a := find_anchor(node.parts[0], quoted=dotted_quoting(node)[0], reader=host,
+                                    datasets_by_name=bundle.datasets_by_name)) is not None}
+    if len(anchors) != 1 or any(not isinstance(n, DottedRef) for n in walk_parsed_refs(parsed)):
+        return None
+    (anchor,) = anchors.values()
+    observe_read(anchor.name)
+    bound = _bind(parsed, scope=DatasetScope(population=anchor, anchored=True), bundle=bundle.rerooted(anchor),
+                  in_filter=False)
+    return compose_frame(bound, frame=anchor.name, host_path=lambda: (anchor_token(anchor.name),))
+
+
 def _bind_partition_keys(
     value, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
     label: str,
@@ -1314,7 +1778,12 @@ def _bind_partition_keys(
         if dim_alias_map and isinstance(elem, Ref) and elem.name in dim_alias_map:
             pks.append(dim_alias_map[elem.name])
             continue
-        bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
+        try:
+            bound = _bind(parsed=elem, scope=scope, bundle=bundle, in_filter=False)
+        except UnresolvableDimensionRelationshipError:
+            bound = _anchored_grain_key(elem, scope=scope, bundle=bundle)
+            if bound is None:
+                raise
         # Whether a key is a query dimension is the checker's; an aggregate-bearing one must already be one.
         if _carries_attached_value(bound) and bound not in (dim_alias_map or {}).values():
             raise PartitionKeyError(
@@ -1335,9 +1804,9 @@ def _carries_attached_value(key: ValueKey) -> bool:
 def _bind_expression_agg_source(
     parsed_source: ParsedExpr, *,
     agg: str,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
-) -> ArithmeticKey | ScalarCallKey | LiteralKey | TimeTruncKey | InKey | TimePointCmpKey | CastKey | ListSetKey:
+) -> ArithmeticKey | ScalarCallKey | LiteralKey | TimeTruncKey | InKey | TimePointCmpKey | CastKey | ListSetKey | WindowKey:
     """Bind a scalar-expression aggregate source.
 
     Dotted joined-dataset leaves and operands carrying ``DatasetField.filter`` are both
@@ -1345,9 +1814,17 @@ def _bind_expression_agg_source(
     desugars to ``CASE WHEN``. The source must still resolve to a row-level
     expression (a field, star, or arithmetic/scalar/predicate composite of them)."""
     bound = _bind(parsed_source, scope=scope, bundle=bundle, in_filter=False)
-    if not isinstance(bound, EXPRESSION_SOURCE_KINDS):
+    if not isinstance(bound, EXPRESSION_SOURCE_KINDS) and not (isinstance(bound, WindowKey) and bound.row_level):
         raise _not_an_aggregation_source(bound, agg=agg)
     return bound
+
+
+def _window_aggregate_valued(node: WindowCall) -> bool:
+    """Whether a parsed window has an aggregation or transform among its operands (its own call excluded)."""
+    call = node.function
+    operands = [call.source, *call.args, call.filter] if isinstance(call, AggCall) else list(getattr(call, "args", ()))
+    operands += [*node.partition, *(item.value for item in node.order)]
+    return any(isinstance(n, (AggCall, TransformCall)) for o in operands for n in walk_parsed(o))
 
 
 def _not_an_aggregation_source(bound: ValueKey, *, agg: str) -> AggregationNotAllowedError:
@@ -1389,7 +1866,7 @@ def _expression_is_confidently_text(key, *, dataset: Optional[SlayerDataset]) ->
 
 def _reject_non_numeric_expression_agg(
     *, source: ValueKey, agg: str,
-    scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> None:
     """A numeric-only aggregation over a text or temporal expression fails here, not in the database."""
     if agg not in NUMERIC_ONLY_AGGREGATIONS:
@@ -1400,7 +1877,7 @@ def _reject_non_numeric_expression_agg(
     if (temporal := temporal_type(source, field_type=field_type)) is not None:
         kind = temporal.value
     elif _expression_is_confidently_text(
-        source, dataset=scope.population if isinstance(scope, DatasetScope) else None,
+        source, dataset=scope.population,
     ):
         kind = "text"
     else:
@@ -1425,6 +1902,8 @@ def _source_is_reaggregation(node) -> bool:
     it is a pure re-aggregation or a row-grain mix."""
     if isinstance(node, (AggCall, TransformCall)):
         return True
+    if isinstance(node, WindowCall):
+        return _window_aggregate_valued(node)
     if isinstance(node, (Arith, Cmp)):
         return _source_is_reaggregation(node.left) or _source_is_reaggregation(node.right)
     if isinstance(node, ScalarCall):
@@ -1438,16 +1917,110 @@ def _source_is_reaggregation(node) -> bool:
     return False
 
 
+def _source_anchors(
+    parsed: AggCall, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[List[SlayerDataset]]:
+    """The datasets a query aggregation's row-level source references are anchored at; ``None`` when one is no
+    dataset reference (an alias, an unknown name, the spine) or the source reads none."""
+    found: List[SlayerDataset] = []
+    # Attached constituents (nested aggregations, transforms) are opaque: only row-level leaves anchor the source.
+    attached = {id(n) for t in walk_parsed(parsed.source) if isinstance(t, (AggCall, TransformCall))
+                for n in walk_parsed(t)}
+    for node in walk_parsed_refs(parsed.source):
+        if isinstance(node, AggCall) or id(node) in attached:
+            continue
+        if not isinstance(node, DottedRef):
+            return None
+        anchor = find_anchor(node.parts[0], quoted=dotted_quoting(node)[0], reader=scope.population,
+                             datasets_by_name=bundle.datasets_by_name)
+        if anchor is None or is_spine(anchor):
+            return None
+        observe_read(anchor.name)
+        found.append(anchor)
+    return found or None
+
+
+def _frame_spelling(
+    parsed: AggCall, *, frame: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> str:
+    """``parsed``'s source with each reference spelled from ``frame``."""
+    datasets = {**bundle.datasets_by_name, frame.name: frame}
+
+    def respell(ref: Ref | DottedRef) -> Ref | DottedRef:
+        if not isinstance(ref, DottedRef):
+            return ref
+        anchor = find_anchor(ref.parts[0], quoted=dotted_quoting(ref)[0], reader=None, datasets_by_name=datasets)
+        if anchor is None:
+            return ref
+        route = to_one_route(frame, anchor, datasets_by_name=datasets)
+        return ref.model_copy(update={"parts": (spelled_name(frame.spelling), *route, *ref.parts[1:]),
+                                      "quoted": False, "quoted_parts": ()})
+
+    return canonical_metric_text(map_refs(parsed.source, respell))
+
+
+def _aggregation_frame(
+    parsed: AggCall, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> Optional[SlayerDataset]:
+    """The dataset a query aggregation is read from (semantics Axiom 2.6), when its source names one."""
+    if not scope.anchored or scope.population is None:
+        return None
+    anchors = _source_anchors(parsed, scope=scope, bundle=bundle)
+    if anchors is None:
+        return None
+    return source_frame(
+        anchors, datasets_by_name={**bundle.datasets_by_name, scope.population.name: scope.population},
+        spell=lambda d: _frame_spelling(parsed, frame=d, bundle=bundle),
+    )
+
+
 def _bind_agg_call(
     parsed: AggCall, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     metric_ctx: Optional[MetricResolutionCtx] = None,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> AggregateKey | TransformKey | TimeTruncKey:
-    """Bind an ``AggCall`` (a granularity called like a function is refused); ``first`` / ``last`` dispatch by the bound operand's
-    type — attached → the series transform, row grain → the ranked aggregation."""
+    """Bind an ``AggCall``, its interior read from its own frame (semantics Axiom 2.6), never routed through the
+    query's population."""
+    frame = _aggregation_frame(parsed, scope=scope, bundle=bundle)
+    if frame is None:
+        return _bind_agg_call_in(
+            parsed, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+            dim_alias_map=dim_alias_map,
+        )
+    host = scope.grain_scope.population
+    assert host is not None and scope.population is not None
+    query_scope, query_bundle = scope, bundle
+    if frame.name != scope.population.name:
+        scope = DatasetScope(population=frame, anchored=True, grain=scope.grain_scope) \
+            if frame.name != host.name else scope.grain_scope
+        bundle = bundle.rerooted(frame)
+    key = _bind_agg_call_in(
+        parsed, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+        dim_alias_map=dim_alias_map,
+    )
+    if not isinstance(key, AggregateKey) or is_attached_source(key.source):
+        # An aggregation over an attached value (``first(regions.metric)``) reads no rows of its own.
+        return key if scope is query_scope else _bind_agg_call_in(
+            parsed, scope=query_scope, bundle=query_bundle, alias_map=alias_map, metric_ctx=metric_ctx,
+            dim_alias_map=dim_alias_map,
+        )
+    key = interior_unanchored(key)
+    return framed_aggregate(key, frame=frame.name) if frame.name != host.name else key
+
+
+def _bind_agg_call_in(
+    parsed: AggCall, *,
+    scope: DatasetScope,
+    bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    metric_ctx: Optional[MetricResolutionCtx] = None,
+    dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+) -> AggregateKey | TransformKey | TimeTruncKey:
+    """Bind an ``AggCall`` (a granularity called like a function is refused); a built-in ``first`` / ``last`` over an
+    attached operand ranks the operand's cells (semantics Axiom 2.4)."""
     if parsed.agg.lower() in RESERVED_NAMES:
         raise ReservedFunctionNameError(name=parsed.agg, where=f"{canonical_metric_text(parsed)}")
     if parsed.filter is not None:
@@ -1472,16 +2045,14 @@ def _bind_agg_call(
         )
         owner, _leaf = _resolve_agg_owner(operand, bundle)
         if is_attached_source(operand) and builtin_semantics(aggregation_definition(owner=owner, agg=parsed.agg)):
-            return _bind_transform_params(
-                op=op, inp=operand, args=parsed.args, kwargs=parsed.kwargs,
-                scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-            )
+            return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
+                            source=cast(AggregateSource, operand))
     return _bind_agg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
 
 def _refuse_granularity_call(
     parsed: AggCall, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
 ) -> None:
@@ -1502,13 +2073,13 @@ def _filter_error(reason: str) -> AggregationFilterError:
     return AggregationFilterError(
         summary=f"{_FILTER_CLAUSE} {reason}",
         location=_FILTER_CLAUSE,
-        suggestion="filter on fields of the aggregated rows, e.g. sum(amount) FILTER (WHERE status = 'paid').",
+        suggestion="filter on fields of the aggregated rows, e.g. sum(orders.amount) FILTER (WHERE orders.status = 'paid').",
     )
 
 
 def _bind_filtered_agg(
     parsed: AggCall, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     metric_ctx: Optional[MetricResolutionCtx] = None,
@@ -1519,7 +2090,7 @@ def _bind_filtered_agg(
     condition = _bind(parsed.filter, scope=scope, bundle=bundle, in_filter=False, dim_alias_map=dim_alias_map)
     if any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(condition)):
         raise _filter_error("needs a row-level condition; it cannot read an aggregate, a transform or a metric.")
-    key = _bind_agg_call(
+    key = _bind_agg_call_in(
         parsed.model_copy(update={"filter": None}), scope=scope, bundle=bundle, alias_map=alias_map,
         metric_ctx=metric_ctx, dim_alias_map=dim_alias_map,
     )
@@ -1543,8 +2114,11 @@ def _carrying_filter(key: AggregateKey, *, condition: ValueKey) -> AggregateKey:
     return key.model_copy(update={"filter": condition})
 
 
-def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSourceBundle) -> TimeTruncKey:
-    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``."""
+def _bind_date_trunc(
+    parsed: DateTrunc, *, source: ValueKey, scope: DatasetScope, bundle: ResolvedSourceBundle,
+) -> TimeTruncKey:
+    """``date_trunc('<unit>', expr)`` as the row-level bucket of ``expr``; a leaf bucketed in another zone is
+    refused."""
     granularity = resolve_granularity(parsed.unit, defined=bundle.granularities)
     if granularity is None:
         raise UnknownGranularityError(summary=unknown_granularity_message(
@@ -1554,6 +2128,9 @@ def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSou
         isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)
     ):
         raise GranularityCallError.wrong_shape(canonical_metric_text(parsed))
+    if bundle.time_zone is not None:
+        check_bucketed_zones(name=canonical_metric_text(parsed), zone=bundle.time_zone,
+                             bucketed_zones=_bucketed_zones(source, scope=scope, bundle=bundle))
     return TimeTruncKey(source=source, granularity=granularity)
 
 
@@ -1599,7 +2176,7 @@ def _classified(parsed: AggCall, *, bundle: ResolvedSourceBundle) -> AggCall:
 
 def _bind_agg_source(
     parsed: AggCall, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
 ) -> AggregateSource:
@@ -1615,7 +2192,7 @@ def _bind_agg_source(
             raise _not_an_aggregation_source(bound, agg=parsed.agg)
         return bound
     if isinstance(parsed.source, StarSource):
-        return StarKey()
+        return _bare_star(scope=scope)
     if (
         isinstance(parsed.source, DottedRef)
         and parsed.source.parts
@@ -1644,11 +2221,14 @@ def _bind_agg_source(
 
 def _bind_agg(
     parsed: AggCall, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
+    source: Optional[AggregateSource] = None,
 ) -> AggregateKey:
-    source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
+    """Bind an aggregation call; ``source`` is its already-bound operand, when given."""
+    if source is None:
+        source = _bind_agg_source(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
     # ``partition_by`` is lifted out of kwargs onto ``partition_keys``
     # (``None`` means no partition, ``[]`` means grand total).
@@ -1657,6 +2237,8 @@ def _bind_agg(
     effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
     )
+    if builtin_semantics(aggregation_definition(owner=_resolve_agg_owner(source, bundle)[0], agg=effective_agg)):
+        check_percentile_fraction(agg=effective_agg, args=parsed.args, kwargs=parsed.kwargs)
     # Names first: no argument value binds before its name is accepted.
     folded = _declared_agg_param_names(agg=effective_agg, source=source, bundle=bundle)[:len(parsed.args)]
     _check_agg_kwarg_names(
@@ -1674,8 +2256,8 @@ def _bind_agg(
     for k, v in parsed.kwargs:
         if k == "partition_by":
             partition_keys = _bind_partition_keys(
-                value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-                label="aggregation",
+                value=v, scope=scope.grain_scope, bundle=_grain_bundle(scope=scope, bundle=bundle),
+                dim_alias_map=dim_alias_map, label="aggregation",
             )
             continue
         kwargs_list.append((
@@ -1707,7 +2289,7 @@ def _bind_agg(
 
 
 def _owner_definition(
-    parsed: AggCall, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    parsed: AggCall, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> Optional[Aggregation]:
     """The aggregation ``parsed.agg`` its field-reading source's owner declares, else ``None``."""
@@ -1822,12 +2404,12 @@ def _check_ranking_positional(*, agg: str, source, bundle: ResolvedSourceBundle,
         )
     if len(args) != 1:
         raise ValueError(
-            f"Aggregation {agg!r} ranks by at most one field or row-level expression; got "
+            f"Aggregation {agg!r} ranks by at most one field or expression; got "
             f"{len(args)} positional value(s)."
         )
-    if not _is_row_level_ranking_key(args[0]):
+    if not _reads_a_field(args[0]):
         raise ValueError(
-            f"Aggregation {agg!r} ranks by a field or a row-level expression of fields; got "
+            f"Aggregation {agg!r} ranks by a field, or an expression of fields and aggregates; got "
             f"{key_display(args[0]) if isinstance(args[0], VALUE_KEY_TYPES) else repr(args[0])} "
             f"as its ranking key."
         )
@@ -1865,10 +2447,11 @@ def _fold_positional_agg_args(
     return (), tuple(folded)
 
 
-def _is_row_level_ranking_key(key: object) -> bool:
-    """A ranking key reads at least one field and no aggregate, transform or attached value."""
-    return isinstance(key, VALUE_KEY_TYPES) and not _carries_attached_value(cast(ValueKey, key)) and any(
-        isinstance(k, (FieldKey, FieldSqlKey)) for k in walk_value_keys(cast(ValueKey, key))
+def _reads_a_field(key: object) -> bool:
+    """A ranking key reads a field, directly or through an aggregate; whether its home determines it is judged at
+    plan time (semantics Axiom 2.4)."""
+    return isinstance(key, VALUE_KEY_TYPES) and not isinstance(key, SqlFragmentKey) and any(
+        isinstance(k, (FieldKey, FieldSqlKey, StarKey)) for k in walk_value_keys(cast(ValueKey, key))
     )
 
 
@@ -1878,14 +2461,11 @@ def _unknown_function_error(name: str, *, aggregations, bundle: ResolvedSourceBu
     callable_names = [*aggregations, *SCALAR_FUNCTIONS, *DATE_PART_ALIASES, *ALL_TRANSFORMS, *granularities]
     match = difflib.get_close_matches(word=name, possibilities=sorted(set(callable_names)), n=1)
     hint = f" Did you mean '{match[0]}'?" if match else ""
-    if name.lower() in AMBIGUOUS_WEEKDAY_NAMES:
-        suggestion = ambiguous_weekday_message(name)
-    else:
-        suggestion = (
-            f"Known: aggregations {sorted(aggregations)}, scalar functions "
-            f"{sorted(SCALAR_FUNCTIONS)}, transforms {sorted(ALL_TRANSFORMS)}, time "
-            f"granularities {granularities}."
-        )
+    suggestion = unknown_call_hint(name) or (
+        f"Known: aggregations {sorted(aggregations)}, scalar functions "
+        f"{sorted(SCALAR_FUNCTIONS)}, transforms {sorted(ALL_TRANSFORMS)}, time "
+        f"granularities {granularities}."
+    )
     return UnknownFunctionError(
         name=name, location=None, summary=f"Unknown function '{name}'.{hint}", suggestion=suggestion,
     )
@@ -1957,7 +2537,9 @@ def _field_agg_refusal(*, col: DatasetField, fields, agg: str, custom: bool) -> 
             return None
         return (f"field {leaf!r} restricts allowed_aggregations to "
                 f"{sorted(col.allowed_aggregations)}; got {agg!r}.")
-    # Dataset-custom aggregations are exempt from the type-default gate.
+    # Dataset-custom aggregations, and fields of a type still unknown, are exempt from the type-default gate.
+    if col.datatype is None:
+        return None
     allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.datatype, frozenset())
     if custom or agg in allowed:
         return None
@@ -1972,7 +2554,7 @@ def _field_agg_refusal(*, col: DatasetField, fields, agg: str, custom: bool) -> 
 
 
 def _bind_quoted_arg(
-    text: str, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    text: str, *, scope: DatasetScope, bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
     """A quoted aggregation argument read as Mode B and bound as its unquoted spelling; a row expression only."""
@@ -1980,14 +2562,17 @@ def _bind_quoted_arg(
         parsed = parse_expr(text)
     except ValueError as exc:
         raise QuotedArgumentRefused(f"it is not a SLayer expression: {exc}") from exc
-    if any(isinstance(node, (AggCall, TransformCall)) for node in walk_parsed(parsed)):
+    nodes = list(walk_parsed(parsed))
+    if any(isinstance(node, WindowCall) for node in nodes):
+        raise QuotedArgumentRefused("it contains a window function")
+    if any(isinstance(node, (AggCall, TransformCall)) for node in nodes):
         raise QuotedArgumentRefused("it contains an aggregate")
     return _bind_agg_arg(parsed, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map)
 
 
 def _bind_agg_arg(
     parsed: ParsedExpr, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ):
@@ -2095,7 +2680,7 @@ def _transform_positional_pairs(
 
 def _bind_transform(
     parsed: TransformCall, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
     metric_ctx: Optional[MetricResolutionCtx] = None,
@@ -2133,7 +2718,7 @@ def _transform_parameters(op: str) -> frozenset[str]:
 
 def _bind_transform_input(
     parsed: ParsedExpr, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     alias_map: Optional[Dict[str, "ValueKey"]],
     metric_ctx: Optional[MetricResolutionCtx],
@@ -2150,7 +2735,7 @@ def _bind_transform_input(
 def _bind_transform_params(
     *, op: str, inp: ValueKey,
     args: Tuple[ParsedExpr, ...], kwargs: Tuple[Tuple[str, ParsedExpr], ...],
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     dim_alias_map: Optional[Dict[str, "ValueKey"]],
     stray: Optional[str] = None,
@@ -2168,8 +2753,8 @@ def _bind_transform_params(
     for k, v in [*positional_pairs, *kwargs]:
         if k == "partition_by" and rank_family:
             partition_keys = _bind_partition_keys(
-                value=v, scope=scope, bundle=bundle, dim_alias_map=dim_alias_map,
-                label=f"transform {op!r}",
+                value=v, scope=scope.grain_scope, bundle=_grain_bundle(scope=scope, bundle=bundle),
+                dim_alias_map=dim_alias_map, label=f"transform {op!r}",
             )
             continue
         if k == "direction" and rank_family:
@@ -2246,7 +2831,7 @@ def _apply_transform_kwarg_defaults(
 
 def _bind_scalar(
     parsed: ScalarCall, *,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     in_filter: bool,
     alias_map: Optional[Dict[str, "ValueKey"]] = None,
@@ -2281,6 +2866,8 @@ def _bind_scalar(
         raise _with_hint(e, hint=positional_hint(e.name)) from e
     if parsed.name == "date_add":
         _check_literal_count(args[DATE_ADD_COUNT_ARG])
+    if parsed.name in DIGITS_SCALARS and len(args) == 2:
+        args = (args[0], _whole_digits(parsed, digits=args[1], field_type=scope_field_type(scope=scope, bundle=bundle)))
     if parsed.name == "json_value":
         args = (_json_input(args[0], scope=scope, bundle=bundle), *args[1:])
     return ScalarCallKey(name=parsed.name, args=args)
@@ -2301,7 +2888,7 @@ def _check_scalar_call(parsed: ScalarCall, *, spelled: list[str], bundle: Resolv
     # Check arity for every allowlisted scalar: sqlglot's handling is
     # inconsistent (silent arg-drop / DB-rejected SQL), so error clearly here.
     arity_error = check_scalar_arity(
-        name=parsed.name, argc=len(parsed.args),
+        name=parsed.name, argc=len(parsed.args), written=parsed.written,
     )
     if arity_error is not None and spelled:
         raise ValueError(f"{arity_error} Note: {positional_hint(spelled[0])}")
@@ -2312,11 +2899,9 @@ def _check_scalar_call(parsed: ScalarCall, *, spelled: list[str], bundle: Resolv
                 f"(value, pattern); got {len(parsed.args)}."
             )
         raise ValueError(arity_error)
-    if parsed.name == "round" and len(parsed.args) == 2 and not _is_integer_literal(parsed.args[1]):
-        raise ValueError(
-            "'round' ndigits (2nd argument) must be an integer literal; got "
-            f"{canonical_metric_text(parsed.args[1])!r}."
-        )
+    if parsed.name in DIGITS_SCALARS and len(parsed.args) == 2 and keyword_spelling(parsed.args[1]) is not None:
+        name = (parsed.written or parsed.name).lower()
+        raise ValueError(f"the digits argument of {name}() is positional. Note: {positional_hint(spelled[-1])}")
     _check_library_literals(parsed, bundle=bundle)
 
 
@@ -2355,7 +2940,7 @@ def _check_library_literals(parsed: ScalarCall, *, bundle: ResolvedSourceBundle)
     check_domain(name, [_fold_to_scalar(arg) for arg in args], texts=[canonical_metric_text(arg) for arg in args])
 
 
-def _json_input(arg: ValueKey, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> ValueKey:
+def _json_input(arg: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> ValueKey:
     """``json_value``'s input: TEXT as is, a native JSON field read as its own type (``CAST(col AS JSONB)``)."""
     field_type = scope_field_type(scope=scope, bundle=bundle)
     db_type = _json_db_type(arg, scope=scope, bundle=bundle)
@@ -2374,9 +2959,9 @@ def _json_input(arg: ValueKey, *, scope: DatasetScope | StageSchema, bundle: Res
     )
 
 
-def _json_db_type(arg: ValueKey, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> Optional[str]:
+def _json_db_type(arg: ValueKey, *, scope: DatasetScope, bundle: ResolvedSourceBundle) -> Optional[str]:
     """The database JSON type of a field ``arg`` (``JSONB``, ``VARIANT``, …), when it has one."""
-    if not isinstance(arg, FieldKey) or not isinstance(scope, DatasetScope) or scope.population is None:
+    if not isinstance(arg, FieldKey) or scope.population is None:
         return None
     owner = resolved_terminal(root=scope.population, path=arg.path, datasets_by_name=bundle.datasets_by_name)
     col = owner.get_field(arg.leaf) if owner is not None else None
@@ -2385,14 +2970,24 @@ def _json_db_type(arg: ValueKey, *, scope: DatasetScope | StageSchema, bundle: R
     return native_json_type(col.db_type, dialect=bundle.dialect)
 
 
-def _is_integer_literal(parsed: ParsedExpr) -> bool:
-    """An integer literal, signed or not (``2``, ``-2``)."""
-    if isinstance(parsed, UnaryOp) and parsed.op == "-":
-        parsed = parsed.operand
-    return (
-        isinstance(parsed, Literal) and isinstance(parsed.value, Decimal)
-        and parsed.value == parsed.value.to_integral_value()
-    )
+def _whole_digits(parsed: ScalarCall, *, digits: ValueKey, field_type: FieldTypeFn) -> ValueKey:
+    """``round`` / ``trunc`` digits: a whole-number literal (as an integer literal), NULL, or an integer value."""
+    if isinstance(digits, LiteralKey):
+        value = digits.value
+        if value is None:
+            return digits
+        if isinstance(value, Decimal) and value == value.to_integral_value():
+            return LiteralKey(value=value.to_integral_value())
+        whole = False
+    else:
+        whole = integer_valued(digits, field_type=field_type)
+    if not whole:
+        name = (parsed.written or parsed.name).lower()
+        raise ScalarArgumentError(
+            summary=f"the digits argument of {name}() must be a whole number; got `{key_display(digits)}`.",
+            suggestion=f"Write whole digits, e.g. {name}(x, 2), or an INT value.",
+        )
+    return digits
 
 
 def _check_literal_count(count: ValueKey) -> None:
@@ -2404,52 +2999,3 @@ def _check_literal_count(count: ValueKey) -> None:
             f"date_add() / interval() count must be an integer or a numeric expression; "
             f"got the literal {value!r}."
         )
-
-
-def _reject_windowed_field_sql(
-    refs: Tuple[ValueKey, ...],
-    *,
-    scope: DatasetScope | StageSchema,
-    bundle: ResolvedSourceBundle,
-    parsed: ParsedExpr,
-) -> None:
-    """Raise ``IllegalWindowInFilterError`` if any referenced ``FieldSqlKey``
-    has a windowed ``DatasetField.sql`` body (no predicate-promotion)."""
-    if isinstance(scope, StageSchema):
-        # StageSchema fields carry no DatasetField.sql; windows caught upstream.
-        return
-    for k in refs:
-        if not isinstance(k, FieldSqlKey):
-            continue
-        dataset = _lookup_dataset(name=k.dataset, scope=scope, bundle=bundle)
-        if dataset is None:
-            continue
-        col = next((c for c in dataset.fields if c.name == k.field_name), None)
-        if col is None or col.sql is None:
-            continue
-        if has_window_function(col.sql):
-            raise IllegalWindowInFilterError(
-                filter_expr=str(parsed),
-                source=(
-                    f"filter references field {k.field_name!r} on dataset "
-                    f"{k.dataset!r} whose DatasetField.sql contains a window "
-                    f"function"
-                ),
-                suggestion=(
-                    "use a rank-family transform (rank, percent_rank, "
-                    "dense_rank, ntile) in the expression instead, or "
-                    "compute the windowed value in an earlier stage."
-                ),
-            )
-
-
-def _lookup_dataset(
-    *,
-    name: str,
-    scope: DatasetScope | StageSchema,
-    bundle: ResolvedSourceBundle,
-) -> Optional[SlayerDataset]:
-    if isinstance(scope, DatasetScope) and scope.population is not None:
-        if scope.population.name == name:
-            return scope.population
-    return bundle.get_referenced_dataset(name)

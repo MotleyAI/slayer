@@ -1,9 +1,9 @@
 """Fail-closed guards for equivalent time dimensions (Option A).
 
-Two same-column buckets are now legal, so equivalence decided by column-name text
+Two same-field buckets are now legal, so equivalence decided by field-name text
 leaves two silent-wrong holes; both fail closed here until DEV-1925 resolves by bound
 ``TimeTruncKey`` identity:
-  * a bare ``main_time_dimension`` naming a column with several granularities;
+  * a bare ``main_time_dimension`` naming a field with several granularities;
   * time dimensions that bind to one ``TimeTruncKey`` but disagree on date range/label.
 """
 import pytest
@@ -30,13 +30,13 @@ def _mtd(*grans_and_cols: tuple) -> SlayerQuery:
     return fx.q(
         population="orders",
         time_dimensions=[{"field": c, "granularity": g} for g, c in grans_and_cols],
-        metrics=[{"metric": "sum(amount)"}],
-        main_time_dimension="created_at",
+        metrics=[{"metric": "sum(orders.amount)"}],
+        main_time_dimension="orders.created_at",
     )
 
 
 async def _orders_dataset(engine: SlayerQueryEngine, **overrides):
-    """The orders model (asserted present), with optional field overrides applied."""
+    """The orders dataset (asserted present), with optional field overrides applied."""
     model = await engine.storage.get_dataset("orders")
     assert model is not None
     return model.model_copy(update=overrides) if overrides else model
@@ -46,63 +46,63 @@ class TestMainTimeDimensionAmbiguity:
     async def test_two_same_column_buckets_raise_via_execute(self, engine) -> None:
         q = fx.q(
             population="orders",
-            dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
-            main_time_dimension="created_at",
-            metrics=[{"metric": "cumsum(sum(amount))", "alias": "cs"}],
+            dimensions=["date_trunc('month', orders.created_at)", "date_trunc('year', orders.created_at)"],
+            main_time_dimension="orders.created_at",
+            metrics=[{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
         )
         with pytest.raises(AmbiguousReferenceError) as ei:
             await engine.execute(q, dry_run=True)
         msg = str(ei.value)
-        assert "date_trunc('month', created_at)" in msg
-        assert "date_trunc('year', created_at)" in msg
+        assert "date_trunc('month', orders.created_at)" in msg
+        assert "date_trunc('year', orders.created_at)" in msg
 
     async def test_unit_resolve_raises_on_same_column_buckets(self, engine) -> None:
         model = await _orders_dataset(engine)
-        q = _mtd(("month", "created_at"), ("year", "created_at"))
+        q = _mtd(("month", "orders.created_at"), ("year", "orders.created_at"))
         with pytest.raises(AmbiguousReferenceError):
-            _resolve_main_time_dimension(query=q, dataset=model)
+            _resolve_main_time_dimension(query=q, dataset=model, root="orders")
 
     async def test_single_bucket_still_resolves(self, engine) -> None:
         model = await _orders_dataset(engine)
-        td = TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
-        q = SlayerQuery(population="orders", time_dimensions=[td], main_time_dimension="created_at")
+        td = TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)
+        q = SlayerQuery(population="orders", time_dimensions=[td], main_time_dimension="orders.created_at")
         # A lone TD ignores main_time_dimension and resolves regardless.
         assert _resolve_main_time_dimension(query=q, dataset=model) is td
 
     async def test_distinct_columns_still_resolve(self, engine) -> None:
         model = await _orders_dataset(engine)
-        q = _mtd(("month", "created_at"), ("year", "customers.created_at"))
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        q = _mtd(("month", "orders.created_at"), ("year", "customers.created_at"))
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is not None
-        assert resolved.field == "created_at"
+        assert resolved.field == "orders.created_at"
 
     async def test_ambiguous_default_resolves_to_none(self, engine) -> None:
-        # A passive model default can't pick a bucket: resolve to None (lenient) so
+        # A passive dataset default can't pick a bucket: resolve to None (lenient) so
         # no-transform queries still run; a transform then fails at point of use.
         model = await _orders_dataset(engine, default_time_dimension="created_at")
         q = fx.q(
             population="orders",
             time_dimensions=[
-                {"field": "created_at", "granularity": "month"},
-                {"field": "created_at", "granularity": "year"},
+                {"field": "orders.created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "year"},
             ],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         )
-        assert _resolve_main_time_dimension(query=q, dataset=model) is None
+        assert _resolve_main_time_dimension(query=q, dataset=model, root="orders") is None
 
     async def test_default_time_dimension_single_host_match_resolves(self, engine) -> None:
         model = await _orders_dataset(engine, default_time_dimension="created_at")
         q = fx.q(
             population="orders",
             time_dimensions=[
-                {"field": "created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "month"},
                 {"field": "customers.created_at", "granularity": "year"},
             ],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         )
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is not None
-        assert resolved.field == "created_at"
+        assert resolved.field == "orders.created_at"
 
     async def _orders_with_default_axis(self, tmp_path):
         engine = await fx.build_engine(tmp_path)
@@ -116,10 +116,10 @@ class TestMainTimeDimensionAmbiguity:
         q = fx.q(
             population="orders",
             time_dimensions=[
-                {"field": "created_at", "granularity": "month"},
-                {"field": "created_at", "granularity": "year"},
+                {"field": "orders.created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "year"},
             ],
-            metrics=[{"metric": "cumsum(sum(amount))", "alias": "cs"}],
+            metrics=[{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
         )
         with pytest.raises(ValueError, match="unambiguous time dimension"):
             await engine.execute(q, dry_run=True)
@@ -129,10 +129,10 @@ class TestMainTimeDimensionAmbiguity:
         q = fx.q(
             population="orders",
             time_dimensions=[
-                {"field": "created_at", "granularity": "month"},
-                {"field": "created_at", "granularity": "year"},
+                {"field": "orders.created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "year"},
             ],
-            metrics=[{"metric": "sum(amount)"}],
+            metrics=[{"metric": "sum(orders.amount)"}],
         )
         resp = await engine.execute(q, dry_run=True)
         assert resp.sql

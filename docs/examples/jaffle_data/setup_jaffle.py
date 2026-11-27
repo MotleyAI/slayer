@@ -17,7 +17,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DB_PATH = os.path.join(_THIS_DIR, "demo", "jaffle_shop.duckdb")
-MODELS_DIR = os.path.join(_THIS_DIR, "slayer_models")
+DATASETS_DIR = os.path.join(_THIS_DIR, "slayer_datasets")
 
 
 def ensure_jaffle_shop(
@@ -31,7 +31,7 @@ def ensure_jaffle_shop(
     # Machine-independent notebook outputs: no paths in warnings (kernel-wide by design).
     warnings.formatwarning = lambda msg, cat, *a, **k: f"{cat.__name__}: {msg}\n"
 
-    storage = YAMLStorage(base_dir=MODELS_DIR)
+    storage = YAMLStorage(base_dir=DATASETS_DIR)
 
     _ds, datasets, db_built = ensure_demo_datasource(
         storage,

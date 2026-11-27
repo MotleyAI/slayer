@@ -1,18 +1,18 @@
-"""Stage 7b.3c (DEV-1450) — date_range → filter + main-TD disambiguation.
+"""date_range → filter + main-TD disambiguation.
 
 Two pieces:
 
-1. ``_resolve_main_time_dimension(query, model) -> Optional[TimeDimension]``
+1. ``_resolve_main_time_dimension(query, dataset) -> Optional[TimeDimension]``
    resolves the active TD for transform / windowing semantics:
    single TD → it; multiple TDs with ``query.main_time_dimension`` →
-   match by full_name or leaf; multiple TDs with model
+   match by full_name or leaf; multiple TDs with dataset
    ``default_time_dimension`` → match by leaf; neither → None;
    unrecognised name → ``UnknownReferenceError``.
 
 2. ``plan_query`` converts each ``TimeDimension.date_range = [start,
    end]`` into a row-phase ``BoundFilter`` on the bare underlying
-   column (``column >= start(start) AND column < next_start(end)``). The
-   filter binds against the raw ``ColumnKey``, NOT the ``TimeTruncKey`` —
+   field (``field >= start(start) AND field < next_start(end)``). The
+   filter binds against the raw ``FieldKey``, NOT the ``TimeTruncKey`` —
    so the shifted self-join CTE reads raw data while the outer projection
    applies the date filter.
 """
@@ -69,7 +69,7 @@ def _customers_dataset() -> SlayerDataset:
     )
 
 
-def _orders_with_customers_join() -> SlayerDataset:
+def _orders_with_customers_relationship() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="prod",
@@ -97,7 +97,7 @@ def _bundle_local() -> ResolvedSourceBundle:
 def _bundle_joined() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_with_customers_join(),
+        population=_orders_with_customers_relationship(),
         referenced_datasets=[_customers_dataset()],
     )
 
@@ -111,53 +111,53 @@ class TestResolveMainTimeDimension:
     def test_no_time_dimensions_returns_none(self) -> None:
         model = _orders_dataset()
         q = SlayerQuery(population="orders")
-        assert _resolve_main_time_dimension(query=q, dataset=model) is None
+        assert _resolve_main_time_dimension(query=q, dataset=model, root="orders") is None
 
     def test_single_td_returns_it(self) -> None:
         model = _orders_dataset()
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td])
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is td
 
     def test_multi_td_no_disambiguator_returns_none(self) -> None:
         model = _orders_dataset()
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td_a, td_b])
-        assert _resolve_main_time_dimension(query=q, dataset=model) is None
+        assert _resolve_main_time_dimension(query=q, dataset=model, root="orders") is None
 
     def test_multi_td_main_time_dimension_matches_by_leaf(self) -> None:
         model = _orders_dataset()
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td_a, td_b],
-            main_time_dimension="reviewed_at",
+            main_time_dimension="orders.reviewed_at",
         )
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is td_b
 
     def test_multi_td_main_time_dimension_matches_by_full_name(self) -> None:
-        model = _orders_with_customers_join()
+        model = _orders_with_customers_relationship()
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
@@ -169,7 +169,7 @@ class TestResolveMainTimeDimension:
             time_dimensions=[td_a, td_b],
             main_time_dimension="customers.signed_up_at",
         )
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is td_b
 
     def test_full_name_wins_over_leaf_match(self) -> None:
@@ -195,7 +195,7 @@ class TestResolveMainTimeDimension:
             ],
         )
         td_local = TimeDimension(
-            field="signed_up_at",
+            field="orders.signed_up_at",
             granularity=TimeGranularity.MONTH,
         )
         td_joined = TimeDimension(
@@ -205,9 +205,9 @@ class TestResolveMainTimeDimension:
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td_local, td_joined],
-            main_time_dimension="signed_up_at",
+            main_time_dimension="orders.signed_up_at",
         )
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         # Local full-name "signed_up_at" matches td_local exactly; the
         # joined TD only matches by leaf. Full-name wins.
         assert resolved is td_local
@@ -218,66 +218,66 @@ class TestResolveMainTimeDimension:
         # is only consulted as a disambiguator for 2+ TDs.
         model = _orders_dataset()
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td],
-            main_time_dimension="something_else",
+            main_time_dimension="orders.something_else",
         )
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is td
 
     def test_multi_td_default_time_dimension_falls_back_when_no_main(self) -> None:
         model = _orders_dataset(default_td="reviewed_at")
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td_a, td_b])
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is td_b
 
     def test_query_main_td_wins_over_model_default(self) -> None:
         model = _orders_dataset(default_td="reviewed_at")
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td_a, td_b],
-            main_time_dimension="created_at",
+            main_time_dimension="orders.created_at",
         )
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is td_a
 
     def test_unknown_main_time_dimension_raises(self) -> None:
         model = _orders_dataset()
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td_a, td_b],
-            main_time_dimension="not_a_td",
+            main_time_dimension="orders.not_a_td",
         )
         with pytest.raises(UnknownReferenceError):
-            _resolve_main_time_dimension(query=q, dataset=model)
+            _resolve_main_time_dimension(query=q, dataset=model, root="orders")
 
     def test_ambiguous_leaf_match_raises(self) -> None:
         # Two joined TDs with the same leaf — ``customers.created_at``
@@ -318,7 +318,7 @@ class TestResolveMainTimeDimension:
             main_time_dimension="created_at",
         )
         with pytest.raises(AmbiguousReferenceError) as excinfo:
-            _resolve_main_time_dimension(query=q, dataset=host)
+            _resolve_main_time_dimension(query=q, dataset=host, root="orders")
         # The error should surface both candidates so the user can
         # disambiguate.
         assert "customers.created_at" in str(excinfo.value)
@@ -326,12 +326,12 @@ class TestResolveMainTimeDimension:
 
     def test_default_td_picks_host_local_over_joined(self) -> None:
         # Legacy ``_resolve_time_alias`` returns
-        # f"{model.name}.{default_time_dimension}" — the host-local form.
+        # f"{dataset.name}.{default_time_dimension}" — the host-local form.
         # When the query includes a joined TD ``customers.created_at``
         # AND a local TD ``reviewed_at``, and the host's default is set
         # to ``created_at`` (which doesn't match a local TD), the
         # resolver must return None rather than the joined match.
-        model = _orders_with_customers_join()
+        model = _orders_with_customers_relationship()
         model = model.model_copy(update={"default_time_dimension": "created_at"})
         td_joined = TimeDimension(
             field="customers.signed_up_at",
@@ -349,7 +349,7 @@ class TestResolveMainTimeDimension:
         )
         # With only one TD, the helper returns that TD (single-TD path
         # bypasses default_time_dimension). To exercise the default
-        # path we need 2+ TDs. Build a fresh model + bundle inline:
+        # path we need 2+ TDs. Build a fresh dataset + bundle inline:
         host = SlayerDataset(
             name="orders",
             data_source="prod",
@@ -368,7 +368,7 @@ class TestResolveMainTimeDimension:
             default_time_dimension="created_at",  # doesn't match any LOCAL TD
         )
         td_local = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         td_joined2 = TimeDimension(
@@ -382,7 +382,7 @@ class TestResolveMainTimeDimension:
         # ``created_at`` doesn't match any local-only TD; the only TDs
         # with leaf == "created_at" are joined, and legacy never returns
         # a joined TD via the default path. Result: None.
-        resolved = _resolve_main_time_dimension(query=q, dataset=host)
+        resolved = _resolve_main_time_dimension(query=q, dataset=host, root="orders")
         assert resolved is None
 
     def test_default_td_matches_local_td(self) -> None:
@@ -399,33 +399,33 @@ class TestResolveMainTimeDimension:
             default_time_dimension="created_at",
         )
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td_a, td_b])
-        resolved = _resolve_main_time_dimension(query=q, dataset=host)
+        resolved = _resolve_main_time_dimension(query=q, dataset=host, root="orders")
         assert resolved is td_a
 
     def test_unknown_default_td_does_not_raise_but_returns_none(self) -> None:
-        # If model.default_time_dimension is set but doesn't match any
+        # If dataset.default_time_dimension is set but doesn't match any
         # entry in query.time_dimensions, the resolver returns None
-        # (legacy behaviour — the default points at a column the user
+        # (legacy behaviour — the default points at a field the user
         # didn't include this query).
         model = _orders_dataset(default_td="not_in_query")
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td_a, td_b])
-        assert _resolve_main_time_dimension(query=q, dataset=model) is None
+        assert _resolve_main_time_dimension(query=q, dataset=model, root="orders") is None
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +434,7 @@ class TestResolveMainTimeDimension:
 
 
 def _plan_filters(planned):
-    """DEV-1865: the placed-filter view is reconstructed by the emission lowering."""
+    """The placed-filter view is reconstructed by the emission lowering."""
     return _lower_positions(planned).filters
 
 
@@ -467,7 +467,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -475,7 +475,7 @@ class TestDateRangeFilter:
         )
         planned = plan_query(query=q, bundle=_bundle_local())
         lower, upper = _find_date_range_filter_on(planned=planned, leaf="created_at")
-        # The bound targets the BARE underlying column, not the TimeTruncKey.
+        # The bound targets the BARE underlying field, not the TimeTruncKey.
         assert lower.operands[0] == FieldKey(path=(), leaf="created_at")
         # TIMESTAMP operand: datetime literals; the day-period upper bound is exclusive.
         assert lower.operands[1] == LiteralKey(value=datetime(2024, 1, 1))
@@ -486,7 +486,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="reviewed_at",
+                    field="orders.reviewed_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03"],
                 ),
@@ -502,7 +502,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -518,7 +518,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -541,21 +541,21 @@ class TestDateRangeFilter:
         lower, _upper = _find_date_range_filter_on(
             planned=planned, leaf="signed_up_at",
         )
-        # Joined TD: path carries the join hop on the underlying column.
-        expected_col = FieldKey(path=("customers",), leaf="signed_up_at")
+        # Joined TD: path carries the relationship hop on the underlying field.
+        expected_col = FieldKey(path=("customers",), leaf="signed_up_at", anchor=("customers",))
         assert lower.operands[0] == expected_col
 
     def test_user_filter_and_date_range_coexist(self) -> None:
         # A user-supplied filter and the auto-generated date_range filter
-        # both appear, both row-phase. DEV-1450 stage 7b.9 enforces
+        # both appear, both row-phase, in the
         # legacy WHERE order: date_range first, user filter second.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "filter": ["amount > 0"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "filter": ["orders.amount > 0"],
             "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -579,17 +579,17 @@ class TestDateRangeFilter:
 
     def test_multiple_tds_each_with_date_range(self) -> None:
         # Two TDs, each with date_range — two separate filters, one per
-        # underlying column.
+        # underlying field.
         q = SlayerQuery(
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
                 TimeDimension(
-                    field="reviewed_at",
+                    field="orders.reviewed_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-02-01", "2024-04-01"],
                 ),
@@ -601,7 +601,7 @@ class TestDateRangeFilter:
             f for f in _plan_filters(planned) if f.phase == Phase.ROW
         ]
         assert len(row_filters) == 2
-        # Each one targets a different underlying column.
+        # Each one targets a different underlying field.
         and_created = _find_date_range_filter_on(
             planned=planned, leaf="created_at",
         )
@@ -624,7 +624,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01"],
                 ),
@@ -641,7 +641,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -655,25 +655,25 @@ class TestDateRangeFilter:
 
 
 # ---------------------------------------------------------------------------
-# date_range filter on the underlying column (NOT TimeTruncKey)
+# date_range filter on the underlying field (NOT TimeTruncKey)
 # ---------------------------------------------------------------------------
 
 
 class TestDateRangeHiddenSlot:
     def test_raw_column_slot_materialized_hidden(self) -> None:
-        # The date_range filter binds against the raw ColumnKey. For
-        # the generator to render that column expression independently
+        # The date_range filter binds against the raw FieldKey. For
+        # the generator to render that field expression independently
         # of the TimeTruncKey (so the outer WHERE references the raw
-        # column while the truncated form goes in the SELECT), the
-        # planner MUST materialise the raw ColumnKey as a hidden slot
+        # field while the truncated form goes in the SELECT), the
+        # planner MUST materialise the raw FieldKey as a hidden slot
         # alongside the public TimeTruncKey slot — they are two
         # distinct slot identities even though they target the same
-        # underlying column.
+        # underlying field.
         q = SlayerQuery(
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -711,7 +711,7 @@ class TestDateRangeBindsToUnderlyingColumn:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -723,6 +723,6 @@ class TestDateRangeBindsToUnderlyingColumn:
         # Walk the predicate; no TimeTruncKey should appear in the tree.
         keys = list(walk_value_keys(fp.expression.value_key))
         assert not any(isinstance(k, TimeTruncKey) for k in keys), (
-            f"date_range filter should target raw column, not TimeTruncKey; "
+            f"date_range filter should target raw field, not TimeTruncKey; "
             f"got keys: {[type(k).__name__ for k in keys]}"
         )

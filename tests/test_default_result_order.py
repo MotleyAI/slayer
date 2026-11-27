@@ -20,29 +20,29 @@ from slayer.storage.sqlite_conn import transaction
 from tests._arrow_types import ArrowTable
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
 
-REVENUE = "sum(order_total)"
+REVENUE = "sum(orders.order_total)"
 STORE_MONTH: dict[str, Any] = {
-    "population": "orders", "metrics": [REVENUE], "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
+    "population": "orders", "metrics": [REVENUE], "dimensions": ["stores.name", "date_trunc('month', orders.ordered_at)"],
 }
 STATUS_MONTH: dict[str, Any] = {
-    "population": "orders", "metrics": ["count(*)"], "dimensions": ["status", "date_trunc('month', ordered_at)"],
+    "population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.status", "date_trunc('month', orders.ordered_at)"],
 }
 STATUS_MONTH_EXPLICIT: dict[str, Any] = {
     **STATUS_MONTH,
     "order": [
-        {"field": "status", "direction": "asc"},
-        {"field": "date_trunc('month', ordered_at)", "direction": "asc"},
+        {"field": "orders.status", "direction": "asc"},
+        {"field": "date_trunc('month', orders.ordered_at)", "direction": "asc"},
     ],
 }
 PER_CUSTOMER_STAGE: dict[str, Any] = {
     "name": "per_customer", "population": "orders",
-    "dimensions": ["customer_id", "region"], "metrics": [{"metric": REVENUE, "alias": "rev"}],
+    "dimensions": ["orders.customer_id", "orders.region"], "metrics": [{"metric": REVENUE, "alias": "rev"}],
 }
 BY_REGION_STAGE: dict[str, Any] = {
-    "population": "per_customer", "dimensions": ["region"], "metrics": [{"metric": "sum(rev)", "alias": "total"}],
+    "population": "per_customer", "dimensions": ["per_customer.region"], "metrics": [{"metric": "sum(per_customer.rev)", "alias": "total"}],
 }
 SPINE: dict[str, Any] = {
-    "population": "orders", "dimensions": ["region"], "metrics": [REVENUE],
+    "population": "orders", "dimensions": ["orders.region"], "metrics": [REVENUE],
     "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month",
                          "date_range": ["2024-01-01", "2024-03-31"]}],
 }
@@ -89,7 +89,7 @@ def _orders() -> SlayerDataset:
             # Sorts opposite to order_total: big orders label "a-big".
             DatasetField(
                 name="size_label", datatype=DataType.STRING,
-                sql="CASE WHEN order_total >= 50 THEN 'a-big' ELSE 'b-small' END",
+                expression="CASE WHEN order_total >= 50 THEN 'a-big' ELSE 'b-small' END",
             ),
         ],
         relationships=[
@@ -191,7 +191,7 @@ class TestEmission:
     async def test_default_order_is_the_explicit_ascending_order(self, dialect) -> None:
         explicit = {**STORE_MONTH, "order": [
             {"field": "stores.name", "direction": "asc"},
-            {"field": "date_trunc('month', ordered_at)", "direction": "asc"},
+            {"field": "date_trunc('month', orders.ordered_at)", "direction": "asc"},
         ]}
         default_sql = await _sql(STORE_MONTH, dialect=dialect)
         assert _outer_order(default_sql, dialect=dialect) is not None
@@ -200,13 +200,13 @@ class TestEmission:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_dimensions_then_time_dimensions(self, dialect) -> None:
         query = {
-            "population": "orders", "metrics": ["count(*)"], "dimensions": ["status", "region"],
-            "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
+            "population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.status", "orders.region"],
+            "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
         }
         explicit = {**query, "order": [
-            {"field": "status", "direction": "asc"},
-            {"field": "region", "direction": "asc"},
-            {"field": "date_trunc('month', ordered_at)", "direction": "asc"},
+            {"field": "orders.status", "direction": "asc"},
+            {"field": "orders.region", "direction": "asc"},
+            {"field": "date_trunc('month', orders.ordered_at)", "direction": "asc"},
         ]}
         assert await _sql(query, dialect=dialect) == await _sql(explicit, dialect=dialect)
 
@@ -219,8 +219,8 @@ class TestEmission:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_explicit_order_used_verbatim(self, dialect) -> None:
         query = {
-            "population": "orders", "metrics": ["count(*)"], "dimensions": ["status", "region"],
-            "order": [{"field": "count(*)", "direction": "desc"}],
+            "population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.status", "orders.region"],
+            "order": [{"field": "count(orders.*)", "direction": "desc"}],
         }
         text = _order_text(await _sql(query, dialect=dialect), dialect=dialect)
         assert "status" not in text
@@ -228,24 +228,24 @@ class TestEmission:
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_raw_rows_are_not_ordered(self, dialect) -> None:
-        query = {"population": "orders", "dimensions": ["status", "region"], "distinct_dimension_values": False}
+        query = {"population": "orders", "dimensions": ["orders.status", "orders.region"], "distinct_dimension_values": False}
         assert _outer_order(await _sql(query, dialect=dialect), dialect=dialect) is None
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_measure_only_is_not_ordered(self, dialect) -> None:
-        query = {"population": "orders", "metrics": [REVENUE, "count(*)"]}
+        query = {"population": "orders", "metrics": [REVENUE, "count(orders.*)"]}
         assert _outer_order(await _sql(query, dialect=dialect), dialect=dialect) is None
 
 
 class TestExecution:
     async def test_monthly_revenue_by_store_is_sorted(self, engine) -> None:
         resp = await engine.execute(STORE_MONTH)
-        keys = [(r["orders.stores.name"], _month(r["orders.ordered_at"])) for r in resp.data]
+        keys = [(r["stores.name"], _month(r["orders.ordered_at"])) for r in resp.data]
         assert keys == sorted(keys)
         assert len(keys) == 5
 
     async def test_null_dimension_sorts_last(self, engine) -> None:
-        resp = await engine.execute({"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]})
+        resp = await engine.execute({"population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.status"]})
         assert _column(resp, "orders.status") == ["a", "b", "c", "d", None]
 
     async def test_identical_to_explicit_spelling(self, engine) -> None:
@@ -258,23 +258,23 @@ class TestExecution:
 
     async def test_default_order_picks_the_page(self, engine) -> None:
         resp = await engine.execute({
-            "population": "orders", "metrics": ["count(*)"], "dimensions": ["status"], "limit": 2, "offset": 1,
+            "population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.status"], "limit": 2, "offset": 1,
         })
         assert _column(resp, "orders.status") == ["b", "c"]
 
     async def test_explicit_order_wins(self, engine) -> None:
         resp = await engine.execute({
-            "population": "orders", "metrics": ["count(*)"], "dimensions": ["region"],
-            "order": [{"field": "count(*)", "direction": "desc"}],
+            "population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.region"],
+            "order": [{"field": "count(orders.*)", "direction": "desc"}],
         })
         # EU has 4 orders, US 3.
         assert _column(resp, "orders.region") == ["EU", "US"]
 
     async def test_computed_and_joined_dimensions_sort_by_projected_values(self, engine) -> None:
         resp = await engine.execute({
-            "population": "orders", "metrics": ["count(*)"], "dimensions": ["size_label", "customers.name"],
+            "population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.size_label", "customers.name"],
         })
-        keys = [(r["orders.size_label"], r["orders.customers.name"]) for r in resp.data]
+        keys = [(r["orders.size_label"], r["customers.name"]) for r in resp.data]
         assert keys == [("a-big", "Amy"), ("a-big", "Mo"), ("b-small", "Amy"), ("b-small", "Mo"), ("b-small", "Zed")]
 
 
@@ -295,8 +295,8 @@ class TestOnlyOutermost:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_query_backed_model_backing_query_unordered(self, dialect) -> None:
         sql = await _sql({
-            "population": "per_customer_m", "dimensions": ["region"],
-            "metrics": [{"metric": "sum(rev)", "alias": "total"}],
+            "population": "per_customer_m", "dimensions": ["per_customer_m.region"],
+            "metrics": [{"metric": "sum(per_customer_m.rev)", "alias": "total"}],
         }, dialect=dialect)
         assert _ordered_ctes(sql, dialect=dialect) == []
         assert "region" in _order_text(sql, dialect=dialect)
@@ -304,7 +304,7 @@ class TestOnlyOutermost:
     async def test_saved_query_used_as_source_unordered(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(query=[PER_CUSTOMER_STAGE, BY_REGION_STAGE], name="by_region")
         resp = await engine.execute(
-            {"population": "by_region", "dimensions": ["region"], "metrics": ["sum(total)"]}, dry_run=True,
+            {"population": "by_region", "dimensions": ["by_region.region"], "metrics": ["sum(by_region.total)"]}, dry_run=True,
         )
         assert resp.sql is not None
         assert _ordered_ctes(resp.sql, dialect="duckdb") == []
@@ -312,7 +312,7 @@ class TestOnlyOutermost:
 
     async def test_saved_query_run_by_name_is_ordered(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(
-            query={"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"]},
+            query={"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"]},
             name="status_counts",
         )
         resp = await engine.execute("status_counts")
@@ -320,10 +320,10 @@ class TestOnlyOutermost:
 
     async def test_refined_saved_query_is_ordered(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(
-            query={"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"]},
+            query={"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"]},
             name="status_counts",
         )
-        resp = await engine.execute("status_counts", refine={"dimensions": ["region"]})
+        resp = await engine.execute("status_counts", refine={"dimensions": ["orders.region"]})
         keys = [(r["orders.status"], r["orders.region"]) for r in resp.data]
         assert keys == sorted(keys, key=lambda k: (_null_last_key(k[0]), _null_last_key(k[1])))
         assert keys[-1][0] is None
@@ -343,16 +343,16 @@ class TestCombinations:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_transform_measure_matches_explicit_spelling(self, dialect) -> None:
         query = {"population": "orders", "metrics": [REVENUE, f"change_pct({REVENUE})"],
-                 "dimensions": ["date_trunc('month', ordered_at)"]}
-        explicit = {**query, "order": [{"field": "date_trunc('month', ordered_at)", "direction": "asc"}]}
+                 "dimensions": ["date_trunc('month', orders.ordered_at)"]}
+        explicit = {**query, "order": [{"field": "date_trunc('month', orders.ordered_at)", "direction": "asc"}]}
         sql = await _sql(query, dialect=dialect)
         assert _outer_order(sql, dialect=dialect) is not None
         assert sql == await _sql(explicit, dialect=dialect)
 
     async def test_transform_values_unchanged(self, engine) -> None:
         query = {"population": "orders", "metrics": [REVENUE, f"change_pct({REVENUE})"],
-                 "dimensions": ["date_trunc('month', ordered_at)"]}
-        explicit = {**query, "order": [{"field": "date_trunc('month', ordered_at)", "direction": "asc"}]}
+                 "dimensions": ["date_trunc('month', orders.ordered_at)"]}
+        explicit = {**query, "order": [{"field": "date_trunc('month', orders.ordered_at)", "direction": "asc"}]}
         default = await engine.execute(query)
         assert default.data == (await engine.execute(explicit)).data
         months = [_month(v) for v in _column(default, "orders.ordered_at")]
@@ -360,21 +360,21 @@ class TestCombinations:
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_hidden_order_only_slot_gets_no_default(self, dialect) -> None:
-        query = {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"],
+        query = {"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"],
                  "order": [{"field": REVENUE, "direction": "desc"}]}
         assert "status" not in _order_text(await _sql(query, dialect=dialect), dialect=dialect)
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_filter_only_hidden_value_excluded_from_default(self, dialect) -> None:
-        query = {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"],
+        query = {"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"],
                  "filter": [f"{REVENUE} > 0"]}
-        explicit = {**query, "order": [{"field": "status", "direction": "asc"}]}
+        explicit = {**query, "order": [{"field": "orders.status", "direction": "asc"}]}
         sql = await _sql(query, dialect=dialect)
         assert _outer_order(sql, dialect=dialect) is not None
         assert sql == await _sql(explicit, dialect=dialect)
 
     async def test_filter_only_hidden_value_rows_sorted(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute({"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"],
+        resp = await engine.execute({"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"],
                                      "filter": [f"{REVENUE} > 0"]})
         assert resp.columns == ["orders.status", "orders._count"]
         assert _column(resp, "orders.status") == ["a", "b", "c", "d", None]
@@ -386,7 +386,7 @@ class TestCombinations:
         assert keys == sorted(keys, key=lambda k: (_null_last_key(k[0]), k[1]))
         assert len(keys) == 6
         explicit = {**SPINE, "order": [
-            {"field": "region", "direction": "asc"},
+            {"field": "orders.region", "direction": "asc"},
             {"field": "date_trunc('month', time_spine.timestamp)", "direction": "asc"},
         ]}
         sql = (await engine.execute(SPINE, dry_run=True)).sql

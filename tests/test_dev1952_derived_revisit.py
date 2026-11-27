@@ -1,11 +1,12 @@
-"""DEV-1952 — a derived ``Column.sql`` / ``Column.filter`` whose join path revisits
-a model already on it is a typed circular refusal, not a silent ``0.0``.
+"""A derived ``DatasetField.sql`` / ``DatasetField.filter`` whose
+relationship path revisits a dataset already on it is a typed circular refusal,
+not a silent ``0.0``.
 
-The shared walker (``core/join_walker.py::walk``) raises ``CircularJoinPathError``
+The shared walker (``core/relationship_walker.py::walk``) raises ``CircularRelationshipPathError``
 on a revisit (``None`` now means only an unknown/unloaded hop); best-effort
 consumers catch it and keep today's answer, while the two doors that classify a
-user-typed definition fail closed. Save time rejects the model with
-``DerivedColumnCircularError`` from both save doors; query time refuses a stored
+user-typed definition fail closed. Save time rejects the dataset with
+``DerivedFieldCircularError`` from both save doors; query time refuses a stored
 circular definition in every position with the base class; the binder's
 query-typed circular refusal adopts the same class.
 
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import (
     AmbiguousRelationshipPathError,
@@ -29,6 +31,7 @@ from slayer.core.errors import (
     SlayerError,
     UnresolvableDimensionRelationshipError,
 )
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.relationship_walker import terminal_dataset, walk
 from slayer.core.keys import Grain
 from slayer.core.models import (
@@ -65,7 +68,7 @@ DS = "ds"
 
 
 # --------------------------------------------------------------------------- #
-# Save-time model builders (``regions ← customers ← orders``; spend on customers,
+# Save-time dataset builders (``regions ← customers ← orders``; spend on customers,
 # so ``regions.customers.spend`` from customers revisits customers).
 # --------------------------------------------------------------------------- #
 def _regions() -> SlayerDataset:
@@ -79,7 +82,7 @@ def _regions() -> SlayerDataset:
     )
 
 
-def _customers(*, cols: tuple[DatasetField, ...] = (), joins: tuple[DatasetRelationship, ...] = ()) -> SlayerDataset:
+def _customers(*, cols: tuple[DatasetField, ...] = (), relationships: tuple[DatasetRelationship, ...] = ()) -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
         fields=[
@@ -92,7 +95,7 @@ def _customers(*, cols: tuple[DatasetField, ...] = (), joins: tuple[DatasetRelat
         relationships=[
             DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
-            *joins,
+            *relationships,
         ],
     )
 
@@ -165,7 +168,7 @@ class TestErrorVocabulary:
         assert "references 'regions.customers.spend'" in msg
         assert "revisits dataset 'customers'" in msg
         assert "not a field of 'customers'" in msg
-        # Both remedy arms: reference the column directly, or aggregate on the via.
+        # Both remedy arms: reference the field directly, or aggregate on the via.
         assert "Reference the field on 'customers'" in msg
         assert "declare the aggregate on 'regions'" in msg
         assert "reaches 'customers'" in msg
@@ -181,11 +184,8 @@ def _chain() -> dict[str, SlayerDataset]:
 
 
 def _self_relationship_dataset() -> SlayerDataset:
-    """A model carrying a named ``parent`` self-join edge, built via
-    ``model_construct`` to bypass ``SlayerModel._reject_self_relationships`` — a real
-    self-join is rejected at construction, so save/query paths never see one;
-    this exercises the walker's first-hop revisit guard in isolation."""
-    return SlayerDataset.model_construct(
+    """A dataset carrying a named ``parent`` self-relationship edge."""
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
@@ -217,10 +217,9 @@ class TestWalkerRaisesOnRevisit:
 
     def test_self_join_first_hop_raises(self) -> None:
         model = _self_relationship_dataset()
-        with pytest.raises(CircularRelationshipPathError) as ei:
+        with pytest.raises(getattr(core_errors, "SelfRelationshipTraversalError"),
+                           match="(?i)self-relationships are not traversable"):
             walk(root=model, path=("parent",), datasets_by_name={"customers": model})
-        assert ei.value.hop == "parent"
-        assert ei.value.revisited == "customers"
 
     def test_terminal_model_catches_revisit_to_none(self) -> None:
         models = _chain()
@@ -278,8 +277,8 @@ class TestBestEffortConsumersUnchanged:
             datasets_by_name=models) is None
 
     def test_resolve_default_qualifier_path_cancels(self) -> None:
-        # The definition-default door resolves through the cancelling walk
-        # (DEV-1908): a revisiting default cancels back to the dataset on the
+        # The definition-default door resolves through the cancelling walk:
+        # a revisiting default cancels back to the dataset on the
         # path and never surfaces the circular signal.
         models = _chain()
         assert resolve_default_qualifier_path(
@@ -305,7 +304,7 @@ class TestBestEffortConsumersUnchanged:
 
 class TestExpansionDoorRevisit:
     """The strict expansion door re-raises a revisit with the complete pre-strip
-    reference and the column whether it surfaces from the direct walk or from the
+    reference and the field whether it surfaces from the direct walk or from the
     legacy ``a__b`` split-alias probe (which walks the naive split)."""
 
     def test_legacy_split_alias_revisit_keeps_full_spelling(self) -> None:
@@ -329,7 +328,7 @@ class TestSaveTimeStorageDoor:
         storage = _storage(tmp_path)
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),))
+            name="revisit_spend", datatype=DataType.FLOAT, expression="regions.customers.spend"),))
         with pytest.raises(DerivedFieldCircularError) as ei:
             await storage.save_dataset(model)
         exc = ei.value
@@ -346,7 +345,7 @@ class TestSaveTimeStorageDoor:
         storage = _storage(tmp_path)
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="rc", datatype=DataType.FLOAT, sql="spend",
+            name="rc", datatype=DataType.FLOAT, expression="spend",
             filter="regions.customers.spend > 0"),))
         with pytest.raises(DerivedFieldCircularError) as ei:
             await storage.save_dataset(model)
@@ -358,7 +357,7 @@ class TestSaveTimeStorageDoor:
         await storage.save_dataset(_regions())
         await storage.save_dataset(_customers())
         model = _orders(cols=(DatasetField(
-            name="rc", datatype=DataType.FLOAT, sql="customers.regions.customers.spend"),))
+            name="rc", datatype=DataType.FLOAT, expression="customers.regions.customers.spend"),))
         with pytest.raises(DerivedFieldCircularError) as ei:
             await storage.save_dataset(model)
         assert ei.value.revisited == "customers"
@@ -369,7 +368,7 @@ class TestSaveTimeStorageDoor:
         storage = _storage(tmp_path)
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="rc", datatype=DataType.FLOAT, sql="customers.regions.customers.spend"),))
+            name="rc", datatype=DataType.FLOAT, expression="customers.regions.customers.spend"),))
         with pytest.raises(DerivedFieldCircularError) as ei:
             await storage.save_dataset(model)
         assert ei.value.reference == "customers.regions.customers.spend"
@@ -384,7 +383,7 @@ class TestSaveTimeStorageDoor:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="y", datatype=DataType.FLOAT),
-                DatasetField(name="rt", datatype=DataType.FLOAT, sql="b.a.y"),
+                DatasetField(name="rt", datatype=DataType.FLOAT, expression="b.a.y"),
             ],
             relationships=[DatasetRelationship(to="b", from_columns=["id"], to_columns=["id"],
                              cardinality=RelationshipCardinality.ONE_TO_ONE)],
@@ -413,7 +412,7 @@ class TestSaveTimeStorageDoor:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
-                DatasetField(name="bf", datatype=DataType.FLOAT, sql="line_items.orders.amount"),
+                DatasetField(name="bf", datatype=DataType.FLOAT, expression="line_items.orders.amount"),
             ],
             relationships=[DatasetRelationship(
                 to="line_items", from_columns=["id"], to_columns=["order_id"],
@@ -430,7 +429,7 @@ class TestSaveTimeStorageDoor:
         # succeeds (the query-time door stays the check).
         storage = _storage(tmp_path)
         model = _customers(cols=(DatasetField(
-            name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),))
+            name="revisit_spend", datatype=DataType.FLOAT, expression="regions.customers.spend"),))
         await storage.save_dataset(model)  # must not raise
         assert await storage.get_dataset("customers", data_source=DS) is not None
 
@@ -438,7 +437,7 @@ class TestSaveTimeStorageDoor:
         storage = _storage(tmp_path)
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),))
+            name="revisit_spend", datatype=DataType.FLOAT, expression="regions.customers.spend"),))
         await storage.save_dataset(model, _validate=False)  # migration write-back path
         assert await storage.get_dataset("customers", data_source=DS) is not None
 
@@ -454,7 +453,7 @@ class TestSaveTimeStorageDoor:
                 DatasetField(name="region_id", datatype=DataType.INTEGER),
                 DatasetField(name="spend", datatype=DataType.FLOAT),
                 DatasetField(name="revisit_spend", datatype=DataType.FLOAT,
-                       sql="regions.customers.spend"),
+                       expression="regions.customers.spend"),
             ],
             relationships=[
                 DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
@@ -480,7 +479,7 @@ class TestSaveTimeEngineDoor:
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
         model = _customers(cols=(DatasetField(
-            name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),))
+            name="revisit_spend", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),))
         with pytest.raises(DerivedFieldCircularError) as storage_ei:
             await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
@@ -499,15 +498,15 @@ class TestSaveTimeEngineDoor:
     async def test_transitive_revisit_names_the_inner_column(self, tmp_path) -> None:
         # ``chain`` (declared first, so the engine expands it before the inner one)
         # references the revisiting ``revisit_spend``. Both doors name the inner
-        # column that actually revisits, with an identical message — the engine
-        # must not attribute the cycle to the outer referring column.
+        # field that actually revisits, with an identical message — the engine
+        # must not attribute the cycle to the outer referring field.
         storage = _storage(tmp_path)
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
         model = _customers(cols=(
-            DatasetField(name="chain", datatype=DataType.FLOAT, sql="revisit_spend * 2"),
+            DatasetField(name="chain", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="customers.revisit_spend * 2")])),
             DatasetField(name="revisit_spend", datatype=DataType.FLOAT,
-                   sql="regions.customers.spend"),
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),
         ))
         with pytest.raises(DerivedFieldCircularError) as storage_ei:
             await storage.save_dataset(model)
@@ -522,8 +521,8 @@ class TestSaveTimeEngineDoor:
         assert str(storage_exc) == str(engine_exc)
 
     async def test_model_filter_surface_propagates_base_error(self, tmp_path) -> None:
-        # A model-level filter that revisits propagates the base error, not the
-        # derived-column one (it is not a column surface).
+        # A dataset-level filter that revisits propagates the base error, not the
+        # derived-field one (it is not a field surface).
         storage = _storage(tmp_path)
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
@@ -575,11 +574,11 @@ def _revisit_query_datasets() -> list[SlayerDataset]:
     """One rich graph; the query selects the circular definition under test."""
     customers = _customers(
         cols=(
-            DatasetField(name="revisit_spend", datatype=DataType.FLOAT, sql="regions.customers.spend"),
+            DatasetField(name="revisit_spend", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="regions.customers.spend"), DialectEntry(dialect="SQLITE", expression="regions.customers.spend")])),
             DatasetField(name="revisit_lead", datatype=DataType.FLOAT,
-                   sql="customers.regions.customers.spend"),
-            DatasetField(name="chain", datatype=DataType.FLOAT, sql="revisit_spend * 2"),
-            DatasetField(name="filt_revisit", datatype=DataType.FLOAT, sql="spend",
+                   expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.regions.customers.spend"), DialectEntry(dialect="SQLITE", expression="customers.regions.customers.spend")])),
+            DatasetField(name="chain", datatype=DataType.FLOAT, expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="customers.revisit_spend * 2"), DialectEntry(dialect="SQLITE", expression="customers.revisit_spend * 2")])),
+            DatasetField(name="filt_revisit", datatype=DataType.FLOAT, expression="spend",
                    filter="regions.customers.spend > 0"),
         ),
     )
@@ -591,8 +590,8 @@ def _unresolved_query_datasets() -> list[SlayerDataset]:
     before it could revisit."""
     customers = _customers(
         cols=(DatasetField(name="ghost_spend", datatype=DataType.FLOAT,
-                     sql="ghost.customers.spend"),),
-        joins=(DatasetRelationship(to="ghost", from_columns=["region_id"], to_columns=["id"]),),
+                     expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="ghost.customers.spend"), DialectEntry(dialect="SQLITE", expression="ghost.customers.spend")])),),
+        relationships=(DatasetRelationship(to="ghost", from_columns=["region_id"], to_columns=["id"]),),
     )
     return [_regions(), customers, _orders()]
 
@@ -656,48 +655,48 @@ class TestQueryTimeBackstop:
 
     async def test_aggregated_on_declaring_model(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            metrics=[QueryMetric(metric="sum(revisit_spend)", alias="w")]))
+            metrics=[QueryMetric(metric="sum(customers.revisit_spend)", alias="w")]))
 
     async def test_as_dimension(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            dimensions=["revisit_spend"],
-            metrics=[QueryMetric(metric="sum(spend)", alias="s")]))
+            dimensions=["customers.revisit_spend"],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")]))
 
     async def test_in_filter(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            metrics=[QueryMetric(metric="sum(spend)", alias="s")],
-            filter=["revisit_spend > 0"]))
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")],
+            filter=["customers.revisit_spend > 0"]))
 
     async def test_raw_row_mode(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            dimensions=["revisit_spend"], distinct_dimension_values=False))
+            dimensions=["customers.revisit_spend"], distinct_dimension_values=False))
 
     async def test_through_a_derived_chain(self, qengine) -> None:
         exc = await _assert_circular(qengine, _cust_q(
-            metrics=[QueryMetric(metric="sum(chain)", alias="w")]))
+            metrics=[QueryMetric(metric="sum(customers.chain)", alias="w")]))
         assert exc.field == "revisit_spend"  # the innermost expanded definition
 
     async def test_filter_kind_definition(self, qengine) -> None:
         # reference comes from the filter fragment, proving the filter surface.
         await _assert_circular(qengine, _cust_q(
-            metrics=[QueryMetric(metric="sum(filt_revisit)", alias="w")]))
+            metrics=[QueryMetric(metric="sum(customers.filt_revisit)", alias="w")]))
 
     async def test_leading_host_qualifier_keeps_full_spelling(self, qengine) -> None:
         # The door keeps the complete pre-strip reference (leading host qualifier).
         await _assert_circular(
-            qengine, _cust_q(metrics=[QueryMetric(metric="sum(revisit_lead)", alias="w")]),
+            qengine, _cust_q(metrics=[QueryMetric(metric="sum(customers.revisit_lead)", alias="w")]),
             reference="customers.regions.customers.spend")
 
     async def test_refused_before_sql_executes(self, qengine) -> None:
         # dry_run builds SQL but does not execute it — a raise here proves the
         # refusal is at compile time, before any SQL runs.
-        query = _cust_q(metrics=[QueryMetric(metric="sum(revisit_spend)", alias="w")])
+        query = _cust_q(metrics=[QueryMetric(metric="sum(customers.revisit_spend)", alias="w")])
         with pytest.raises(CircularRelationshipPathError):
             await qengine.execute(query, dry_run=True)
 
     async def test_query_typed_spelling_same_class(self, qengine) -> None:
         # The binder builds its own reference fields; pin only the class, the
-        # revisited model, and that the message names the circular path.
+        # revisited dataset, and that the message names the circular path.
         exc = await _assert_circular(
             qengine, _orders_q(metrics=[QueryMetric(
                 metric="sum(customers.regions.customers.spend)", alias="w")]),
@@ -707,8 +706,8 @@ class TestQueryTimeBackstop:
         assert not isinstance(exc, DerivedFieldCircularError)
 
     async def test_unresolved_model_refused_as_unresolvable(self, unresolved_engine) -> None:
-        query = _cust_q(dimensions=["ghost_spend"],
-                        metrics=[QueryMetric(metric="sum(spend)", alias="s")])
+        query = _cust_q(dimensions=["customers.ghost_spend"],
+                        metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")])
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await unresolved_engine.execute(query)
         msg = str(ei.value)
@@ -732,7 +731,7 @@ class TestBinderParity:
         assert not isinstance(exc, DerivedFieldCircularError)
 
     def test_leading_self_prefix_keeps_full_spelling(self) -> None:
-        # C14's ``_strip_self_prefix`` drops a leading same-model prefix for
+        # C14's ``_strip_self_prefix`` drops a leading same-dataset prefix for
         # resolution, but the circular error keeps the complete reference as
         # spelled (bound directly, before the query layer's own prefix strip).
         bundle = ResolvedSourceBundle(
@@ -751,8 +750,8 @@ class TestBinderParity:
 # --------------------------------------------------------------------------- #
 # Section G — behaviour-unchanged regressions (design Risks): a composed via-host
 # reroot path still resolves by association (never a new raise), and definition
-# defaults still resolve owner-first with root fallback. Reuse the DEV-1900 /
-# DEV-1931 graphs and their oracles; these pass before and after the fix.
+# defaults still resolve owner-first with root fallback. Reuse the ``_dev1900_fixtures`` /
+# ``_dev1931_fixtures`` graphs and their oracles; these pass before and after the fix.
 # --------------------------------------------------------------------------- #
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def reroot_engine(request):
@@ -771,11 +770,11 @@ class TestViaHostRerootUnchanged:
         # `sum(customers.spend, partition_by=status)` from orders exercises
         # reroot_from_root / attributable_from_root over a composed via-host path.
         resp = await reroot_engine.execute(_dev1900_orders_q(
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="w")],
+                metric="sum(customers.spend, partition_by=orders.status)", alias="w")],
             to_many_handling="associate"))
-        got = {r["orders.status"]: r["orders.w"] for r in resp.data}
+        got = {r["orders.status"]: r["w"] for r in resp.data}
         assert got == pytest.approx({"new": 290.0, "ok": 420.0})
 
 
@@ -784,7 +783,7 @@ class TestDefinitionDefaultsUnchanged:
     async def _value(engine, expression: str) -> float:
         resp = await engine.execute(
             _dev1931_orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
-        return float(resp.data[0]["orders.w"])
+        return float(resp.data[0]["w"])
 
     async def test_scalar_default_matches_explicit(self, default_engine) -> None:
         explicit = await self._value(

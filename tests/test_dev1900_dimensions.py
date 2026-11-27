@@ -1,6 +1,6 @@
 """A derived fanning dimension routes through the mode axis.
 
-A dimension naming a derived column whose definition crosses the 1:N
+A dimension naming a derived field whose definition crosses the 1:N
 ``regions → region_events`` hop is unattributable exactly as a structural
 fanning dimension is: broadcast (default, warning naming the hop, the metric
 repeated), associate (per-cell over distinct root entities), or error. An
@@ -53,8 +53,8 @@ class TestBroadcast:
     async def test_broadcasts_the_metric_with_a_warning_naming_the_hop(self, engine):
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP], metrics=[AMOUNT_SUM, SPEND_SUM], to_many_handling="broadcast"))
-        amt = bad_pop_vals(resp, "orders.amt")
-        spend = bad_pop_vals(resp, "orders.csp")
+        amt = bad_pop_vals(resp, "amt")
+        spend = bad_pop_vals(resp, "csp")
         # Every cell carries the ungrouped total (broadcast), never the per-event
         # multiplied figure.
         for cell in amt:
@@ -72,8 +72,8 @@ class TestAssociate:
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP], metrics=[AMOUNT_SUM, SPEND_SUM],
             to_many_handling="associate"))
-        amt = bad_pop_vals(resp, "orders.amt")
-        spend = bad_pop_vals(resp, "orders.csp")
+        amt = bad_pop_vals(resp, "amt")
+        spend = bad_pop_vals(resp, "csp")
         for cell, expected in ASSOC_AMOUNT_BY_BAD_POP.items():
             assert float(amt[cell]) == pytest.approx(expected), cell
         for cell, expected in ASSOC_SPEND_BY_BAD_POP.items():
@@ -84,7 +84,7 @@ class TestAssociate:
 
 
 class TestErrorMode:
-    """Local and cross-model refusals proven separately — a combined query could
+    """Local and cross-dataset refusals proven separately — a combined query could
     stop at the first metric and never exercise the other."""
 
     async def test_local_metric_refuses(self, engine):
@@ -106,7 +106,7 @@ class TestExplicitPartitionBy:
         """An explicit partition_by naming the fanning derived dimension is an
         error outside associate — every partition key must be attributable."""
         measure = QueryMetric(
-            metric="sum(amount, partition_by=customers.regions.bad_pop)", alias="w")
+            metric="sum(orders.amount, partition_by=customers.regions.bad_pop)", alias="w")
         q = orders_q(dimensions=[BAD_POP], metrics=[measure], to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
             await engine.execute(q)

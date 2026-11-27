@@ -48,8 +48,8 @@ def test_the_allowlist_names_real_tokenize_readers() -> None:
 # --------------------------------------------------------------------------- #
 # Usage reporting reads the parse tree
 # --------------------------------------------------------------------------- #
-def _features(*measures: str) -> tuple[Counter[str], Counter[str]]:
-    found = query_features({"population": "m", "metrics": list(measures)})
+def _features(*metrics: str) -> tuple[Counter[str], Counter[str]]:
+    found = query_features({"population": "m", "metrics": list(metrics)})
     return Counter(found.aggregations), Counter(found.flags)
 
 
@@ -69,8 +69,8 @@ def test_count_distinct_counts_as_count_distinct() -> None:
     assert _features("count(DISTINCT x)")[0] == Counter({"count_distinct": 1})
 
 
-def test_array_length_stays_custom() -> None:
-    found = query_features({"population": "m", "metrics": ["array_length(tags)"]})
+def test_an_unknown_call_stays_custom() -> None:
+    found = query_features({"population": "m", "metrics": ["array_size(m.tags)"]})
     assert Counter(found.aggregations) == Counter({"custom": 1})
     assert found.functions == []
 
@@ -91,6 +91,6 @@ async def storage(tmp_path: Path) -> YAMLStorage:
 
 
 async def test_quoted_identifier_in_a_filter_is_tagged(storage: YAMLStorage) -> None:
-    query = SlayerQuery(population="orders", filter=['"region" = \'x\''], metrics=[QueryMetric(metric="count(*)")])
+    query = SlayerQuery(population="orders", filter=['orders."region" = \'x\''], metrics=[QueryMetric(metric="count(orders.*)")])
     result = await extract_entities_from_query(query, storage=storage)
     assert "mydb.orders.region" in result.canonical_forms

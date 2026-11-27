@@ -300,7 +300,7 @@ def _rows_as_dicts(result: Any) -> list[dict[str, Any]]:
 
 
 def sql_dataset_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:
-    """The zero-row trial of read-only model ``sql``; anything else raises."""
+    """The zero-row trial of read-only dataset ``sql``; anything else raises."""
     inner = parse_query(sql=sql, target_dialect=dialect)
     return exp.select("*").from_(inner.subquery("_sd_validate")).where(
         exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))
@@ -526,7 +526,10 @@ def _probe_sync(conn: Any, *, probe: TypeProbe, db_type: str | None) -> dict[str
     if census_sql is None:
         return _types_from_cursor(result, dialect=dialect)
     result.fetchall()
-    return dialect.result_census_types(columns=columns, row=_first_row(_exec_verbatim(conn, census_sql)))
+    types = dialect.result_census_types(columns=columns, row=_first_row(_exec_verbatim(conn, census_sql)))
+    declared_sql = probe.declared_sql(dialect=dialect)
+    declared = dialect.declared_result_types(_exec_verbatim(conn, declared_sql).fetchall()) if declared_sql else {}
+    return {name: declared.get(name, found) for name, found in types.items()}
 
 
 async def _probe_async(conn: Any, *, probe: TypeProbe, db_type: str | None) -> dict[str, ResultColumnType]:
@@ -546,9 +549,13 @@ async def _probe_async(conn: Any, *, probe: TypeProbe, db_type: str | None) -> d
     if census_sql is None:
         return _types_from_cursor(result, dialect=dialect)
     result.fetchall()
-    return dialect.result_census_types(
+    types = dialect.result_census_types(
         columns=columns, row=_first_row(await _exec_verbatim_async(conn, census_sql)),
     )
+    declared_sql = probe.declared_sql(dialect=dialect)
+    declared = dialect.declared_result_types(
+        (await _exec_verbatim_async(conn, declared_sql)).fetchall()) if declared_sql else {}
+    return {name: declared.get(name, found) for name, found in types.items()}
 
 
 def _open_probe_transaction(conn: sa.Connection) -> bool:
@@ -1061,12 +1068,14 @@ class SlayerSQLClient:
             return ServerProfile()
         try:
             async_engine = self._async_engine_here()
+            engine = async_engine if async_engine is not None else self._get_sync_engine_for_client()
+            known = server_profiles.known_profile(engine)
+            if known is not None:
+                return known
             if async_engine is not None:
                 async with async_engine.connect() as conn:
                     return await _server_profile_async(conn, engine=async_engine, dialect=dialect)
-            return await self._blocking(
-                _server_profile_sync, engine=self._get_sync_engine_for_client(), dialect=dialect,
-            )
+            return await self._blocking(_server_profile_sync, engine=engine, dialect=dialect)
         except Exception as exc:
             await self._typed(exc)
             raise

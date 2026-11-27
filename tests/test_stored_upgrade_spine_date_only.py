@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import yaml
 
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
 from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, spine_dataset
 from slayer.database import engine_factory
@@ -53,8 +54,8 @@ def model_doc(name: str, columns: list[dict], *, joins: list[dict] | None = None
             "columns": columns, "joins": joins or [], **extra}
 
 
-def memory(memory_id: str, body: dict, *, version: int = PRE["Memory"]) -> dict:
-    return memory_v2(memory_id=memory_id, version=version, query=body)
+def memory(memory_id: str, body: dict, *, version: int = PRE["Memory"], entities: Sequence[str] = ()) -> dict:
+    return memory_v2(memory_id=memory_id, version=version, query=body, entities=entities)
 
 
 def to_customers() -> dict:
@@ -137,8 +138,8 @@ class TestSpineOperands:
         q = (model.source_queries or [])[0]
         assert q.filter == ["time_spine.timestamp >= '2024-01-25'", ORDERS_LT, SPINE_LT]
         resp = await run(storage, q)
-        by_day = {r["time_spine.timestamp"]: r["orders.rev"] for r in resp.data}
-        assert by_day.get("2024-01-31") == pytest.approx(JAN_31_ORDER[-1]), resp.data
+        by_day = {r["time_spine.timestamp"]: r["rev"] for r in resp.data}
+        assert by_day.get("2024-01-31 00:00:00") == pytest.approx(JAN_31_ORDER[-1]), resp.data
 
     async def test_spine_spelt_in_another_case(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         body = stage("TIME_SPINE.timestamp <= '2024-01-31'", "Time_Spine.TIMESTAMP > '2024-01-31'")
@@ -151,7 +152,7 @@ class TestSpineOperands:
                                              source: str) -> None:
         body = spine_stage(TS_LE, SPINE_LE, ORDERS_LE, source=source)
         storage = await store(tmp_path, shop_ds, backend=backend, models=(saved("rooted", body),))
-        assert await loaded_filters(storage, "rooted") == [TS_LT, SPINE_LT, ORDERS_LT]
+        assert await loaded_filters(storage, "rooted") == [SPINE_LT, SPINE_LT, ORDERS_LT]
 
     async def test_saved_measure_and_column_filter(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                    backend: str) -> None:
@@ -184,7 +185,7 @@ class TestSpineOperands:
                               memories=(memory("m_spine", spine_stage(TS_LE, SPINE_LE)),))
         mem = await storage.get_memory("m_spine")
         assert mem.query is not None
-        assert mem.query.filter == [TS_LT, SPINE_LT]
+        assert mem.query.filter == [SPINE_LT, SPINE_LT]
 
     async def test_memory_on_the_spine_in_a_store_with_one_datasource(
         self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
@@ -195,16 +196,30 @@ class TestSpineOperands:
         assert mem.query is not None
         assert mem.query.filter == [ORDERS_LT]
 
+    @pytest.mark.parametrize(("pinned", "loaded"), [(DS, ORDERS_LT), (OTHER, ORDERS_LE)])
+    async def test_memory_on_the_spine_in_a_store_with_two_datasources(
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, pinned: str, loaded: str,
+    ) -> None:
+        storage = await store(tmp_path, shop_ds, backend=backend,
+                              memories=(memory("m_two_ds", spine_stage(ORDERS_LE), entities=[f"{pinned}.orders"]),))
+        text_orders = orders_v10(version=PRE["SlayerModel"])
+        text_orders["columns"] = [{**c, "type": "TEXT"} if c["name"] == "ordered_at" else c
+                                  for c in text_orders["columns"]]
+        await add_other_datasource(storage, tmp_path, backend=backend, models=({**text_orders, "data_source": OTHER},))
+        mem = await storage.get_memory("m_two_ds")
+        assert mem.query is not None
+        assert mem.query.filter == [loaded]
+
     async def test_memory_on_the_spine_with_a_variant_in_two_datasources(
         self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
     ) -> None:
         variant = model_doc("Time_Spine", [{"name": "timestamp", "type": "TEXT", "primary_key": True}])
         storage = await store(tmp_path, shop_ds, backend=backend, models=(variant,),
-                              memories=(memory("m_variants", spine_stage(TS_LE)),))
+                              memories=(memory("m_variants", spine_stage(TS_LE), entities=[f"{DS}.Time_Spine"]),))
         await add_other_datasource(storage, tmp_path, backend=backend, models=({**variant, "data_source": OTHER},))
         mem = await storage.get_memory("m_variants")
         assert mem.query is not None
-        assert mem.query.filter == [TS_LT]
+        assert mem.query.filter == [SPINE_LT]
 
     async def test_extension_column_filter(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         # Stored before extension columns were removed: the load-time conversion inlines it after this upgrade.
@@ -260,7 +275,7 @@ class TestSpineOperands:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_legacy", body, version=3),))
         mem = await storage.get_memory("m_legacy")
         assert mem.query is not None
-        assert mem.query.filter == [TS_LT]
+        assert mem.query.filter == [SPINE_LT]
 
     async def test_legacy_time_literal_on_a_case_variant_source(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                                 backend: str) -> None:
@@ -268,17 +283,18 @@ class TestSpineOperands:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_legacy_case", body, version=3),))
         mem = await storage.get_memory("m_legacy_case")
         assert mem.query is not None
-        assert mem.query.filter == ["ordered_at < '2024-02-01'"]
+        assert mem.query.filter == [ORDERS_LT]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
 class TestSpineLeftAlone:
-    @pytest.mark.parametrize("body", [
-        stage("TIME_SPINE.timestamp <= '2024-01-31'"),
-        spine_stage(TS_LE, source="TIME_SPINE"),
+    @pytest.mark.parametrize(("body", "loaded"), [
+        (stage("TIME_SPINE.timestamp <= '2024-01-31'"), "TIME_SPINE.timestamp <= '2024-01-31'"),
+        (spine_stage(TS_LE, source="TIME_SPINE"), "TIME_SPINE.timestamp <= '2024-01-31'"),
     ], ids=["path", "root"])
     async def test_spine_spelling_shared_with_a_stored_variant(
-        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, body: dict, caplog: pytest.LogCaptureFixture,
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, body: dict, loaded: str,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         variant = model_doc("Time_Spine", [{"name": "timestamp", "type": "TIMESTAMP", "primary_key": True}])
         storage = await store(tmp_path, shop_ds, backend=backend, models=(variant,),
@@ -286,20 +302,8 @@ class TestSpineLeftAlone:
         with logged(caplog) as texts:
             mem = await storage.get_memory("m_ambiguous")
         assert mem.query is not None
-        assert mem.query.filter == body["filters"]
+        assert mem.query.filter == [loaded]
         assert any("m_ambiguous" in t and body["filters"][0] in t for t in texts), texts
-
-    async def test_memory_on_the_spine_in_a_store_with_two_datasources(
-        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        storage = await store(tmp_path, shop_ds, backend=backend,
-                              memories=(memory("m_two_ds", spine_stage(ORDERS_LE)),))
-        await add_other_datasource(storage, tmp_path, backend=backend)
-        with logged(caplog) as texts:
-            mem = await storage.get_memory("m_two_ds")
-        assert mem.query is not None
-        assert mem.query.filter == [ORDERS_LE]
-        assert any("m_two_ds" in t and ORDERS_LE in t for t in texts), texts
 
     async def test_source_held_by_two_datasources(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                   caplog: pytest.LogCaptureFixture) -> None:
@@ -310,21 +314,20 @@ class TestSpineLeftAlone:
         with logged(caplog) as texts:
             mem = await storage.get_memory("m_held_twice")
         assert mem.query is not None
-        assert mem.query.filter == [TS_LE]
-        assert any("m_held_twice" in t and TS_LE in t for t in texts), texts
+        assert mem.query.filter == [SPINE_LE]
+        assert not any(TS_LE in t for t in texts), texts
 
-    async def test_path_continuing_past_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
-                                                  caplog: pytest.LogCaptureFixture) -> None:
+    async def test_path_continuing_past_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig,
+                                                  backend: str) -> None:
         crossing = "orders.time_spine.customers.created_at <= '2024-01-31'"
         customers = customers_v10(version=PRE["SlayerModel"])
         customers["columns"] = [*customers["columns"], {"name": "created_at", "sql": "signed_up_at", "type": "TIMESTAMP"}]
         storage = await store(tmp_path, shop_ds, backend=backend, customers=customers,
                               memories=(memory("m_crossing", stage(crossing)),))
-        with logged(caplog) as texts:
-            mem = await storage.get_memory("m_crossing")
-        assert mem.query is not None
-        assert mem.query.filter == [crossing]
-        assert any("m_crossing" in t and crossing in t for t in texts), texts
+        with pytest.raises(StoredDocumentLoadError) as info:
+            await storage.get_memory("m_crossing")
+        assert "m_crossing" in str(info.value)
+        assert "orders.time_spine.customers.created_at" in str(info.value)
 
     async def test_stored_join_named_like_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                     caplog: pytest.LogCaptureFixture) -> None:
@@ -337,7 +340,7 @@ class TestSpineLeftAlone:
         with logged(caplog) as texts:
             filters = await loaded_filters(storage, "join_named")
         assert filters == [text]
-        assert not any(text in t for t in texts), texts
+        assert any("join_named" in t and text in t for t in texts), texts
 
     async def test_sibling_stage_named_like_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                       caplog: pytest.LogCaptureFixture) -> None:
@@ -365,7 +368,7 @@ def stored(*extra: dict, stages: frozenset[str] = frozenset()) -> StoredDatasets
     return StoredDatasets(data_source=DS, datasets={d["name"]: d for d in docs}, stages=stages)
 
 
-SPINE_TYPE = spine_dataset(data_source=DS).fields[0].datatype.value
+SPINE_TYPE = str(spine_dataset(data_source=DS).fields[0].datatype)
 
 
 class TestStoredModels:
@@ -386,7 +389,7 @@ class TestStoredModels:
         host = stored().host(TIME_SPINE_DATASET)
         assert host is not None
         expected = spine_dataset(data_source=DS).fields
-        assert [(c["name"], c["type"]) for c in host["columns"]] == [(c.name, c.datatype.value) for c in expected]
+        assert [(c["name"], c["type"]) for c in host["columns"]] == [(c.name, str(c.datatype)) for c in expected]
 
     def test_exact_stored_spelling_wins(self) -> None:
         variant = model_doc("Time_Spine", [{"name": "timestamp", "type": "TEXT"}])

@@ -5,7 +5,7 @@ cell of the same query grouped by ``d``. Holds by default and under ``to_many_ha
 satisfy it (its warning hint is the disclosure).
 
 Spec: openspec …/specs/queries/semantics — "Dice–slice correspondence under
-associate". Generated over a measure × dimension × value family on SQLite +
+associate". Generated over a metric × dimension × value family on SQLite +
 DuckDB; the two runs are compared to each other, so no hand oracle is needed.
 """
 
@@ -21,8 +21,8 @@ from tests._dev1841_fixtures import (
 )
 from slayer.core.query import QueryMetric
 
-#: metric root spans local column, star-count, deep hop, and percentile family.
-MEASURES = {
+#: metric root spans local field, star-count, deep hop, and percentile family.
+METRICS = {
     "spend": "sum(customers.spend)",
     "count": "count(customers.*)",
     "pop": "sum(customers.regions.pop)",
@@ -33,7 +33,7 @@ DIMENSIONS = {"status": ["ok", "new"], "channel": ["app", "web"]}
 
 FAMILY = [
     pytest.param(m, d, v, id=f"{m}-{d}-{v}")
-    for m in MEASURES
+    for m in METRICS
     for d, values in DIMENSIONS.items()
     for v in values
 ]
@@ -48,15 +48,15 @@ async def exec_backend(request):
 @pytest.mark.parametrize("measure_key,dim,value", FAMILY)
 async def test_filtered_value_equals_sliced_cell(exec_backend, measure_key, dim, value):
     _, engine = exec_backend
-    measure = QueryMetric(metric=MEASURES[measure_key], alias="m")
+    measure = QueryMetric(metric=METRICS[measure_key], alias="m")
 
     filtered = await engine.execute(
-        assoc_q(metrics=[measure], filter=[f"{dim} = '{value}'"]))
+        assoc_q(metrics=[measure], filter=[f"orders.{dim} = '{value}'"]))
     sliced = await engine.execute(
-        assoc_q(dimensions=[dim], metrics=[measure]))
+        assoc_q(dimensions=[f"orders.{dim}"], metrics=[measure]))
 
-    filtered_value = float(filtered.data[0]["orders.m"])
-    sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["orders.m"]
+    filtered_value = float(filtered.data[0]["m"])
+    sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["m"]
     assert filtered_value == pytest.approx(float(sliced_cell)), (
         f"LAW dice–slice violated for {measure_key} on {dim}={value!r}: "
         f"filtered {filtered_value} != sliced {sliced_cell}")
@@ -65,10 +65,10 @@ async def test_filtered_value_equals_sliced_cell(exec_backend, measure_key, dim,
 @pytest.mark.parametrize("measure_key,dim,value", FAMILY)
 async def test_holds_by_default(exec_backend, measure_key, dim, value):
     _, engine = exec_backend
-    measure = QueryMetric(metric=MEASURES[measure_key], alias="m")
+    measure = QueryMetric(metric=METRICS[measure_key], alias="m")
 
-    filtered = await engine.execute(q(metrics=[measure], filter=[f"{dim} = '{value}'"]))
-    sliced = await engine.execute(q(dimensions=[dim], metrics=[measure]))
+    filtered = await engine.execute(q(metrics=[measure], filter=[f"orders.{dim} = '{value}'"]))
+    sliced = await engine.execute(q(dimensions=[f"orders.{dim}"], metrics=[measure]))
 
-    sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["orders.m"]
-    assert float(filtered.data[0]["orders.m"]) == pytest.approx(float(sliced_cell))
+    sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["m"]
+    assert float(filtered.data[0]["m"]) == pytest.approx(float(sliced_cell))

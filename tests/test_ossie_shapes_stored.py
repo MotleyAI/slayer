@@ -14,13 +14,12 @@ import pytest
 
 from slayer.core.models import SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
-from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._deprecated_input_helpers import deprecations, recorded
 from tests._ossie_vocabulary_fixtures import shop_store, stored_document
 from tests._stored_upgrade_fixtures import DS
 
-PRE_DATASET = CURRENT_VERSIONS["SlayerModel"] - 1
-PRE_QUERY = CURRENT_VERSIONS["SlayerQuery"] - 1
+PRE_DATASET = 25
+PRE_QUERY = 15
 
 
 def pre_dataset(*columns: dict[str, Any], **extra: Any) -> dict[str, Any]:
@@ -110,15 +109,17 @@ class TestShapes:
         assert (rel["from_columns"], rel["to_columns"]) == (["customer_id"], ["id"])
 
     @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
-    async def test_a_migrated_dataset_is_written_back_in_ossie_shapes(self, backend: str, tmp_path: Path) -> None:
+    async def test_a_migrated_dataset_is_saved_in_ossie_shapes(self, backend: str, tmp_path: Path) -> None:
         doc = pre_dataset({"name": "customer_id", "type": "INT"}, {"name": "amount", "type": "DOUBLE"},
                           joins=[{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}])
         customers = {"version": PRE_DATASET, "name": "customers", "sql_table": "customers", "data_source": DS,
                      "columns": [{"name": "id", "type": "INT", "primary_key": True}]}
         storage = await shop_store(backend=backend, base=str(tmp_path), datasets=[customers, doc])
         with recorded() as caught:
-            assert await storage.get_dataset("orders", data_source=DS) is not None
+            loaded = await storage.get_dataset("orders", data_source=DS)
+            assert loaded is not None
         assert deprecations(caught) == []
+        await storage.save_dataset(loaded)
         written = stored_document(backend=backend, base=str(tmp_path), name="orders")
         [rel] = written["relationships"]
         assert (rel["from_columns"], rel["to_columns"]) == (["customer_id"], ["id"])

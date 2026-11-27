@@ -33,8 +33,8 @@ def _cases() -> dict[str, dict[str, Any]]:
             "time_dimensions": [spine_td(granularity="quarter_hour", date_range=["2025-01-01", "2025-01-01"])],
         },
         "custom/fiscal_year": {
-            "population": "orders", "metrics": [m("sum(amount)", "s")],
-            "time_dimensions": [{"field": "order_date", "granularity": "fiscal_year"}],
+            "population": "orders", "metrics": [m("sum(orders.amount)", "s")],
+            "time_dimensions": [{"field": "orders.order_date", "granularity": "fiscal_year"}],
         },
     }
 

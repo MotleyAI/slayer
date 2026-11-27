@@ -1,18 +1,17 @@
-"""DEV-1829 — the local partitioned-measure join-back migrates onto the regroup
+"""The local partitioned-metric join-back migrates onto the regroup
 primitive's ``attach_phase="combined"`` arm.
 
 Plan-level contracts (fail on the current tree, which still routes a local
-partitioned measure through the retired cross-model plan):
+partitioned metric through the retired cross-dataset plan):
 
-* a local partitioned MEASURE yields ``RegroupAttachPlan(attach_phase="combined")``
-  and NO cross-model plan; its producer is a host-rooted single SELECT;
+* a local partitioned METRIC yields ``RegroupAttachPlan(attach_phase="combined")``
+  and NO cross-dataset plan; its producer is a host-rooted single SELECT;
   the consumer keeps no partitioned aggregate slot (substituted to a placeholder);
 * same-partition-set interning — N distinct aggregates share ONE producer;
-* combined-attach coexistence with an isolated family (cross-model / windowed /
-  ranked / transform measure) plans and renders (lifted by DEV-1824);
+* combined-attach coexistence with an isolated family (cross-dataset / windowed /
+  ranked / transform metric) plans and renders;
 * row+combined coexistence (a computed dimension over one partition set plus a
-  partitioned measure over another) plans both attach phases and renders
-  (lifted by DEV-1824 task 3.2).
+  partitioned metric over another) plans both attach phases and renders.
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ def _count_isolated_ctes(sql: str) -> int:
 
 def _consumer_partition_agg_slots(planned) -> list:
     """Consumer aggregate slots that still carry a partition_by — must be empty
-    once the measure is desugared into a combined regroup producer."""
+    once the metric is desugared into a combined regroup producer."""
     return [
         s for s in planned.aggregate_slots
         if isinstance(s.key, AggregateKey) and s.key.partition_keys is not None
@@ -54,9 +53,9 @@ class TestCombinedAttachReplacesCrossModelPlan:
     def test_local_partitioned_measure_yields_combined_attach(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[QueryMetric(
-                    metric="sum(amount, partition_by=region)", alias="region_rev",
+                    metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -69,9 +68,9 @@ class TestCombinedAttachReplacesCrossModelPlan:
     def test_producer_is_host_rooted_single_select(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[QueryMetric(
-                    metric="sum(amount, partition_by=region)", alias="region_rev",
+                    metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -90,9 +89,9 @@ class TestCombinedAttachReplacesCrossModelPlan:
     def test_measure_slot_maps_to_placeholder_column_key(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[QueryMetric(
-                    metric="sum(amount, partition_by=region)", alias="region_rev",
+                    metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -116,9 +115,9 @@ class TestCombinedAttachReplacesCrossModelPlan:
     def test_grand_total_producer_has_empty_join_pairs(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[QueryMetric(
-                    metric="sum(amount, partition_by=[])", alias="g",
+                    metric="sum(orders.amount, partition_by=[])", alias="g",
                 )],
             ),
             bundle=_bundle(),
@@ -133,10 +132,10 @@ class TestSamePartitionSetInterning:
     def test_two_distinct_aggregates_share_one_producer(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[
-                    QueryMetric(metric="sum(amount, partition_by=region)", alias="rsum"),
-                    QueryMetric(metric="avg(amount, partition_by=region)", alias="ravg"),
+                    QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rsum"),
+                    QueryMetric(metric="avg(orders.amount, partition_by=orders.region)", alias="ravg"),
                 ],
             ),
             bundle=_bundle(),
@@ -150,10 +149,10 @@ class TestSamePartitionSetInterning:
 
     async def test_two_distinct_aggregates_emit_one_cte(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rsum"),
-                QueryMetric(metric="avg(amount, partition_by=region)", alias="ravg"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rsum"),
+                QueryMetric(metric="avg(orders.amount, partition_by=orders.region)", alias="ravg"),
             ],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -161,10 +160,10 @@ class TestSamePartitionSetInterning:
     def test_same_aggregate_two_names_shares_one_output(self) -> None:
         planned = plan_query(
             query=_q(
-                dimensions=["region", "city"],
+                dimensions=["orders.region", "orders.city"],
                 metrics=[
-                    QueryMetric(metric="sum(amount, partition_by=region)", alias="a"),
-                    QueryMetric(metric="sum(amount, partition_by=region)", alias="b"),
+                    QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="a"),
+                    QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="b"),
                 ],
             ),
             bundle=_bundle(),
@@ -177,26 +176,26 @@ class TestSamePartitionSetInterning:
 
     async def test_same_aggregate_two_names_projects_both(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="a"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="b"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="a"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="b"),
             ],
         ))
         assert _count_isolated_ctes(sql) == 1
-        assert '"orders.a"' in sql
-        assert '"orders.b"' in sql
+        assert '"a"' in sql
+        assert '"b"' in sql
 
     def test_distinct_partition_sets_produce_separate_attaches(self) -> None:
         # D3 grouping is by partition set: two DIFFERENT sets must NOT collapse
         # into one producer (a global-intern bug would pass the same-set tests).
         planned = plan_query(
             query=_q(
-                dimensions=["region", "channel", "city"],
+                dimensions=["orders.region", "orders.channel", "orders.city"],
                 metrics=[
-                    QueryMetric(metric="sum(amount, partition_by=region)", alias="rr"),
+                    QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rr"),
                     QueryMetric(
-                        metric="sum(amount, partition_by=[region, channel])", alias="rc",
+                        metric="sum(orders.amount, partition_by=[orders.region, orders.channel])", alias="rc",
                     ),
                 ],
             ),
@@ -208,44 +207,44 @@ class TestSamePartitionSetInterning:
 
 
 class TestCoexistenceWithIsolatedFamilies:
-    """DEV-1824 (D11 / task 3.8) lifts the combined-attach coexistence guards:
-    a partitioned MEASURE (combined regroup attach) now composes with a
-    cross-model / windowed / ranked / transform measure through the shared
+    """The combined-attach coexistence guards are lifted:
+    a partitioned METRIC (combined regroup attach) now composes with a
+    cross-dataset / windowed / ranked / transform metric through the shared
     ``_render_with_combined_attaches`` join-back belt (executed-value coverage
     lives in ``tests/test_dev1824_partitioned_execution.py``). Row+combined
     coexistence stays deferred."""
 
     async def test_combined_attach_plus_cross_model_measure(self) -> None:
-        # Combined regroup attach (local partition) + a genuine cross-model
-        # measure (its own _cm_ CTE) — both are combined-SELECT join-backs.
+        # Combined regroup attach (local partition) + a genuine cross-dataset
+        # metric (its own _cm_ CTE) — both are combined-SELECT join-backs.
         q = _q(
-            dimensions=["region", "city"],
+            dimensions=["orders.region", "orders.city"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # DEV-1836: the cross-model measure now desugars into its OWN
+        # The cross-dataset metric now desugars into its OWN
         # target-rooted regroup producer, so it coexists as a SECOND combined
-        # attach rather than a top-level cross-model plan.
+        # attach rather than a top-level cross-dataset plan.
         assert len(planned.regroup_attach_plans) == 2
         # One local producer (rooted at the consumer → None) + one target-rooted
-        # cross-model producer rooted at ``customers``.
+        # cross-dataset producer rooted at ``customers``.
         roots = {rap.producer_root_dataset for rap in planned.regroup_attach_plans}
         assert roots == {None, "customers"}, roots
         assert "__regroup__" not in await gen(q)
 
     async def test_combined_attach_plus_windowed_measure(self) -> None:
         q = _q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
-                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # DEV-1835/DEV-1838: the windowed family desugars into its own regroup
+        # The windowed family desugars into its own regroup
         # producer (trailing-window kernel), so it coexists as a SECOND
         # combined attach, not as a top-level windowed plan.
         assert len(planned.regroup_attach_plans) == 2
@@ -257,14 +256,14 @@ class TestCoexistenceWithIsolatedFamilies:
 
     async def test_combined_attach_plus_ranked_measure(self) -> None:
         q = _q(
-            dimensions=["region", "city"], time_dimensions=month_td(),
+            dimensions=["orders.region", "orders.city"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
-                QueryMetric(metric="last(amount)", alias="lst"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
+                QueryMetric(metric="last(orders.amount)", alias="lst"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
-        # DEV-1835/DEV-1838: the ranked (first/last) family desugars into its
+        # The ranked (first/last) family desugars into its
         # own ranked-kernel producer, so it coexists as a SECOND combined
         # attach, not as a top-level ranked plan.
         assert len(planned.regroup_attach_plans) == 2
@@ -276,10 +275,10 @@ class TestCoexistenceWithIsolatedFamilies:
 
     async def test_combined_attach_plus_transform_measure(self) -> None:
         q = _q(
-            dimensions=["region"], time_dimensions=month_td(),
+            dimensions=["orders.region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
-                QueryMetric(metric="cumsum(sum(amount))", alias="cs"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="cs"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -288,18 +287,18 @@ class TestCoexistenceWithIsolatedFamilies:
         assert "__regroup__" not in await gen(q)
 
     async def test_row_and_combined_attach_coexistence(self) -> None:
-        # DEV-1824 (task 3.2) — a computed dimension over one partition set (row
-        # attach) plus a partitioned MEASURE over another (combined attach)
+        # A computed dimension over one partition set (row
+        # attach) plus a partitioned METRIC over another (combined attach)
         # coexist: the row producer joins into ``_base``, the combined producer at
         # the combined SELECT. (Executed values: test_dev1824_partitioned_execution.)
         q = _q(
             dimensions=[
-                "region", "city",
-                {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
+                "orders.region", "orders.city",
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=region)", alias="region_rev",
+                metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
             )],
         )
         planned = plan_query(query=q, bundle=_bundle())

@@ -3,9 +3,12 @@
 import datetime
 
 import pytest
+import sqlglot
+from sqlglot import exp
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
 
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
@@ -17,12 +20,12 @@ from slayer.core.models import (
 )
 from slayer.core.query import (
     FieldRef,
-    DatasetExtension,
     OrderItem,
     QueryMetric,
     SlayerQuery,
     TimeDimension,
 )
+from slayer.core.relationship_walker import walk
 from slayer.sql.dialects import SqliteDialect
 from slayer.sql.mode_a_variables import bind_mode_a
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -46,7 +49,7 @@ class TestColumnRef:
         assert ref.full_name == "status"
 
     def test_dotted_name_parsed_into_model(self) -> None:
-        """Dotted name like 'customers.name' is auto-parsed: model='customers', name='name'."""
+        """Dotted name like 'customers.name' is auto-parsed: dataset='customers', name='name'."""
         ref = FieldRef(name="customers.name")
         assert ref.dataset == "customers"
         assert ref.name == "name"
@@ -60,13 +63,13 @@ class TestColumnRef:
         assert ref.full_name == "customers.regions.name"
 
     def test_simple_name_no_model(self) -> None:
-        """Simple name without dots leaves model as None."""
+        """Simple name without dots leaves dataset as None."""
         ref = FieldRef(name="status")
         assert ref.dataset is None
         assert ref.name == "status"
 
     def test_explicit_model_not_overwritten(self) -> None:
-        """If model is explicitly provided, dotted parsing is skipped."""
+        """If dataset is explicitly provided, dotted parsing is skipped."""
         ref = FieldRef(dataset="customers", name="name")
         assert ref.dataset == "customers"
         assert ref.name == "name"
@@ -85,7 +88,7 @@ class TestColumnRef:
 
 
 class TestOrderItem:
-    """OrderItem column coercion and raw_formula capture."""
+    """OrderItem field coercion and raw_expression capture."""
 
     def test_funcstyle_builtin_agg_preserved(self) -> None:
         """The functional spelling is preserved verbatim — a
@@ -106,12 +109,12 @@ class TestOrderItem:
         assert item.raw_expression == "rolling_avg(revenue)"
 
     def test_funcstyle_custom_agg_with_args_accepted(self) -> None:
-        """Function-style custom agg with args is captured as raw_formula."""
+        """Function-style custom agg with args is captured as raw_expression."""
         item = OrderItem(field="rolling_avg(revenue, window=7)", direction="asc")
         assert item.raw_expression == "rolling_avg(revenue, window=7)"
 
     def test_plain_column_no_raw_formula(self) -> None:
-        """A plain column reference has no raw_formula."""
+        """A plain field reference has no raw_expression."""
         item = OrderItem(field="status", direction="asc")
         assert item.field == "status"
         assert item.raw_expression is None
@@ -121,7 +124,7 @@ class TestOrderShorthandHealing:
     """Heal LLM-shorthand ``order`` items and harden direction validation.
 
     Shorthand ``{col: "desc"}`` (single- or multi-key) heals to canonical
-    ``{"column": col, "direction": "desc"}``; direction is normalized
+    ``{"field": col, "direction": "desc"}``; direction is normalized
     (case-insensitive, ``asc``/``desc``/``ascending``/``descending``, whitespace
     trimmed) and anything else is rejected; ``OrderItem`` forbids extra keys.
     """
@@ -166,7 +169,7 @@ class TestOrderShorthandHealing:
         q = SlayerQuery(population="orders", order=[{"status": " Asc "}])
         assert q.order[0].direction == "asc"
 
-    # --- formula key composes with existing normalization ---
+    # --- expression key composes with existing normalization ---
 
     def test_shorthand_formula_key(self) -> None:
         q = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(revenue)": "desc"}]})
@@ -176,10 +179,10 @@ class TestOrderShorthandHealing:
         assert q.order[0].direction == "desc"
 
     def test_shorthand_formula_key_equals_canonical(self) -> None:
-        shorthand = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(revenue)": "desc"}]})
+        shorthand = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(orders.revenue)": "desc"}]})
         canonical = SlayerQuery.model_validate({
             "population": "orders",
-            "order": [{"field": "sum(revenue)", "direction": "desc"}],
+            "order": [{"field": "sum(orders.revenue)", "direction": "desc"}],
         })
         assert shorthand.order == canonical.order
 
@@ -238,7 +241,7 @@ class TestOrderShorthandHealing:
         # Pre-existing latent bug: SQL generator compares ``direction == "asc"`` strictly,
         # so a stored "ASCENDING"/"ASC" used to silently emit DESC. Now normalized.
         q = SlayerQuery.model_validate({
-            "population": "orders", "order": [{"field": "status", "direction": "ASCENDING"}]
+            "population": "orders", "order": [{"field": "orders.status", "direction": "ASCENDING"}]
         })
         assert q.order[0].direction == "asc"
 
@@ -251,8 +254,8 @@ class TestOrderShorthandHealing:
         assert [(p.old, p.new) for p in q.deprecated_inputs] == [("column", "field")]
 
     def test_canonical_column_named_like_direction_word(self) -> None:
-        # Single reserved 'column' key whose value happens to be a direction word
-        # stays canonical (order by a column literally named "desc").
+        # Single reserved 'field' key whose value happens to be a direction word
+        # stays canonical (order by a field literally named "desc").
         q = SlayerQuery.model_validate({"population": "orders", "order": [{"field": "desc"}]})
         assert q.order is not None
         assert q.order[0].field == "desc"
@@ -266,19 +269,19 @@ class TestOrderShorthandHealing:
 
     def test_invalid_direction_value_canonical_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "status", "direction": "sideways"}]})
+            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "direction": "sideways"}]})
 
     def test_mixed_canonical_and_stray_direction_key_raises(self) -> None:
         # extra='forbid' rejects the stray 'b' rather than silently dropping it.
         with pytest.raises(ValidationError):
-            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "status", "b": "asc"}]})
+            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "b": "asc"}]})
 
     def test_mixed_canonical_and_stray_nondirection_key_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "status", "b": "downward"}]})
+            SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "b": "downward"}]})
 
     def test_direction_only_key_raises(self) -> None:
-        # {"direction": "desc"} is a malformed canonical item (no column), not shorthand.
+        # {"direction": "desc"} is a malformed canonical item (no field), not shorthand.
         with pytest.raises(ValidationError):
             SlayerQuery(population="orders", order=[{"direction": "desc"}])
 
@@ -293,7 +296,7 @@ class TestOrderShorthandHealing:
 
     def test_non_wrappable_scalar_string_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
-            SlayerQuery(population="orders", order="status")
+            SlayerQuery(population="orders", order="orders.status")
 
     def test_non_wrappable_int_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
@@ -332,7 +335,7 @@ class TestOrderShorthandHealing:
 
     def test_non_string_key_not_healed_raises(self) -> None:
         # A non-string key means the dict is not treated as shorthand; it falls
-        # through to OrderItem validation, which rejects it (no column).
+        # through to OrderItem validation, which rejects it (no field).
         with pytest.raises(ValidationError):
             SlayerQuery(population="orders", order=[{1: "desc"}])
 
@@ -351,7 +354,7 @@ class TestOrderShorthandHealing:
         assert q.order[1].direction == "asc"
 
     def test_list_orderitem_passthrough(self) -> None:
-        item = OrderItem.model_validate({"field": "sum(revenue)", "direction": "desc"})
+        item = OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})
         q = SlayerQuery(population="orders", order=[item])
         assert q.order is not None
         assert len(q.order) == 1
@@ -361,18 +364,18 @@ class TestOrderShorthandHealing:
     # --- OrderItem-level direction validation + extra=forbid ---
 
     def test_orderitem_direction_synonym_normalized(self) -> None:
-        assert OrderItem(field="status", direction="DESCENDING").direction == "desc"
+        assert OrderItem(field="orders.status", direction="DESCENDING").direction == "desc"
 
     def test_orderitem_direction_default_asc(self) -> None:
-        assert OrderItem(field="status").direction == "asc"
+        assert OrderItem(field="orders.status").direction == "asc"
 
     def test_orderitem_invalid_direction_raises(self) -> None:
         with pytest.raises(ValidationError):
-            OrderItem(field="status", direction="sideways")
+            OrderItem(field="orders.status", direction="sideways")
 
     def test_orderitem_extra_key_forbidden(self) -> None:
         with pytest.raises(ValidationError):
-            OrderItem(field="status", direction="asc", bogus="x")
+            OrderItem(field="orders.status", direction="asc", bogus="x")
 
 
 class TestSlayerModel:
@@ -387,7 +390,7 @@ class TestSlayerModel:
         assert model.get_field("y") is None
 
     def test_get_measure(self) -> None:
-        """``get_measure`` returns a ModelMeasure formula by name."""
+        """``get_metric`` returns a DatasetMetric by name."""
         model = SlayerDataset(
             name="test",
             sql_table="t",
@@ -401,28 +404,12 @@ class TestSlayerModel:
         """A transform name acts as a transform only in call position."""
         assert DatasetMetric(name="cumsum", expression="sum(revenue)").name == "cumsum"
 
-    def test_model_measure_formula_with_raw_over_raises(self) -> None:
-        """A ``ModelMeasure`` formula containing raw `OVER (...)` SQL
-        cannot be parsed by SLayer's formula grammar (Python AST) and would
-        produce invalid SQL on every dialect if used as a filter. Reject at
-        construction time with an actionable error pointing at SLayer's
-        ``rank()`` / ``first()`` / ``last()`` / ``lag()`` / ``lead()`` transforms
-        or a ``Column.sql``-with-window pattern.
-        """
-        with pytest.raises(ValueError) as excinfo:
-            DatasetMetric(
-                name="top_3",
-                expression="row_number() over (order by mass desc) <= 3",
-            )
-        msg = str(excinfo.value)
-        assert "window function" in msg.lower(), msg
-        assert any(
-            keyword in msg
-            for keyword in ("rank(", "first(", "last(", "lag(", "lead(", "Column.sql", "multi-stage")
-        ), msg
+    def test_model_measure_formula_with_raw_over_constructs(self) -> None:
+        metric = DatasetMetric(name="top_3", expression="row_number() over (order by mass desc) <= 3")
+        assert metric.expression == "row_number() over (order by mass desc) <= 3"
 
     def test_filter_bare_column_allowed(self) -> None:
-        """Bare column names in model filters are valid."""
+        """Bare field names in dataset filters are valid."""
         model = SlayerDataset(
             name="test", sql_table="t", data_source="test",
             filters=["status == 'active'", "amount > 100"],
@@ -430,7 +417,7 @@ class TestSlayerModel:
         assert model.filters == ["status == 'active'", "amount > 100"]
 
     def test_filter_single_dot_allowed(self) -> None:
-        """Single-dot (table.column) references in model filters are valid SQL."""
+        """Single-dot (table.column) references in dataset filters are valid SQL."""
         model = SlayerDataset(
             name="test", sql_table="t", data_source="test",
             filters=["customers.region == 'US'"],
@@ -438,7 +425,7 @@ class TestSlayerModel:
         assert model.filters == ["customers.region == 'US'"]
 
     def test_filter_double_underscore_allowed(self) -> None:
-        """Double-underscore alias references in model filters are valid."""
+        """Double-underscore alias references in dataset filters are valid."""
         model = SlayerDataset(
             name="test", sql_table="t", data_source="test",
             filters=["customers__regions.name == 'US'"],
@@ -455,32 +442,32 @@ class TestSlayerModel:
 
     def test_dimension_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in dimension sql are left as-is."""
-        dim = DatasetField(name="cust_name", sql="customers.name", datatype=DataType.FLOAT)
-        assert dim.sql == "customers.name"
+        dim = DatasetField(name="cust_name", expression="customers.name", datatype=DataType.FLOAT)
+        assert dim.expression == "customers.name"
 
     def test_measure_sql_single_dot_unchanged(self) -> None:
-        """Single-dot references in measure sql are left as-is."""
-        meas = DatasetField(name="total", sql="orders.amount", datatype=DataType.FLOAT)
-        assert meas.sql == "orders.amount"
+        """Single-dot references in field sql are left as-is."""
+        meas = DatasetField(name="total", expression="orders.amount", datatype=DataType.FLOAT)
+        assert meas.expression == "orders.amount"
 
     def test_model_name_allows_double_underscore(self) -> None:
-        # `__` is legal in model names (the dotted-canonical flip
-        # made join-path ambiguity structurally impossible).
-        model = SlayerDataset(name="my__model", sql_table="t", data_source="test")
-        assert model.name == "my__model"
+        # `__` is legal in dataset names (the dotted-canonical flip
+        # made relationship-path ambiguity structurally impossible).
+        model = SlayerDataset(name="my__dataset", sql_table="t", data_source="test")
+        assert model.name == "my__dataset"
 
     def test_model_name_rejects_reserved_slayer_prefix(self) -> None:
         with pytest.raises(ValueError, match="__slayer_"):
             SlayerDataset(name="__slayer_x", sql_table="t", data_source="test")
 
     def test_dimension_name_allows_double_underscore(self) -> None:
-        """__ is allowed in dimension names — used for flattened join paths in virtual models."""
+        """__ is allowed in dimension names — used for flattened relationship paths in virtual datasets."""
         dim = DatasetField(name="stores__name")
         assert dim.name == "stores__name"
 
     def test_measure_name_allows_double_underscore(self) -> None:
-        """__ is allowed in measure names — used for flattened join paths in virtual models."""
-        meas = DatasetField(name="stores__tax_rate_sum", sql="tax_rate", datatype=DataType.FLOAT)
+        """__ is allowed in metric names — used for flattened relationship paths in virtual datasets."""
+        meas = DatasetField(name="stores__tax_rate_sum", expression="tax_rate", datatype=DataType.FLOAT)
         assert meas.name == "stores__tax_rate_sum"
 
     def test_query_name_allows_double_underscore(self) -> None:
@@ -493,8 +480,8 @@ class TestSlayerModel:
             SlayerQuery(name="__slayer_x", population="orders")
 
     def test_model_name_single_underscore_allowed(self) -> None:
-        model = SlayerDataset(name="my_model", sql_table="t", data_source="test")
-        assert model.name == "my_model"
+        model = SlayerDataset(name="my_dataset", sql_table="t", data_source="test")
+        assert model.name == "my_dataset"
 
     def test_dimension_name_single_underscore_allowed(self) -> None:
         dim = DatasetField(name="customer_name")
@@ -506,16 +493,16 @@ class TestSlayerModel:
             DatasetField(name="customers.name")
 
     def test_measure_name_rejects_dot(self) -> None:
-        """Dots are path syntax, not allowed in measure names."""
+        """Dots are path syntax, not allowed in metric names."""
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            DatasetField(name="customers.name_sum", sql="name", datatype=DataType.FLOAT)
+            DatasetField(name="customers.name_sum", expression="name", datatype=DataType.FLOAT)
 
     def test_dimension_name_without_dot_allowed(self) -> None:
         dim = DatasetField(name="region_name")
         assert dim.name == "region_name"
 
     def test_measure_name_without_dot_allowed(self) -> None:
-        meas = DatasetField(name="order_total_sum", sql="total", datatype=DataType.FLOAT)
+        meas = DatasetField(name="order_total_sum", expression="total", datatype=DataType.FLOAT)
         assert meas.name == "order_total_sum"
 
     def test_model_data_source_rejects_dot(self) -> None:
@@ -533,8 +520,8 @@ class TestSlayerModel:
             DatasourceConfig(name="prod.legacy", type="postgres")
 
     def test_datasource_name_allows_double_underscore(self) -> None:
-        """``__`` is reserved as a SQL join-path alias separator on
-        model/query names, but datasource names never appear in SQL
+        """``__`` is reserved as a SQL relationship-path alias separator on
+        dataset/query names, but datasource names never appear in SQL
         alias positions, so they accept ``__`` freely."""
         ds = DatasourceConfig(name="prod__staging", type="postgres")
         assert ds.name == "prod__staging"
@@ -556,21 +543,21 @@ class TestSlayerModel:
             DatasourceConfig(name="memory:42", type="sqlite")
 
     def test_model_data_source_rejects_colon(self) -> None:
-        """A model's ``data_source`` shares the same canonical-id
+        """A dataset's ``data_source`` shares the same canonical-id
         namespace constraints as ``DatasourceConfig.name``."""
         with pytest.raises(ValueError, match="must not contain ':'"):
             SlayerDataset(name="orders", sql_table="t", data_source="memory:42")
 
     def test_model_name_rejects_colon(self) -> None:
         """Colon is reserved as the DSL aggregation separator
-        (``revenue:sum``) — model names sharing the shape would collide
-        with formula parsing."""
+        (``revenue:sum``) — dataset names sharing the shape would collide
+        with expression parsing."""
         with pytest.raises(ValueError, match="must not contain ':'"):
             SlayerDataset(name="rev:sum", sql_table="t", data_source="ds")
 
     def test_query_name_rejects_colon(self) -> None:
-        """SlayerQuery names share the same naming space as SlayerModel
-        names (a query can be persisted as a query-backed model), so the
+        """SlayerQuery names share the same naming space as SlayerDataset
+        names (a query can be persisted as a query-backed dataset), so the
         same rejection rules apply."""
         with pytest.raises(ValueError, match="must not contain ':'"):
             SlayerQuery(name="rev:sum", population="orders")
@@ -582,24 +569,24 @@ class TestSlayerModel:
             SlayerQuery(name="prod.summary", population="orders")
 
     def test_column_name_rejects_colon(self) -> None:
-        """Column names containing ``:`` would collide with the
+        """Field names containing ``:`` would collide with the
         aggregation colon syntax (``revenue:sum``)."""
         with pytest.raises(ValueError, match="must not contain ':'"):
             DatasetField(name="rev:sum")
 
 
 class TestWithinListDuplicateNames:
-    """Duplicate names within ``columns`` or within ``measures`` are rejected.
+    """Duplicate names within ``fields`` or within ``metrics`` are rejected.
 
     Codex's Major 4: today only cross-list overlap is validated, so two
-    columns named ``revenue`` (or two measures named ``aov``) silently pass
-    and ``get_column`` / ``get_measure`` return the first match.
+    fields named ``revenue`` (or two metrics named ``aov``) silently pass
+    and ``get_field`` / ``get_metric`` return the first match.
     """
 
     def test_duplicate_column_names_rejected(self) -> None:
         columns = [
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="revenue", sql="net_amount", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="net_amount", datatype=DataType.FLOAT),
         ]
         with pytest.raises(ValueError, match="duplicate.*field|field.*duplicate"):
             SlayerDataset(
@@ -610,7 +597,7 @@ class TestWithinListDuplicateNames:
             )
 
     def test_duplicate_measure_names_rejected(self) -> None:
-        columns = [DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)]
+        columns = [DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT)]
         measures = [
             DatasetMetric(name="aov", expression="sum(amount) / count(*)"),
             DatasetMetric(name="aov", expression="avg(amount)"),
@@ -627,7 +614,7 @@ class TestWithinListDuplicateNames:
     def test_unnamed_model_measure_rejected(self) -> None:
         """A dataset metric must have a name."""
         raw = {"name": "orders", "sql_table": "t", "data_source": "test",
-               "fields": [{"name": "amount", "sql": "amount", "datatype": "Float"}],
+               "fields": [{"name": "amount", "expression": "amount", "datatype": "Float"}],
                "metrics": [{"expression": "sum(amount)"}]}
         with pytest.raises(ValueError, match="must have a name"):
             SlayerDataset.model_validate(raw)
@@ -638,8 +625,8 @@ class TestWithinListDuplicateNames:
             sql_table="t",
             data_source="test",
             fields=[
-                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", expression="status", datatype=DataType.STRING),
             ],
             metrics=[
                 DatasetMetric(name="aov", expression="sum(amount) / count(*)"),
@@ -721,26 +708,24 @@ class TestSourceModeExclusivity:
             SlayerDataset(name="orders", source_queries=[], data_source="ds")
 
 
-class TestSelfJoinRejected:
-    """A join targeting the model itself is unaddressable (joins resolve by
-    target-model name) and must fail loudly at construction."""
+class TestSelfRelationshipAccepted:
+    """A self-relationship is accepted at construction; spelling its hop is refused."""
 
-    def test_self_join_raises_informative_error(self) -> None:
+    def test_self_relationship_constructs_and_its_hop_is_refused(self) -> None:
         columns = [
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="manager_id", datatype=DataType.INTEGER),
         ]
-        joins = [DatasetRelationship(to="staff",
+        joins = [DatasetRelationship(to="staff", name="manager",
                            from_columns=["manager_id"], to_columns=["id"])]
-        with pytest.raises(ValueError, match="[Ss]elf-relationship") as ei:
-            SlayerDataset(
-                name="staff", data_source="ds", sql_table="staff",
-                fields=columns, relationships=joins,
-            )
-        message = str(ei.value)
-        assert "staff" in message
-        # The remedy is named, not just the ban.
-        assert "separate dataset" in message
+        staff = SlayerDataset(
+            name="staff", data_source="ds", sql_table="staff",
+            fields=columns, relationships=joins,
+        )
+        assert staff.relationships[0].to == "staff"
+        with pytest.raises(getattr(core_errors, "SelfRelationshipTraversalError"),
+                           match="(?i)self-relationships are not traversable"):
+            walk(root=staff, path=("manager",), datasets_by_name={"staff": staff})
 
     def test_distinct_target_still_accepted(self) -> None:
         m = SlayerDataset(
@@ -865,13 +850,13 @@ class TestQueryVariablesAndCacheFields:
 
 
 class TestAllowedAggregationsBuildTimeValidation:
-    """Build-time validation of ``Column.allowed_aggregations``.
+    """Build-time validation of ``DatasetField.allowed_aggregations``.
 
     The intersection contract: a whitelist entry must satisfy
     (1) the PK rule (only ``count`` / ``count_distinct`` for PKs),
     (2) type-default eligibility (``DEFAULT_AGGREGATIONS_BY_TYPE[col.type]``).
-    Custom aggregations defined on the model bypass type-default eligibility
-    (their formula determines applicability), but PK restrictions still apply
+    Custom aggregations defined on the dataset bypass type-default eligibility
+    (their expression determines applicability), but PK restrictions still apply
     and the name must be a known custom aggregation.
     """
 
@@ -973,7 +958,7 @@ class TestAllowedAggregationsBuildTimeValidation:
 
     def test_custom_aggregation_in_whitelist_bypasses_type_check(self) -> None:
         """A custom-aggregation entry is exempt from type-default eligibility.
-        Its applicability depends on the custom formula, not the type-default map.
+        Its applicability depends on the custom expression, not the type-default map.
         """
         model = SlayerDataset(
             name="orders",
@@ -1013,9 +998,9 @@ class TestAllowedAggregationsBuildTimeValidation:
             )
 
     def test_builtin_override_still_type_gated(self) -> None:
-        """Overriding a built-in name (e.g., ``sum``) with a custom formula must
+        """Overriding a built-in name (e.g., ``sum``) with a custom expression must
         still respect type-default eligibility — built-ins keep their type
-        semantics regardless of the override formula. Only truly novel custom
+        semantics regardless of the override expression. Only truly novel custom
         names bypass the type-default gate.
         """
         aggregations = [
@@ -1038,7 +1023,7 @@ class TestAllowedAggregationsBuildTimeValidation:
             )
 
     def test_pk_column_with_custom_agg_rejected(self) -> None:
-        """Even custom aggregations cannot be whitelisted on a PK column —
+        """Even custom aggregations cannot be whitelisted on a PK field —
         the PK rule (count/count_distinct only) is absolute.
         """
         aggregations = [
@@ -1425,10 +1410,10 @@ class TestStringCoercion:
     """Plain strings are accepted in fields and dimensions lists."""
 
     def test_fields_plain_strings(self) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)", "sum(revenue)"]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)", "sum(orders.revenue)"]})
         assert len(query.metrics) == 2
-        assert query.metrics[0] == QueryMetric(metric="count(*)")
-        assert query.metrics[1] == QueryMetric(metric="sum(revenue)")
+        assert query.metrics[0] == QueryMetric(metric="count(orders.*)")
+        assert query.metrics[1] == QueryMetric(metric="sum(orders.revenue)")
 
     def test_dimensions_plain_strings(self) -> None:
         query = SlayerQuery(population="orders", dimensions=["status", "customers.name"])
@@ -1440,11 +1425,11 @@ class TestStringCoercion:
     def test_fields_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": ["count(*)", {"metric": "sum(revenue) / count(*)", "alias": "aov"}],
+            "metrics": ["count(orders.*)", {"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov"}],
         })
         assert len(query.metrics) == 2
-        assert query.metrics[0] == QueryMetric(metric="count(*)")
-        assert query.metrics[1] == QueryMetric(metric="sum(revenue) / count(*)", alias="aov")
+        assert query.metrics[0] == QueryMetric(metric="count(orders.*)")
+        assert query.metrics[1] == QueryMetric(metric="sum(orders.revenue) / count(orders.*)", alias="aov")
 
     def test_dimensions_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery.model_validate({
@@ -1526,7 +1511,7 @@ class TestCoerceFieldsAndDimensions:
 
     def test_dimensions_scalar_string_raises(self) -> None:
         with pytest.raises(Exception, match="must be a list"):
-            SlayerQuery(population="orders", dimensions="status")
+            SlayerQuery(population="orders", dimensions="orders.status")
 
     def test_fields_list_of_strings_coerced(self) -> None:
         q = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)", "sum(revenue)"]})
@@ -1561,7 +1546,7 @@ class TestCoerceFieldsAndDimensions:
 
 
 class TestAggregationValidation:
-    """Aggregation must require formula for non-built-in names."""
+    """Aggregation must require expression for non-built-in names."""
 
     def test_builtin_without_formula_succeeds(self) -> None:
         agg = Aggregation(name="sum")
@@ -1583,9 +1568,9 @@ class TestAggregationValidation:
 
     def test_name_with_dot_rejected(self) -> None:
         """``Aggregation.name`` must enforce the same identifier
-        rules as ``Column.name`` and ``ModelMeasure.name``. Otherwise the
-        ``column_x_custom_aggs`` catalog expansion produces a same-model
-        metric like ``amount_my.agg`` whose dotted name the cross-model
+        rules as ``DatasetField.name`` and ``DatasetMetric.name``. Otherwise the
+        ``column_x_custom_aggs`` catalog expansion produces a same-dataset
+        metric like ``amount_my.agg`` whose dotted name the cross-dataset
         flatten filter (catalog.local_metrics / local_dimensions) would
         misclassify."""
         with pytest.raises(ValueError, match="Invalid name"):
@@ -1602,11 +1587,11 @@ class TestAggregationValidation:
 
 class TestDimensionLabel:
     def test_label_optional(self) -> None:
-        d = DatasetField(name="status", sql="status", datatype=DataType.FLOAT)
+        d = DatasetField(name="status", expression="status", datatype=DataType.FLOAT)
         assert d.label is None
 
     def test_label_set(self) -> None:
-        d = DatasetField(name="status", sql="status", label="Order Status", datatype=DataType.FLOAT)
+        d = DatasetField(name="status", expression="status", label="Order Status", datatype=DataType.FLOAT)
         assert d.label == "Order Status"
 
     def test_label_in_model_dump(self) -> None:
@@ -1622,30 +1607,30 @@ class TestDimensionLabel:
 
 class TestMeasureLabel:
     def test_label_optional(self) -> None:
-        m = DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)
+        m = DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)
         assert m.label is None
 
     def test_label_set(self) -> None:
-        m = DatasetField(name="revenue", sql="amount", label="Total Revenue", datatype=DataType.FLOAT)
+        m = DatasetField(name="revenue", expression="amount", label="Total Revenue", datatype=DataType.FLOAT)
         assert m.label == "Total Revenue"
 
 
 class TestMeasureFilter:
     def test_filter_optional(self) -> None:
-        m = DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)
+        m = DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT)
         assert m.filter is None
 
     def test_filter_set(self) -> None:
-        m = DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+        m = DatasetField(name="active_revenue", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         assert m.filter == "status = 'active'"
 
     def test_filter_in_model_dump(self) -> None:
-        m = DatasetField(name="x", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
+        m = DatasetField(name="x", expression="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         data = m.model_dump(exclude_none=True)
         assert data["filter"] == "status = 'active'"
 
     def test_filter_excluded_when_none(self) -> None:
-        m = DatasetField(name="x", sql="amount", datatype=DataType.FLOAT)
+        m = DatasetField(name="x", expression="amount", datatype=DataType.FLOAT)
         data = m.model_dump(exclude_none=True)
         assert "filter" not in data
 
@@ -1703,7 +1688,7 @@ class TestSubstituteVariables:
         """Variables field is accepted on SlayerQuery."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": ["count(*)"],
+            "metrics": ["count(orders.*)"],
             "filter": ["status = '{val}'"],
             "variables": {"val": "completed"},
         })
@@ -1719,7 +1704,7 @@ def _prefix_datasets() -> list[SlayerDataset]:
                 DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ),
@@ -1745,11 +1730,21 @@ async def _prefix_sql(query: dict) -> str:
     return await _engine_generate(query=SlayerQuery.model_validate(query), dataset=model, extra_datasets=extra)
 
 
+def _unaliased(sql: str) -> str:
+    """``sql`` with each outer result alias replaced by its position."""
+    tree = sqlglot.parse_one(sql)
+    assert isinstance(tree, exp.Query)
+    for i, name in enumerate(tree.named_selects):
+        sql = sql.replace(f'"{name}"', f'"_c{i}"')
+    return sql
+
+
 _MONTH = {"field": "created_at", "granularity": "month"}
 
+_ANCHORED_KEYS = {"joined-dimension", "joined-formula", "multihop-dimension"}
 # (root-qualified, bare) spellings of one query.
 _ROOT_QUALIFIED = {
-    "dimension": ({"dimensions": ["orders.status"]}, {"dimensions": ["status"]}),
+    "dimension": ({"dimensions": ["status"]}, {"dimensions": ["orders.status"]}),
     "joined-dimension": ({"dimensions": ["orders.customers.name"]}, {"dimensions": ["customers.name"]}),
     "multihop-dimension": ({"dimensions": ["orders.customers.regions.name"]}, {"dimensions": ["customers.regions.name"]}),
     "dimension-label": ({"dimensions": [{"name": "orders.status", "label": "Status"}]},
@@ -1760,9 +1755,9 @@ _ROOT_QUALIFIED = {
         {"time_dimensions": [{"field": "created_at", "granularity": "month",
                               "date_range": ["2024-01-01", "2024-12-31"], "label": "Month"}]},
     ),
-    "formula": ({"metrics": ["sum(orders.revenue)"]}, {"metrics": ["sum(revenue)"]}),
-    "star-count": ({"metrics": ["count(orders.*)"]}, {"metrics": ["count(*)"]}),
-    "arithmetic": ({"metrics": ["sum(orders.revenue) / count(orders.*)"]}, {"metrics": ["sum(revenue) / count(*)"]}),
+    "formula": ({"metrics": ["sum(revenue)"]}, {"metrics": ["sum(revenue)"]}),
+    "star-count": ({"metrics": ["count(*)"]}, {"metrics": ["count(orders.*)"]}),
+    "arithmetic": ({"metrics": ["sum(revenue) / count(*)"]}, {"metrics": ["sum(orders.revenue) / count(orders.*)"]}),
     "transform": ({"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(orders.revenue))"]},
                   {"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(revenue))"]}),
     "joined-formula": ({"metrics": ["avg(orders.customers.score)"]}, {"metrics": ["avg(customers.score)"]}),
@@ -1795,28 +1790,23 @@ class TestRootQualifier:
     @pytest.mark.parametrize("case", sorted(_ROOT_QUALIFIED))
     async def test_root_qualified_equals_bare(self, case: str) -> None:
         qualified, bare = _ROOT_QUALIFIED[case]
-        assert await _prefix_sql({"population": "orders", **qualified}) == await _prefix_sql(
-            {"population": "orders", **bare})
+        got = await _prefix_sql({"population": "orders", **qualified})
+        expected = await _prefix_sql({"population": "orders", **bare})
+        if case in _ANCHORED_KEYS:  # different anchors are different result keys
+            got, expected = _unaliased(got), _unaliased(expected)
+        assert got == expected
 
-    @pytest.mark.parametrize("source", [
-        {"population": "orders", "extensions": [{"dataset": "orders"}]},
-        {"population": "orders", "extensions": [DatasetExtension(dataset="orders")]},
-    ], ids=["extension-dict", "extension-object"])
-    async def test_every_root_spec_takes_its_name(self, source: dict) -> None:
-        assert await _prefix_sql({**source, "dimensions": ["orders.status"]}) == await _prefix_sql(
-            {**source, "dimensions": ["status"]})
-
-    @pytest.mark.parametrize("query", [
-        {"metrics": ["count(customers.orders.id)"]},
-        {"metrics": ["count(*)"], "filter": ["customers.orders.status = 'paid'"]},
-    ], ids=["formula", "filter"])
-    async def test_an_inner_hop_named_like_the_root_is_still_refused(self, query: dict) -> None:
+    async def test_an_inner_hop_named_like_the_root_is_still_refused(self) -> None:
+        query = {"metrics": ["count(orders.*)"], "filter": ["customers.orders.status = 'paid'"]}
         with pytest.raises(Exception, match="customers"):
             await _prefix_sql({"population": "orders", **query})
 
+    async def test_an_aggregation_reads_an_inner_hop_named_like_the_root_from_its_own_frame(self) -> None:
+        assert await _prefix_sql({"population": "orders", "metrics": ["count(customers.orders.id)"]})
+
     @pytest.mark.parametrize("query", [
-        {"metrics": ["count(*)"], "filter": ["reorders.status = 'active'"]},
-        {"metrics": ["sum(reorders.revenue)"]},
+        {"metrics": ["count(orders.*)"], "filter": ["orders.reorders.status = 'active'"]},
+        {"metrics": ["sum(orders.reorders.revenue)"]},
     ], ids=["filter", "formula"])
     async def test_a_longer_model_name_is_no_root_qualifier(self, query: dict) -> None:
         with pytest.raises(Exception, match="reorders"):
@@ -1825,7 +1815,7 @@ class TestRootQualifier:
 
 class TestColumnTypeLenientValidator:
     """A Pydantic ``before``-validator absorbs legacy lowercase type
-    spellings on ``Column.datatype`` so old MCP/REST input keeps working after
+    spellings on ``DatasetField.datatype`` so old MCP/REST input keeps working after
     the sqlglot-aligned enum rename. No deprecation warning."""
 
     def test_legacy_string_maps_to_text(self) -> None:
@@ -1879,7 +1869,7 @@ class TestColumnTypeLenientValidator:
 
 
 class TestOpaqueColumn:
-    """Opaque (``UNKNOWN``) columns are stored + displayed but never operated
+    """Opaque (``UNKNOWN``) fields are stored + displayed but never operated
     on — the raw DB type rides along on ``db_type``."""
 
     def test_db_type_defaults_to_none(self) -> None:
@@ -1922,10 +1912,10 @@ class TestOpaqueColumn:
 
 
 class TestModelMeasureType:
-    """ModelMeasure has an optional ``type`` declaring the formula's
+    """DatasetMetric has an optional ``datatype`` declaring the expression's
     result type. None (default) → no cast. Set value → outer CAST on the
     aggregation expression. Surfaces transparently on
-    ``SlayerQuery.metrics[i]`` since query measures use the same shape."""
+    ``SlayerQuery.metrics[i]`` since query metrics use the same shape."""
 
     def test_default_is_none(self) -> None:
         m = DatasetMetric(name="m", expression="count(*)")
@@ -1940,7 +1930,7 @@ class TestModelMeasureType:
         assert m.datatype == DataType.INTEGER
 
     def test_legacy_string_value_absorbed(self) -> None:
-        # Lenient validator on ModelMeasure.datatype mirrors Column.datatype.
+        # Lenient validator on DatasetMetric.datatype mirrors DatasetField.datatype.
         m = DatasetMetric.model_validate({"name": "m", "expression": "count(*)", "datatype": "number"})
         assert m.datatype == DataType.FLOAT
 
@@ -1959,9 +1949,9 @@ class TestModelMeasureType:
 
 
 class TestColumnSampledValuesAndDistinctCount:
-    """``Column`` has a structured sibling ``sampled_values`` for
+    """``DatasetField`` has a structured sibling ``sampled_values`` for
     the text ``sampled`` string, and a ``distinct_count`` integer for the
-    column's total cardinality at profile time. Both default to ``None``."""
+    field's total cardinality at profile time. Both default to ``None``."""
 
     def test_sampled_values_defaults_to_none(self) -> None:
         col = DatasetField(name="status", datatype=DataType.STRING)
@@ -1972,7 +1962,7 @@ class TestColumnSampledValuesAndDistinctCount:
         assert col.distinct_count is None
 
     def test_sampled_values_accepts_empty_list(self) -> None:
-        # All-NULL profiled categorical column.
+        # All-NULL profiled categorical field.
         col = DatasetField(name="status", datatype=DataType.STRING, sampled_values=[])
         assert col.sampled_values == []
 

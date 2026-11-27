@@ -1,11 +1,8 @@
 """Golden SQL for a trailing ``window=`` on every aggregation (DEV-1915), over
 the seven harness dialects.
 
-On the current tree every case records the "only supported for sum and avg"
-raise, so the two invariant tests below are red; after the change the baseline
-is regenerated (``SLAYER_UPDATE_GOLDEN=1``) and only the real dialect gaps —
-``median``/``percentile`` on MySQL and T-SQL — record raises (D5: windowed gaps
-equal the plain gaps; corr/covar and BigQuery median render fine).
+No case records a raise: windowed gaps equal the plain gaps (D5), and every dialect renders
+``median``/``percentile``.
 """
 
 from __future__ import annotations
@@ -20,9 +17,6 @@ from tests._golden_harness import bind_golden_tests, record_raise, render_value
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1915_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-#: The only real render-time dialect gaps (probed on the plain forms; D5).
-AGG_UNSUPPORTED = {f"{c}::{d}" for c in ("median", "percentile_p09")
-                   for d in ("mysql", "tsql")}
 #: Cases whose emitted SQL must rank interval rows, never a plain aggregate.
 FIRST_LAST = {"first", "last", "last_explicit_time", "cross_model_last"}
 
@@ -35,36 +29,36 @@ def _cases() -> dict:
     m = month_td()
     sm = month_td("customers.signup_at")
     return {
-        "count": {"kw": {"time_dimensions": m, "metrics": _cm("count(amount, window='90d')", "w")}},
-        "min": {"kw": {"time_dimensions": m, "metrics": _cm("min(amount, window='90d')", "w")}},
-        "max": {"kw": {"time_dimensions": m, "metrics": _cm("max(amount, window='90d')", "w")}},
-        "count_distinct": {"kw": {"time_dimensions": m, "metrics": _cm("count_distinct(amount, window='90d')", "w")}},
-        "count_distinct_approx": {"kw": {"time_dimensions": m, "metrics": _cm("count_distinct_approx(amount, window='90d')", "w")}},
-        "star_count": {"kw": {"time_dimensions": m, "metrics": _cm("count(*, window='90d')", "w")}},
-        "median": {"kw": {"time_dimensions": m, "metrics": _cm("median(amount, window='90d')", "w")}},
-        "percentile_p09": {"kw": {"time_dimensions": m, "metrics": _cm("percentile(amount, p=0.9, window='90d')", "w")}},
-        "stddev_samp": {"kw": {"time_dimensions": m, "metrics": _cm("stddev_samp(amount, window='90d')", "w")}},
-        "var_pop": {"kw": {"time_dimensions": m, "metrics": _cm("var_pop(amount, window='90d')", "w")}},
-        "corr": {"kw": {"time_dimensions": m, "metrics": _cm("corr(amount, other=qty, window='90d')", "w")}},
-        "covar_samp": {"kw": {"time_dimensions": m, "metrics": _cm("covar_samp(amount, other=qty, window='90d')", "w")}},
-        "stddev_pop": {"kw": {"time_dimensions": m, "metrics": _cm("stddev_pop(amount, window='90d')", "w")}},
-        "var_samp": {"kw": {"time_dimensions": m, "metrics": _cm("var_samp(amount, window='90d')", "w")}},
-        "covar_pop": {"kw": {"time_dimensions": m, "metrics": _cm("covar_pop(amount, other=qty, window='90d')", "w")}},
-        "weighted_avg": {"kw": {"time_dimensions": m, "metrics": _cm("weighted_avg(amount, weight=qty, window='90d')", "w")}},
-        "weighted_avg_attached_weight": {"kw": {"time_dimensions": m, "metrics": _cm("weighted_avg(amount, weight=sum(qty, partition_by=region), window='90d')", "w")}},
-        "custom_trimmed_mean": {"kw": {"time_dimensions": m, "metrics": _cm("trimmed_mean(amount, lo=150, hi=350, window='90d')", "w")}},
-        "custom_default_literal_p": {"kw": {"time_dimensions": m, "metrics": _cm("trimmed_mean(amount, window='90d')", "w")}},
+        "count": {"kw": {"time_dimensions": m, "metrics": _cm("count(orders.amount, window='90d')", "w")}},
+        "min": {"kw": {"time_dimensions": m, "metrics": _cm("min(orders.amount, window='90d')", "w")}},
+        "max": {"kw": {"time_dimensions": m, "metrics": _cm("max(orders.amount, window='90d')", "w")}},
+        "count_distinct": {"kw": {"time_dimensions": m, "metrics": _cm("count_distinct(orders.amount, window='90d')", "w")}},
+        "count_distinct_approx": {"kw": {"time_dimensions": m, "metrics": _cm("count_distinct_approx(orders.amount, window='90d')", "w")}},
+        "star_count": {"kw": {"time_dimensions": m, "metrics": _cm("count(orders.*, window='90d')", "w")}},
+        "median": {"kw": {"time_dimensions": m, "metrics": _cm("median(orders.amount, window='90d')", "w")}},
+        "percentile_p09": {"kw": {"time_dimensions": m, "metrics": _cm("percentile(orders.amount, p=0.9, window='90d')", "w")}},
+        "stddev_samp": {"kw": {"time_dimensions": m, "metrics": _cm("stddev_samp(orders.amount, window='90d')", "w")}},
+        "var_pop": {"kw": {"time_dimensions": m, "metrics": _cm("var_pop(orders.amount, window='90d')", "w")}},
+        "corr": {"kw": {"time_dimensions": m, "metrics": _cm("corr(orders.amount, other=orders.qty, window='90d')", "w")}},
+        "covar_samp": {"kw": {"time_dimensions": m, "metrics": _cm("covar_samp(orders.amount, other=orders.qty, window='90d')", "w")}},
+        "stddev_pop": {"kw": {"time_dimensions": m, "metrics": _cm("stddev_pop(orders.amount, window='90d')", "w")}},
+        "var_samp": {"kw": {"time_dimensions": m, "metrics": _cm("var_samp(orders.amount, window='90d')", "w")}},
+        "covar_pop": {"kw": {"time_dimensions": m, "metrics": _cm("covar_pop(orders.amount, other=orders.qty, window='90d')", "w")}},
+        "weighted_avg": {"kw": {"time_dimensions": m, "metrics": _cm("weighted_avg(orders.amount, weight=orders.qty, window='90d')", "w")}},
+        "weighted_avg_attached_weight": {"kw": {"time_dimensions": m, "metrics": _cm("weighted_avg(orders.amount, weight=sum(orders.qty, partition_by=orders.region), window='90d')", "w")}},
+        "custom_trimmed_mean": {"kw": {"time_dimensions": m, "metrics": _cm("trimmed_mean(orders.amount, lo=150, hi=350, window='90d')", "w")}},
+        "custom_default_literal_p": {"kw": {"time_dimensions": m, "metrics": _cm("trimmed_mean(orders.amount, window='90d')", "w")}},
         "custom_joined_default_column": {"kw": {"time_dimensions": sm, "metrics": _cm("disc_spend(customers.spend, window='1y')", "w")}},
-        "first": {"kw": {"time_dimensions": m, "metrics": _cm("first(amount, window='90d')", "w")}},
-        "last": {"kw": {"time_dimensions": m, "metrics": _cm("last(amount, window='90d')", "w")}},
-        "last_explicit_time": {"kw": {"time_dimensions": m, "metrics": _cm("last(amount, updated_at, window='90d')", "w")}},
-        "partitioned_count": {"kw": {"dimensions": ["region"], "time_dimensions": m, "metrics": _cm("count(amount, window='90d', partition_by=region)", "w")}},
+        "first": {"kw": {"time_dimensions": m, "metrics": _cm("first(orders.amount, window='90d')", "w")}},
+        "last": {"kw": {"time_dimensions": m, "metrics": _cm("last(orders.amount, window='90d')", "w")}},
+        "last_explicit_time": {"kw": {"time_dimensions": m, "metrics": _cm("last(orders.amount, orders.updated_at, window='90d')", "w")}},
+        "partitioned_count": {"kw": {"dimensions": ["orders.region"], "time_dimensions": m, "metrics": _cm("count(orders.amount, window='90d', partition_by=orders.region)", "w")}},
         "cross_model_last": {"kw": {"time_dimensions": sm, "metrics": _cm("last(customers.spend, customers.signup_at, window='1y')", "w")}},
-        "expression_source_count_distinct": {"kw": {"time_dimensions": m, "metrics": _cm("count_distinct(amount - qty, window='90d')", "w")}},
-        "order_only_max": {"kw": {"time_dimensions": m, "metrics": _cm("sum(amount)", "s"),
-                                  "order": [{"field": "max(amount, window='90d')", "direction": "desc"}]}},
-        "filter_only_count": {"kw": {"time_dimensions": m, "metrics": _cm("sum(amount)", "s"),
-                                     "filter": ["count(amount, window='90d') >= 3"]}},
+        "expression_source_count_distinct": {"kw": {"time_dimensions": m, "metrics": _cm("count_distinct(orders.amount - orders.qty, window='90d')", "w")}},
+        "order_only_max": {"kw": {"time_dimensions": m, "metrics": _cm("sum(orders.amount)", "s"),
+                                  "order": [{"field": "max(orders.amount, window='90d')", "direction": "desc"}]}},
+        "filter_only_count": {"kw": {"time_dimensions": m, "metrics": _cm("sum(orders.amount)", "s"),
+                                     "filter": ["count(orders.amount, window='90d') >= 3"]}},
     }
 
 
@@ -99,13 +93,6 @@ def test_first_last_cases_rank_and_never_raise(baseline) -> None:
                 f"{key} must emit ranked SQL, not a raise: {render_value(value)}")
 
 
-def test_only_median_percentile_gaps_record_raises(baseline) -> None:
+def test_no_case_records_a_raise(baseline) -> None:
     for key, value in baseline.items():
-        if key in AGG_UNSUPPORTED:
-            assert isinstance(value, dict), (
-                f"{key} should record the plain dialect gap: {render_value(value)}")
-            assert value.get("error") == "NotImplementedError", (
-                f"{key} should record the plain dialect gap: {render_value(value)}")
-        else:
-            assert not isinstance(value, dict), (
-                f"{key} unexpectedly records a raise: {render_value(value)}")
+        assert not isinstance(value, dict), f"{key} unexpectedly records a raise: {render_value(value)}"

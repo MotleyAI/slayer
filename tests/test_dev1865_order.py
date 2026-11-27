@@ -1,8 +1,8 @@
-"""DEV-1865 — order targets compile through the same typing pass as filters.
+"""Order targets compile through the same typing pass as filters.
 
 Covers the order-position gaps: opposite-direction MIN/MAX duplicates on one
-column, NULLs-last on every backend, hidden order-only slots trimmed from the
-result, and ordering by a cross-model partitioned aggregate. Run on
+field, NULLs-last on every backend, hidden order-only slots trimmed from the
+result, and ordering by a cross-dataset partitioned aggregate. Run on
 SQLite + DuckDB.
 """
 
@@ -15,24 +15,24 @@ from slayer.core.query import QueryMetric
 from tests._dev1865_fixtures import q
 from slayer.engine.query_engine import SlayerQueryEngine
 
-RK_REGION = "orders.customers.regions.name"
-RK_TIER = "orders.customers.tier"
+RK_REGION = "customers.regions.name"
+RK_TIER = "customers.tier"
 
 
 class TestDuplicateOppositeDirection:
     async def test_min_and_max_wrap_the_same_column(self, exec_engine: SlayerQueryEngine) -> None:
         # ASC wraps per-group MIN, DESC per-group MAX — two hidden slots for one
-        # column must coexist, and neither leaks into the projection.
+        # field must coexist, and neither leaks into the projection.
         query = q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[
-                {"field": "ordered_at", "direction": "asc"},
-                {"field": "ordered_at", "direction": "desc"},
+                {"field": "orders.ordered_at", "direction": "asc"},
+                {"field": "orders.ordered_at", "direction": "desc"},
             ],
         )
         resp = await exec_engine.execute(query)
-        assert resp.columns == ["orders.region", "orders.s"]
+        assert resp.columns == ["orders.region", "s"]
         sql = (await exec_engine.execute(query=query, dry_run=True)).sql
         assert sql is not None
         order_by = sql.upper().rsplit("ORDER BY", 1)[1]
@@ -47,9 +47,9 @@ class TestNullsSortLast:
     @pytest.mark.parametrize("direction", ["asc", "desc"])
     async def test_null_dimension_values_sort_last(self, exec_engine, direction) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["city"],
+            dimensions=["orders.city"],
             distinct_dimension_values=False,
-            order=[{"field": "city", "direction": direction}],
+            order=[{"field": "orders.city", "direction": direction}],
         ))
         cities = [r["orders.city"] for r in resp.data]
         assert None in cities
@@ -61,11 +61,11 @@ class TestNullsSortLast:
 class TestOrderOnlyTrimmed:
     async def test_order_by_undeclared_aggregate_adds_no_column(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
-            order=[{"field": "min(amount)", "direction": "asc"}],
+            dimensions=["orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
+            order=[{"field": "min(orders.amount)", "direction": "asc"}],
         ))
-        assert resp.columns == ["orders.region", "orders.s"]
+        assert resp.columns == ["orders.region", "s"]
 
 
 class TestOrderByCrossModelPartitioned:
@@ -79,7 +79,7 @@ class TestOrderByCrossModelPartitioned:
             }],
         ))
         assert RK_REGION in resp.columns
-        assert "orders.sp" in resp.columns
+        assert "sp" in resp.columns
         # The partitioned value is hidden, not projected.
         assert not any("partition" in c for c in resp.columns)
         # RegN partition total (300) sorts before RegS (50) under desc.

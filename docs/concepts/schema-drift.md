@@ -23,7 +23,8 @@ SLayer surfaces drift as a first-class concept across three behaviours:
    field it reads; any other drift leaves the original database error.
 
 Use `validate_datasets` to inspect drift; use `slayer validate-datasets
---force-clean` (CLI only) to apply the deletes.
+--force-clean` (CLI only) to apply the deletes and write in the types of
+[untyped semantic-model fields](#untyped-findings).
 
 ## How drift is detected
 
@@ -52,11 +53,16 @@ Drift is computed per source mode:
 A dataset whose listed table cannot be read, or whose datasource cannot be
 connected to, gets no verdict rather than a drop.
 
+An [enforced key](datasets.md#trusted-relationships) that the live table no longer carries as a primary or unique
+key is reported as `enforced_key:<fields>` and removed on apply (`remove.enforced_keys`), as is every enforced key
+on a database that enforces none. Only the enforcement record goes; the declared key, the relationships and their
+`trusted` flags stay as they are.
+
 ## Cascade rules
 
 A drop on `M.X` cascades through:
 
-1. **Derived fields on M.** Any `DatasetField.sql` on `M` that references `X`
+1. **Derived fields on M.** Any field expression on `M` that references `X`
    (via sqlglot AST walk) is dropped, transitively across chains of
    derived fields.
 2. **Metrics on M.** Any `DatasetMetric.expression` on `M` referencing `X`
@@ -93,6 +99,12 @@ live schema of the tables its query reads (else from the type the database
 reports for the result column), so a list the query returns is found even on
 BigQuery, whose driver reports a repeated result column by its element type.
 
+## Untyped findings
+
+A [semantic-model](semantic-models.md) field that declares no `datatype`, and whose live type validation can read, is reported as `{finding: "untyped", dataset_name, data_source, semantic_model, field, live_type, summary}`, printed by the CLI as an `UNTYPED:` line. Such a field already works: the engine reads its type at query time without storing it.
+
+`--force-clean` writes the live type into the document, with the same prompt and `--yes` as its deletes: an Ossie type (or `Opaque`) as the field's `datatype`, and a list as `datatype: Opaque` plus a `SLAYER` entry recording the list and its element type. Only those fields' lines change. MCP and REST report untyped findings but never apply them. A field whose live type cannot be read is not reported.
+
 ## Output shape
 
 `validate_datasets` returns a `List[ToDeleteEntry]`, where each entry is
@@ -105,6 +117,10 @@ either:
   target) and `relationship_edges` addresses each exactly as `{to, name, from_columns, to_columns}`.
 * `WholeDatasetDelete` — `{tool: "delete_dataset", dataset_name, data_source,
   reasons}`. Replays directly as a `delete_dataset` call.
+
+The list also carries the report-only `retype` and `narrowed_access` findings
+and the [`untyped`](#untyped-findings) findings. A delete on a semantic-model
+dataset is applied inside its document.
 
 If a single dataset receives both kinds, the `WholeDatasetDelete` preempts
 and only the whole-dataset drop is emitted (the field-level deletes would
@@ -123,12 +139,13 @@ be no-ops once the dataset is gone).
 * **CLI.** `slayer validate-datasets [--datasource X] [--dataset M]
   [--format text|json] [--force-clean] [--yes] [--cardinality]`. Without `--force-clean`,
   prints the diff and exits 0. `--force-clean` prompts (or skips with
-  `--yes`), applies via `apply_drift_deletes`, and exits non-zero on
+  `--yes`), applies via `apply_drift_deletes` (and writes untyped fields'
+  types via `apply_untyped_findings`), and exits non-zero on
   per-entry errors or non-empty residual drift. `--dataset` scopes both the
   report and the applied deletes. Unlike the engine method, an unscoped CLI
   run validates each datasource explicitly and exits 1 if any of them fails,
   rather than dropping it from the result. `--cardinality` adds an opt-in
-  [relationship-arity profiling](models.md#relationship-cardinality) pass, which runs after
+  [relationship-arity profiling](datasets.md#relationship-cardinality) pass, which runs after
   any `--force-clean` apply. See the
   [CLI reference](../reference/cli.md#slayer-validate-datasets).
 
@@ -185,5 +202,5 @@ from FK relationships — define relationships manually via `edit_dataset`.
 
 ## Related
 
-* [Datasets](models.md) — `SlayerDataset` source modes, fields, metrics.
+* [Datasets](datasets.md) — `SlayerDataset` source modes, fields, metrics.
 * [Ingestion](ingestion.md) — auto-ingestion details, FK rollups.

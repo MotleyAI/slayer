@@ -12,9 +12,10 @@ on:
     # same lint + test gate as PRs to main.
     branches: ['**']
 
-env:
-  # jaffle-shop-generator is not on PyPI; the demo-DB cache key carries this pin too.
-  JAFGEN_SHA: 09557a1118b000071f8171aa97d54d5029bf0f0b
+# A new push to a PR cancels that PR's run still in progress; other runs never cancel or queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Full basedpyright check against the committed ratchet baseline; parallel, as it needs ~3 GB.
@@ -58,14 +59,17 @@ jobs:
           git fetch --no-tags origin +refs/heads/1.x:refs/remotes/origin/1.x
           poetry run python -m scripts.forward_merge_specs --base "$BASE_SHA" --head "$HEAD_SHA" --one-x origin/1.x
 
+  # The 3.11 jobs run on every push; their 3.14 twins (steps shared by YAML alias) only when py314-gate allows.
   unit-tests:
     runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.11"
     strategy:
       matrix:
-        python-version: ["3.11", "3.14"]
-        shard: [1, 2, 3]
+        python-version: ["3.11"]
+        shard: [1, 2, 3, 4]
 
-    steps:
+    steps: &unit-test-steps
       - uses: actions/checkout@v4
 
       - name: Set up JDK 17 (for the Flight SQL JDBC tests)
@@ -76,35 +80,106 @@ jobs:
 
       - uses: ./.github/actions/poetry-env
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
+      # The Ossie corpus tests run upstream's validator and portability grader through `uv run`.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
 
-      - name: Run unit tests (shard ${{ matrix.shard }}/3)
-        timeout-minutes: 20
-        # One of three duration-balanced module groups (tests/_sharding.py); -n logical
-        # uses every vCPU (-n auto only the physical cores).
+      - name: Run unit tests (shard ${{ matrix.shard }}/4)
+        timeout-minutes: 25
+        # One of four duration-balanced module groups (tests/_sharding.py); -n logical
+        # uses every vCPU (-n auto only the physical cores); worksteal spreads a shard's
+        # heaviest modules across workers. The hang watchdog (tests/_hang_watchdog.py)
+        # dumps every process's stacks at 22 minutes.
         run: >-
-          poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
-          --shard ${{ matrix.shard }}/3 --store-shard-durations "$RUNNER_TEMP/shard-durations.json"
+          poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --dist worksteal --durations=25
+          --shard ${{ matrix.shard }}/4 --store-shard-durations "$RUNNER_TEMP/shard-durations.json"
+          --stall-report-after 120 --stack-dump-after 1320 --hang-report-dir "$RUNNER_TEMP/hang-reports"
+          --hard-timeout-grace 30
+
+      - name: Print hang reports
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/hang-reports/*; do
+            [ -e "$f" ] || continue
+            echo "===== $f"
+            cat "$f"
+          done
+
+      - name: Upload hang reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hang-reports-${{ env.PYTHON_VERSION }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/hang-reports
+          if-no-files-found: ignore
+          retention-days: 14
 
       # Per-module timings that rebalance the shards (refresh steps: tests/_sharding.py).
       - name: Upload shard durations
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: shard-durations-${{ matrix.python-version }}-${{ matrix.shard }}
+          name: shard-durations-${{ env.PYTHON_VERSION }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/shard-durations.json
           retention-days: 14
 
-  integration-tests:
+  py314-gate:
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/expensive-job-gate.yml
+    with:
+      workflow: ci.yml
+      jobs: |
+        unit-tests-py314 (1)
+        unit-tests-py314 (2)
+        unit-tests-py314 (3)
+        unit-tests-py314 (4)
+        integration-tests-py314
+
+  unit-tests-py314:
+    needs: py314-gate
+    if: needs.py314-gate.outputs.run == 'true'
     runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.14"
     strategy:
       matrix:
-        python-version: ["3.11", "3.14"]
+        shard: [1, 2, 3, 4]
+    steps: *unit-test-steps
 
+  # The lock pins a sqlglot that parses AGG(...) as a generic call; the newest parses it as exp.Agg.
+  sqlglot-latest:
+    runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/poetry-env
+        with:
+          python-version: "3.11"
+
+      - name: Upgrade sqlglot to the newest allowed
+        env:
+          POETRY_INSTALLER_ONLY_BINARY: ":all:"
+        run: |
+          poetry run pip install --upgrade --only-binary :all: "sqlglot[c]"
+          poetry run python -c "import sqlglot; print('sqlglot', sqlglot.__version__)"
+
+      - name: Run the AGG-shape and validity tests
+        run: >-
+          poetry run pytest tests/test_dev2394_agg_shapes.py tests/test_dev2394_validity.py
+          -m "not integration" --timeout=120 -n logical
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.11"
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps: &integration-test-steps
       - uses: actions/checkout@v4
 
       - name: Set up JDK 17 (for the Flight SQL JDBC tests)
@@ -115,10 +190,7 @@ jobs:
 
       - uses: ./.github/actions/poetry-env
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install jafgen (for the demo and notebook tests, not on PyPI)
-        run: poetry run pip install "git+https://github.com/rossbowen/jaffle-shop-generator.git@${JAFGEN_SHA}"  # NOSONAR(S8541) — source-only test dependency, pinned to a commit
+          python-version: ${{ env.PYTHON_VERSION }}
 
       # Install a pinned, checksum-verified DuckDB CLI into ~/.duckdb/cli/latest
       # (the layout the installer uses and the 15_duckdb notebook expects on
@@ -166,7 +238,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: docs/examples/jaffle_data/demo/jaffle_shop.duckdb
-          key: notebook-demo-db-${{ runner.os }}-${{ env.JAFGEN_SHA }}-${{ hashFiles('poetry.lock', 'slayer/demo/**', 'tests/integration/_demo_build.py') }}
+          key: notebook-demo-db-${{ runner.os }}-${{ hashFiles('poetry.lock', 'slayer/demo/**', 'tests/integration/_demo_build.py') }}
 
       - name: Build or refresh the notebook demo DuckDB
         run: poetry run python -c "from tests.integration._demo_build import build_notebook_demo_db; build_notebook_demo_db()"
@@ -190,7 +262,8 @@ jobs:
         # The live-Metabase e2e suite (`metabase_e2e` marker) has
         # its own workflow at .github/workflows/pg-facade-e2e.yml — same
         # reasoning, exclude here so this job isn't on the hook for booting
-        # a Metabase container.
+        # a Metabase container. The Ossie compliance gate's server engines run
+        # nightly in ossie-compliance.yml.
         # -n logical --dist loadscope: parallelise across all vCPUs, but pin each
         # test module to one worker so the notebook suite's fixed-path DuckDB
         # (single-writer) can't hit a cross-process lock. --durations logs slowest.
@@ -200,17 +273,36 @@ jobs:
             --ignore=tests/integration/test_integration_mysql.py \
             --ignore=tests/integration/test_integration_clickhouse.py \
             --ignore=tests/integration/test_integration_sqlserver.py \
-            --ignore=tests/integration/test_integration_trino.py
+            --ignore=tests/integration/test_integration_trino.py \
+            --ignore=tests/integration/test_integration_ossie_gate.py
 
-  # The previous `integration-examples` matrix (verify.py-based
-  # end-to-end checks for ClickHouse + MySQL) migrated into the per-dialect
-  # workflows so each dialect's CI lives in one place and is path-gated.
-  # SQL Server gained its first verify.py-based CI coverage there too.
+  integration-tests-py314:
+    needs: py314-gate
+    if: needs.py314-gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.14"
+    steps: *integration-test-steps
+
+  # The Docker examples' verify.py checks run in examples.yml.
+
+  bigquery-gate:
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/expensive-job-gate.yml
+    with:
+      workflow: ci.yml
+      jobs: bigquery-example
 
   bigquery-example:
+    needs: bigquery-gate
     # Skip on forked-PR runs where the GCP secrets aren't available — the job
     # would fail otherwise and we'd rather not nag external contributors.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    # BigQuery bills per query, so bigquery-gate also limits which PR pushes run it.
+    if: >-
+      ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      && needs.bigquery-gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     # One run at a time in the shared GCP project; overlapping runs queue, never cancel.
     concurrency:

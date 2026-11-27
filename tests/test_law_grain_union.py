@@ -1,5 +1,5 @@
 """LAW grain union (semantics.arc42.md §3 law 1): grain(a ⊕ b) =
-grain(a) ∨ grain(b). Population half: measures never move the group set.
+grain(a) ∨ grain(b). Population half: metrics never move the group set.
 Broadcast half: an attached operand is constant within its own semantic grain;
 the direct half combines operands of different explicit grains at a finer
 query grain and pins the union-grain cells."""
@@ -9,9 +9,11 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.query import QueryMetric
+from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._law_harness import (
     OPERAND_GRAIN,
+    LawShape,
     canon,
     execute_shape,
     keyed_rows,
@@ -47,7 +49,7 @@ async def exec_engine(request):
         yield engine
 
 
-def _grain_projection(key: tuple, *, shape, grain: tuple) -> tuple:
+def _grain_projection(key: tuple, *, shape: LawShape, grain: tuple) -> tuple:
     parts = []
     if "region" in grain:
         parts.append(key[0])
@@ -60,7 +62,7 @@ def _grain_projection(key: tuple, *, shape, grain: tuple) -> tuple:
     return tuple(parts)
 
 
-async def test_population_and_operand_broadcast_constancy(law_case):
+async def test_population_and_operand_broadcast_constancy(law_case: tuple[SlayerQueryEngine, LawShape]):
     engine, shape = law_case
     full = await execute_shape(engine, shape, to_many_handling="broadcast")
     if full is None:
@@ -79,18 +81,18 @@ async def test_population_and_operand_broadcast_constancy(law_case):
             shape=shape,
         )
 
-    for meas in shape.measure_keys:
+    for meas in shape.metric_keys:
         grain = OPERAND_GRAIN.get(meas)
         if grain is None:
             continue
         if meas == "cm" and shape.dim_family == "cmgrain":
             # regions.name is attributable from customers, so the ungrained
-            # cross-model sum participates at that grain instead of ().
+            # cross-dataset sum participates at that grain instead of ().
             grain = ("cmregion",)
         cells: dict[tuple, set] = {}
         for key, row in full_rows.items():
             cell = _grain_projection(key, shape=shape, grain=grain)
-            cells.setdefault(cell, set()).add(canon(row[f"orders.m_{meas}"]))
+            cells.setdefault(cell, set()).add(canon(row[f"m_{meas}"]))
         for cell, values in cells.items():
             law_assert(
                 len(values) == 1,
@@ -113,10 +115,10 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
     """part(region) ⊕ part(city) queried at (region, city, month): x is typed
     by the union grain (region, city) and constant within each of its cells."""
     resp = await exec_engine.execute(q(
-        dimensions=["region", "city"],
+        dimensions=["orders.region", "orders.city"],
         time_dimensions=month_td(),
         metrics=[QueryMetric(
-            metric="sum(amount, partition_by=region) + sum(amount, partition_by=city)",
+            metric="sum(orders.amount, partition_by=orders.region) + sum(orders.amount, partition_by=orders.city)",
             alias="x",
         )],
     ))
@@ -128,10 +130,10 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
     cells: dict[tuple, set] = {}
     for row in resp.data:
         cell = (row["orders.region"], row["orders.city"])
-        cells.setdefault(cell, set()).add(canon(row["orders.x"]))
+        cells.setdefault(cell, set()).add(canon(row["x"]))
     for cell, values in cells.items():
         assert len(values) == 1, (
-            f"LAW grain union violated — mixed-grain formula not constant "
+            f"LAW grain union violated — mixed-grain expression not constant "
             f"within union-grain cell {cell}: {sorted(map(str, values))}"
         )
     got = {cell: next(iter(values)) for cell, values in cells.items()}

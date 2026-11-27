@@ -14,8 +14,8 @@ from slayer.dbt.models import DbtProject
 from slayer.dbt.parser import parse_dbt_project
 from slayer.database import engine_factory
 from tests._dev2171_fixtures import (
-    DS, MASKED, collect_over_engine, column, counts_by, deletes, drift_entries, entries, has_column, has_metric,
-    import_dbt, datasets_of, run_cli, save_datasource, seed, source_column, stored_dataset, unreachable_engine, value,
+    DS, collect_over_engine, field_of, counts_by, deletes, drift_entries, entries, has_field, has_metric,
+    import_dbt, datasets_of, run_cli, save_datasource, seed, source_field, stored_dataset, unreachable_engine, value,
     write_yaml,
 )
 
@@ -52,32 +52,27 @@ def db(tmp_path: Path) -> Path:
 
 
 class TestPhysicalReferences:
-    @MASKED
     async def test_collision_in_a_measure_expr(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[RENAMED_STATUS], measures=[
             meas("paid_cnt", "sum", "CASE WHEN status = 'paid' THEN 1 ELSE 0 END")])], db=db)
         assert await value(datasets=result.datasets, db=db, dataset="orders", expression="paid_cnt") == 2
 
-    @MASKED
     async def test_collision_in_sum_boolean(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[RENAMED_STATUS], measures=[
             meas("paid_cnt", "sum_boolean", "status = 'paid'")])], db=db)
         assert await value(datasets=result.datasets, db=db, dataset="orders", expression="paid_cnt") == 2
 
-    @MASKED
     async def test_collision_in_a_dimension_expr(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[RENAMED_STATUS, dim("status_upper", "UPPER(status)")])], db=db)
         assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="status_upper") == {
             "PAID": 2, "OPEN": 1}
 
-    @MASKED
     async def test_entity_key_masked_by_a_dimension(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("customer_id", "legacy_ref")], entities=[ORDER, CUSTOMER_FK]),
                              CUSTOMERS], db=db)
         assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="customers.name") == {
             "Ann": 2, "Bo": 1}
 
-    @MASKED
     async def test_self_named_dimension(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("status", "UPPER(status)")])], db=db)
         assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="status") == {
@@ -87,8 +82,8 @@ class TestPhysicalReferences:
         result = import_dbt([sm(dimensions=[dim("s_lower", "status"), dim("s_upper", '"Status"'),
                                             dim("s_len", "LENGTH(Status)"), dim("s_qlen", 'LENGTH("Status")')])],
                             target_dialect="duckdb")
-        assert not has_column(result, "orders", "s_len")
-        assert all(has_column(result, "orders", c) for c in ("s_lower", "s_upper", "s_qlen"))
+        assert not has_field(result, "orders", "s_len")
+        assert all(has_field(result, "orders", c) for c in ("s_lower", "s_upper", "s_qlen"))
         assert [e for e in entries(result, "Status") if "ambiguous" in e.message.lower()], result.warnings
 
 
@@ -99,7 +94,7 @@ class TestDeclaredDataType:
     ])
     def test_list_data_types(self, data_type: str, element: DataType) -> None:
         result = import_dbt([sm(dimensions=[dim("tags")])], regular_datasets=typed(("tags", data_type)))
-        col = column(datasets_of(result)["orders"], "tags")
+        col = field_of(datasets_of(result)["orders"], "tags")
         assert (col.datatype, col.element_type) == (DataType.ARRAY, element)
 
     @pytest.mark.parametrize(("data_type", "expected"), [
@@ -108,25 +103,25 @@ class TestDeclaredDataType:
     ])
     def test_scalar_data_types(self, data_type: str, expected: DataType) -> None:
         result = import_dbt([sm(dimensions=[dim("note")])], regular_datasets=typed(("note", data_type)))
-        assert column(datasets_of(result)["orders"], "note").datatype == expected
+        assert field_of(datasets_of(result)["orders"], "note").datatype == expected
 
     def test_declared_type_of_a_time_dimension(self) -> None:
         created = {"name": "created_at", "type": "time", "type_params": {"time_granularity": "day"}}
         result = import_dbt([sm(dimensions=[created])], regular_datasets=typed(("created_at", "date")))
-        assert column(datasets_of(result)["orders"], "created_at").datatype == DataType.DATE
+        assert field_of(datasets_of(result)["orders"], "created_at").datatype == DataType.DATE
 
     def test_declared_types_reach_keys_and_measure_sources(self) -> None:
         result = import_dbt([sm(measures=[meas("total", "sum", "amount"), meas("tag_cnt", "count", "tags")])],
                             regular_datasets=typed(("id", "bigint"), ("amount", "numeric(10,2)"), ("tags", "text[]")))
         model = datasets_of(result)["orders"]
-        assert column(model, "id").datatype == DataType.INTEGER
-        assert source_column(model, "total").datatype == DataType.DECIMAL
-        tags = source_column(model, "tag_cnt")
+        assert field_of(model, "id").datatype == DataType.INTEGER
+        assert source_field(model, "total").datatype == DataType.DECIMAL
+        tags = source_field(model, "tag_cnt")
         assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.STRING)
 
     def test_unrecognised_data_type(self) -> None:
         result = import_dbt([sm(measures=[meas("geo_sum", "sum", "geo")])], regular_datasets=typed(("geo", "geography")))
-        assert source_column(datasets_of(result)["orders"], "geo_sum").datatype == DataType.FLOAT
+        assert source_field(datasets_of(result)["orders"], "geo_sum").datatype == DataType.FLOAT
         assert entries(result, "geography", severity="info"), result.warnings
 
     @pytest.mark.parametrize(("data_type", "expected", "element"), [
@@ -137,7 +132,7 @@ class TestDeclaredDataType:
                                             element: DataType | None) -> None:
         result = import_dbt([sm(dimensions=[dim("note")])], regular_datasets=typed(("note", data_type)),
                             target_dialect="bigquery")
-        col = column(datasets_of(result)["orders"], "note")
+        col = field_of(datasets_of(result)["orders"], "note")
         assert (col.datatype, col.element_type) == (expected, element)
 
     def test_read_from_schema_yml_without_hidden_models(self, tmp_path: Path) -> None:
@@ -147,12 +142,12 @@ class TestDeclaredDataType:
         })
         project = parse_dbt_project(str(tmp_path))
         result = DbtToSlayerConverter(project=project, data_source=DS).convert()
-        col = column(datasets_of(result)["orders"], "tags")
+        col = field_of(datasets_of(result)["orders"], "tags")
         assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
 
     async def test_declared_type_contradicted_by_the_database(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("amount")])], regular_datasets=typed(("amount", "text")), db=db)
-        assert column(datasets_of(result)["orders"], "amount").datatype == DataType.INTEGER
+        assert field_of(datasets_of(result)["orders"], "amount").datatype == DataType.INTEGER
         assert entries(result, "amount", severity="info"), result.warnings
 
 
@@ -161,15 +156,16 @@ class TestTypingOrder:
         result = import_dbt([sm(measures=[meas("total", "sum", "amount"), meas("n_notes", "count", "note"),
                                           meas("paid", "sum_boolean", "status = 'paid'")])])
         model = datasets_of(result)["orders"]
-        assert source_column(model, "total").datatype == DataType.FLOAT
-        assert source_column(model, "n_notes").datatype == DataType.STRING
-        assert source_column(model, "paid").datatype == DataType.INTEGER
+        assert source_field(model, "total").datatype == DataType.FLOAT
+        assert source_field(model, "n_notes").datatype == DataType.STRING
+        assert source_field(model, "paid").datatype == DataType.INTEGER
 
     @pytest.mark.parametrize("target", ["mysql", "mssql"])
-    def test_median_refused_by_the_target_is_dropped(self, target: str) -> None:
+    def test_median_is_kept_on_a_target_that_translates_it(self, target: str) -> None:
         result = import_dbt([sm(measures=[meas("mid", "median", "amount")])], target_dialect=target)
-        assert not has_metric(result, "orders", "mid")
-        assert [e for e in entries(result, "mid") if "not supported" in e.message], result.warnings
+        found = datasets_of(result)["orders"].get_metric("mid")
+        assert found is not None
+        assert found.text == "median(amount)"
 
     def test_unreachable_datasource_is_tried_once(self, tmp_path: Path) -> None:
         project = DbtProject.model_validate({"semantic_models": [sm(), sm(name="orders_b")]})
@@ -200,18 +196,18 @@ class TestTypingOrder:
                   "filter": "{{ Dimension('order__status') }} = 'paid'"}
         result = import_dbt([sm(dimensions=[dim("status")], measures=[meas("latest", "max", "created_at")])],
                             regular_datasets=typed(("created_at", "timestamp")), metrics=[metric])
-        assert source_column(datasets_of(result)["orders"], "late_paid").datatype is DataType.DATETIME
+        assert source_field(datasets_of(result)["orders"], "late_paid").datatype is DataType.DATETIME
 
     def test_model_sql_with_a_trailing_semicolon_is_typed_live(self, db: Path) -> None:
         orders_q = {**sm(measures=[meas("tag_cnt", "count", "tags")]), "model": "orders_q"}
         result = import_dbt([orders_q], regular_datasets=[{"name": "orders_q", "raw_code": "SELECT * FROM orders;"}],
                             db=db)
-        col = source_column(datasets_of(result)["orders"], "tag_cnt")
+        col = source_field(datasets_of(result)["orders"], "tag_cnt")
         assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
 
     async def test_list_measure_source_typed_from_the_database(self, db: Path) -> None:
         result = import_dbt([sm(measures=[meas("tag_cnt", "count", "tags")])], db=db)
-        col = source_column(datasets_of(result)["orders"], "tag_cnt")
+        col = source_field(datasets_of(result)["orders"], "tag_cnt")
         assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
         assert await value(datasets=result.datasets, db=db, dataset="orders", expression="tag_cnt") == 2
 
@@ -239,5 +235,5 @@ def test_cli_types_without_hidden_models(db: Path, tmp_path: Path) -> None:
     finally:
         engine_factory.invalidate_engine(DatasourceConfig(name=DS, type="duckdb", database=str(db)))
     assert code == 0
-    col = source_column(stored_dataset(store, "orders"), "tag_cnt")
+    col = source_field(stored_dataset(store, "orders"), "tag_cnt")
     assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)

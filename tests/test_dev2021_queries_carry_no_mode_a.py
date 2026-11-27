@@ -13,12 +13,13 @@ from typing import Any
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
 
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import UnanalyzableAggregationParameterError
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
@@ -75,7 +76,7 @@ def _datasets() -> list[SlayerDataset]:
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="amount", datatype=DataType.FLOAT),
-            DatasetField(name="scaled", sql="amount * {k}", datatype=DataType.FLOAT),
+            DatasetField(name="scaled", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="amount * {k}"), DialectEntry(dialect="SQLITE", expression="amount * {k}")]), datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
@@ -119,7 +120,7 @@ def _ext_column(column: dict[str, Any], *, source_name: str = "orders") -> dict[
     return {
         "population": "orders",
         "extensions": [{"source_name": source_name, "columns": [column]}],
-        "metrics": [{"metric": "count(*)"}],
+        "metrics": [{"metric": "count(orders.*)"}],
     }
 
 
@@ -147,7 +148,7 @@ class TestEachRouteIsRefused:
             SlayerQuery.model_validate(payload)
 
     def test_legacy_root_extension_with_columns_is_refused(self) -> None:
-        legacy = {"source_name": "orders", "fields": [{"name": "leak", "sql": "(SELECT max(pw) FROM secrets)"}]}
+        legacy = {"source_name": "orders", "fields": [{"name": "leak", "expression": "(SELECT max(pw) FROM secrets)"}]}
         with pytest.raises(ValidationError, match="fields"):
             SlayerQuery.model_validate({"population": legacy, "metrics": ["count(*)"]})
 
@@ -158,7 +159,7 @@ class TestEachRouteIsRefused:
     ])
     def test_the_suggested_replacement_keeps_the_columns_meaning(self, column: dict, replacement: str) -> None:
         with pytest.raises(ValidationError) as exc:
-            SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"],
+            SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"],
                                         "extensions": [{"source_name": "orders", "columns": [column]}]})
         assert replacement in str(exc.value)
 
@@ -169,7 +170,7 @@ class TestEachRouteIsRefused:
 
     async def test_a_hostile_variable_is_refused_before_sql_runs(self, shop: _Shop, executed: list[str]) -> None:
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"metric": "sum(scaled)"}],
+            "population": "orders", "metrics": [{"metric": "sum(orders.scaled)"}],
             "variables": {"k": "(SELECT count(*) FROM secrets)"},
         })
         with pytest.raises(ValueError, match="literal values"):
@@ -181,7 +182,7 @@ class TestEachRouteIsRefused:
     ) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "weighted_avg(amount, weight='length(sqlite_version())')"}],
+            "metrics": [{"metric": "weighted_avg(orders.amount, weight='length(sqlite_version())')"}],
         })
         with pytest.raises(UnanalyzableAggregationParameterError):
             await shop.engine.execute(query)
@@ -208,7 +209,7 @@ class TestSurfaces:
         server = create_mcp_server(storage=shop.storage)
         with pytest.raises(ToolError, match="literal values"):
             await server.call_tool(name="query", arguments={"query": {
-                "population": "orders", "metrics": [{"metric": "sum(scaled)"}],
+                "population": "orders", "metrics": [{"metric": "sum(orders.scaled)"}],
                 "variables": {"k": "(SELECT count(*) FROM secrets)"},
             }})
         assert not any("secrets" in sql or "sqlite_version" in sql for sql in executed)
@@ -219,23 +220,23 @@ class TestModeBSpellingsRun:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"field": "upper(customers.tier)", "alias": "tier_label"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         }))
-        assert {r["orders.tier_label"]: r["orders.rev"] for r in resp.data} == {"GOLD": 70.0, "SILVER": 30.0}
+        assert {r["tier_label"]: r["rev"] for r in resp.data} == {"GOLD": 70.0, "SILVER": 30.0}
 
     async def test_a_literal_variable_binds_into_stored_mode_a(self, shop: _Shop) -> None:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"metric": "sum(scaled)", "alias": "s"}], "variables": {"k": 2},
+            "population": "orders", "metrics": [{"metric": "sum(orders.scaled)", "alias": "s"}], "variables": {"k": 2},
         }))
-        assert resp.data[0]["orders.s"] == pytest.approx(200.0)
+        assert resp.data[0]["s"] == pytest.approx(200.0)
 
     @pytest.mark.parametrize("formula", [
-        "weighted_avg(amount, weight='id * 2')",
-        "weighted_avg(amount, weight=id * 2)",
+        "weighted_avg(orders.amount, weight='orders.id * 2')",
+        "weighted_avg(orders.amount, weight=orders.id * 2)",
     ])
     async def test_a_string_argument_is_mode_b(self, shop: _Shop, formula: str) -> None:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
             "population": "orders", "metrics": [{"metric": formula, "alias": "w"}],
         }))
         # sum(amount * id * 2) / sum(id * 2) = 600 / 20
-        assert resp.data[0]["orders.w"] == pytest.approx(30.0)
+        assert resp.data[0]["w"] == pytest.approx(30.0)

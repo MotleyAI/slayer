@@ -42,13 +42,13 @@ async def _seed(storage: YAMLStorage) -> None:
         data_source="mydb",
         description="One row per placed order.",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(
-                name="amount", sql="amount", datatype=DataType.FLOAT,
+                name="amount", expression="amount", datatype=DataType.FLOAT,
                 description="Order total in USD.",
             ),
             DatasetField(
-                name="customer_id", sql="customer_id", datatype=DataType.INTEGER,
+                name="customer_id", expression="customer_id", datatype=DataType.INTEGER,
                 description="FK to customers.",
             ),
         ],
@@ -64,7 +64,7 @@ async def _seed(storage: YAMLStorage) -> None:
 
 
 async def _call_tool(server, *, name: str, arguments: dict) -> str:
-    content_blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 
@@ -93,7 +93,7 @@ class TestMcpSurface:
                 "compact": False,
             },
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ class TestRestSurface:
             },
         )
         assert r.status_code == 200
-        assert "Column: mydb.orders.amount" in r.json()["result"]
+        assert "Field: mydb.orders.amount" in r.json()["result"]
 
     def test_inspect_json_format(self, rest_client: TestClient) -> None:
         r = rest_client.post(
@@ -199,7 +199,7 @@ class TestCliSurface:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             _run_inspect(args=_inspect_args(), storage=cli_storage)
-        assert "Column: mydb.orders.amount" in buf.getvalue()
+        assert "Field: mydb.orders.amount" in buf.getvalue()
 
     def test_run_inspect_not_found_prints_string(
         self, cli_storage: YAMLStorage
@@ -241,14 +241,14 @@ class TestSlayerClientSurface:
         out = await client.inspect(
             reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
     def test_inspect_sync_local(self, client_storage: YAMLStorage) -> None:
         client = SlayerClient(storage=client_storage)
         out = client.inspect_sync(
             reference="mydb.orders.amount", entity_type="field", compact=False,
         )
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
 
     def test_inspect_sync_remote_posts_body(
         self, monkeypatch: pytest.MonkeyPatch
@@ -272,7 +272,7 @@ class TestSlayerClientSurface:
 
 
 # ===========================================================================
-# DEV-1612: reference accepts str | list[str] (batched single-kind lookup)
+# Reference accepts str | list[str] (batched single-kind lookup)
 # ===========================================================================
 
 _BLOCK_SEP = "\n\n---\n\n"
@@ -321,7 +321,7 @@ class TestMcpBatch:
         # and the docstring mentions the batch/list behavior.
         server = create_mcp_server(storage=mcp_storage)
         tool = {t.name: t for t in await server.list_tools()}["inspect"]
-        ref_schema = tool.inputSchema["properties"]["reference"]
+        ref_schema = tool.input_schema["properties"]["reference"]
         # Structural assertion (not a substring match): the union must keep BOTH
         # the scalar str branch and a list[str] branch — so it would fail if the
         # batch branch regressed to list[Any] or the scalar branch disappeared.
@@ -436,7 +436,7 @@ class TestCliBatch:
                 storage=cli_storage,
             )
         out = buf.getvalue()
-        assert "Column: mydb.orders.amount" in out
+        assert "Field: mydb.orders.amount" in out
         assert "## mydb.orders.amount" not in out
 
     def test_run_inspect_multi_positional_is_batch(
@@ -457,7 +457,7 @@ class TestCliBatch:
     def test_parser_accepts_multiple_positionals(
         self, cli_storage: YAMLStorage, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # End-to-end: ``slayer inspect c1 c2 --type column`` must parse two
+        # End-to-end: ``slayer inspect c1 c2 --type field`` must parse two
         # positionals (nargs="+") and batch them.
         storage_dir = os.path.join(str(tmp_path), "store")
         os.makedirs(storage_dir, exist_ok=True)

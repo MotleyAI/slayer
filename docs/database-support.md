@@ -23,7 +23,7 @@ against the live service in CI when they are.
 | **Snowflake** | `tests/integration/test_integration_snowflake.py` (skips without `~/.snowflake/connections.toml`; profile name overridable via `$SLAYER_SNOWFLAKE_CONNECTION`) | `examples/snowflake/` (no Docker) |
 | **BigQuery** | `tests/integration/test_integration_bigquery.py` (live ingestion against a temp dataset in the billing project; skips without `GCP_PROJECT_ID` + ADC) plus `examples/bigquery/verify.py` driven by CI against `bigquery-public-data.thelook_ecommerce` (gated on `GCP_PROJECT_ID` / `GCP_SA_KEY_B64` repo secrets) | `examples/bigquery/` (no Docker — managed service) |
 
-A filter whose predicate can hold on a null-extended related row (`tier = 'gold'
+A filter whose predicate can hold on a null-extended related row (`customers.tier = 'gold'
 or orders.status = 'ok'`) renders its semi-join from a one-row derived table
 carrying the outer keys — supported on Postgres, SQLite, DuckDB and MySQL 8.0.14+;
 ClickHouse, BigQuery and older MySQL reject it with the engine's own error.
@@ -40,7 +40,12 @@ project, asserting comment import and idempotent re-ingest semantics, then
 deleting it. The service account therefore needs dataset create/delete rights
 in the billing project (e.g. `roles/bigquery.user`), not just `jobUser`.
 
-[List fields](concepts/queries.md#list-fields), the list functions and `collect` run on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino and Presto, and fail at plan time on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle.
+BigQuery and Snowflake bill per query, so on a pull request their CI jobs run
+only on the first push, on the push that archives the PR's OpenSpec change,
+and after a failed run (`.github/workflows/expensive-job-gate.yml`). Every push
+to `main` runs them.
+
+[List fields](concepts/filters.md#list-fields), the list functions and `collect` run on Postgres, DuckDB, BigQuery, Snowflake, ClickHouse, Trino and Presto, and fail at plan time on SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle.
 On ClickHouse, an element filter on a list reached through a relationship, like any filter across a to-many hop, needs server 25.4 or later, while a list field of the query's own dataset filters on every version. A filter across a to-many hop in a query that also reads a list's elements needs 25.8 or later. A dataset filter that reads a joined dataset across a hop not proven to-one also needs 25.4 or later.
 
 ## Tier 2 — code-covered
@@ -74,7 +79,7 @@ rejects the read-only setting fails the connection with its own error.
 
 ## Portable library support
 
-Each database runs a [portable library function](concepts/references.md) only where SLayer translates it for that database; anywhere else the query fails at plan time naming the function and the database (express the computation in `DatasetField.sql` instead). `TRY_CAST` also covers comparing or computing text with numbers, which reads through it, and the regex and JSON operators (`~`, `->>`, …) share their function's row.
+Each database runs a [portable library function](concepts/references.md) only where SLayer translates it for that database; anywhere else the query fails at plan time naming the function and the database (express the computation in a field's entry for that database's dialect instead). `TRY_CAST` also covers comparing or computing text with numbers, which reads through it, and the regex and JSON operators (`~`, `->>`, …) share their function's row.
 
 | Function | Postgres | DuckDB | SQLite | MySQL | MariaDB | ClickHouse | SQL Server | Trino | Presto | Snowflake | BigQuery | Redshift | Databricks | Spark | Oracle |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -88,6 +93,8 @@ Each database runs a [portable library function](concepts/references.md) only wh
 | `concat_ws` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `contains` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `cos` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `current_time` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `degrees` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `div` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `ends_with` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `greatest` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -100,6 +107,8 @@ Each database runs a [portable library function](concepts/references.md) only wh
 | `lpad` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `ltrim` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `radians` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
+| `regexp_count` | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | — | — | — |
 | `regexp_extract` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `regexp_like` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 | `regexp_replace` | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
@@ -117,6 +126,16 @@ Each database runs a [portable library function](concepts/references.md) only wh
 | `trim` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `try_cast` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | — |
 
+`regexp_count` of a pattern that can match the empty string (`'x*'`) runs only on Postgres; elsewhere it fails at plan time.
+
+## Time of day
+
+A [time of day](concepts/references.md#time-of-day) is the database's own microsecond time type on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery, and canonical text `HH:MM:SS.ffffff` on SQLite, where stored time text is read in any of the literal's forms.
+
+On ClickHouse it needs server 25.6 or later: from 25.12 the query runs as written, on 25.6 to 25.11 SLayer sends `enable_time_time64_type = 1` with the statement (a `readonly = 1` user without that setting is refused), and an older or unknown server is refused before the query runs; computed values are `Time64(6)`.
+
+MariaDB behaves as MySQL; Redshift and Oracle keep the `TIME` cast for the literal and the cast, and every Tier-2 database refuses `current_time()` and the parts of a time of day.
+
 ## Identifier length limits
 
 Some databases cap identifier length (Postgres is the tightest at 63 bytes, and
@@ -132,11 +151,12 @@ shows the trimmed form, so account for it if you introspect the SQL.
 ## Aggregation support
 
 Most aggregations (`sum`, `avg`, `min`, `max`, `count`, `count_distinct`,
-`count_distinct_approx`, `first`, `last`, `weighted_avg`) work on every
+`sum_distinct`, `avg_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`) work on every
 supported database. `count_distinct_approx` is dialect-aware (see
 [below](#count_distinct_approx-by-dialect)) but always available — it falls
 back to an exact `COUNT(DISTINCT)` where there's no native function.
-`median`, `percentile`, the variance/stddev family (`stddev_samp`,
+`median`, `percentile`, `percentile_disc` (see [below](#discrete-and-approximate-percentiles-by-dialect)),
+the variance/stddev family (`stddev_samp`,
 `stddev_pop`, `var_samp`, `var_pop`), and the paired statistics
 (`corr`, `covar_samp`, `covar_pop`) need dialect-specific handling
 because no standard syntax works everywhere:
@@ -146,12 +166,30 @@ because no standard syntax works everywhere:
 | Postgres | yes | yes | yes | yes | yes | Native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`, native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
 | DuckDB | yes | yes | yes | yes | yes | sqlglot rewrites ordered-set percentiles to `QUANTILE_CONT`. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*` (sqlglot may emit `VARIANCE` for `var_samp`). |
 | SQLite | yes | yes | yes | yes | **no** | Python aggregate UDFs registered on every connection — see "SQLite caveats" below. |
-| ClickHouse | yes | yes | yes | yes | yes | Native `median(x)`, parametric `quantile(p)(x)`, native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
-| Snowflake | yes | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. No native `LOG10` or `LOG2`; both render as `LOG(base, x)`. |
-| MySQL | **no** | **no** | yes | **no** | **no** | No native `MEDIAN`/`PERCENTILE_CONT`/`CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. Use MariaDB or compute the unsupported aggregations client-side. |
-| SQL Server (T-SQL) | **no** | **no** | yes | yes (decomposed) | **no** | `MEDIAN` doesn't exist and T-SQL's `PERCENTILE_CONT` is window-only (no `WITHIN GROUP` aggregate form) — SLayer raises `NotImplementedError`. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
-| Trino | yes (approximate) | yes (approximate) | yes | yes | yes | sqlglot emits `APPROX_PERCENTILE(x, p)` — see "Trino caveats" below. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
-| BigQuery | **no** | **no** | yes | yes | yes | BigQuery has no `MEDIAN` aggregate, and its `PERCENTILE_CONT` is analytic-only (no `WITHIN GROUP` syntax) — the base class emit `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` fails at runtime. If you need percentile on BigQuery, define a custom `Aggregation` using `APPROX_QUANTILES(x, 100)[OFFSET(N)]`. Native `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP`/`CORR`/`COVAR_SAMP`/`COVAR_POP` (sqlglot may emit `VARIANCE` for `var_samp`). |
+| ClickHouse | yes | yes | yes | yes | yes | The exact `quantileExactInclusive(p)(x)`, NULL over no values; native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
+| Snowflake | yes | `PARTITION BY` only | `PARTITION BY` only | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. No native `LOG10` or `LOG2`; both render as `LOG(base, x)`. |
+| MySQL | yes | yes | yes | **no** | **no** | `MEDIAN`/`PERCENTILE_CONT` interpolate over `ROW_NUMBER`/`COUNT` windows in a subquery. No native `CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. |
+| SQL Server (T-SQL) | yes | yes | yes | yes (decomposed) | **no** | T-SQL's `PERCENTILE_CONT` is window-only: SLayer computes it per row in a subquery and regroups. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
+| Trino | yes | yes | yes | yes | yes | `MEDIAN`/`PERCENTILE_CONT` interpolate over `ROW_NUMBER`/`COUNT` windows in a subquery, exactly. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. |
+| BigQuery | yes | yes | yes | yes | yes | BigQuery's `PERCENTILE_CONT` is analytic-only: SLayer computes it per row in a subquery and regroups. Native `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP`/`CORR`/`COVAR_SAMP`/`COVAR_POP` (sqlglot may emit `VARIANCE` for `var_samp`). |
+
+`median` and `percentile` are exact on every database above, on groups of any size.
+
+### Discrete and approximate percentiles by dialect
+
+`percentile_disc(x, p)` returns an observed value of any ordered type, exactly; `percentile_approx(x, p)` uses the
+database's own approximate percentile where one takes any fraction, else the exact `percentile`, and is a float
+everywhere.
+
+| Engine | `percentile_disc` | `percentile_approx` |
+|---|---|---|
+| Postgres | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)` | `percentile` (exact) |
+| Snowflake | `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)` over a number, the ranked subquery otherwise | `APPROX_PERCENTILE(x, p)` |
+| DuckDB | `QUANTILE_DISC` | `APPROX_QUANTILE(x, p)` |
+| SQLite | the `percentile_disc(x, p)` UDF | `percentile` (exact) |
+| MySQL / Trino / ClickHouse | the value ranked ⌈p·n⌉ over `ROW_NUMBER`/`COUNT` windows in a subquery | exact on MySQL; `approx_percentile(x, p)` on Trino; `quantile(p)(x)` on ClickHouse |
+| SQL Server (T-SQL) | windowed `PERCENTILE_DISC` over a number, the ranked subquery otherwise | `APPROX_PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` |
+| BigQuery | analytic `PERCENTILE_DISC(x, p)` per row, regrouped | `percentile` (exact) |
 
 ### `count_distinct_approx` by dialect
 
@@ -205,7 +243,7 @@ connection via SQLAlchemy's `connect` event (see
 - `log(B, X)` — base-first 2-arg logarithm (log_B(X)), registered on **every** SQLite version, in the same argument order as SQLite ≥3.35's built-in and Postgres's `LOG(b, x)`.
 - `pow(x, n)` and `power(x, n)` — both spellings registered (sqlglot may emit
   either).
-- The portable library's own `slayer_*` functions: `slayer_like_glob`, `slayer_regexp_like` / `_extract` / `_replace`, `slayer_try_cast`, `slayer_date_add`, `slayer_lpad` / `_rpad` / `_reverse` / `_repeat` / `_split_part` / `_concat_ws`, `slayer_trunc`, `slayer_fmod`, `slayer_pi`, `slayer_cbrt` and the trigonometric `slayer_sin` … `slayer_atan2`.
+- The portable library's own `slayer_*` functions: `slayer_like_glob`, `slayer_regexp_like` / `_extract` / `_replace` / `_count`, `slayer_try_cast`, `slayer_date_add`, `slayer_lpad` / `_rpad` / `_reverse` / `_repeat` / `_split_part` / `_concat_ws`, `slayer_trunc` (one and two arguments), `slayer_fmod`, `slayer_pi`, `slayer_cbrt`, `slayer_radians`, `slayer_degrees` and the trigonometric `slayer_sin` … `slayer_atan2`.
 
 NULL inputs return NULL on every UDF, and so do math-domain inputs (`ln(0)`,
 `sqrt(-1)`, `pow(0, -1)`), as on every database (overflow still raises).
@@ -223,21 +261,10 @@ register_sqlite_udfs(connection)
 
 ### MySQL caveats
 
-MySQL has no native `PERCENTILE_CONT`, no `MEDIAN`, no `CORR`, no
-`COVAR_SAMP` / `COVAR_POP`, and no Python-UDF mechanism (UDFs are loadable C
-`.so` files requiring server-side install).
-Workarounds (`GROUP_CONCAT` + `SUBSTRING_INDEX`, or windowed CTE rewrites)
-have material downsides — silent truncation past `group_concat_max_len`,
-or major restructuring of the generated query that interacts poorly with
-multi-metric `GROUP BY`. SLayer raises `NotImplementedError` at SQL
-generation time so the failure is loud and the message is actionable.
-
-If you need percentiles on MySQL, the recommended options are:
-
-- Switch to MariaDB, which has `MEDIAN()`.
-- Pull the raw values and compute the percentile in your application.
-- Define a custom `Aggregation` on the dataset with whatever `GROUP_CONCAT`-
-  based or windowed expression suits your data shape and group sizes.
+MySQL has no `PERCENTILE_CONT`, `PERCENTILE_DISC` or `MEDIAN`: SLayer ranks each group's values with `ROW_NUMBER` and `COUNT` windows in
+a subquery and interpolates between the two ranks either side of the requested percentile, exactly. It has no native `CORR` or `COVAR_SAMP` /
+`COVAR_POP` and no Python-UDF mechanism (UDFs are loadable C `.so` files requiring server-side install); SLayer raises
+`NotImplementedError` for those at SQL generation time.
 
 **String-literal escaping** (`{variable}` substitution and generated SQL
 generally) assumes MySQL's **default** `sql_mode` where a backslash escapes
@@ -252,6 +279,8 @@ backslash-bearing string values are not supported on such servers.
 
 ### SQL Server (T-SQL) caveats
 
+Under a query `time_zone`, zones map to Windows zone names by CLDR 49; `America/Vancouver`, `America/Edmonton` and `America/Winnipeg` map to the 2026 Windows zones British Columbia, Alberta and Manitoba Standard Time, which a host needs the Windows time zone update to resolve.
+
 T-SQL has `STDEV`/`STDEVP`/`VAR`/`VARP` (not `STDDEV_SAMP`/`STDDEV_POP`/
 `VAR_SAMP`/`VAR_POP`); sqlglot's tsql transpiler emits incorrect names like
 `VAR_SAMP` and `VARIANCE_POP`, so the T-SQL dialect overrides the canonical
@@ -262,10 +291,9 @@ spellings via `Anonymous` rewrites in `slayer/sql/dialects/tsql.py`.
 `corr = cov / (stddev(x) · stddev(y))`. The decomposition is shared with
 MySQL via `_build_covar_decomposition` in `slayer/sql/dialects/base.py`.
 
-`MEDIAN` doesn't exist, and `PERCENTILE_CONT` in T-SQL is a window function
-only — there is no `WITHIN GROUP` aggregate form. SLayer raises
-`NotImplementedError` for both at SQL generation time. Use the windowed form
-as a custom `Aggregation` if you need it, or compute client-side.
+`MEDIAN` doesn't exist, and `PERCENTILE_CONT` in T-SQL is a window function only — there is no `WITHIN GROUP`
+aggregate form. SLayer computes both per row as `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x) OVER (PARTITION BY
+<grouping keys>)` in a subquery and regroups it.
 
 Other T-SQL specifics surfaced by the dialect:
 
@@ -287,9 +315,15 @@ Other T-SQL specifics surfaced by the dialect:
 
 `TRY_CAST`'s NULL for an unconvertible value, the text-to-number coercion that reads through it, and `json_value`'s NULL for malformed JSON need Postgres 16 (`pg_input_is_valid`); on an older or unknown server they are a plain cast, so one bad row fails the query.
 
+`regexp_count` needs Postgres 15; an older server fails at plan time.
+
+`ANY_VALUE` also needs Postgres 16; on an older or unknown server SLayer reads `mode() WITHIN GROUP`, which needs a sortable type, so a `json`, `xml` or geometric value there fails the query.
+
 ### ClickHouse caveats
 
 `JSON` and `Object` columns are read natively by `json_value` through their ingested `db_type` (from `system.columns`), so datasets ingested before that need a re-ingest.
+
+Under a query `time_zone`, a converted timestamp is a `DateTime64(6, zone)` instant, so adding hours or minutes across a DST transition adds elapsed time (01:30 + 1 hour on a spring-forward day gives 03:30, where Postgres or DuckDB give 02:30), and in a repeated hour a `civil` wall clock equals only one of the two instants that read as it.
 
 ### Snowflake caveats
 
@@ -313,7 +347,7 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
   Snowflake exposes its (non-enforced) FK metadata via the Inspector. Auto-
   ingestion discovers relationships like Postgres / MySQL / SQLite.
 - **Untyped `ARRAY` columns.** Ingestion infers their element type from a sample of each column's `TYPEOF`s, one query per untyped `ARRAY` column, and `json_value` reads a `VARIANT`, `OBJECT` or `ARRAY` column natively.
-- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a `DatasetField.sql` fall
+- **No native LOG10 or LOG2.** `log10(x)` and `log2(x)` in a field's dialect entry fall
   through to the canonical 2-arg `LOG(10, x)` / `LOG(2, x)` form; the rest of
   the math / statistical functions are native.
 
@@ -322,8 +356,8 @@ Snowflake](configuration/datasources.md#snowflake) for connection setup.
 The live suite runs against the `memory` catalog in a `trinodb/trino` container.
 Set `database: <catalog>/<schema>` (e.g. `memory/default`) on the datasource.
 
-- **Approximate `median` / `percentile`.** Both emit `APPROX_PERCENTILE(x, p)`,
-  so results are approximate; define a custom `Aggregation` if you need an exact value.
+- **Exact `median` / `percentile` / `percentile_disc`.** Trino has no exact `PERCENTILE_CONT` or `PERCENTILE_DISC`:
+  SLayer ranks each group's values with `ROW_NUMBER` and `COUNT` windows in a subquery, as on MySQL.
 - **No FK introspection.** Trino connectors expose no foreign keys, so
   auto-ingestion discovers no relationships; hand-declare `DatasetRelationship`s. Table and column
   comments are imported.
@@ -362,20 +396,44 @@ plus `$GCP_PROJECT_ID` for billing). The `bigquery://` driver requires the
   `orders.products.category`) to `<dataset>___<field>` at emit time and
   reverses the mapping on result rows. The triple-underscore separator is
   distinct from `__` (used by the query-backed virtual-dataset wrap for cross-dataset leaf
-  flattening), so the two encodings never collide. In `DatasetField.sql`,
+  flattening), so the two encodings never collide. In a field's dialect entry,
   fully-qualified table paths must be backticked per-segment
   (`` `project`.`dataset`.`table` ``) — a single backticked dotted path of
   word-only segments (`` `my_dataset.my_table` ``) would false-positive
   mangle.
-- **No `MEDIAN` aggregate; `PERCENTILE_CONT` is analytic-only.** Both
-  raise at SQL generation time (sqlglot doesn't transpile the base class's
-  `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` to BigQuery's analytic
-  form). Use a custom `Aggregation` with `APPROX_QUANTILES(x, 100)[OFFSET(N)]`
-  when you need it.
-- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a zoned `TIMESTAMP` column, which ingestion marks with `db_type: TIMESTAMP` (re-ingest older datasets), reads as its UTC wall clock everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
+- **No `MEDIAN` aggregate; `PERCENTILE_CONT` is analytic-only.** SLayer computes both per row as
+  `PERCENTILE_CONT(x, p) OVER (PARTITION BY <grouping keys>)` in a subquery and regroups it.
+- **SLayer timestamps are `DATETIME`.** `now()`, timestamp literals, `TRY_CAST(… AS TIMESTAMP)`, `json_value(… RETURNING TIMESTAMP)` and the date functions produce naive `DATETIME` values (UTC wall clock), and a `TIMESTAMP` column, which ingestion types `DateTimeTz` (a stored `DateTime` field with `db_type: TIMESTAMP` loads as one), reads as its UTC wall clock without a query `time_zone` everywhere except as a direct comparison operand, where it stays bare (keeping partition pruning) and the other side is cast to `TIMESTAMP`.
 - **A NULL list is an empty list.** BigQuery stores a `NULL` `REPEATED` value as `[]`, so `length` returns 0, `IS NULL` is false and `count(list)` counts it where other databases see `NULL`.
 - **No native EXPLAIN.** BigQuery has no SQL-level `EXPLAIN`, so `engine.execute(..., explain=True)` raises
   `ExplainUnsupportedError` (a `ValueError`); use `dry_run=True` to see the SQL.
+
+## Window functions
+
+Every Tier 1 database runs Ossie's [window functions](concepts/expressions.md#sql-window-functions-over) — the
+ranking and offset functions and the windowed `SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, `STDDEV` / `VARIANCE` family —
+with no frame or Ossie's frame forms; where a database lacks one, SLayer writes an exact equivalent:
+
+- **NULL placement** is stated on every order item: `NULLS FIRST` / `NULLS LAST` where the database has the clause,
+  a `CASE WHEN x IS NULL THEN 1 ELSE 0 END` key before the item on MySQL and SQL Server where Ossie's placement differs
+  from theirs. A `RANGE` frame with an offset takes only one order key, so there such an item is refused unless its
+  stated placement is the database's own.
+- **SQL Server** has no `NTH_VALUE`: SLayer rewrites it over the default frame, `ROWS` / `RANGE BETWEEN UNBOUNDED
+  PRECEDING AND CURRENT ROW` and `ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING`, and refuses it over any other frame.
+- **ClickHouse** has no `CUME_DIST` (written as two counts); its `LAG` / `LEAD` read the whole partition, a sample
+  statistic over one row is NULL rather than NaN, and `COUNT(x)` sums non-NULL flags.
+- **SQLite** runs the statistics through its window-capable SLayer functions.
+- **Snowflake** frames an ordered `LAST_VALUE` / `NTH_VALUE` over the whole partition by default, so SLayer states
+  the standard running frame.
+
+`COUNT(DISTINCT …)`, `MEDIAN` and `PERCENTILE_CONT` under `OVER` run where the database windows them and are refused
+with a `WindowFunctionError` elsewhere:
+
+| Engine | `COUNT(DISTINCT …) OVER` | `MEDIAN(…) OVER` | `PERCENTILE_CONT(…) OVER` |
+|---|---|---|---|
+| DuckDB | yes | yes | yes (as `quantile_cont`) |
+| Snowflake | yes | yes | yes |
+| SQLite, Postgres, MySQL, ClickHouse, SQL Server, Trino, BigQuery | refused | refused | refused |
 
 ## Adding a new dialect
 

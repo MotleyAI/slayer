@@ -1,6 +1,6 @@
 # Storage
 
-SLayer uses a storage backend to persist dataset and datasource configurations, agent memories, and embedding indexes.
+SLayer uses a storage backend to persist dataset and datasource configurations, [semantic models](../concepts/semantic-models.md), agent memories, and embedding indexes.
 
 ## Default Location
 
@@ -52,6 +52,9 @@ slayer_data/
       customers.yaml
     other_db/
       orders.yaml          # same name, different datasource — coexists
+  semantic_models/         # Ossie documents, stored as written (optional)
+    my_postgres/
+      sales.yaml           # declares more datasets of my_postgres
   datasources/
     my_postgres.yaml
     other_db.yaml
@@ -63,6 +66,8 @@ slayer_data/
 ```
 
 **Layout note:** Datasets live under `models/<data_source>/<name>.yaml` so two datasources sharing a table name don't collide. Opening a `YAMLStorage` on a legacy flat directory migrates `models/<name>.yaml` files into the nested layout automatically. If a flat file has an empty `data_source` and exactly one datasource is registered, the migrator auto-fills it; otherwise it hard-fails so the user can edit `data_source` by hand before reopening.
+
+**Semantic models:** A document at `semantic_models/<data_source>/<name>.yaml` belongs to that datasource and must be named `<name>`. Its datasets are listed with the datasource's standalone datasets, and dataset tools edit them inside the file, changing only the edited lines. A `<name>.yaml.lock` file beside it serialises concurrent writes. A hand edit is picked up on the next query.
 
 **Durable writes:** Saves are failure-atomic — each file is written to a temporary file and `fsync`-replaced into place, so a serialization error, full disk, or crash mid-write leaves the previous file fully intact rather than a truncated one.
 
@@ -82,7 +87,16 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 storage = SQLiteStorage(db_path="./slayer.db")
 ```
 
-Tables: `models`, `datasources`, `settings` (for the datasource priority list), `memories` + `memory_entities` (indexed by canonical entity), and `embeddings` (cached embedding rows keyed by `(canonical_id, embedding_model_name)`). Memory ids are assigned by SQLite's `INTEGER PRIMARY KEY` rowid mechanism inside the save transaction — no separate counter table is needed.
+Tables: `models`, `datasources`, `semantic_models` (each document's text, verbatim), `settings` (for the datasource priority list), `memories` + `memory_entities` (indexed by canonical entity), and `embeddings` (cached embedding rows keyed by `(canonical_id, embedding_model_name)`). Memory ids are assigned by SQLite's `INTEGER PRIMARY KEY` rowid mechanism inside the save transaction — no separate counter table is needed.
+
+## Upgrading Stored Documents
+
+A load never writes: a document stored by an older release upgrades in memory on every load and stays as stored, so
+the older release can still read it. Each such document loads with one `stored_upgrade_needed` warning. Run
+[`slayer storage upgrade`](../reference/cli.md#slayer-storage) to store every document in the current format, or save
+the document. Opening a store still performs its one-time layout moves (the YAML flat-layout move, the memory-file
+split, SQLite table rebuilds), which change no document's content, except that the flat-layout move fills an empty
+`data_source` (see the layout note above).
 
 ## Storage Resolution
 
@@ -157,7 +171,9 @@ A backend implements `_save_datasource_impl` (not `save_datasource`), returns `(
 
 If your backend stores ids as filenames (or another case-insensitive keyspace), set the class attribute `_ids_collide_as_filenames = True` — the base save templates then reject ids differing only by case — and call `await self.check_datasource_id_collision(datasource.name)` at the top of your `_save_datasource_impl`.
 
-Stored-document upgrades that rewrite raw documents, such as renaming a granularity a newer release reserves, run only on backends that expose their raw documents; a backend that builds its own datasource configs is never asked to list or load its datasources for them.
+Stored-document upgrades that read raw documents, such as renaming a granularity a newer release reserves, run only on backends that expose their raw documents; a backend that builds its own datasource configs is never asked to list or load its datasources for them. `slayer storage upgrade` writes through the raw-document hooks (`_write_raw_dataset_dict`, `_write_raw_memory_dict`, `_write_raw_datasource_dict`); override `_write_raw_if_unchanged` to compare and write in one transaction.
+
+Semantic models are optional. To store them, implement `_save_semantic_model_text_impl`, `_get_semantic_model_text_impl`, `_list_semantic_model_identities`, `_delete_semantic_model_row`, and `_patch_semantic_model_text` (read, patch and write one document as one serialised step). A backend without them keeps working for datasets, datasources and memories: it lists no semantic models, and every other semantic-model operation fails with `SemanticModelsUnsupportedError` naming the backend. A backend with them must change `graph_fingerprint()` whenever a document's content or membership changes.
 
 Caches derived from stored content (the search graph, the SQL facade catalog) are keyed by `cache_identity()` (default: one per instance) and reused only while `graph_fingerprint()` returns the same string, so override it to report content changes — the default `None` means a cache is never reused.
 
@@ -188,6 +204,6 @@ client = SlayerClient(storage=my_storage)
 
 ## Access-filtered storage
 
-Wrap a store as `AccessFilteredStorage(storage, tags={"fin"}, bypass=False)` (from `slayer.storage.access_filtered`) to serve one caller: every dataset whose [`access_tags`](../concepts/models.md#fields-at-a-glance) it cannot access, every dataset reading one, and every memory linked only to such datasets reads as deleted, relationships into them are pruned, and the caller's writes merge onto the full stored documents (`bypass=True` sees and writes everything).
+Wrap a store as `AccessFilteredStorage(storage, tags={"fin"}, bypass=False)` (from `slayer.storage.access_filtered`) to serve one caller: every dataset whose [`access_tags`](../concepts/datasets.md#fields-at-a-glance) it cannot access, every dataset reading one, and every memory linked only to such datasets reads as deleted, relationships into them are pruned, and the caller's writes merge onto the full stored documents (`bypass=True` sees and writes everything). Semantic-model datasets follow the same rule, and every model-scoped metric reading a hidden dataset, directly or through other model-scoped metrics, reads as unknown.
 
 Saving a dataset that reads a tagged dataset whose tags do not cover its own emits a `narrowed_access` warning, and `validate_datasets` reports every such dataset as a `narrowed_access` finding.

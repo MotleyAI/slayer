@@ -1,4 +1,4 @@
-"""A refinement measure restating a saved measure by its bare name (spec: queries/saved-query-refinement)."""
+"""A refinement metric restating a saved metric by its bare name (spec: queries/saved-query-refinement)."""
 
 from __future__ import annotations
 
@@ -20,17 +20,17 @@ FIELD_VALUES = {"label": "Rev", "datatype": "Float", "description": "Paid revenu
 OTHER_VALUES = {"label": "Revenue", "datatype": "Integer", "description": "All revenue", "meta": {"unit": "eur"}}
 
 
-def saved(*measures: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "orders", "metrics": list(measures)})
+def saved(*metrics: Any) -> SlayerQuery:
+    return SlayerQuery.model_validate({"population": "orders", "metrics": list(metrics)})
 
 
-def merge(base: SlayerQuery, *measures: Any) -> SlayerQuery:
-    return refine_query(saved=base, refinement=QueryRefinement.model_validate({"metrics": list(measures)}))
+def merge(base: SlayerQuery, *metrics: Any) -> SlayerQuery:
+    return refine_query(saved=base, refinement=QueryRefinement.model_validate({"metrics": list(metrics)}))
 
 
-def conflict(base: SlayerQuery, *measures: Any) -> str:
+def conflict(base: SlayerQuery, *metrics: Any) -> str:
     with pytest.raises(RefinementConflictError) as info:
-        merge(base, *measures)
+        merge(base, *metrics)
     return str(info.value)
 
 
@@ -79,11 +79,11 @@ class TestRestatementConflicts:
 class TestNotARestatement:
     def test_other_name_appends(self) -> None:
         merged = merge(saved(REVENUE), {"metric": "revenue", "alias": "r2"})
-        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(amount)"), ("r2", "revenue")]
+        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(orders.amount)"), ("r2", "revenue")]
 
     def test_bare_name_of_no_saved_entry_appends(self) -> None:
         merged = merge(saved(REVENUE), "amount_total")
-        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(amount)"), (None, "amount_total")]
+        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(orders.amount)"), (None, "amount_total")]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

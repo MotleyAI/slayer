@@ -143,7 +143,7 @@ def test_computed_count_multiplies_quoted_unit(dialect, unit: TimeGranularity, e
 
 @_family
 def test_week_sunday_truncation_quotes_intervals(dialect) -> None:
-    sql = _sql(dialect, dialect.build_date_trunc(exp.column("d"), TG.WEEK_SUNDAY))
+    sql = _sql(dialect, dialect.build_date_trunc(col_expr=exp.column("d"), granularity=TG.WEEK_SUNDAY, operand=DataType.DATETIME))
     assert sql == "DATE_TRUNC('WEEK', CAST(d + INTERVAL '1' DAY AS TIMESTAMP)) - INTERVAL '1' DAY"
 
 
@@ -218,7 +218,8 @@ def test_week_gap_uses_day_date_diff(dialect, unit: TimeGranularity) -> None:
 @_family
 def test_week_gap_operands(dialect) -> None:
     assert (
-        "DATE_DIFF('DAY', CAST(DATE_TRUNC('WEEK', A) AS DATE), CAST(DATE_TRUNC('WEEK', B) AS DATE))"
+        "DATE_DIFF('DAY', CAST(DATE_TRUNC('WEEK', CAST(A AS TIMESTAMP)) AS DATE), "
+        "CAST(DATE_TRUNC('WEEK', CAST(B AS TIMESTAMP)) AS DATE))"
         in _diff(dialect, TG.WEEK)
     )
 
@@ -228,7 +229,8 @@ def test_week_gap_operands(dialect) -> None:
 def test_sub_day_gap_uses_second_date_diff(dialect, unit: TimeGranularity) -> None:
     sql = _diff(dialect, unit)
     trunc = unit.value.upper()
-    assert f"DATE_DIFF('SECOND', DATE_TRUNC('{trunc}', A), DATE_TRUNC('{trunc}', B))" in sql, sql
+    assert (f"DATE_DIFF('SECOND', DATE_TRUNC('{trunc}', CAST(A AS TIMESTAMP)), "
+            f"DATE_TRUNC('{trunc}', CAST(B AS TIMESTAMP)))") in sql, sql
     assert "TO_UNIXTIME" not in sql, sql
     assert "EPOCH" not in sql, sql
 
@@ -303,14 +305,14 @@ def test_percentile_is_approx_percentile(dialect) -> None:
 _DATE_QUERY = SlayerQuery.model_validate({
     "population": "dt",
     "dimensions": [
-        "id",
-        {"field": "date_add(d1, 1, 'month')", "alias": "a"},
-        {"field": "date_add(d1, 2, 'hour')", "alias": "b"},
-        {"field": "date_add(t1, n, 'day')", "alias": "c"},
-        {"field": "date_diff('day', d1, d2)", "alias": "e"},
-        {"field": "date_diff('second', t1, t2)", "alias": "f"},
-        {"field": "date_part('iso_year', d1)", "alias": "g"},
-        {"field": "date_part('day_of_week', t1)", "alias": "h"},
+        "dt.id",
+        {"field": "date_add(dt.d1, 1, 'month')", "alias": "a"},
+        {"field": "date_add(dt.d1, 2, 'hour')", "alias": "b"},
+        {"field": "date_add(dt.t1, dt.n, 'day')", "alias": "c"},
+        {"field": "date_diff('day', dt.d1, dt.d2)", "alias": "e"},
+        {"field": "date_diff('second', dt.t1, dt.t2)", "alias": "f"},
+        {"field": "date_part('iso_year', dt.d1)", "alias": "g"},
+        {"field": "date_part('day_of_week', dt.t1)", "alias": "h"},
     ],
 })
 
@@ -322,8 +324,9 @@ async def _date_query_sql(ds_type: str) -> str:
 async def test_trino_date_query_uses_fixed_grammar() -> None:
     sql = await _date_query_sql("trino")
     assert not _UNQUOTED_INTERVAL.search(sql), sql
+    flat = re.sub(r"\(\s+", "(", " ".join(sql.replace('"', "").split()))
     for fragment in ("YEAR_OF_WEEK", "DAY_OF_WEEK", "DATE_DIFF('DAY'", "DATE_DIFF('SECOND'", "CAST(dt.d1 AS TIMESTAMP)"):
-        assert fragment in sql.replace('"', ""), sql
+        assert fragment in flat, sql
 
 
 @pytest.mark.parametrize("ds_type", ["presto", "athena"])

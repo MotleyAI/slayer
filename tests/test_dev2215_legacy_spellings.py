@@ -35,7 +35,7 @@ from tests._dev2215_fixtures import (
     single,
     warnings_mentioning,
 )
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 
 SLAYER_3 = "3.0"
 
@@ -71,10 +71,10 @@ async def run(engine: SlayerQueryEngine, query: Any) -> tuple[SlayerResponse, li
 # --------------------------------------------------------------------------- #
 class TestFreshInput:
     async def test_python_spellings(self, engine: SlayerQueryEngine) -> None:
-        legacy, python_warned = await run(engine, q(metrics=[m("count(*)", "n")],
-                                                    filter=["status == 'paid' and region is not None"]))
-        canonical, sql_warned = await run(engine, q(metrics=[m("count(*)", "n")],
-                                                    filter=["status = 'paid' AND region IS NOT NULL"]))
+        legacy, python_warned = await run(engine, q(metrics=[m("count(orders.*)", "n")],
+                                                    filter=["orders.status == 'paid' and orders.region is not None"]))
+        canonical, sql_warned = await run(engine, q(metrics=[m("count(orders.*)", "n")],
+                                                    filter=["orders.status = 'paid' AND orders.region IS NOT NULL"]))
         assert legacy.sql == canonical.sql
         assert legacy.data == canonical.data
         assert len(deprecations(legacy)) == 2
@@ -85,12 +85,12 @@ class TestFreshInput:
         assert sql_warned == []
 
     @pytest.mark.parametrize(("legacy", "canonical"), [
-        ("sum(iif(region IN ['EU', 'US'], amount, None))", "sum(iif(region IN ('EU', 'US'), amount, NULL))"),
+        ("sum(iif(orders.region IN ['EU', 'US'], orders.amount, None))", "sum(iif(orders.region IN ('EU', 'US'), orders.amount, NULL))"),
         ("customers.count_distinct(status)", "count_distinct(customers.status)"),
         ("customers.count(*)", "count(customers.*)"),
         ("customers.count_distinct(status || name)", "count_distinct(customers.status || customers.name)"),
         ("customers.percentile(score, 0.5)", "percentile(customers.score, 0.5)"),
-        ("sum(iif(region is None, 1, 0))", "sum(iif(region IS NULL, 1, 0))"),
+        ("sum(iif(orders.region is None, 1, 0))", "sum(iif(orders.region IS NULL, 1, 0))"),
     ])
     async def test_twins_share_sql_key_and_value(self, engine: SlayerQueryEngine, legacy: str,
                                                  canonical: str) -> None:
@@ -111,26 +111,26 @@ class TestFreshInput:
 
     async def test_a_date_part_method_call_shows_its_functional_spelling(self, engine: SlayerQueryEngine) -> None:
         query = q(dimensions=[{"field": "customers.month(updated_at)", "alias": "mo"}],
-                  metrics=[m("count(*)", "n")])
+                  metrics=[m("count(orders.*)", "n")])
         with pytest.raises(ValueError, match=re.escape("month(customers.updated_at)")):
             await engine.execute(query)
 
     async def test_bare_none_list_and_method_call_warn_per_spelling(self, engine: SlayerQueryEngine) -> None:
         resp, warned = await run(engine, q(metrics=[
-            m("sum(iif(region IN ['EU', 'US'], amount, None))", "a"), m("customers.count_distinct(status)", "b")]))
+            m("sum(iif(orders.region IN ['EU', 'US'], orders.amount, None))", "a"), m("customers.count_distinct(status)", "b")]))
         assert len(deprecations(resp)) == 3
         assert len(warned) == 3
 
     async def test_a_spelling_used_twice_warns_once(self, engine: SlayerQueryEngine) -> None:
-        resp, warned = await run(engine, q(metrics=[m("count(*)", "n")],
-                                           filter=["status == 'paid'", "region == 'EU'"]))
+        resp, warned = await run(engine, q(metrics=[m("count(orders.*)", "n")],
+                                           filter=["orders.status == 'paid'", "orders.region == 'EU'"]))
         assert len(warned) == 1
         assert len(deprecations(resp)) == 1
         assert int(single(resp, "n")) == 3
 
     async def test_true_false_and_not_equal_are_not_deprecated(self, engine: SlayerQueryEngine) -> None:
-        resp, warned = await run(engine, q(metrics=[m("count(*)", "n")],
-                                           filter=["status != 'void'", "(amount > 15) = True"]))
+        resp, warned = await run(engine, q(metrics=[m("count(orders.*)", "n")],
+                                           filter=["orders.status != 'void'", "(orders.amount > 15) = True"]))
         assert deprecations(resp) == []
         assert warned == []
 
@@ -158,14 +158,14 @@ async def test_a_save_stores_the_canonical_twin(storage: StorageBackend, written
 async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) -> None:
     await storage.save_dataset(orders_dataset())
     saved = SlayerDataset.model_validate({"name": "paid_orders", "data_source": "test", "source_queries": [
-        {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}],
-         "filter": ["status == 'paid' and region is not None"]}]})
+        {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}],
+         "filter": ["orders.status == 'paid' and orders.region is not None"]}]})
     await storage.save_dataset(saved)
     loaded = await storage.get_dataset("paid_orders", data_source="test")
     assert loaded is not None
     assert loaded.source_queries
     stage = loaded.source_queries[0]
-    assert stage.filter == ["status = 'paid' and region IS NOT NULL"]
+    assert stage.filter == ["orders.status = 'paid' and orders.region IS NOT NULL"]
 
 
 PAID_SPELLINGS = "sum(iif(status == 'paid' AND region is not None, amount, 0))"
@@ -193,8 +193,8 @@ async def test_an_engine_save_returns_one_warning_per_spelling(storage: StorageB
 
 async def test_a_saved_query_save_returns_its_spelling_warnings(engine: SlayerQueryEngine) -> None:
     saved = SlayerDataset.model_validate({"name": "paid_orders", "source_queries": [
-        {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}],
-         "filter": ["status == 'paid' and region is not None"]}]})
+        {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}],
+         "filter": ["orders.status == 'paid' and orders.region is not None"]}]})
     notes: list[Any] = []
     with recorded_warnings():
         await engine.save_dataset(saved, warnings_out=notes)
@@ -253,8 +253,8 @@ class TestNeverSelfWarns:
         assert parse_expr(rendered) == parse_expr(text)
 
     async def test_case_query(self, engine: SlayerQueryEngine) -> None:
-        resp, warned = await run(engine, q(metrics=[m("sum(CASE status WHEN 'paid' THEN 1 END)")],
-                                           filter=["CASE WHEN region IS NULL THEN 0 ELSE 1 END = 1"]))
+        resp, warned = await run(engine, q(metrics=[m("sum(CASE orders.status WHEN 'paid' THEN 1 END)")],
+                                           filter=["CASE WHEN orders.region IS NULL THEN 0 ELSE 1 END = 1"]))
         assert num(single(resp)) == 4.0
         assert deprecations(resp) == []
         assert warned == []
@@ -269,7 +269,7 @@ class TestNeverSelfWarns:
         assert warned == []
 
     async def test_engine_remedies_are_canonical(self, engine: SlayerQueryEngine) -> None:
-        query = q(metrics=[m("weighted_avg(amount, wieght = qty)")])
+        query = q(metrics=[m("weighted_avg(orders.amount, wieght = orders.qty)")])
         with pytest.raises(ValueError) as err:
             await engine.execute(query)
         assert "==" not in str(err.value)

@@ -6,7 +6,7 @@ expression enters a scope through :meth:`ScopeFrame.resolve`, which:
 * **Law 1 (anchored rendering):** expands derived refs (reserved-word
   identifiers prequoted; multi-term derived expansions parenthesised
  ), anchors every reference at the scope root or a ``__``-path join
-  alias, and REGISTERS each crossed relationship path into ``join_paths`` in the same
+  alias, and REGISTERS each crossed relationship path into ``relationship_paths`` in the same
   call. Discovery is a side effect of rendering — it can never be forgotten.
 * **Law 2 (projection boundaries):** when a ``consumer`` scope is named, the
   value is materialised as a ``_val_<n>`` projection in THIS (producing) scope
@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import ParseError
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
@@ -47,14 +48,16 @@ from slayer.core.keys import (
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.field_expansion import (
     collect_root_scope_joined_paths,
-    expand_field_definition_sync,
-    expand_derived_refs_sync,
+    expand_field_definition_ast,
+    ExpansionSinks,
+    expand_derived_refs_ast,
 )
+from slayer.sql.zoned_reads import STORED, VALUE, Context, ReadSite, apply_reads, mark_read, read_column, zone_setting
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import SQLGLOT_NAMES
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import AliasAllocator, quote_mixed_case_identifiers
-from slayer.sql.render.parse import parse_expression, parse_predicate
+from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate
 from slayer.sql.render.row_expr import render_row_expression
 from slayer.sql.sql_template import sql_template
 from slayer.sql.reserved_keywords import (
@@ -128,7 +131,7 @@ class ScopeFrame(BaseModel):
     bundle: ResolvedSourceBundle
     dialect: SqlDialect
     allocator: AliasAllocator
-    join_paths: _OrderedPathSet = Field(default_factory=_OrderedPathSet)
+    relationship_paths: _OrderedPathSet = Field(default_factory=_OrderedPathSet)
     materializations: List[Materialization] = Field(default_factory=list)
     # reserved-leaf placeholder → its rendered column on an attached
     # regroup producer CTE. Resolved by EXACT membership before ordinary column
@@ -138,10 +141,14 @@ class ScopeFrame(BaseModel):
     placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
     #: Element types of the list-valued ones.
     placeholder_elements: Dict[Any, DataType] = Field(default_factory=dict)
+    #: The context the frame's column reads take (system principle 12).
+    context: Context = VALUE
+    #: A semi-join group's tree-node path → its dataset name; such paths are not root relationship paths.
+    node_datasets: Dict[Tuple[str, ...], str] = Field(default_factory=dict)
 
     # ---- Law 1 -------------------------------------------------------------
     def resolve(self, ref: Ref, *, consumer: "ScopeFrame | None" = None) -> exp.Expression:
-        """Anchor ``ref`` in this scope, register the joins it crosses, and —
+        """Anchor ``ref`` in this scope, register the relationship paths it crosses, and —
         when a ``consumer`` scope is named — materialise it and return the bare
         alias for the consumer.
 
@@ -152,10 +159,10 @@ class ScopeFrame(BaseModel):
         template = self._anchor(ref)
         return self._close(template, consumer=consumer)
 
-    def _register_path_prefixes(self, path: Tuple[str, ...]) -> None:
+    def register_path_prefixes(self, path: Tuple[str, ...]) -> None:
         """Register every relationship-path prefix of ``path`` into this scope."""
         for i in range(1, len(path) + 1):
-            self.join_paths.add(path[:i])
+            self.relationship_paths.add(path[:i])
 
     # ---- The one Mode-A door (P-A) -----------------------------------------
     def enter_predicate(
@@ -204,13 +211,13 @@ class ScopeFrame(BaseModel):
         1. prequote reserved identifiers,
         2. parse the PREQUOTED text and scan it for crossed relationship paths,
         3. expand derived refs, parse the EXPANDED text and scan that too,
-        4. union both scans into ``join_paths``,
+        4. union both scans into ``relationship_paths``,
         5. Law 2 — materialise for a named ``consumer``, else return the AST.
 
         Both scans are load-bearing (the dual-scan contract): a dotted
         ref whose derived field inlines to a constant vanishes from the
-        expanded AST, so only the pre-expansion scan sees its join; and a bare
-        derived ref only reveals the joins its expansion crosses AFTER
+        expanded AST, so only the pre-expansion scan sees its relationship path; and a bare
+        derived ref only reveals the relationship paths its expansion crosses AFTER
         expanding. Discovery is a side effect of entering — it cannot be
         forgotten by a caller.
 
@@ -227,7 +234,7 @@ class ScopeFrame(BaseModel):
 
         ``owner_path`` anchors the scan/expansion at a to-one SUB-scope — the
         owner of a metric-local ``DatasetField.filter`` or an owner-anchored parameter
-        default — so its refs resolve from that owner and the joins they cross
+        default — so its refs resolve from that owner and the relationship paths they cross
         register relative to it (prefixed by ``owner_path``). Empty (the default)
         is the scope root, byte-identical to before.
         """
@@ -244,7 +251,7 @@ class ScopeFrame(BaseModel):
                 root=self.root_relation, path=owner_path,
                 limit=self.dialect.max_identifier_bytes,
             )
-            self._register_path_prefixes(owner_path)
+            self.register_path_prefixes(owner_path)
         else:
             owner_dataset = self.root_dataset
             alias_path = self.root_relation
@@ -255,36 +262,47 @@ class ScopeFrame(BaseModel):
             prequoted, grammar=grammar, fragment=sql, location=location,
         )
         # Scan the RAW (dotted) form for the relationship paths its references cross;
-        # the expansion below additionally registers any joins revealed only by
+        # the expansion below additionally registers any relationship paths revealed only by
         # inlining a derived field (the dual-discovery contract), now
         # collected STRUCTURALLY via ``crossed_paths`` rather than by re-scanning
         # the internal-alias output.
-        self._register_join_paths(
+        self._register_relationship_paths(
             raw_ast, owner_dataset=owner_dataset, owner_relation=alias_path,
             owner_path=owner_path,
         )
 
+        # A predicate defining the dataset (a field or dataset filter) reads stored values.
         try:
-            expanded = expand_derived_refs_sync(
-                sql=prequoted,
-                dataset=owner_dataset,
-                alias_path=alias_path,
-                datasets_by_name=self._datasets_by_name(),
-                dialect=self.dialect.sqlglot_name,
-                owner_path=owner_path,
-                alias_resolver=self._alias_resolver(),
-                crossed_paths=self.join_paths,
+            expanded = self._expand(
+                prequoted, dataset=owner_dataset, alias_path=alias_path, owner_path=owner_path,
+                context=STORED if grammar == _PREDICATE else self.context,
             )
         except UnreachableDefinitionError as exc:
             raise exc.labelled(f"definition {sql!r}") from None
-        if expanded is None or expanded == prequoted:
-            final = raw_ast
-        else:
-            final = self._parse_mode_a(
-                expanded, grammar=grammar, fragment=sql, location=location,
-            )
+        return self._close(expanded if expanded is not None else raw_ast, consumer=consumer)
 
-        return self._close(final, consumer=consumer)
+    def _expand(
+        self, sql: str, *, dataset: SlayerDataset, alias_path: str, owner_path: Tuple[str, ...], context: Context,
+    ) -> Optional[Expression]:
+        """``sql`` expanded at ``alias_path`` and parsed as SLayer parses a fragment, its column reads through the read
+        path in ``context``; ``None`` when it reads as written."""
+        return self._read(expand_derived_refs_ast(
+            sql=sql,
+            dataset=dataset,
+            alias_path=alias_path,
+            datasets_by_name=self._datasets_by_name(),
+            dialect=self.dialect.sqlglot_name,
+            owner_path=owner_path,
+            alias_resolver=self._alias_resolver(),
+            sinks=ExpansionSinks(crossed=self.relationship_paths, read=mark_read, context=context),
+        ))
+
+    def _read(self, marked: Optional[Expression]) -> Optional[Expression]:
+        """``marked`` (an expansion, its reads marked) with SLayer's parse rewrites, its reads through the read path."""
+        if marked is None:
+            return None
+        tree = apply_ast_rewrites(tree=marked, target_dialect=self.dialect, parse_dialect=self.dialect)
+        return apply_reads(tree, dialect=self.dialect, setting=zone_setting(self.bundle))
 
     def _parse_mode_a(
         self,
@@ -338,7 +356,7 @@ class ScopeFrame(BaseModel):
             limit=self.dialect.max_identifier_bytes,
         )
 
-    def _register_join_paths(
+    def _register_relationship_paths(
         self, parsed: exp.Expression, *,  # pyright: ignore[reportPrivateImportUsage]
         owner_dataset: Optional[SlayerDataset] = None,
         owner_relation: Optional[str] = None,
@@ -354,7 +372,7 @@ class ScopeFrame(BaseModel):
             source_relation=owner_relation or self.root_relation,
             bundle=self.bundle,
         ):
-            self.join_paths.add(tuple(owner_path) + path)
+            self.relationship_paths.add(tuple(owner_path) + path)
 
     def materialize_for(
         self, template: exp.Expression, *, consumer: "ScopeFrame",
@@ -370,7 +388,7 @@ class ScopeFrame(BaseModel):
         Same table, same dedup key, same aliases as :meth:`resolve`: there is
         one materialisation mechanism per scope, which is the point.
         """
-        self._register_join_paths(template)
+        self._register_relationship_paths(template)
         return self._close(template, consumer=consumer)
 
     def _close(
@@ -379,7 +397,7 @@ class ScopeFrame(BaseModel):
         """Law 2: materialise for a named consumer, else hand back a copy so a
         caller attaching this into its tree can never corrupt a value the scope
         (or another caller) also holds (D-L / M1)."""
-        if consumer is not None and not self.may_inline(self.join_paths.as_list()):
+        if consumer is not None and not self.may_inline(self.relationship_paths.as_list()):
             return exp.column(self._materialize(template))
         return template.copy()
 
@@ -406,21 +424,31 @@ class ScopeFrame(BaseModel):
                     f"through the attach registry; reaching field anchoring "
                     f"means the placeholder escaped its producer's join scope.",
                 )
+            declared = self._plain_field(ref)
+            if declared is None:
+                raise UnknownReferenceError(
+                    name=".".join((*ref.path, ref.leaf)),
+                    scope_kind="ScopeFrame",
+                    scope_summary=f"scope rooted at dataset {self.root_dataset.name!r}",
+                    suggestion="A plain field reference must name a field its relationship path's terminal dataset declares.",
+                )
             # The allocator is the single join-alias authority
             # (dotted-canonical); it also registers the crossed path prefixes.
             alias = self.allocator.alias_for(
                 root=self.root_relation, path=ref.path,
                 limit=self.dialect.max_identifier_bytes,
             )
-            self._register_path_prefixes(ref.path)
+            self.register_path_prefixes(ref.path)
             column = quote_mixed_case_identifiers(exp.Column(
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
             ))
-            declared = dataset_field(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name(), key=ref)
-            return self.dialect.read_column(
-                column, zoned=self.dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
-            )
+            owner = self._plain_owner(ref)
+            if owner is None or not isinstance(column, exp.Column):
+                return column
+            site = ReadSite(dataset=owner, field=declared, column=ref.leaf, path=tuple(ref.path),
+                            context=self.context)
+            return read_column(column, site=site, dialect=self.dialect, setting=zone_setting(self.bundle))
         if isinstance(ref, FieldSqlKey):
             dataset = self._dataset_for(ref.dataset)
             col = next(
@@ -441,19 +469,14 @@ class ScopeFrame(BaseModel):
                 )
             else:
                 alias_path = self.root_relation
-            self._register_path_prefixes(owner_path)
+            self.register_path_prefixes(owner_path)
             if col is None:
-                expanded = expand_derived_refs_sync(
-                    sql=ref.field_name, dataset=dataset, alias_path=alias_path,
-                    datasets_by_name=self._datasets_by_name(),
-                    dialect=self.dialect.sqlglot_name, owner_path=owner_path,
-                    alias_resolver=self._alias_resolver(),
-                    crossed_paths=self.join_paths,
-                )
-                return self._parse(expanded or ref.field_name)
-            # A ``DatasetField.filter`` desugars to CASE WHEN here — the value
-            # and filter expand through the same door at ``owner_path``.
-            expanded = expand_field_definition_sync(
+                expanded = self._expand(ref.field_name, dataset=dataset, alias_path=alias_path,
+                                        owner_path=owner_path, context=self.context)
+                return expanded if expanded is not None else self._parse(ref.field_name)
+            # A ``DatasetField.filter`` desugars to CASE WHEN here — the value (in this frame's context)
+            # and the filter (stored) expand through the same door at ``owner_path``.
+            expanded = expand_field_definition_ast(
                 field=col,
                 dataset=dataset,
                 alias_path=alias_path,
@@ -461,18 +484,24 @@ class ScopeFrame(BaseModel):
                 dialect=self.dialect.sqlglot_name,
                 owner_path=owner_path,
                 alias_resolver=self._alias_resolver(),
-                crossed_paths=self.join_paths,
+                crossed_paths=self.relationship_paths,
+                read=mark_read,
+                context=self.context,
             )
-            return self.dialect.read_column(self._parse(expanded), zoned=self.dialect.is_zoned_db_type(col.db_type))
+            instant = self.dialect.holds_instant(datatype=col.datatype, db_type=col.db_type) \
+                and self.dialect.time_zone is None
+            read = self._read(expanded)
+            assert read is not None
+            return self.dialect.read_column(read, zoned=instant)
         if isinstance(ref, SqlFragmentKey):
             # A bound parameter expression: each typed ref anchors (and registers
-            # its joins) here, substituted into the parsed template.
+            # its relationship paths) here, substituted into the parsed template.
             template = sql_template(text=ref.template, dialect=self.dialect.sqlglot_name)
             return template.render({f"r{i}": self._anchor(r) for i, r in enumerate(ref.refs)})
         if isinstance(ref, (
                 ArithmeticKey, ScalarCallKey, LiteralKey, ArrayLiteralKey, TimeTruncKey, InKey, CastKey, ListSetKey)):
             # An aggregate's row-level expression source — field
-            # leaves anchor recursively through this scope, so join
+            # leaves anchor recursively through this scope, so relationship-path
             # registration and derived expansion apply per leaf.
             return render_row_expression(
                 key=ref, dialect=self.dialect, resolve_field=self._anchor,
@@ -482,17 +511,9 @@ class ScopeFrame(BaseModel):
             prequoted = prequote_reserved_identifiers(
                 ref, dialect=self.dialect.sqlglot_name,
             )
-            expanded = expand_derived_refs_sync(
-                sql=prequoted,
-                dataset=self.root_dataset,
-                alias_path=self.root_relation,
-                datasets_by_name=self._datasets_by_name(),
-                dialect=self.dialect.sqlglot_name,
-                owner_path=(),
-                alias_resolver=self._alias_resolver(),
-                crossed_paths=self.join_paths,
-            )
-            return self._parse(expanded or prequoted)
+            expanded = self._expand(prequoted, dataset=self.root_dataset, alias_path=self.root_relation,
+                                    owner_path=(), context=self.context)
+            return expanded if expanded is not None else self._parse(prequoted)
         raise NotImplementedError(
             f"ScopeFrame.resolve does not yet handle ref type {type(ref).__name__}",
         )
@@ -512,6 +533,22 @@ class ScopeFrame(BaseModel):
     def field(self, ref: FieldKey | FieldSqlKey) -> Optional[DatasetField]:
         """The dataset field ``ref`` names, or ``None`` when unresolvable."""
         return dataset_field(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name(), key=ref)
+
+    def _plain_owner(self, ref: FieldKey) -> Optional[SlayerDataset]:
+        """The dataset declaring ``ref``'s field: a semi-join node dataset first, else the relationship graph."""
+        node_dataset = self.node_datasets.get(ref.path)
+        if node_dataset is not None:
+            return self._datasets_by_name()[node_dataset]
+        if not ref.path:
+            return self.root_dataset
+        return resolved_terminal(root=self.root_dataset, path=tuple(ref.path), datasets_by_name=self._datasets_by_name())
+
+    def _plain_field(self, ref: FieldKey) -> Optional[DatasetField]:
+        """The field ``ref`` names: through a semi-join node dataset first, else the relationship graph."""
+        node_dataset = self.node_datasets.get(ref.path)
+        if node_dataset is None:
+            return self.field(ref)
+        return self._datasets_by_name()[node_dataset].get_field(ref.leaf)
 
     def _dataset_for(self, name: str) -> SlayerDataset:
         """Resolve a dataset name against the scope root, then the bundle.

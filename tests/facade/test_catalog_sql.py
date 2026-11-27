@@ -1,4 +1,4 @@
-"""Tests for slayer.facade.catalog_sql — DuckDB-backed catalog SQL executor (DEV-1558).
+"""Tests for slayer.facade.catalog_sql — DuckDB-backed catalog SQL executor.
 
 Replaces canned-row catalog matching with arbitrary SQL execution against an
 in-memory DuckDB materialising the catalog corpus. These tests pin the corpus
@@ -16,7 +16,7 @@ import pytest
 import sqlglot
 from pydantic import BaseModel
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.facade.catalog import (
     FacadeCatalog,
@@ -82,7 +82,7 @@ def _demo_catalog() -> FacadeCatalog:
     )
 
 
-# DEV-1815: building a CatalogSqlExecutor materialises an in-memory DuckDB
+# Building a CatalogSqlExecutor materialises an in-memory DuckDB
 # (37 table creates + bulk inserts). The default demo catalog is deterministic
 # and every query here is read-only, so reuse one executor per datasource across
 # the ~80 default-catalog tests instead of rebuilding it each call. Tests that
@@ -110,7 +110,7 @@ def _run(sql: str, *, executor: CatalogSqlExecutor | None = None) -> RowBatch:
     return ex.execute(parsed=_parse(sql), sql=sql)
 
 
-# --- DEV-1815 reuse guard ---------------------------------------------------
+# --- Executor reuse guard ---------------------------------------------------
 
 
 def test_dev1815_demo_executor_built_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,7 +202,7 @@ def test_pg_tables_one_row_per_table_typed_model() -> None:
 
 
 def test_view_typed_models_surface_as_pg_views() -> None:
-    """Codex review: SQL-backed models (``table_type='VIEW'``) must
+    """Codex review: SQL-backed datasets (``table_type='VIEW'``) must
     surface as views to view-aware clients — emitted with
     ``relkind='v'`` in ``pg_class`` AND one row in ``pg_views``. They
     are NOT in ``pg_tables`` (M1)."""
@@ -212,14 +212,14 @@ def test_view_typed_models_surface_as_pg_views() -> None:
     )
     cat = build_catalog_grouped_by_schema(datasets_by_datasource={"jaffle": [sql_model]})
     relations = {r.name: r for r in build_catalog_relations(cat)}
-    # pg_tables filters out VIEW-typed models (M1).
+    # pg_tables filters out VIEW-typed datasets (M1).
     assert relations["pg_tables"].rows == []
     # pg_matviews unused — materialized-view abstraction not implemented.
     assert relations["pg_matviews"].rows == []
-    # pg_class advertises relkind='v' for VIEW-typed models.
+    # pg_class advertises relkind='v' for VIEW-typed datasets.
     cls_row = next(r for r in relations["pg_class"].rows if r["relname"] == "custom_view")
     assert cls_row["relkind"] == "v"
-    # pg_views has one row per VIEW-typed model.
+    # pg_views has one row per VIEW-typed dataset.
     view_rows = relations["pg_views"].rows
     assert len(view_rows) == 1
     assert view_rows[0]["viewname"] == "custom_view"
@@ -227,7 +227,7 @@ def test_view_typed_models_surface_as_pg_views() -> None:
 
 
 def test_table_typed_models_stay_as_pg_class_r() -> None:
-    """Regression: normal ``sql_table``-mode models stay relkind='r' and
+    """Regression: normal ``sql_table``-mode datasets stay relkind='r' and
     do not bleed into pg_views."""
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
     for row in relations["pg_class"].rows:
@@ -340,7 +340,7 @@ def test_is_catalog_only_false_for_user_model() -> None:
 
 
 def test_is_catalog_only_false_for_mixed() -> None:
-    # FROM a catalog table joined to a user model is NOT catalog-only.
+    # FROM a catalog table joined to a user dataset is NOT catalog-only.
     sql = "SELECT * FROM pg_catalog.pg_class c JOIN orders o ON c.relname = o.status"
     assert is_catalog_only(_parse(sql)) is False
 
@@ -357,7 +357,7 @@ def test_is_catalog_only_skips_cte_names() -> None:
 
 
 def test_is_catalog_only_cte_body_user_table_still_false() -> None:
-    # A CTE that references a user model in its body — outer 'x' is exempt
+    # A CTE that references a user dataset in its body — outer 'x' is exempt
     # because it's CTE-defined, but the CTE BODY's reference to `orders`
     # must still disqualify (otherwise an exemption-everything implementation
     # would mark all unknown refs as catalog-only).
@@ -373,8 +373,8 @@ def test_is_catalog_only_unknown_table_false() -> None:
 
 @pytest.mark.parametrize("name", ["columns", "tables", "schemata"])
 def test_is_catalog_only_bare_info_schema_names_disallowed(name: str) -> None:
-    # DEV-1558 Codex review: bare info-schema names like `columns` /
-    # `tables` shadow user models with the same name. Only the qualified
+    # Bare info-schema names like `columns` /
+    # `tables` shadow user datasets with the same name. Only the qualified
     # form `information_schema.columns` routes to the catalog executor;
     # bare `columns` flows down to the regular SLayer translator.
     assert is_catalog_only(_parse(f"SELECT * FROM {name}")) is False
@@ -558,7 +558,7 @@ def test_tableless_context_function_routes_to_executor_via_translator(sql: str) 
     siblings) are parsed by sqlglot as bare Column refs without a
     FROM clause. The translator must classify them as catalog-only
     (via is_catalog_only) so they reach the executor instead of
-    falling through to the SLayer model-query path with a 'no FROM
+    falling through to the SLayer dataset-query path with a 'no FROM
     clause' error."""
     parsed = _parse(sql)
     assert is_catalog_only(parsed) is True
@@ -576,7 +576,7 @@ def test_information_schema_qualified_column_projection_resolves() -> None:
     )
     assert batch.rows
     cols = {r["column_name"] for r in batch.rows}
-    # The demo catalog's ``orders`` model defines four dimension columns;
+    # The demo catalog's ``orders`` dataset defines four dimension fields;
     # all four must surface so a partial qualifier-strip would fail loudly.
     assert {"id", "revenue", "status", "ordered_at"} <= cols
 
@@ -729,7 +729,7 @@ def test_current_schemas_non_first_index_returns_null() -> None:
 
 
 def test_is_schemata_folds_datasources_to_public_by_default() -> None:
-    """DEV-1594: datasources without a custom ``postgres_schema`` fold into a
+    """Datasources without a custom ``postgres_schema`` fold into a
     single ``public`` schema, so ``information_schema.schemata`` has one row
     even when multiple datasources back the catalog."""
     cat = build_catalog_grouped_by_schema(datasets_by_datasource={
@@ -879,7 +879,7 @@ def test_executor_distinguishes_duplicate_output_column_names() -> None:
 
 def test_is_metrics_emits_jdbc_type_names() -> None:
     """The SLayer ``INFORMATION_SCHEMA.METRICS`` extension preserves the
-    JDBC-style type contract from the pre-DEV-1558 ``match_info_schema``
+    JDBC-style type contract from the former ``match_info_schema``
     path (DOUBLE / BIGINT / TIMESTAMP rather than Postgres-internal
     float8 / int8 / timestamp)."""
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
@@ -1069,10 +1069,32 @@ def test_executor_for_returns_same_instance_for_identical_catalog() -> None:
     assert a is b
 
 
+def _cardinality_catalog(cardinality: RelationshipCardinality | None) -> FacadeCatalog:
+    orders = SlayerDataset(
+        name="orders", data_source="jaffle", sql_table="orders",
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["code"],
+                                           cardinality=cardinality)],
+    )
+    customers = SlayerDataset(
+        name="customers", data_source="jaffle", sql_table="customers",
+        fields=[DatasetField(name="code", datatype=DataType.INTEGER), DatasetField(name="region", datatype=DataType.STRING)],
+    )
+    return build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
+
+
+def test_executor_for_invalidates_when_only_a_hops_determination_changes() -> None:
+    """Same names and types; only whether ``customers.region`` is advertised differs."""
+    a = executor_for(_cardinality_catalog(None))
+    b = executor_for(_cardinality_catalog(RelationshipCardinality.MANY_TO_ONE))
+    assert a is not b
+
+
 def test_executor_for_invalidates_on_catalog_change() -> None:
     cat1 = _demo_catalog()
     a = executor_for(cat1)
-    # Add a new model and rebuild — same datasource, but with an additional table.
+    # Add a new dataset and rebuild — same datasource, but with an additional table.
     extended = build_catalog(datasets_by_datasource={"jaffle": [
         SlayerDataset(
             name="orders", data_source="jaffle", sql_table="orders",
@@ -1103,7 +1125,7 @@ def test_executor_for_invalidates_on_catalog_change() -> None:
 
 def test_executor_for_distinguishes_column_order() -> None:
     """CR review: column position drives ``attnum`` / ``ordinal_position``
-    / ``pg_description.objsubid``, so reordering a model's columns under
+    / ``pg_description.objsubid``, so reordering a dataset's fields under
     the same name set MUST produce a new executor — otherwise the cache
     serves stale catalog metadata."""
     model_a = SlayerDataset(
@@ -1191,7 +1213,7 @@ def test_pg_attribute_oids_match_datatype() -> None:
 def test_pg_type_covers_six_oids() -> None:
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
     oids = {r["oid"] for r in relations["pg_type"].rows}
-    assert oids == {16, 20, 25, 701, 1082, 1114}
+    assert oids == {16, 20, 25, 701, 1082, 1083, 1114}
     by_oid = {r["oid"]: r for r in relations["pg_type"].rows}
     assert by_oid[25]["typname"] == "text"
     assert by_oid[20]["typname"] == "int8"
@@ -1640,7 +1662,7 @@ class TestPgCollationAndTypcollation:
             "(SELECT oid FROM pg_catalog.pg_class WHERE relname = 'orders')"
         )
         batch = _run(sql)
-        # Rows returned — one per column of the orders model.
+        # Rows returned — one per column of the orders dataset.
         assert len(batch.rows) > 0
         # The correlated attcollation sub-select is NULL for every row
         # (every column uses the default collation).

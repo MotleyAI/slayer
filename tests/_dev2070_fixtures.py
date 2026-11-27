@@ -52,7 +52,7 @@ def customers_dataset() -> SlayerDataset:
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="region_id", datatype=DataType.INTEGER),
             DatasetField(name="spend", datatype=DataType.INTEGER),
-            DatasetField(name="spend_x2", sql="spend * 2", datatype=DataType.INTEGER),
+            DatasetField(name="spend_x2", expression="spend * 2", datatype=DataType.INTEGER),
             DatasetField(name="signup_at", datatype=DataType.DATETIME),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],

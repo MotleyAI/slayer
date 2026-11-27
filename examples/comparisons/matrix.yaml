@@ -185,7 +185,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`\"to_many_handling\": \"broadcast\" | \"associate\" | \"error\"`"
+    how: "`\"to_many_handling\": \"associate\" | \"error\"`"
     caveat: Typed errors and structured warnings; every SLayer probe returns the right numbers or fails with a typed error (verified).
   malloy:
     verdict: partial
@@ -332,7 +332,7 @@ rows:
   origin: SLayer
   slayer:
     verdict: 'yes'
-    how: "`\"population\": {\"dataset\": \"orders\", \"fields\": [...], \"relationships\": [...]}`"
+    how: "`\"extensions\": [{\"dataset\": \"orders\", \"metrics\": [...], \"relationships\": [...]}]`; a column is a computed dimension"
   malloy:
     verdict: 'yes'
     how: "`extend: { join_one: ...; measure: ... }`"
@@ -512,7 +512,7 @@ rows:
   origin: Malloy
   slayer:
     verdict: 'yes'
-    text: "The reading follows where the inputs live (all verified): `avg(customers.credit)` is per customer, even as a metric declared on orders; an orders filter keeps customers with orders; an orders-side field (`credit: customers.credit`, in a dataset extension) reads per order."
+    text: "The reading follows where the inputs live (all verified): `avg(customers.credit)` is per customer, even as a metric declared on orders; an orders filter keeps customers with orders; per order, a first stage lists each order with `customers.credit` and a second averages it."
   malloy:
     verdict: 'yes'
     how: "`customers.credit.avg()` vs `source.avg(customers.credit)` (verified)"

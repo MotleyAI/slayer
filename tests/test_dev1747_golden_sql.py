@@ -5,11 +5,11 @@ module docstring for the four-step blessing loop); only the matrix differs. This
 one targets exactly what PR 4 rewires and what PRs 5-6 will move next:
 
 * every ORDER BY render path the single resolver replaced — host base, the
-  hidden-slot outer trim wrap, the combined cross-model SELECT, the windowed
+  hidden-slot outer trim wrap, the combined cross-dataset SELECT, the windowed
   CTE, and the transform chain's outer wrap;
 * the host-grain (``locus="host"``) wrap in both directions, which is where a
   regression would silently sort every group by one global value;
-* the re-rooted cross-model CTE with reachable / host-local / unreachable
+* the re-rooted cross-dataset CTE with reachable / host-local / unreachable
   filters, since re-rooting is what PR 5 builds on;
 * both transform chains, whose WITH clause is now assembled rather than
   spliced, across the dialects that mangle dotted aliases at emission.
@@ -47,7 +47,7 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"field": "created_at", "granularity": "month"}]
+_MONTH = [{"field": "orders.created_at", "granularity": "month"}]
 
 
 def _q(**kw) -> SlayerQuery:
@@ -57,86 +57,86 @@ def _q(**kw) -> SlayerQuery:
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
-    rev = [{"metric": "sum(amount)", "alias": "rev"}]
+    rev = [{"metric": "sum(orders.amount)", "alias": "rev"}]
     return {
         # --- the five ORDER BY render paths ---
         "order/host_base_alias": _q(
-            dimensions=["status"], metrics=rev,
+            dimensions=["orders.status"], metrics=rev,
             order=[{"field": "rev", "direction": "desc"}],
         ),
         "order/hidden_slot_outer_trim": _q(
-            dimensions=["status"], metrics=rev,
-            order=[{"field": "max(amount)", "direction": "desc"}],
+            dimensions=["orders.status"], metrics=rev,
+            order=[{"field": "max(orders.amount)", "direction": "desc"}],
         ),
         "order/combined_cross_model": _q(
             to_many_handling="broadcast",
-            dimensions=["status"],
+            dimensions=["orders.status"],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
                 {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
             order=[{"field": "cs", "direction": "desc"}],
         ),
         "order/outer_composite": _q(
             to_many_handling="broadcast",
-            dimensions=["status"],
-            metrics=[{"metric": "sum(customers.spend) + sum(amount)", "alias": "mix"}],
+            dimensions=["orders.status"],
+            metrics=[{"metric": "sum(customers.spend) + sum(orders.amount)", "alias": "mix"}],
             order=[{"field": "mix", "direction": "desc"}],
         ),
         "order/windowed_cte": _q(
             time_dimensions=_MONTH,
-            metrics=[{"metric": "sum(amount, window='90d')", "alias": "w"}],
+            metrics=[{"metric": "sum(orders.amount, window='90d')", "alias": "w"}],
             order=[{"field": "w", "direction": "desc"}],
         ),
-        # A windowed measure WITH a well-formed date_range mints a
+        # A windowed metric WITH a well-formed date_range mints a
         # date-range filter routed via ``date_range_fids`` (the src-row-phase
         # gate the coupling re-derives). Pins the emitted BETWEEN so capturing
         # the minted fid set instead of re-deriving it stays byte-identical.
         "order/windowed_cte_date_range": _q(
             time_dimensions=[{
-                "field": "created_at", "granularity": "month",
+                "field": "orders.created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-06-30"],
             }],
-            metrics=[{"metric": "sum(amount, window='90d')", "alias": "w"}],
+            metrics=[{"metric": "sum(orders.amount, window='90d')", "alias": "w"}],
             order=[{"field": "w", "direction": "desc"}],
         ),
         "order/transform_chain_wrap": _q(
             time_dimensions=_MONTH,
-            metrics=[{"metric": "cumsum(sum(amount))", "alias": "cs"}],
+            metrics=[{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
             order=[{"field": "cs", "direction": "asc"}],
         ),
         # --- D10: the wrap is direction-aware, so BOTH are pinned ---
         "order/grouped_local_row_asc": _q(
-            dimensions=["status"], metrics=rev,
-            order=[{"field": "created_at", "direction": "asc"}],
+            dimensions=["orders.status"], metrics=rev,
+            order=[{"field": "orders.created_at", "direction": "asc"}],
         ),
         "order/grouped_local_row_desc": _q(
-            dimensions=["status"], metrics=rev,
-            order=[{"field": "created_at", "direction": "desc"}],
+            dimensions=["orders.status"], metrics=rev,
+            order=[{"field": "orders.created_at", "direction": "desc"}],
         ),
         # --- D2: host-grain, where a target-rooted route would go scalar ---
         "order/grouped_joined_row_asc": _q(
-            dimensions=["status"], metrics=rev,
+            dimensions=["orders.status"], metrics=rev,
             order=[{"field": "customers.regions.name", "direction": "asc"}],
         ),
         "order/grouped_joined_row_desc": _q(
-            dimensions=["status"], metrics=rev,
+            dimensions=["orders.status"], metrics=rev,
             order=[{"field": "customers.regions.name", "direction": "desc"}],
         ),
-        # --- D9: a derived column whose sql crosses, both groupings ---
+        # --- D9: a derived field whose sql crosses, both groupings ---
         "order/grouped_derived_crossing": _q(
-            dimensions=["status"], metrics=rev,
-            order=[{"field": "cust_region", "direction": "asc"}],
+            dimensions=["orders.status"], metrics=rev,
+            order=[{"field": "orders.cust_region", "direction": "asc"}],
         ),
         "order/ungrouped_derived_crossing": _q(
-            dimensions=["status"], distinct_dimension_values=False,
-            order=[{"field": "cust_region", "direction": "asc"}],
+            dimensions=["orders.status"], distinct_dimension_values=False,
+            order=[{"field": "orders.cust_region", "direction": "asc"}],
         ),
         # --- B6: re-rooting, per filter reachability ---
         "reroot/reachable_filter": _q(
             dimensions=["customers.regions.name"],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
                 {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
             filter=["customers.regions.name == 'Alpha'"],
@@ -146,15 +146,15 @@ def _cases() -> dict:
         "reroot/host_local_filter": _q(
             dimensions=["customers.regions.name"],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
                 {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
-            filter=["status == 'A'"],
+            filter=["orders.status == 'A'"],
         ),
         "reroot/unreachable_filter": _q(
             dimensions=["customers.regions.name"],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
                 {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
             filter=["order_tags.name == 'rush'"],
@@ -163,16 +163,16 @@ def _cases() -> dict:
         "chain/local_multi_step": _q(
             time_dimensions=_MONTH,
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
-                {"metric": "cumsum(sum(amount))", "alias": "cs"},
-                {"metric": "change(sum(amount))", "alias": "ch"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
+                {"metric": "cumsum(sum(orders.amount))", "alias": "cs"},
+                {"metric": "change(sum(orders.amount))", "alias": "ch"},
             ],
         ),
         "chain/local_consecutive_periods": _q(
             time_dimensions=_MONTH,
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
-                {"metric": "consecutive_periods(sum(amount))", "alias": "streak"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
+                {"metric": "consecutive_periods(sum(orders.amount))", "alias": "streak"},
             ],
         ),
         "chain/cross_model_window": _q(
@@ -188,8 +188,8 @@ def _cases() -> dict:
         "chain/transform_two_names": _q(
             time_dimensions=_MONTH,
             metrics=[
-                {"metric": "cumsum(sum(amount))", "alias": "run_a"},
-                {"metric": "cumsum(sum(amount))", "alias": "run_b"},
+                {"metric": "cumsum(sum(orders.amount))", "alias": "run_a"},
+                {"metric": "cumsum(sum(orders.amount))", "alias": "run_b"},
             ],
         ),
         # consecutive_periods (own cp_reset/cp_value CTE path) under
@@ -197,17 +197,17 @@ def _cases() -> dict:
         "chain/consecutive_periods_two_names": _q(
             time_dimensions=_MONTH,
             metrics=[
-                {"metric": "consecutive_periods(sum(amount))", "alias": "streak_a"},
-                {"metric": "consecutive_periods(sum(amount))", "alias": "streak_b"},
+                {"metric": "consecutive_periods(sum(orders.amount))", "alias": "streak_a"},
+                {"metric": "consecutive_periods(sum(orders.amount))", "alias": "streak_b"},
             ],
         ),
-        # Two aggregates of one column in the base CTE surface in
+        # Two aggregates of one field in the base CTE surface in
         # plan order, not hash-seed order.
         "chain/multi_agg_base_order": _q(
             time_dimensions=_MONTH,
             metrics=[
-                {"metric": "cumsum(sum(amount))", "alias": "c1"},
-                {"metric": "cumsum(max(amount))", "alias": "c2"},
+                {"metric": "cumsum(sum(orders.amount))", "alias": "c1"},
+                {"metric": "cumsum(max(orders.amount))", "alias": "c2"},
             ],
         ),
         # --- Dependency-split step-CTE shapes. ---
@@ -215,7 +215,7 @@ def _cases() -> dict:
         # (the dependency-split the extracted helper's ordering invariant guards).
         "chain/local_nested_window": _q(
             time_dimensions=_MONTH,
-            metrics=[{"metric": "cumsum(cumsum(sum(amount)))", "alias": "cc"}],
+            metrics=[{"metric": "cumsum(cumsum(sum(orders.amount)))", "alias": "cc"}],
         ),
         "chain/cross_model_nested_window": _q(
             to_many_handling="broadcast",
@@ -300,7 +300,7 @@ def test_ordering_cases_actually_emit_an_order_by(baseline) -> None:
 
 
 def test_reroot_cases_actually_reroot(baseline) -> None:
-    """Vacuity guard for the reroot half. ``_cm_`` marks a cross-model rerooted
+    """Vacuity guard for the reroot half. ``_cm_`` marks a cross-dataset rerooted
     alias; its absence means the shape stopped re-rooting and the entry silently
     pins a forward plan instead."""
     for key, value in baseline.items():
@@ -327,7 +327,7 @@ _CHAIN_STEP_EXPECTATIONS: dict[str, dict[str, bool]] = {
     "chain/local_consecutive_periods": {"cp": True},
     "chain/cross_model_window": {"step1": True, "step2": False},
     "chain/local_nested_window": {"step1": True, "step2": True},
-    "chain/cross_model_nested_window": {"step1": True, "step2": True},
+    "chain/cross_model_nested_window": {"step1": True, "step2": False},
 }
 
 

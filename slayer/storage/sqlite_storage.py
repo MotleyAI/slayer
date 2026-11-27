@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 import sqlite3
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
 from typing import Any
 
 from sqlglot import exp
@@ -21,6 +21,7 @@ from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import (
+    DATASOURCE_NAME,
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
@@ -40,6 +41,19 @@ from slayer.storage.document_keys import keys_for
 
 _PRIORITY_KEY = "datasource_priority"
 _PRAGMA_FOREIGN_KEYS_ON = "PRAGMA foreign_keys = ON"
+_BEGIN_IMMEDIATE = "BEGIN IMMEDIATE"
+_SELECT_DATASET = "SELECT data FROM models WHERE data_source = ? AND name = ?"
+_UPDATE_DATASET = "UPDATE models SET data = ? WHERE data_source = ? AND name = ?"
+_SELECT_MEMORY = "SELECT data FROM memories WHERE id = ?"
+_UPDATE_MEMORY = "UPDATE memories SET data = ? WHERE id = ?"
+_SELECT_DATASOURCE = "SELECT data FROM datasources WHERE name = ?"
+_UPDATE_DATASOURCE = "UPDATE datasources SET data = ? WHERE name = ?"
+#: Each stored document kind's row ``data`` read and update, keyed by its identity columns.
+_ROW_DATA_STATEMENTS = {
+    "dataset": (_SELECT_DATASET, _UPDATE_DATASET),
+    "memory": (_SELECT_MEMORY, _UPDATE_MEMORY),
+    "datasource": (_SELECT_DATASOURCE, _UPDATE_DATASOURCE),
+}
 
 
 class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
@@ -155,6 +169,28 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS semantic_models (
+                    data_source TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    PRIMARY KEY (data_source, name)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ontologies (
+                    name TEXT PRIMARY KEY,
+                    text TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ontology_mappings (
+                    data_source TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    PRIMARY KEY (data_source, name)
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -213,7 +249,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _get_dataset_sync(self, data_source: str, name: str) -> str | None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
-                "SELECT data FROM models WHERE data_source = ? AND name = ?",
+                _SELECT_DATASET,
                 (data_source, name),
             ).fetchone()
         return row[0] if row else None
@@ -226,6 +262,103 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             )
             return cursor.rowcount > 0
 
+    def _save_semantic_model_sync(self, data_source: str, name: str, text: str) -> None:
+        with transaction(self.db_path) as conn:
+            conn.execute("INSERT OR REPLACE INTO semantic_models (data_source, name, text) VALUES (?, ?, ?)",
+                         (data_source, name, text))
+
+    def _get_semantic_model_sync(self, data_source: str, name: str) -> str | None:
+        with transaction(self.db_path) as conn:
+            row = conn.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?",
+                               (data_source, name)).fetchone()
+        return row[0] if row else None
+
+    def _list_semantic_models_sync(self) -> list[tuple[str, str]]:
+        with transaction(self.db_path) as conn:
+            rows = conn.execute("SELECT data_source, name FROM semantic_models ORDER BY data_source, name").fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def _delete_semantic_model_sync(self, data_source: str, name: str) -> bool:
+        with transaction(self.db_path) as conn:
+            return conn.execute("DELETE FROM semantic_models WHERE data_source = ? AND name = ?",
+                                (data_source, name)).rowcount > 0
+
+    def _patch_semantic_model_sync(self, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+        with open_connection(self.db_path, isolation_level=None) as conn:
+            conn.execute(_BEGIN_IMMEDIATE)
+            try:
+                row = conn.execute("SELECT text FROM semantic_models WHERE data_source = ? AND name = ?",
+                                   (data_source, name)).fetchone()
+                if row is None:
+                    raise ValueError(f"semantic model {name!r} of datasource {data_source!r} not found")
+                text = patch(row[0])
+                conn.execute("UPDATE semantic_models SET text = ? WHERE data_source = ? AND name = ?",
+                             (text, data_source, name))
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        return text
+
+    async def _save_semantic_model_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        await asyncio.to_thread(self._save_semantic_model_sync, data_source, name, text)
+
+    async def _get_semantic_model_text_impl(self, *, data_source: str, name: str) -> str | None:
+        return await asyncio.to_thread(self._get_semantic_model_sync, data_source, name)
+
+    async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
+        return await asyncio.to_thread(self._list_semantic_models_sync)
+
+    async def _delete_semantic_model_row(self, *, data_source: str, name: str) -> bool:
+        return await asyncio.to_thread(self._delete_semantic_model_sync, data_source, name)
+
+    async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+        return await asyncio.to_thread(self._patch_semantic_model_sync, data_source, name, patch)
+
+    # ---- ontology and mapping documents ------------------------------------
+
+    def _write_sync(self, sql: str, params: tuple[str, ...]) -> int:
+        with transaction(self.db_path) as conn:
+            return conn.execute(sql, params).rowcount
+
+    def _rows_sync(self, sql: str, params: tuple[str, ...] = ()) -> list[tuple[Any, ...]]:
+        with transaction(self.db_path) as conn:
+            return [tuple(r) for r in conn.execute(sql, params).fetchall()]
+
+    async def _save_ontology_text_impl(self, *, name: str, text: str) -> None:
+        await asyncio.to_thread(self._write_sync, "INSERT OR REPLACE INTO ontologies (name, text) VALUES (?, ?)",
+                                (name, text))
+
+    async def _get_ontology_text_impl(self, *, name: str) -> str | None:
+        rows = await asyncio.to_thread(self._rows_sync, "SELECT text FROM ontologies WHERE name = ?", (name,))
+        return rows[0][0] if rows else None
+
+    async def _list_ontology_names(self) -> list[str]:
+        return [r[0] for r in await asyncio.to_thread(self._rows_sync, "SELECT name FROM ontologies ORDER BY name")]
+
+    async def _delete_ontology_row(self, *, name: str) -> bool:
+        return await asyncio.to_thread(self._write_sync, "DELETE FROM ontologies WHERE name = ?", (name,)) > 0
+
+    async def _save_ontology_mapping_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        await asyncio.to_thread(
+            self._write_sync, "INSERT OR REPLACE INTO ontology_mappings (data_source, name, text) VALUES (?, ?, ?)",
+            (data_source, name, text))
+
+    async def _get_ontology_mapping_text_impl(self, *, data_source: str, name: str) -> str | None:
+        rows = await asyncio.to_thread(
+            self._rows_sync, "SELECT text FROM ontology_mappings WHERE data_source = ? AND name = ?", (data_source, name))
+        return rows[0][0] if rows else None
+
+    async def _list_ontology_mapping_identities(self) -> list[tuple[str, str]]:
+        rows = await asyncio.to_thread(
+            self._rows_sync, "SELECT data_source, name FROM ontology_mappings ORDER BY data_source, name")
+        return [(r[0], r[1]) for r in rows]
+
+    async def _delete_ontology_mapping_row(self, *, data_source: str, name: str) -> bool:
+        deleted = await asyncio.to_thread(
+            self._write_sync, "DELETE FROM ontology_mappings WHERE data_source = ? AND name = ?", (data_source, name))
+        return deleted > 0
+
     def _save_datasource_sync(self, datasource: DatasourceConfig) -> None:
         data = json.dumps(without_none(datasource.model_dump(mode="json")))
         with transaction(self.db_path) as conn:
@@ -237,7 +370,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _get_datasource_sync(self, name: str) -> str | None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
-                "SELECT data FROM datasources WHERE name = ?", (name,)
+                _SELECT_DATASOURCE, (name,)
             ).fetchone()
         return row[0] if row else None
 
@@ -336,7 +469,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _write_raw_dataset_dict(self, *, name: str, data_source: str, data: dict) -> None:
         await asyncio.to_thread(
-            self._update_sync, "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
+            self._update_sync, _UPDATE_DATASET,
             (json.dumps(data), data_source, name),
         )
         self._forget_raw(data_source=data_source, name=name)
@@ -344,14 +477,47 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _raw_datasource_dicts(self) -> dict[str, dict]:
         return dict(await asyncio.to_thread(self._raw_rows_sync, "SELECT name, data FROM datasources ORDER BY name"))
 
+    def _write_if_unchanged_sync(self, *, kind: str, params: tuple[str, ...], expected: dict, data: dict) -> bool:
+        """``UPDATE`` one row's ``data`` in the transaction that checks it still reads ``expected``."""
+        select, update = _ROW_DATA_STATEMENTS[kind]
+        with open_connection(self.db_path, isolation_level=None) as conn:
+            conn.execute(_BEGIN_IMMEDIATE)
+            try:
+                row = conn.execute(select, params).fetchone()
+                try:
+                    current = json.loads(row[0]) if row else None
+                except ValueError:
+                    current = None
+                unchanged = current == expected
+                if unchanged:
+                    conn.execute(update, (json.dumps(data), *params))
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        return unchanged
+
+    async def _write_raw_if_unchanged(
+        self, *, kind: str, data_source: str | None, name: str, expected: dict, data: dict,
+    ) -> bool:
+        if kind == "dataset" and data_source is not None:
+            row, params = "dataset", (data_source, name)
+        else:
+            row, params = ("memory" if kind == "memory" else "datasource"), (name,)
+        written = await asyncio.to_thread(self._write_if_unchanged_sync, kind=row, params=params, expected=expected,
+                                          data=data)
+        if written and kind == "dataset" and data_source is not None:
+            self._forget_raw(data_source=data_source, name=name)
+        return written
+
     async def _write_raw_datasource_dict(self, *, name: str, data: dict) -> None:
-        await asyncio.to_thread(self._update_sync, "UPDATE datasources SET data = ? WHERE name = ?", (json.dumps(data), name))
+        await asyncio.to_thread(self._update_sync, _UPDATE_DATASOURCE, (json.dumps(data), name))
 
     async def _raw_memory_dicts(self) -> dict[str, dict]:
         return dict(await asyncio.to_thread(self._raw_rows_sync, "SELECT id, data FROM memories ORDER BY id"))
 
     async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
-        await asyncio.to_thread(self._update_sync, "UPDATE memories SET data = ? WHERE id = ?", (json.dumps(data), memory_id))
+        await asyncio.to_thread(self._update_sync, _UPDATE_MEMORY, (json.dumps(data), memory_id))
 
     async def _delete_dataset_row(
         self, *, data_source: str, name: str,
@@ -366,7 +532,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     ) -> None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
-                "SELECT data FROM models WHERE data_source = ? AND name = ?",
+                _SELECT_DATASET,
                 (data_source, dataset_name),
             ).fetchone()
             if not row:
@@ -393,7 +559,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                     f"on dataset {dataset_name!r} in datasource {data_source!r}."
                 )
             conn.execute(
-                "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
+                _UPDATE_DATASET,
                 (json.dumps(data), data_source, dataset_name),
             )
 
@@ -423,12 +589,11 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         # SQLite lookup is parameterised so injection isn't the risk —
         # validation here keeps the public ABC contract uniform across
         # backends.
-        _validate_path_component(name, kind="datasource name")
+        _validate_path_component(name, kind=DATASOURCE_NAME)
         raw = await asyncio.to_thread(self._get_datasource_sync, name)
         if raw is None:
             return None
-        data = await self._with_library_granularities_renamed(name=name, data=json.loads(raw))
-        ds = DatasourceConfig.model_validate(data)
+        ds = await self._datasource_from_stored(name=name, data=json.loads(raw))
         return ds.resolve_env_vars()
 
     async def list_datasources(self) -> list[str]:
@@ -498,14 +663,14 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         # BEGIN IMMEDIATE / COMMIT / ROLLBACK under autocommit.
         with open_connection(self.db_path, isolation_level=None, timeout=30.0) as conn:
             conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(_BEGIN_IMMEDIATE)
             try:
                 preserved_created_at = None
                 if memory_id is None:
                     memory_id = self._next_memory_seq_sync_from_conn(conn)
                 else:
                     existing_row = conn.execute(
-                        "SELECT data FROM memories WHERE id = ?",
+                        _SELECT_MEMORY,
                         (memory_id,),
                     ).fetchone()
                     if existing_row is not None:
@@ -614,7 +779,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _get_memory_sync(self, memory_id: str) -> str | None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
-                "SELECT data FROM memories WHERE id = ?", (memory_id,)
+                _SELECT_MEMORY, (memory_id,)
             ).fetchone()
         return row[0] if row else None
 

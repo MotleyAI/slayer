@@ -12,7 +12,7 @@ customers (id, name, region, status, updated_at, score): 1 A North gold 2024-05-
    3 C South bronze 2024-02-01 3 | 4 D South tin NULL 4
 events (id, customer_id, updated_at, status): customer 1 → (2024-01-01 a), (NULL b), (2024-03-01 c);
    customer 2 → (NULL x), (NULL y); customer 3 → (2024-01-01 p), (2024-02-01 NULL)
-ledger (id, rev_a, rev_b): (1, 1, 10), (2, 2, 20) — model columns ``Revenue`` (rev_a) and ``revenue`` (rev_b).
+ledger (id, rev_a, rev_b): (1, 1, 10), (2, 2, 20) — dataset fields ``Revenue`` (rev_a) and ``revenue`` (rev_b).
 
 Row 3's ``created_at`` extracts to year 2024, quarter 4, month 12, ISO week 1, day 30, hour 10, minute 15, second 42.
 """
@@ -34,9 +34,9 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev1737_fixtures import TableSpec, seed_backend, server_table_statements
 from tests._engine_helpers import seeded_exec_engine
 from tests._time_points_fixtures import PinnedClock
+from tests._ossie_gate import TIER1 as TIER1  # re-exported: the one Tier-1 list
 
 BACKENDS = ("sqlite", "duckdb")
-TIER1 = ("sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "trino", "snowflake", "bigquery")
 NOW = datetime(2026, 9, 29, 12, 0, 0)
 GRANULARITIES: list[dict[str, Any]] = [{"name": "fiscal_year", "base": "year", "origin": "2000-04-01"}]
 DS_FIELDS: dict[str, Any] = {"granularities": GRANULARITIES}
@@ -90,7 +90,7 @@ TABLES = (ORDERS, CUSTOMERS, EVENTS, LEDGER)
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 def trimmed() -> Aggregation:
     return Aggregation(name="trimmed", expression="AVG(CASE WHEN {value} > {cutoff} THEN {value} END)",
@@ -154,8 +154,8 @@ def ledger_dataset(*, data_source: str = "test") -> SlayerDataset:
         name="ledger", sql_table="ledger", data_source=data_source,
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="Revenue", sql="rev_a", datatype=DataType.FLOAT),
-            DatasetField(name="revenue", sql="rev_b", datatype=DataType.FLOAT),
+            DatasetField(name="Revenue", expression="rev_a", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="rev_b", datatype=DataType.FLOAT),
         ],
     )
 
@@ -173,7 +173,7 @@ async def dev2215_engine(
     backend: str, *, datasets: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
     datasource_fields: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
-    """Executing engine over the seed; the datasource defines ``fiscal_year``; models are saved unvalidated."""
+    """Executing engine over the seed; the datasource defines ``fiscal_year``; datasets are saved unvalidated."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, TABLES),
         datasets=dev2215_datasets() if datasets is None else datasets,
@@ -201,24 +201,24 @@ def m(expression: str, name: str = "v") -> dict[str, str]:
     return {"metric": expression, "alias": name}
 
 
-FIRST_LAST = [m("first(status, updated_at)", "f"), m("last(status, updated_at)", "l")]
+FIRST_LAST = [m("first(events.status, events.updated_at)", "f"), m("last(events.status, events.updated_at)", "l")]
 #: customer_id → (first, last) over the events seed.
 FIRST_LAST_BY_CUSTOMER = {1: ("a", "c"), 2: (None, None), 3: ("p", None)}
 
 
 def events_query() -> SlayerQuery:
-    return q(population="events", dimensions=["customer_id"], metrics=FIRST_LAST)
+    return q(population="events", dimensions=["events.customer_id"], metrics=FIRST_LAST)
 
 
 async def check_events(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(events_query())
-    got = {int(r["events.customer_id"]): (r["events.f"], r["events.l"]) for r in resp.data}
+    got = {int(r["events.customer_id"]): (r["f"], r["l"]) for r in resp.data}
     assert got == FIRST_LAST_BY_CUSTOMER
 
 
 def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{dataset}.{name}"]
+    return resp.data[0][name]
 
 
 def ids(resp: SlayerResponse, *, dataset: str = "orders") -> set[int]:
@@ -235,7 +235,9 @@ def day(value: Any) -> Optional[str]:
 
 
 def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str = "orders") -> dict[Any, Any]:
-    out = {r[f"{dataset}.{key}"]: r[f"{dataset}.{value}"] for r in resp.data}
+    """A result key or alias as written, else a field of ``dataset``."""
+    col = key if "." in key or key in resp.columns else f"{dataset}.{key}"
+    out = {r[col]: r[value] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {key}"
     return out
 

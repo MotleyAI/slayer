@@ -1,4 +1,4 @@
-"""DEV-1750 / DEV-1836 / DEV-1838 — where the work for a ``time_shift`` inner
+"""Where the work for a ``time_shift`` inner
 aggregate lives, pinned at the planner level (Codex test-review F1).
 
 A TARGET-GRAIN inner desugars onto a target-rooted regroup producer; a
@@ -77,10 +77,10 @@ def _attach_answering(planned, key):
 
 class TestGuardOwnership:
     def test_b_host_rooted_inner_is_owned_by_a_host_rooted_plan(self) -> None:
-        """(b) ``time_shift(wscaled_sum(amount))`` — DEV-1838 D5 migrates the
+        """(b) ``time_shift(wscaled_sum(amount))`` — the planner migrates the
         crossing-fragment inner onto the regroup primitive: the shift wraps a
         placeholder answered by a HOST-rooted producer attach."""
-        planned = _plan("time_shift(wscaled_sum(amount), -1)")
+        planned = _plan("time_shift(wscaled_sum(orders.amount), -1)")
         layer = next(
             layer for layer in planned.transform_layers if layer.op == "time_shift"
         )
@@ -96,9 +96,9 @@ class TestGuardOwnership:
         assert attach.producer_root_dataset is None  # rooted at the host
 
     def test_c_target_grain_inner_is_a_regroup_attach(self) -> None:
-        """(c) ``time_shift(sum(customers.spend))`` — DEV-1836 migrates the
+        """(c) ``time_shift(sum(customers.spend))`` — the planner migrates the
         target-grain inner onto the regroup primitive: the time_shift wraps a
-        regroup placeholder, the query owns a regroup attach, and no cross-model
+        regroup placeholder, the query owns a regroup attach, and no cross-dataset
         plan is produced."""
         planned = _plan("time_shift(sum(customers.spend), -1)")
         assert planned.regroup_attach_plans
@@ -112,7 +112,7 @@ class TestGuardOwnership:
         assert inner.leaf.startswith("__regroup__"), inner
 
     def test_a_local_inner_stays_inline(self) -> None:
-        """(a) ``time_shift(sum(amount))`` beside a cross-model sibling — the shift's
+        """(a) ``time_shift(sum(amount))`` beside a cross-dataset sibling — the shift's
         OWN inner aggregate is local, so no producer attach answers it (it stays
         an inline ``_base`` aggregate, and it renders)."""
         planned = plan_query(
@@ -120,7 +120,7 @@ class TestGuardOwnership:
                 population="orders", time_dimensions=month_td(),
                 metrics=[
                     QueryMetric(metric="sum(customers.spend)", alias="cm"),
-                    QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+                    QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
                 ],
             ),
             bundle=_bundle(),

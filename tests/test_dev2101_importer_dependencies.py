@@ -1,4 +1,4 @@
-"""Importers check saved-measure dependencies over the one Mode-B parser (design D8)."""
+"""Importers check saved-metric dependencies over the one Mode-B parser (design D8)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from slayer.cube.report import CubeConversionReport
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject
 
-MEASURES = {
+METRICS = {
     "a": "sum(amount)",
     "b": "a + missing",
     "c": "b * 2",
@@ -30,7 +30,7 @@ CYCLIC = {"d", "e"}
 
 
 def _metrics(extra: dict[str, str] | None = None) -> list[DatasetMetric]:
-    return [DatasetMetric(name=n, expression=f) for n, f in {**MEASURES, **(extra or {})}.items()]
+    return [DatasetMetric(name=n, expression=f) for n, f in {**METRICS, **(extra or {})}.items()]
 
 
 class TestDbtDependencyCheck:
@@ -84,10 +84,11 @@ class TestCubeDependencyCheck:
 
 class TestOneParser:
     def test_legacy_parser_deleted(self) -> None:
-        with pytest.raises(ImportError, match="slayer.core.syntax"):
-            importlib.import_module("slayer.core.formula")
+        module = importlib.import_module("slayer.core.formula")
+        with pytest.raises(AttributeError, match="slayer.core.syntax"):
+            getattr(module, "parse_expr")
 
-    @pytest.mark.parametrize("module", ["slayer.dbt.converter", "slayer.cube.converter", "slayer.osi.converter"])
+    @pytest.mark.parametrize("module", ["slayer.dbt.converter", "slayer.cube.converter"])
     def test_importers_do_not_use_the_legacy_parser(self, module: str) -> None:
         assert not hasattr(importlib.import_module(module), "parse_formula")
 

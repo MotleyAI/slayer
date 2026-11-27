@@ -10,6 +10,7 @@ import sqlalchemy as sa
 import sqlglot
 from sqlglot import exp
 
+from slayer.core import errors as core_errors
 from slayer.core.enums import DataType, RelationshipCardinality, TimeGranularity
 from slayer.core.errors import CircularRelationshipPathError
 from slayer.core.format import NumberFormat, NumberFormatType
@@ -99,10 +100,10 @@ def _customers() -> SlayerDataset:
             DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="last_order_id", datatype=DataType.INTEGER),
             DatasetField(name="first_order_id", datatype=DataType.INTEGER),
-            DatasetField(name="last_amount", datatype=DataType.FLOAT, sql="last_order.amount",
+            DatasetField(name="last_amount", datatype=DataType.FLOAT, expression="last_order.amount",
                    label="Latest amount", format=CURRENCY),
-            DatasetField(name="first_amount", datatype=DataType.FLOAT, sql="first_order.amount"),
-            DatasetField(name="last_ordered_at", datatype=DataType.DATETIME, sql="last_order.ordered_at"),
+            DatasetField(name="first_amount", datatype=DataType.FLOAT, expression="first_order.amount"),
+            DatasetField(name="last_ordered_at", datatype=DataType.DATETIME, expression="last_order.ordered_at"),
         ],
         relationships=[
             DatasetRelationship(to="orders", name="last_order",
@@ -131,9 +132,9 @@ def _cycle_datasets() -> list[SlayerDataset]:
         )
 
     return [
-        node("x", "y", [DatasetField(name="zv", datatype=DataType.STRING, sql="y.z.v")]),
+        node("x", "y", [DatasetField(name="zv", datatype=DataType.STRING, expression="y.z.v")]),
         node("y", "z"),
-        node("z", "x", [DatasetField(name="xzv", datatype=DataType.STRING, sql="x.zv")]),
+        node("z", "x", [DatasetField(name="xzv", datatype=DataType.STRING, expression="x.zv")]),
     ]
 
 
@@ -142,7 +143,7 @@ def _ab_datasets() -> list[SlayerDataset]:
         name="a", data_source=DS, sql_table="a",
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                  DatasetField(name="b_id", datatype=DataType.INTEGER),
-                 DatasetField(name="bw", datatype=DataType.FLOAT, sql="to_b.w")],
+                 DatasetField(name="bw", datatype=DataType.FLOAT, expression="to_b.w")],
         relationships=[DatasetRelationship(to="b", name="to_b", from_columns=["b_id"], to_columns=["id"], cardinality=M2O)],
     )
     b = SlayerDataset(
@@ -150,7 +151,7 @@ def _ab_datasets() -> list[SlayerDataset]:
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                  DatasetField(name="a_id", datatype=DataType.INTEGER),
                  DatasetField(name="w", datatype=DataType.FLOAT),
-                 DatasetField(name="abw", datatype=DataType.FLOAT, sql="to_a.bw")],
+                 DatasetField(name="abw", datatype=DataType.FLOAT, expression="to_a.bw")],
         relationships=[DatasetRelationship(to="a", name="to_a", from_columns=["a_id"], to_columns=["id"], cardinality=M2O)],
     )
     return [a, b]
@@ -225,7 +226,7 @@ class TestDerivedColumnsCompose:
         oracle = ctx.oracle(f"SELECT o.id, lo.amount {_ORDERS_THROUGH_LAST} ORDER BY o.id")
         assert [(i, _num(v)) for i, v in oracle] == [(11, 20.0), (12, 20.0), (21, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id", "customer.last_amount"], order=[{"field": "id", "direction": "asc"}]))
+            dimensions=["orders.id", "orders.customer.last_amount"], order=[{"field": "orders.id", "direction": "asc"}]))
         got = [(i, _num(v)) for i, v in _rows(resp, "orders.id", "orders.customer.last_amount")]
         assert got == [(i, _num(v)) for i, v in oracle]
         assert resp.sql is not None
@@ -235,7 +236,7 @@ class TestDerivedColumnsCompose:
         assert meta.label == "Latest amount"
 
     async def test_same_chain_typed_in_one_frame_is_refused(self, ctx: _Ctx) -> None:
-        query = _q(dimensions=["id", "customer.last_order.amount"])
+        query = _q(dimensions=["orders.id", "orders.customer.last_order.amount"])
         with pytest.raises(CircularRelationshipPathError) as ei:
             await ctx.engine.execute(query)
         assert ei.value.hop == "last_order"
@@ -246,9 +247,9 @@ class TestDerivedColumnsCompose:
             f"SELECT c.name, MAX(lo.amount) {_ORDERS_THROUGH_LAST} GROUP BY c.name ORDER BY c.name")
         assert [(n, _num(v)) for n, v in oracle] == [("ann", 20.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=[{"metric": "max(customer.last_amount)", "alias": "m"}],
-            order=[{"field": "customer.name", "direction": "asc"}]))
-        assert [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.m")] == [
+            dimensions=["orders.customer.name"], metrics=[{"metric": "max(orders.customer.last_amount)", "alias": "m"}],
+            order=[{"field": "orders.customer.name", "direction": "asc"}]))
+        assert [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "m")] == [
             (n, _num(v)) for n, v in oracle]
         assert _broadcasts(resp) == []
 
@@ -261,8 +262,8 @@ class TestDerivedColumnsCompose:
         norm = [(i, _num(a), _num(f), _num(lv)) for i, a, f, lv in oracle]
         assert norm == [(11, 10.0, 10.0, 20.0), (12, 20.0, 10.0, 20.0), (21, 5.0, 5.0, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id", "amount", "customer.first_amount", "customer.last_amount"],
-            order=[{"field": "id", "direction": "asc"}]))
+            dimensions=["orders.id", "orders.amount", "orders.customer.first_amount", "orders.customer.last_amount"],
+            order=[{"field": "orders.id", "direction": "asc"}]))
         got = [(i, _num(a), _num(f), _num(lv)) for i, a, f, lv in _rows(
             resp, "orders.id", "orders.amount", "orders.customer.first_amount", "orders.customer.last_amount")]
         assert got == norm
@@ -275,7 +276,7 @@ class TestDerivedColumnsCompose:
             "LEFT JOIN z z2 ON y.z_id = z2.id ORDER BY z.id")
         assert oracle == [(100, "z200"), (200, "z100")]
         resp = await ctx.engine.execute(SlayerQuery.model_validate(
-            {"population": "z", "dimensions": ["id", "xzv"], "order": [{"field": "id", "direction": "asc"}]}))
+            {"population": "z", "dimensions": ["z.id", "z.xzv"], "order": [{"field": "z.id", "direction": "asc"}]}))
         assert _rows(resp, "z.id", "z.xzv") == oracle
 
     async def test_directed_three_cycle_typed_in_one_frame_is_refused(self, ctx: _Ctx) -> None:
@@ -290,7 +291,7 @@ class TestDerivedColumnsCompose:
             "LEFT JOIN b b2 ON a2.b_id = b2.id ORDER BY a.id")
         assert [(i, _num(w)) for i, w in oracle] == [(1, 200.0), (2, 100.0)]
         resp = await ctx.engine.execute(SlayerQuery.model_validate(
-            {"population": "a", "dimensions": ["id", "to_b.abw"], "order": [{"field": "id", "direction": "asc"}]}))
+            {"population": "a", "dimensions": ["a.id", "a.to_b.abw"], "order": [{"field": "a.id", "direction": "asc"}]}))
         assert [(i, _num(w)) for i, w in _rows(resp, "a.id", "a.to_b.abw")] == [
             (i, _num(w)) for i, w in oracle]
 
@@ -301,7 +302,7 @@ class TestDerivedColumnsCompose:
         models = [_orders(), _customers(), *_cycle_datasets(), *_ab_datasets()]
         for model in models:
             await engine.save_dataset(model.model_copy(update={
-                "fields": [c for c in model.fields if c.sql is None], "metrics": []}))
+                "fields": [c for c in model.fields if c.is_base], "metrics": []}))
         for model in models:
             await engine.save_dataset(model)
         for name in ("customers", "z", "b"):
@@ -322,45 +323,43 @@ class TestSavedMeasuresCompose:
         oracle = [(n, _num(v)) for n, v in ctx.oracle(_ORDER_TOTAL_BY_NAME)]
         assert oracle == [("ann", 30.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.order_total"],
-            order=[{"field": "customer.name", "direction": "asc"}]))
+            dimensions=["orders.customer.name"], metrics=["orders.customer.order_total"],
+            order=[{"field": "orders.customer.name", "direction": "asc"}]))
         got = [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.customer.order_total")]
         assert got == oracle
         assert _broadcasts(resp) == []
 
     async def test_unattributable_host_dimension_broadcasts(self, ctx: _Ctx) -> None:
-        (total,), = ctx.oracle(
-            "SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id IN (SELECT customer_id FROM orders)")
-        assert _num(total) == 35.0
+        # The measure's home is the dataset ``orders``: it reads the population's ``orders.id`` as its own row.
         resp = await ctx.engine.execute(_q(
-            dimensions=["id"], metrics=["customer.order_total"], to_many_handling="broadcast"))
-        assert [_num(v) for (v,) in _rows(resp, "orders.customer.order_total")] == [35.0] * 3
-        assert _broadcasts(resp) != []
+            dimensions=["orders.id"], metrics=["orders.customer.order_total"], to_many_handling="broadcast",
+            order=[{"field": "orders.id", "direction": "asc"}]))
+        assert [_num(v) for (v,) in _rows(resp, "orders.customer.order_total")] == [10.0, 20.0, 5.0]
+        assert _broadcasts(resp) == []
 
     @pytest.mark.parametrize("mode", [None, "associate"])
     async def test_unattributable_host_dimension_associates(self, ctx: _Ctx, mode: str | None) -> None:
-        oracle = [(i, _num(v)) for i, v in ctx.oracle(
-            "SELECT o.id, (SELECT SUM(o2.amount) FROM orders o2 WHERE o2.customer_id = o.customer_id) "
-            "FROM orders o ORDER BY o.id")]
-        assert oracle == [(11, 30.0), (12, 30.0), (21, 5.0)]
+        oracle = [(i, _num(v)) for i, v in ctx.oracle("SELECT o.id, o.amount FROM orders o ORDER BY o.id")]
+        assert oracle == [(11, 10.0), (12, 20.0), (21, 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["id"], metrics=["customer.order_total"], to_many_handling=mode,
-            order=[{"field": "id", "direction": "asc"}]))
+            dimensions=["orders.id"], metrics=["orders.customer.order_total"], to_many_handling=mode,
+            order=[{"field": "orders.id", "direction": "asc"}]))
         assert [(i, _num(v)) for i, v in _rows(resp, "orders.id", "orders.customer.order_total")] == oracle
 
     async def test_measure_through_a_pointer_back_to_the_host(self, ctx: _Ctx) -> None:
+        # Every ``orders`` row counts under its own customer, read from the home by ``orders.customer``.
         oracle = [(n, _num(v)) for n, v in ctx.oracle(
-            "SELECT c.name, SUM(lo.amount) FROM customers c JOIN orders lo ON c.last_order_id = lo.id "
+            "SELECT c.name, SUM(o.amount) FROM orders o JOIN customers c ON o.customer_id = c.id "
             "GROUP BY c.name ORDER BY c.name")]
-        assert oracle == [("ann", 20.0), ("bob", 5.0)]
+        assert oracle == [("ann", 30.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.latest_total"], to_many_handling="associate",
-            order=[{"field": "customer.name", "direction": "asc"}]))
+            dimensions=["orders.customer.name"], metrics=["orders.customer.latest_total"], to_many_handling="associate",
+            order=[{"field": "orders.customer.name", "direction": "asc"}]))
         got = [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.customer.latest_total")]
         assert got == oracle
 
     async def test_formula_revisiting_its_own_frame_is_refused(self, ctx: _Ctx) -> None:
-        query = _q(dimensions=["customer.name"], metrics=["customer.bad"])
+        query = _q(dimensions=["orders.customer.name"], metrics=["orders.customer.bad"])
         with pytest.raises(CircularRelationshipPathError) as ei:
             await ctx.engine.execute(query)
         assert ei.value.hop == "customer"
@@ -368,11 +367,11 @@ class TestSavedMeasuresCompose:
 
     async def test_composing_measure_has_no_hand_written_equivalent(self, ctx: _Ctx) -> None:
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.latest_total"], to_many_handling="associate"))
+            dimensions=["orders.customer.name"], metrics=["orders.customer.latest_total"], to_many_handling="associate"))
         assert resp.data
         query = _q(
-            dimensions=["customer.name"],
-            metrics=[{"metric": "sum(customer.last_order.amount)", "alias": "h"}],
+            dimensions=["orders.customer.name"],
+            metrics=[{"metric": "sum(orders.customer.last_order.amount)", "alias": "h"}],
             to_many_handling="associate")
         with pytest.raises(CircularRelationshipPathError):
             await ctx.engine.execute(query)
@@ -388,19 +387,19 @@ class TestComposedOccurrenceMetadata:
             "ON c.last_order_id = lo.id GROUP BY c.name"))
         assert {k: _num(v) for k, v in oracle.items()} == {"ann": 1.0, "bob": 0.0}
         native = await ctx.engine.execute(SlayerQuery.model_validate({
-            "population": "customers", "dimensions": ["name"],
-            "metrics": [{"metric": "avg(last_order.big)", "alias": "s"},
-                         {"metric": "sum(last_order.amount)", "alias": "t"}]}))
-        assert native.attributes.metrics["customers.s"].format == NumberFormat(type=NumberFormatType.PERCENT)
-        assert native.attributes.metrics["customers.t"].format == CURRENCY
+            "population": "customers", "dimensions": ["customers.name"],
+            "metrics": [{"metric": "avg(customers.last_order.big)", "alias": "s"},
+                         {"metric": "sum(customers.last_order.amount)", "alias": "t"}]}))
+        assert native.attributes.metrics["s"].format == NumberFormat(type=NumberFormatType.PERCENT)
+        assert native.attributes.metrics["t"].format == CURRENCY
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.latest_big_share", "customer.latest_total"],
+            dimensions=["orders.customer.name"], metrics=["orders.customer.latest_big_share", "orders.customer.latest_total"],
             to_many_handling="associate"))
         assert resp.attributes.metrics["orders.customer.latest_big_share"].format == NumberFormat(
             type=NumberFormatType.PERCENT)
         assert resp.attributes.metrics["orders.customer.latest_total"].format == CURRENCY
         got = {n: _num(v) for n, v in _rows(resp, "orders.customer.name", "orders.customer.latest_big_share")}
-        assert got == {k: _num(v) for k, v in oracle.items()}
+        assert got == {"ann": 0.5, "bob": 0.0}
 
     async def test_last_ranks_over_a_composed_path(self, ctx: _Ctx) -> None:
         oracle = [(n, _num(v)) for n, v in ctx.oracle(
@@ -409,8 +408,8 @@ class TestComposedOccurrenceMetadata:
             "ORDER BY c.name")]
         assert oracle == [("ann", 20.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=["customer.last_ranked"],
-            order=[{"field": "customer.name", "direction": "asc"}]))
+            dimensions=["orders.customer.name"], metrics=["orders.customer.last_ranked"],
+            order=[{"field": "orders.customer.name", "direction": "asc"}]))
         got = [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.customer.last_ranked")]
         assert got == oracle
 
@@ -419,13 +418,13 @@ class TestComposedOccurrenceMetadata:
             f"SELECT CAST(lo.ordered_at AS VARCHAR), COUNT(*) {_ORDERS_THROUGH_LAST} "
             "GROUP BY lo.ordered_at ORDER BY lo.ordered_at DESC")
         assert [(str(t)[:7], n) for t, n in oracle] == [("2024-03", 1), ("2024-02", 2)]
-        td = TimeDimension(field="customer.last_ordered_at",
+        td = TimeDimension(field="orders.customer.last_ordered_at",
                            granularity=TimeGranularity.MONTH)
         resp = await ctx.engine.execute(_q(
-            time_dimensions=[td], metrics=[{"metric": "count(*)", "alias": "n"}],
-            order=[{"field": "customer.last_ordered_at", "direction": "desc"}]))
+            time_dimensions=[td], metrics=[{"metric": "count(orders.*)", "alias": "n"}],
+            order=[{"field": "orders.customer.last_ordered_at", "direction": "desc"}]))
         key = next(k for k in resp.columns if "last_ordered_at" in k)
-        got = [(str(t)[:7], n) for t, n in _rows(resp, key, "orders.n")]
+        got = [(str(t)[:7], n) for t, n in _rows(resp, key, "n")]
         assert got == [(str(t)[:7], n) for t, n in oracle]
 
     async def test_spelling_twins_of_a_composed_path_share_one_cache_key(self, ctx: _Ctx) -> None:
@@ -466,13 +465,13 @@ class TestComposedWalk:
 
     def test_typed_revisit_attributes_to_nothing_in_drift(self) -> None:
         models = _by_name()
-        stage = SlayerQuery.model_validate({"population": "orders", "dimensions": ["customer.last_order.amount"]})
+        stage = SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.customer.last_order.amount"]})
         graph = _stage_scope(stage, models)
         assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="orders", scope=graph) == set()
 
     def test_composed_reference_attributes_to_its_declaring_model(self) -> None:
         models = _by_name()
-        stage = SlayerQuery.model_validate({"population": "orders", "dimensions": ["customer.last_amount"]})
+        stage = SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.customer.last_amount"]})
         graph = _stage_scope(stage, models)
         assert _refs_on_base(refs=_stage_dependency_refs(stage=stage, scope=graph), base_name="customers", scope=graph) == {
             "last_amount"}
@@ -509,7 +508,7 @@ class TestCancellationToTheNearestOccurrence:
                             owner_path=("customer", "last_order"), tokens=("orders",)) == (
             "customer", "last_order")
 
-    def test_incident_edge_name_hops_rather_than_cancels(self) -> None:
+    def test_incident_edge_name_colliding_with_another_edges_target_is_ambiguous(self) -> None:
         notes = SlayerDataset(
             name="notes", data_source=DS, sql_table="notes",
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
@@ -519,5 +518,28 @@ class TestCancellationToTheNearestOccurrence:
                 to="notes", name="orders", from_columns=["note_id"], to_columns=["id"], cardinality=M2O)],
         })
         models = {**_by_name(), "customers": cust, "notes": notes}
-        assert self._cancel(datasets=models, owner_path=("customer", "last_order", "customer"),
-                            tokens=("orders",)) == ("customer", "last_order", "customer", "orders")
+        # "orders" names customers' edge into notes and last_order's target: ambiguous.
+        with pytest.raises(getattr(core_errors, "AmbiguousHopError")) as ei:
+            self._cancel(datasets=models, owner_path=("customer", "last_order", "customer"), tokens=("orders",))
+        assert isinstance(ei.value, core_errors.AmbiguousReferenceError)
+        assert "orders" in str(ei.value)
+
+    def test_incident_edge_name_hops_rather_than_cancels(self) -> None:
+        # regions' edge "orders" collides with no other edge's target; orders is two hops back.
+        notes = SlayerDataset(
+            name="notes", data_source=DS, sql_table="notes",
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
+        regions = SlayerDataset(
+            name="regions", data_source=DS, sql_table="regions",
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="note_id", datatype=DataType.INTEGER)],
+            relationships=[DatasetRelationship(
+                to="notes", name="orders", from_columns=["note_id"], to_columns=["id"], cardinality=M2O)])
+        cust = _customers().model_copy(update={
+            "fields": [*_customers().fields, DatasetField(name="region_id", datatype=DataType.INTEGER)],
+            "relationships": [*_customers().relationships, DatasetRelationship(
+                to="regions", name="region", from_columns=["region_id"], to_columns=["id"], cardinality=M2O)],
+        })
+        models = {**_by_name(), "customers": cust, "regions": regions, "notes": notes}
+        assert self._cancel(datasets=models, owner_path=("customer", "region"),
+                            tokens=("orders",)) == ("customer", "region", "orders")

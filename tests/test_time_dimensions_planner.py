@@ -8,8 +8,8 @@ that turns ``query.time_dimensions`` into ``DeclaredMeasure`` rows that
 ``ProjectionPlanner`` materialises.
 
 Public-alias contract (matches legacy ``EnrichedTimeDimension.alias =
-f"{model}.{td.dimension.full_name}"``): the granularity affects only the
-SQL ``DATE_TRUNC``, not the alias. Local TD on column ``created_at``
+f"{dataset}.{td.dimension.full_name}"``): the granularity affects only the
+SQL ``DATE_TRUNC``, not the alias. Local TD on field ``created_at``
 emits ``created_at``; joined TD ``customers.signed_up_at`` flattens to
 ``customers__signed_up_at`` in the stage schema so downstream stages can
 bind it as a flat name.
@@ -40,6 +40,7 @@ from slayer.engine.compile.projection import (
     _canonical_name,
     _iter_slot_deps,
 )
+from tests._slot_typing_fixtures import SHOP_TYPING
 from slayer.ir.bound import DeclaredMetric
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
@@ -80,7 +81,7 @@ def _customers_dataset() -> SlayerDataset:
     )
 
 
-def _orders_with_customers_join() -> SlayerDataset:
+def _orders_with_customers_relationship() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="prod",
@@ -97,7 +98,7 @@ def _orders_with_customers_join() -> SlayerDataset:
     )
 
 
-def _customers_with_regions_join() -> SlayerDataset:
+def _customers_with_regions_relationship() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         data_source="prod",
@@ -128,11 +129,11 @@ def _regions_dataset() -> SlayerDataset:
 
 
 def _orders_with_derived_temporal() -> SlayerDataset:
-    """Host model with a derived (Column.sql) temporal column.
+    """Host dataset with a derived (DatasetField.sql) temporal field.
 
-    Used to pin the 7b.3b rejection contract: derived TD columns route
-    through ``ColumnSqlKey`` and ``TimeTruncKey.source`` is typed as
-    ``ColumnKey``, so the binder must raise rather than silently produce
+    Used to pin the 7b.3b rejection contract: derived TD fields route
+    through ``FieldSqlKey`` and ``TimeTruncKey.source`` is typed as
+    ``FieldKey``, so the binder must raise rather than silently produce
     an ill-typed key. A later issue can widen TimeTruncKey if/when this
     case is needed.
     """
@@ -145,7 +146,7 @@ def _orders_with_derived_temporal() -> SlayerDataset:
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="created_day",
-                sql="date_trunc('day', created_at)",
+                expression="date_trunc('day', created_at)",
                 datatype=DataType.DATETIME,
             ),
         ],
@@ -163,7 +164,7 @@ def _bundle_local() -> ResolvedSourceBundle:
 def _bundle_joined() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_with_customers_join(),
+        population=_orders_with_customers_relationship(),
         referenced_datasets=[_customers_dataset()],
     )
 
@@ -171,8 +172,8 @@ def _bundle_joined() -> ResolvedSourceBundle:
 def _bundle_multi_hop() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_with_customers_join(),
-        referenced_datasets=[_customers_with_regions_join(), _regions_dataset()],
+        population=_orders_with_customers_relationship(),
+        referenced_datasets=[_customers_with_regions_relationship(), _regions_dataset()],
     )
 
 
@@ -193,7 +194,7 @@ class TestBindTimeDimension:
     def test_local_td_yields_timetrunckey(self) -> None:
         model = _orders_dataset()
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -205,7 +206,7 @@ class TestBindTimeDimension:
         assert bound.bound.phase == Phase.ROW
 
     def test_joined_td_path_is_populated(self) -> None:
-        host = _orders_with_customers_join()
+        host = _orders_with_customers_relationship()
         td = TimeDimension(
             field="customers.signed_up_at",
             granularity=TimeGranularity.DAY,
@@ -220,7 +221,7 @@ class TestBindTimeDimension:
         assert bound.bound.value_key.granularity == "day"
 
     def test_non_temporal_column_rejected(self) -> None:
-        # The temporal-column rule moved from the binder to the checker (P9).
+        # The temporal-field rule moved from the binder to the checker (P9).
         with pytest.raises(TimeDimensionFieldError, match="temporal"):
             check_time_dimension_field(
                 name="status", field_type=DataType.STRING,
@@ -230,7 +231,7 @@ class TestBindTimeDimension:
     def test_unknown_column_raises_unknown_reference(self) -> None:
         model = _orders_dataset()
         td = TimeDimension(
-            field="not_a_column",
+            field="not_a_field",
             granularity=TimeGranularity.MONTH,
         )
         scope = DatasetScope(population=model)
@@ -243,7 +244,7 @@ class TestBindTimeDimension:
 
     def test_model_scope_without_source_model_rejected(self) -> None:
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         scope = DatasetScope(population=None)
@@ -272,7 +273,7 @@ class TestBindTimeDimension:
     def test_multi_hop_joined_td(self) -> None:
         # orders → customers → regions. TD on regions.opened_at via the
         # multi-hop path. The bound key carries the full path.
-        host = _orders_with_customers_join()
+        host = _orders_with_customers_relationship()
         td = TimeDimension(
             field="customers.regions.opened_at",
             granularity=TimeGranularity.MONTH,
@@ -289,8 +290,8 @@ class TestBindTimeDimension:
         assert bound.bound.value_key.granularity == "month"
 
     def test_derived_column_sql_td_binds(self) -> None:
-        # A derived (Column.sql) temporal column now
-        # binds to ``TimeTruncKey(source=ColumnSqlKey(...))`` — full support,
+        # A derived (DatasetField.sql) temporal field now
+        # binds to ``TimeTruncKey(source=FieldSqlKey(...))`` — full support,
         # no NotImplementedError. The grain still rides on the TimeTruncKey.
 
         host = _orders_with_derived_temporal()
@@ -329,10 +330,10 @@ class TestPlanningPrimitivesForTimeTruncKey:
 
     def test_iter_slot_deps_does_not_force_inner_column_slot(self) -> None:
         # The TimeTruncKey itself is the materialised slot. The inner
-        # ColumnKey does not need to be a separate slot just because a
-        # TD references it — the generator picks the column expression
+        # FieldKey does not need to be a separate slot just because a
+        # TD references it — the generator picks the field expression
         # out of the TimeTruncKey at render time. (This matches legacy:
-        # adding a time dimension does not auto-add the raw column as a
+        # adding a time dimension does not auto-add the raw field as a
         # separate output column.)
         col = FieldKey(path=(), leaf="created_at")
         key = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
@@ -340,7 +341,7 @@ class TestPlanningPrimitivesForTimeTruncKey:
         assert deps == [key]
 
     def test_canonical_name_local_no_grain_suffix(self) -> None:
-        # Legacy result-key contract: alias is the column name only —
+        # Legacy result-key contract: alias is the field name only —
         # the granularity goes into the SQL DATE_TRUNC, not the alias.
         key = TimeTruncKey(
             source=FieldKey(path=(), leaf="created_at"),
@@ -370,7 +371,7 @@ class TestPlanningPrimitivesForTimeTruncKey:
 
 class TestValueRegistryTimeTrunc:
     def test_same_column_same_grain_interns_once(self) -> None:
-        reg = ValueRegistry()
+        reg = ValueRegistry(typing=SHOP_TYPING)
         k1 = TimeTruncKey(
             source=FieldKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
@@ -384,10 +385,10 @@ class TestValueRegistryTimeTrunc:
         assert sid1 == sid2
 
     def test_different_grain_distinct_slots(self) -> None:
-        # TimeTruncKey identity is (column, granularity); different
-        # grains on the same column intern to distinct slots even though
-        # they share an underlying column.
-        reg = ValueRegistry()
+        # TimeTruncKey identity is (field, granularity); different
+        # grains on the same field intern to distinct slots even though
+        # they share an underlying field.
+        reg = ValueRegistry(typing=SHOP_TYPING)
         k_month = TimeTruncKey(
             source=FieldKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
@@ -405,7 +406,7 @@ class TestValueRegistryTimeTrunc:
         assert sid_m != sid_d
 
     def test_different_column_distinct_slots(self) -> None:
-        reg = ValueRegistry()
+        reg = ValueRegistry(typing=SHOP_TYPING)
         k_a = TimeTruncKey(
             source=FieldKey(path=(), leaf="created_at"),
             granularity=TimeGranularity.MONTH,
@@ -428,7 +429,7 @@ class TestProjectionPlannerTimeDimensions:
     def test_td_declared_measure_is_public_not_hidden(self) -> None:
         model = _orders_dataset()
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -443,6 +444,7 @@ class TestProjectionPlannerTimeDimensions:
             label=None,
         )
         plan = ProjectionPlanner().plan(
+            typing=SHOP_TYPING,
             metrics=[dm],
             filters=[],
             order=[],
@@ -469,7 +471,7 @@ class TestStagePlannerTimeDimensions:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -485,7 +487,7 @@ class TestStagePlannerTimeDimensions:
             s for s in all_slots if isinstance(s.key, TimeTruncKey)
         )
         assert td_slot.phase == Phase.ROW
-        assert td_slot.public_name == "created_at"
+        assert td_slot.public_name == "orders.created_at"
 
     def test_label_propagates_to_stage_column(self) -> None:
         query = SlayerQuery(
@@ -493,7 +495,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     label="Order date",
                 ),
@@ -572,7 +574,7 @@ class TestStagePlannerTimeDimensions:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -590,10 +592,10 @@ class TestStagePlannerTimeDimensions:
     def test_td_coexists_with_aggregate_measure(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ], "metrics": [{"metric": "sum(amount)"}]})
+            ], "metrics": [{"metric": "sum(orders.amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert len(planned.projection) == 2
         assert any(isinstance(s.key, TimeTruncKey) for s in planned.row_slots)
@@ -604,10 +606,10 @@ class TestStagePlannerTimeDimensions:
     def test_stage_schema_emits_one_td_column(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "name": "s1", "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ], "metrics": [{"metric": "sum(amount)"}]})
+            ], "metrics": [{"metric": "sum(orders.amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert planned.stage_schema is not None
         cols = planned.stage_schema.fields

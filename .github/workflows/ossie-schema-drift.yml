@@ -1,8 +1,8 @@
 name: Ossie schema drift
 
-# Weekly: compare the vendored apache/ossie schema and examples (listed in
-# tests/fixtures/osi/ossie-schema.source.yaml) with upstream main. Never runs on PRs.
-# Exit 1 = upstream changed (re-vendor the files and update the .source.yaml); exit 2 = a fetch failed.
+# Weekly: compare the vendored apache/ossie corpus (listed in
+# tests/fixtures/ossie_corpus/provenance.yaml) with upstream main. Never runs on PRs.
+# Exit 1 = upstream changed (re-vendor the files and update provenance.yaml); exit 2 = a fetch failed.
 on:
   schedule:
     - cron: "23 5 * * 1"

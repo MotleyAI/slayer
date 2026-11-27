@@ -71,7 +71,7 @@ def _row_leaf_op(msg: str) -> str:
 class TestMessagesMatchTheLedger:
     def test_row_leaf_message(self):
         with pytest.raises(ValueError) as ei:
-            _check("cumsum(weight)")
+            _check("cumsum(sales.weight)")
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     @pytest.mark.parametrize("op", ["change", "change_pct"])
@@ -90,7 +90,7 @@ class TestMessagesMatchTheLedger:
         _check(formula)
 
     def test_planner_raises_the_same_message(self):
-        measures = [QueryMetric(metric="cumsum(weight)", alias="m")]
+        measures = [QueryMetric(metric="cumsum(sales.weight)", alias="m")]
         with pytest.raises(ValueError) as ei:
             _plan(metrics=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
@@ -98,8 +98,8 @@ class TestMessagesMatchTheLedger:
 
 class TestInnermostTransformNamed:
     @pytest.mark.parametrize("formula", [
-        "first(cumsum(weight))", "last(cumsum(weight))", "rank(cumsum(weight), direction='desc')",
-        "time_shift(cumsum(weight), -1)", "change(cumsum(weight))",
+        "first(cumsum(sales.weight))", "last(cumsum(sales.weight))", "rank(cumsum(sales.weight), direction='desc')",
+        "time_shift(cumsum(sales.weight), -1)", "change(cumsum(sales.weight))",
     ])
     def test_consuming_transform_is_named(self, formula):
         measures = [QueryMetric(metric=formula, alias="m")]
@@ -108,7 +108,7 @@ class TestInnermostTransformNamed:
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_first_over_row_leaf_transform_is_not_the_expression_error(self):
-        measures = [QueryMetric(metric="first(cumsum(weight))", alias="m")]
+        measures = [QueryMetric(metric="first(cumsum(sales.weight))", alias="m")]
         with pytest.raises(ValueError) as ei:
             _plan(metrics=measures)
         assert "not supported over an expression" not in str(ei.value)
@@ -121,8 +121,8 @@ class TestTraversal:
         pytest.param("weighted_avg(revenue, weight=cumsum(weight))", id="aggregate-kwarg"),
         pytest.param("sum(qty * cumsum(weight))", id="expression-source"),
         pytest.param("count(cumsum(weight) > 0)", id="predicate"),
-        pytest.param("first(cumsum(weight))", id="under-first"),
-        pytest.param("last(cumsum(weight))", id="under-last"),
+        pytest.param("first(cumsum(sales.weight))", id="under-first"),
+        pytest.param("last(cumsum(sales.weight))", id="under-last"),
         pytest.param("cumsum(sum(revenue)) + cumsum(weight)", id="composite"),
     ])
     def test_row_leaf_transform_found(self, formula):
@@ -131,13 +131,13 @@ class TestTraversal:
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_filter_position(self):
-        measures = [QueryMetric(metric="sum(revenue)", alias="r")]
+        measures = [QueryMetric(metric="sum(sales.revenue)", alias="r")]
         with pytest.raises(ValueError) as ei:
-            _plan(metrics=measures, filter=["cumsum(weight) > 0"])
+            _plan(metrics=measures, filter=["cumsum(sales.weight) > 0"])
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_projected_leaf_exempt(self):
-        _check("cumsum(weight)", projected=frozenset({FieldKey(path=(), leaf="weight")}))
+        _check("cumsum(sales.weight)", projected=frozenset({FieldKey(path=(), leaf="weight")}))
 
     def test_partition_and_time_keys_are_not_leaves(self):
         key = _key("cumsum(sum(revenue))")

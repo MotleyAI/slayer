@@ -12,7 +12,7 @@ from slayer.embeddings import client as embedding_client
 from slayer.inspect.service import InspectService
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     DATASOURCE_MEMORY,
     DS,
@@ -49,7 +49,7 @@ def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFiltered
 
 
 TWIN_DS = "acme2"
-HR_QUERY = SlayerQuery.model_validate({"population": "hr", "metrics": [{"metric": "sum(salary)"}]})
+HR_QUERY = SlayerQuery.model_validate({"population": "hr", "metrics": [{"metric": "sum(hr.salary)"}]})
 
 
 async def _twin_hr(store: AccessStore) -> None:

@@ -20,6 +20,7 @@ from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.cli import _run_ingest
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.warnings import BrokenDependentWarning, SlayerBrokenDependentWarning
 from slayer.live_schema.broken_dependents import FoundBreak, report_broken
@@ -43,23 +44,23 @@ LIVE = (
 )
 TAGS = "contractors.tags"
 NT = DatasetMetric(name="nt", expression="max(tags)")
-FIRST_TAG = DatasetField(name="first_tag", sql="upper(tags)", datatype=DataType.STRING)
-BY_TAG = {"population": "contractors", "metrics": ["count(*)"], "filter": ["tags = 'go'"]}
+FIRST_TAG = DatasetField(name="first_tag", expression=ExpressionObject(dialects=[DialectEntry(dialect="DUCKDB", expression="upper(tags)")]), datatype=DataType.STRING)
+BY_TAG = {"population": "contractors", "metrics": ["count(contractors.*)"], "filter": ["contractors.tags = 'go'"]}
 
 Key = tuple[str, str, str]
 
 
-def contractors(*, columns: tuple[DatasetField, ...] = (), metrics: tuple[DatasetMetric, ...] = (NT,),
+def contractors(*, fields: tuple[DatasetField, ...] = (), metrics: tuple[DatasetMetric, ...] = (NT,),
                 filters: tuple[str, ...] = ()) -> SlayerDataset:
     return SlayerDataset(name="contractors", sql_table="contractors", data_source="ds", filters=list(filters), fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING),
-        DatasetField(name="tags", datatype=DataType.STRING), *columns], metrics=list(metrics))
+        DatasetField(name="tags", datatype=DataType.STRING), *fields], metrics=list(metrics))
 
 
-def orders(*, columns: tuple[DatasetField, ...] = (), metrics: tuple[DatasetMetric, ...] = ()) -> SlayerDataset:
+def orders(*, fields: tuple[DatasetField, ...] = (), metrics: tuple[DatasetMetric, ...] = ()) -> SlayerDataset:
     return SlayerDataset(name="orders", sql_table="orders", data_source="ds", fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="contractor_id", datatype=DataType.INTEGER),
-        DatasetField(name="amount", datatype=DataType.FLOAT), *columns], metrics=list(metrics),
+        DatasetField(name="amount", datatype=DataType.FLOAT), *fields], metrics=list(metrics),
         relationships=[DatasetRelationship(to="contractors", from_columns=["contractor_id"], to_columns=["id"])])
 
 
@@ -117,9 +118,9 @@ class Env:
 
 
 @contextlib.asynccontextmanager
-async def _env(*models: SlayerDataset, saved: dict[str, dict[str, Any]] | None = None) -> AsyncGenerator[Env]:
+async def _env(*datasets: SlayerDataset, saved: dict[str, dict[str, Any]] | None = None) -> AsyncGenerator[Env]:
     with tempfile.TemporaryDirectory() as tmp:
-        ds, storage = await _seed(tmp, datasets=models, saved=saved or {})
+        ds, storage = await _seed(tmp, datasets=datasets, saved=saved or {})
         try:
             yield Env(ds=ds, storage=storage)
         finally:
@@ -130,8 +131,8 @@ def _by_key(result: IdempotentIngestResult) -> dict[Key, BrokenDependentWarning]
     return {(b.dataset, b.dependent_kind, b.name): b for b in result.broken_dependents}
 
 
-def _assert_list_type_break(entry: BrokenDependentWarning, *, column: str = TAGS) -> None:
-    assert (entry.checked, entry.data_source, entry.field, entry.error_type) == (True, "ds", column,
+def _assert_list_type_break(entry: BrokenDependentWarning, *, field: str = TAGS) -> None:
+    assert (entry.checked, entry.data_source, entry.field, entry.error_type) == (True, "ds", field,
                                                                                  "ListTypeError"), entry
     assert entry.error, entry
     assert "tags" in entry.error, entry
@@ -200,21 +201,21 @@ class TestReported:
 
 class TestNotReported:
     async def test_raw_sql_definitions_are_not_reported(self) -> None:
-        async with _env(contractors(columns=(FIRST_TAG,), filters=("tags = 'go'",))) as env:
+        async with _env(contractors(fields=(FIRST_TAG,), filters=("tags = 'go'",))) as env:
             broken = _by_key(await env.reingest())
         assert ("contractors", "metric", "nt") in broken, broken
         assert not [k for k in broken if k[1] in ("field", "filter")], broken
 
     async def test_a_raw_sql_derived_column_is_checked(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _refuse_planning(monkeypatch, "first_tag")
-        async with _env(contractors(columns=(FIRST_TAG,))) as env:
+        async with _env(contractors(fields=(FIRST_TAG,))) as env:
             broken = _by_key(await env.reingest())
         assert broken[("contractors", "field", "first_tag")].checked is False, broken
 
     async def test_a_dependant_that_still_works(self) -> None:
         n_tagged = DatasetMetric(name="n_tagged", expression="count(tags)")
         n_sets = DatasetMetric(name="n_sets", expression="count_distinct(tags)")
-        by_set = {"population": "contractors", "dimensions": ["tags"], "metrics": ["count(*)"]}
+        by_set = {"population": "contractors", "dimensions": ["contractors.tags"], "metrics": ["count(contractors.*)"]}
         async with _env(contractors(metrics=(NT, n_tagged, n_sets)), saved={"by_set": by_set}) as env:
             broken = _by_key(await env.reingest())
         assert ("contractors", "metric", "nt") in broken, broken
@@ -249,9 +250,9 @@ class TestNotReported:
     @pytest.mark.parametrize("marker", ["notes", "label"])
     async def test_a_name_mention_that_is_no_reference_is_not_checked(self, monkeypatch: pytest.MonkeyPatch,
                                                                      marker: str) -> None:
-        label = DatasetField(name="label", sql="'tags'", datatype=DataType.STRING)
+        label = DatasetField(name="label", expression="'tags'", datatype=DataType.STRING)
         _refuse_planning(monkeypatch, marker)
-        async with _env(contractors(), orders(columns=(label,)), notes()) as env:
+        async with _env(contractors(), orders(fields=(label,)), notes()) as env:
             result = await env.reingest()
         assert ("contractors", "metric", "nt") in _by_key(result), result.broken_dependents
         assert not [b for b in result.broken_dependents if b.dataset == "notes" or b.name == "label"], (
@@ -324,8 +325,8 @@ class TestSurfaces:
     async def test_mcp_lists_each_broken_dependant(self) -> None:
         async with _env(contractors(), saved={"by_tag": BY_TAG}) as env:
             server = create_mcp_server(storage=env.storage)
-            blocks, _ = cast(Any, await server.call_tool(name="ingest_datasource",
-                                                         arguments={"datasource_name": "ds"}))
+            blocks = cast(Any, await server.call_tool(name="ingest_datasource",
+                                                         arguments={"datasource_name": "ds"})).content
         lines = blocks[0].text.splitlines()
         for model, name in (("contractors", "nt"), ("by_tag", "by_tag")):
             assert any(name in line and model in line and TAGS in line for line in lines), lines

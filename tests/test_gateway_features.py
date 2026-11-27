@@ -23,12 +23,13 @@ from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
+from slayer.embeddings import client as embedding_client
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
-from slayer.osi.converter import OsiToSlayerConverter
-from slayer.osi.models import OSIDocument
 from slayer.database import engine_factory
+from slayer.search import graph as search_graph
+from slayer.search.service import SearchService, handle_edit_refresh
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -44,24 +45,16 @@ from tests._gateway_harness import (
     shop_datasource,
     shop_storage,
 )
+from tests._loop_gated_stub import gated
 from tests._stored_upgrade_fixtures import raw_store
 
 REVENUE_BY_STATUS = {
-    "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+    "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
 }
 ORDERS_PROJECT = DbtProject(
     semantic_models=[], metrics=[],
     regular_models=[DbtRegularModel(name="orders", schema_name="main", alias="orders", description="Orders")],
 )
-ORDERS_OSI = OSIDocument.model_validate({
-    "version": "0.2.0.dev0", "name": "shop",
-    "datasets": [{
-        "name": "orders", "source": "orders",
-        "fields": [{"name": "status", "expression": {"sql": "status"}},
-                   {"name": "big", "expression": {"sql": "amount * 2"}}],
-    }],
-})
-
 Run = Callable[[SlayerQueryEngine, GatewayFactory | None], Awaitable[Any]]
 
 
@@ -109,7 +102,7 @@ def _dumps(datasets: list[SlayerDataset]) -> list[dict]:
 
 
 async def _call(server: Any, name: str, arguments: dict[str, Any]) -> str:
-    content_blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 
@@ -134,7 +127,7 @@ class TestGatewayServesEveryFeature:
     async def test_model_validation(self, tmp_path: Path, shop_db: str) -> None:
         ds = shop_datasource(shop_db)
         drifted = orders_dataset()
-        drifted.fields.append(DatasetField(name="ghost", sql="ghost", datatype=DataType.STRING))
+        drifted.fields.append(DatasetField(name="ghost", expression="ghost", datatype=DataType.STRING))
 
         async def build(base: str) -> StorageBackend:
             return await shop_storage(base, datasource=ds, datasets=[drifted, customers_dataset(), paid_sql_dataset()])
@@ -163,7 +156,7 @@ class TestGatewayServesEveryFeature:
         )
         assert twin.attempts == []
         assert twin.default == [
-            {"orders.status": "new", "orders.rev": 20.0}, {"orders.status": "paid", "orders.rev": 40.5},
+            {"orders.status": "new", "rev": 20.0}, {"orders.status": "paid", "rev": 40.5},
         ]
         assert twin.gateway == twin.default
 
@@ -208,7 +201,7 @@ class TestGatewayServesEveryFeature:
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
         assert twin.attempts == []
         created, described, models = twin.default
-        assert "Ingested" in created
+        assert "new dataset(s)" in created
         assert "Connection: OK" in described
         assert models
         assert twin.gateway == twin.default
@@ -221,22 +214,6 @@ class TestGatewayServesEveryFeature:
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
             converter = DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_datasets=True)
-            await converter.collect_metadata(client=engine.client_for(ds))
-            return _dumps(converter.convert().datasets)
-
-        twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
-        assert twin.attempts == []
-        assert [m["name"] for m in twin.default] == ["orders"]
-        assert twin.gateway == twin.default
-
-    async def test_osi_import_introspecting_a_table(self, tmp_path: Path, shop_db: str) -> None:
-        ds = shop_datasource(shop_db)
-
-        async def build(base: str) -> StorageBackend:
-            return await shop_storage(base, datasource=ds)
-
-        async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
-            converter = OsiToSlayerConverter(documents=[ORDERS_OSI], data_source=DS_NAME, target_dialect="sqlite")
             await converter.collect_metadata(client=engine.client_for(ds))
             return _dumps(converter.convert().datasets)
 
@@ -353,3 +330,52 @@ class TestTheLoopStaysResponsive:
             engine_factory.invalidate_engine(ds)
         assert statements
         assert threading.get_ident() not in checkouts + statements
+
+    @pytest.mark.parametrize("route", ["ingest", "edit"])
+    async def test_dataset_subtree_refresh(
+        self, tmp_path: Path, shop_db: str, monkeypatch: pytest.MonkeyPatch, route: str,
+    ) -> None:
+        ds = shop_datasource(shop_db)
+        storage = await shop_storage(str(tmp_path / "store"), datasource=ds, datasets=[orders_dataset()])
+        engine = SlayerQueryEngine(storage=storage)
+        check = gated()
+        monkeypatch.setattr(embedding_client, "is_available", check)
+        try:
+            if route == "ingest":
+                await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
+            else:
+                await handle_edit_refresh(
+                    engine=engine, storage=storage, data_source=DS_NAME, dataset_name="orders",
+                    changed_fields={"status"}, dataset_level_change=False,
+                )
+        finally:
+            await engine.aclose()
+            engine.close()
+            engine_factory.invalidate_engine(ds)
+        check.assert_loop_stayed_free()
+
+    async def test_search_with_a_question(
+        self, tmp_path: Path, shop_db: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ds = shop_datasource(shop_db)
+        storage = await shop_storage(
+            str(tmp_path / "store"), datasource=ds, datasets=[orders_dataset(), customers_dataset()],
+        )
+        check = gated()
+        monkeypatch.setattr(embedding_client, "is_available", check)
+        response = await SearchService(storage=storage).search(question="orders amount")
+        check.assert_loop_stayed_free()
+        assert response.results
+
+    async def test_cypher_filtered_search(
+        self, tmp_path: Path, shop_db: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ds = shop_datasource(shop_db)
+        storage = await shop_storage(str(tmp_path / "store"), datasource=ds, datasets=[orders_dataset()])
+        check = gated()
+        monkeypatch.setattr(search_graph, "is_available", check)
+        response = await SearchService(storage=storage).search(
+            question="orders", cypher_filter="MATCH (n:Dataset) RETURN n.id AS id",
+        )
+        check.assert_loop_stayed_free()
+        assert response.results

@@ -1,6 +1,6 @@
-"""DEV-1910 fixtures: the association producer roots at the home, so an entity
+"""Fixtures: the association producer roots at the home, so an entity
 absent from the population still counts in the cells its path reaches. Built on
-``_dev1900_fixtures`` + the DEV-1840 dataset; c7 is a South customer with ZERO
+``_dev1900_fixtures`` + the ``_dev1840_fixtures`` dataset; c7 is a South customer with ZERO
 orders, and ``make_null_status_engine`` adds a NULL-status order for c1 (SQLite
 + DuckDB), so the NULL-status cell holds c1 and the orderless c7."""
 
@@ -58,28 +58,27 @@ async def make_null_status_engine(
 
 
 SPEND_SUM = QueryMetric(metric="sum(customers.spend)", alias="csp")
-AMOUNT_SUM = QueryMetric(metric="sum(amount)", alias="amt")
-LOCAL_SPEND_SUM = QueryMetric(metric="sum(spend)", alias="sp")  # customers-rooted
+AMOUNT_SUM = QueryMetric(metric="sum(orders.amount)", alias="amt")
+LOCAL_SPEND_SUM = QueryMetric(metric="sum(customers.spend)", alias="sp")  # customers-rooted
 REGION_POP_SUM = QueryMetric(metric="sum(customers.regions.pop)", alias="rp")
 STORE_RENT_SUM = QueryMetric(metric="sum(stores.rent)", alias="rent")
-# home-determined weight (includes c7) vs a fanning host column across the hop.
+# home-determined weight (includes c7) vs a fanning host field across the hop.
 SPEND_WAVG_HOME = QueryMetric(
     metric="weighted_avg(customers.spend, weight=customers.spend)", alias="wa")
 SPEND_WAVG_AMOUNT = QueryMetric(
-    metric="weighted_avg(customers.spend, weight=amount)", alias="wa")
+    metric="weighted_avg(customers.spend, weight=orders.amount)", alias="wa")
 
 
-def status_vals(resp, metric: str, *, root: str = "orders") -> dict:
-    col = "orders.status" if root == "orders" else "customers.orders.status"
-    return {k[0]: v[metric] for k, v in rows_by(resp, col).items()}
+def status_vals(resp, metric: str) -> dict:
+    return {k[0]: v[metric] for k, v in rows_by(resp, "orders.status").items()}
 
 
 def bad_pop_status_cells(resp, metric: str) -> dict:
     return {k: v[metric]
-            for k, v in rows_by(resp, "orders." + BAD_POP, "orders.status").items()}
+            for k, v in rows_by(resp, BAD_POP, "orders.status").items()}
 
 
-# Oracles traced to the DEV-1840 dataset (+ the extra NULL-status order).
+# Oracles traced to the ``_dev1840_fixtures`` dataset (+ the extra NULL-status order).
 # Issue bar: spend incl. orderless c7 in South (195); local amount unchanged.
 SPEND_BY_BAD_POP = {150.0: 280.0, 230.0: 195.0, None: 40.0}
 AMOUNT_BY_BAD_POP = {150.0: 100.0, 230.0: 20.0, None: 47.0}

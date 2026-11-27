@@ -31,7 +31,7 @@ from tests._usage_reporting_capture import CaptureServer
 if TYPE_CHECKING:
     from tests._otel_helpers import OtelCapture
 
-pytest_plugins = ["tests._sharding", "tests._async_engine_release_law", "pytester"]
+pytest_plugins = ["tests._sharding", "tests._hang_watchdog", "tests._async_engine_release_law", "pytester"]
 
 
 class JaffleGeneratorSpy:
@@ -220,7 +220,7 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
     Two reasons:
 
     * Without this, tests that exercise the real write paths
-      (``save_memory`` / ``ingest`` / ``edit_model``) would attempt
+      (``save_memory`` / ``ingest`` / ``edit_dataset``) would attempt
       live ``litellm.aembedding`` calls — costing money on a dev
       machine that has ``OPENAI_API_KEY`` set, and emitting per-entity
       bubble-up warnings on CI that doesn't.
@@ -254,6 +254,12 @@ def _enable_scope_validation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _enable_zoned_read_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """System principle 12: every emitted temporal dataset read must carry the read path's tag."""
+    monkeypatch.setenv("SLAYER_VALIDATE_ZONED_READS", "1")
+
+
+@pytest.fixture(autouse=True)
 def _no_statement_render_during_composition(monkeypatch: pytest.MonkeyPatch) -> None:
     """python.sql.arc42.md §3.1: rendering a statement inside an AST builder fails the test."""
     statement_render_law.install(monkeypatch)
@@ -278,11 +284,11 @@ def sample_dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -303,7 +309,7 @@ def sample_datasource() -> DatasourceConfig:
 @pytest.fixture
 async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
     """A YAMLStorage seeded with a single ``mydb`` datasource
-    and a minimal ``orders`` model (id PK + amount column). Shared by
+    and a minimal ``orders`` dataset (id PK + amount field). Shared by
     every memory-reference test that just needs *some* live entity to resolve
     memory references against; centralised here to keep the per-test
     setup blocks from drifting into Sonar duplication-density failures.
@@ -321,8 +327,8 @@ async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
                 sql_table="orders",
                 data_source="mydb",
                 fields=[
-                    DatasetField(name="id", sql="id", primary_key=True),
-                    DatasetField(name="amount", sql="amount"),
+                    DatasetField(name="id", expression="id", primary_key=True),
+                    DatasetField(name="amount", expression="amount"),
                 ],
             )
         )
@@ -331,7 +337,7 @@ async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_engine(request):
-    """Executing engine over the shared dev1739-family models, one per backend.
+    """Executing engine over the shared dev1739-family datasets, one per backend.
 
     Modules built on another fixture family override this locally.
     """

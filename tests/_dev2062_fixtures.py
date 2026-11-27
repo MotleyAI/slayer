@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-2062 — a selected composite alongside a consumer containing it.
+"""Shared fixtures for a selected composite alongside a consumer containing it.
 
 Underscore-prefixed so pytest skips collection. ``orders.customer_id →
 customers.id`` is many-to-one; ``orders.aov`` is the saved ``sum(amount) / count(*)``.
@@ -39,10 +39,10 @@ from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
-AOV = "sum(amount) / count(*)"
-CROSS_RATIO = "sum(amount) / max(customers.score)"
+AOV = "sum(orders.amount) / count(orders.*)"
+CROSS_RATIO = "sum(orders.amount) / max(customers.score)"
 
 
 def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
@@ -80,7 +80,7 @@ def dev2062_datasets(*, data_source: str = "test") -> List[SlayerDataset]:
 # Query shorthands
 # --------------------------------------------------------------------------- #
 DATE_RANGE: List[Optional[str]] = ["2025-01-01", "2025-12-31"]
-DATE_FILTER = "order_date >= '2025-01-01'"
+DATE_FILTER = "orders.order_date >= '2025-01-01'"
 
 
 def m(expression: str, name: str = "v") -> QueryMetric:
@@ -94,13 +94,13 @@ def orders_q(**kw) -> SlayerQuery:
 
 def month_td(*, date_range: Optional[List[Optional[str]]] = None) -> List[TimeDimension]:
     return [TimeDimension(
-        field="order_date", granularity=TimeGranularity.MONTH, date_range=date_range,
+        field="orders.order_date", granularity=TimeGranularity.MONTH, date_range=date_range,
     )]
 
 
-def monthly_q(*measures: QueryMetric, **kw) -> SlayerQuery:
+def monthly_q(*metrics: QueryMetric, **kw) -> SlayerQuery:
     kw.setdefault("time_dimensions", month_td())
-    return orders_q(metrics=list(measures), **kw)
+    return orders_q(metrics=list(metrics), **kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -178,7 +178,7 @@ def month_key(value) -> str:
 
 def by_month(resp: SlayerResponse, name: str = "v") -> dict:
     tkey = next(k for k in resp.columns if "order_date" in k)
-    out = {month_key(r[tkey]): r[f"orders.{name}"] for r in resp.data}
+    out = {month_key(r[tkey]): r[name] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one month"
     return out
 

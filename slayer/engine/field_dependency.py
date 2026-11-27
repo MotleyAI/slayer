@@ -1,27 +1,32 @@
 """Save-time well-formedness of a dataset's derived fields (arity + cycles) and filters.
 
-A derived ``DatasetField.sql`` / ``DatasetField.filter`` reference must be a function of its
-declaring dataset's row (Axiom 1): it may cross only provably to-one hops. Called
+A row definition (a field's ``expression`` in every form, its ``filter``, a dataset's ``filters``) reads source
+columns by bare name and fields by path; each path must be a function of its declaring dataset's row (Axiom 1): it may
+cross only provably to-one hops. Called
 from ``StorageBackend.save_dataset`` (skipped under ``_validate=False``), this
 early-failure layer rejects a path that revisits a dataset already on it
 (``DerivedFieldCircularError``) or provably fans (``DerivedFieldFanningError``),
 warns on an unproven hop (query-time input-safety gate is the backstop), and
 rejects a derived-field cycle (``DatasetFieldCycleError``). A reference crossing an ambiguous hop is rejected
 (``DerivedFieldAmbiguousError``); a save that changes the dataset's edges warns
-about other datasets' definitions it breaks. Dataset filters naming a metric or a
-windowed field, or reading their own dataset (``DatasetFilterCycleError``), are
+about other datasets' definitions it breaks. Dataset filters naming a metric, or reading
+their own dataset (``DatasetFilterCycleError``; a windowed column reads its own dataset), are
 refused here and, for every dataset a query reads, at query time. Best-effort, same-datasource;
 unresolved/unloaded targets are skipped and the compile-time/query-time guards
 remain authoritative.
 """
 from __future__ import annotations
 
+import contextlib
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Set as AbstractSet
 
 import sqlglot
+from sqlglot import exp
 
 from slayer.core.errors import (
+    AggArgumentError,
+    AggInFieldError,
     AmbiguousRelationshipPathError,
     CircularRelationshipPathError,
     DatasetFieldCycleError,
@@ -29,26 +34,87 @@ from slayer.core.errors import (
     DerivedFieldCircularError,
     DerivedFieldFanningError,
     DatasetFilterCycleError,
+    FieldExpressionError,
+    UnevaluableEntityError,
     UnreachableDefinitionError,
+    UnresolvableDimensionRelationshipError,
 )
+from slayer.core.field_expression import portable_text, running_form
+from slayer.core.ossie_validity import SOURCE_MEASURE_REASON, reads_source_measure
 from slayer.core.relationship_search import unreachable_target
 from slayer.core.relationship_walker import OrientedRelationship, provably_to_one, walk, walk_miss, walk_terminal
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.deprecation import outside_stacklevel
-from slayer.core.syntax import drop_root_hop
+from slayer.core.enums import normalize_aggregation_name
+from slayer.core.models import aggregation_definition, builtin_semantics
+from slayer.core.syntax import AggCall, DottedRef, Ref, drop_root_hop, parse_template, walk_parsed
 from slayer.engine.elaborate_env import validate_dataset_filter
 from slayer.engine.cardinality.relationship_safety import provably_fans
+from slayer.engine.param_binding import check_percentile_fraction
+from slayer.sql.definitions import qualified_siblings, sibling_names
 from slayer.sql.field_expansion import (
     is_trivial_base,
+    reads_source_column,
     reference_sites,
-    root_scope_field_ids,
     resolve_ref_target,
 )
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
+from slayer.sql.root_scope import root_scope_field_ids
+from slayer.sql.window_detect import holds_window
 
 # The walk only inspects ``exp.Column`` identifier shape, so sqlglot's default
 # dialect keeps it independent of the dataset's runtime datasource dialect.
 _DEPENDENCY_DIALECT: str | None = None
+
+#: A definition's text and whether it is portable (Mode B) rather than native SQL.
+Fragment = tuple[str, bool]
+
+
+def _native(text: str) -> Fragment:
+    return (text, False)
+
+
+def value_fragments(field: DatasetField, *, host: SlayerDataset) -> list[Fragment]:
+    """Every form of ``field``'s value that can run: its resolved native SQL, else its portable ``sql``, each dialect
+    entry, and a deprecated ``sql`` (sibling references read as paths)."""
+    if field.resolved:
+        text = field.definition_sql
+        return [] if text is None or is_trivial_base(field=field) else [_native(text)]
+    out: list[Fragment] = []
+    portable = portable_text(field.expression)
+    if portable is not None:
+        out.append((portable, True))
+    out += [_native(t) for t in field.native_texts if t != field.sql]
+    if field.sql is not None:
+        out.append(_native(qualified_siblings(field.sql, dataset=host.name,
+                                              siblings=sibling_names(host, field=field.name), dialect="postgres")))
+    return out
+
+
+RefSite = tuple[tuple[str, ...], str, bool]
+
+
+def _portable_refs(text: str) -> list[RefSite] | None:
+    try:
+        parsed = parse_template(text)
+    except Exception:  # noqa: BLE001 — binding reports an unparseable definition
+        return None
+    return [((), n.name, n.quoted) if isinstance(n, Ref)
+            else (tuple(n.parts[:-1]), n.parts[-1], n.quoted_at(len(n.parts) - 1))
+            for n in walk_parsed(parsed) if isinstance(n, (Ref, DottedRef))]
+
+
+def _ref_sites(fragment: Fragment, *, host: SlayerDataset) -> list[RefSite]:
+    """``(qualifiers, leaf, leaf quoted)`` for each field path ``fragment`` reads from ``host``, bar source-column
+    reads."""
+    text, portable = fragment
+    found = (_portable_refs(text) if portable else _fragment_refs(text)) or []
+    return [site for site in found if not reads_source_column(tuple(site[0]), dataset=host)]
+
+
+def _refs(fragment: Fragment, *, host: SlayerDataset) -> list[tuple[tuple[str, ...], str]]:
+    """The field paths ``fragment`` reads from ``host``: its references bar source-column reads."""
+    return [(quals, leaf) for quals, leaf, _quoted in _ref_sites(fragment, host=host)]
 
 
 def _fragment_refs(sql: str):
@@ -69,8 +135,8 @@ def _fragment_refs(sql: str):
     # sqlglot's parse_one is typed with a generic Expr TypeVar; without into= it
     # is an Expression at runtime.
     return [
-        (quals, leaf)
-        for _node, quals, leaf in reference_sites(
+        (quals, leaf, bool((node.parts[-1] if isinstance(node, exp.Column) else node.expression).args.get("quoted")))
+        for node, quals, leaf in reference_sites(
             parsed, root_scope_field_ids(parsed=parsed),  # pyright: ignore[reportArgumentType]
         )
     ]
@@ -79,15 +145,50 @@ def _fragment_refs(sql: str):
 def definition_reads(
     *, field: DatasetField, host: SlayerDataset, reachable: dict[str, SlayerDataset],
 ) -> list[tuple[str, str]]:
-    """Every ``(dataset, field)`` the ``DatasetField.sql`` / ``DatasetField.filter`` of ``field`` names, base fields included."""
+    """Every ``(dataset, field)`` the definition or ``filter`` of ``field`` reads by path, base fields included; a
+    source column it reads counts as a read of the host's physical readers of that column."""
     out: list[tuple[str, str]] = []
-    texts = [] if field.sql is None or is_trivial_base(field=field) else [field.sql]
-    for text in [*texts, *([field.filter] if field.filter else [])]:
-        for quals, leaf in _fragment_refs(text) or []:
+    for fragment in _arity_reference_sources(field, host=host):
+        out += _source_column_reads(fragment, field=field, host=host)
+        for quals, leaf, quoted in _ref_sites(fragment, host=host):
             target = resolve_ref_target(qualifiers=quals, source_dataset=host, datasets_by_name=reachable)
-            if target is not None and target.get_field(leaf, quoted=True) is not None:
-                out.append((target.name, leaf))
+            read = target.get_field(leaf, quoted=quoted) if target is not None else None
+            if target is not None and read is not None:
+                out.append((target.name, read.name))
     return out
+
+
+def value_reads(
+    field: DatasetField, *, host: SlayerDataset, reachable: dict[str, SlayerDataset],
+) -> list[tuple[SlayerDataset, str, bool]]:
+    """What the value of derived ``field`` reads: ``(host, column, True)`` per source column, ``(dataset, field,
+    False)`` per field a path reaches; its ``filter`` is not part of its value."""
+    sites = [site for text, portable in value_fragments(field, host=host)
+             for site in (_portable_refs(text) if portable else _fragment_refs(text)) or []]
+    return [read for site in sites if (read := _value_read(site, host=host, reachable=reachable)) is not None]
+
+
+def _value_read(
+    site: RefSite, *, host: SlayerDataset, reachable: dict[str, SlayerDataset],
+) -> tuple[SlayerDataset, str, bool] | None:
+    """One reference site of a value as ``value_reads`` reports it; ``None`` when its target is unresolved."""
+    quals, leaf, quoted = site
+    if reads_source_column(tuple(quals), dataset=host):
+        return host, leaf, True
+    target = resolve_ref_target(qualifiers=quals, source_dataset=host, datasets_by_name=reachable)
+    if target is None:
+        return None
+    read = target.get_field(leaf, quoted=quoted)
+    return target, read.name if read is not None else leaf, False
+
+
+def _source_column_reads(fragment: tuple[str, bool], *, field: DatasetField, host: SlayerDataset) -> list[tuple[str, str]]:
+    """``(host, reader)`` for each physical reader of a source column ``fragment`` reads, other than ``field``."""
+    text, portable = fragment
+    columns = [leaf for quals, leaf, _quoted in (_portable_refs(text) if portable else _fragment_refs(text)) or []
+               if reads_source_column(tuple(quals), dataset=host)]
+    return [(host.name, c.name) for leaf in columns for c in host.fields
+            if c.name != field.name and c.is_physical_reader and c.physical_name == leaf]
 
 
 def _field_dependencies(
@@ -97,10 +198,10 @@ def _field_dependencies(
     reachable: dict[str, SlayerDataset],
     known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]]:
-    """Root-scope dependency edges ``(dataset, field)`` of ``field`` — both its
-    ``DatasetField.sql`` and its ``DatasetField.filter``, pointing at any referenced field
-    that itself needs expansion (a filter naming its own field is a cycle; a
-    dotted filter path that does not walk from ``host`` fails the save)."""
+    """Root-scope dependency edges ``(dataset, field)`` of ``field`` — every form of its
+    definition and its ``filter``, pointing at any field a path reads that itself needs
+    expansion (a path to its own field is a cycle; a dotted filter path that does not
+    walk from ``host`` fails the save)."""
     return [
         *_sql_dependencies(field=field, host=host, reachable=reachable),
         *_filter_dependencies(
@@ -113,19 +214,18 @@ def _field_dependencies(
 def _sql_dependencies(
     *, field: DatasetField, host: SlayerDataset, reachable: dict[str, SlayerDataset],
 ) -> list[tuple[str, str]]:
-    """Edges from a derived ``DatasetField.sql`` to every expanding field it names."""
-    if field.sql is None or is_trivial_base(field=field):
-        return []
+    """Edges from every form of a field's definition to each expanding field a path reads."""
     deps: list[tuple[str, str]] = []
-    for quals, leaf in _fragment_refs(field.sql) or []:
-        target = resolve_ref_target(
-            qualifiers=quals, source_dataset=host, datasets_by_name=reachable,
-        )
-        if target is None:
-            continue
-        col = target.get_field(leaf, quoted=True)
-        if col is not None and col.needs_expansion:
-            deps.append((target.name, col.name))
+    for fragment in value_fragments(field, host=host):
+        for quals, leaf, quoted in _ref_sites(fragment, host=host):
+            target = resolve_ref_target(
+                qualifiers=quals, source_dataset=host, datasets_by_name=reachable,
+            )
+            if target is None:
+                continue
+            col = target.get_field(leaf, quoted=quoted)
+            if col is not None and col.needs_expansion:
+                deps.append((target.name, col.name))
     return deps
 
 
@@ -133,27 +233,21 @@ def _filter_dependencies(
     *, field: DatasetField, host: SlayerDataset, reachable: dict[str, SlayerDataset],
     known_but_unloaded: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str]]:
-    """Edges from a ``DatasetField.filter`` to every expanding field it names; a
-    trivial-base self-reference reads the physical column, not a cycle."""
+    """Edges from a ``DatasetField.filter`` to every expanding field a path reads (its own field by path
+    is a cycle; a bare own name reads the source column)."""
     if not field.filter:
         return []
     deps: list[tuple[str, str]] = []
-    for quals, leaf in _fragment_refs(field.filter) or []:
+    for quals, leaf, quoted in _ref_sites(_native(field.filter), host=host):
         target = _filter_ref_target(
             field=field, host=host, quals=quals, leaf=leaf, reachable=reachable,
             known_but_unloaded=known_but_unloaded,
         )
         if target is None:
             continue  # a real relationship hop whose target is not loaded here — skip
-        col = target.get_field(leaf, quoted=True)
-        if col is None or not col.needs_expansion:
-            continue
-        if (
-            target.name == host.name and leaf == field.name
-            and is_trivial_base(field=field)
-        ):
-            continue
-        deps.append((target.name, col.name))
+        col = target.get_field(leaf, quoted=quoted)
+        if col is not None and col.needs_expansion:
+            deps.append((target.name, col.name))
     return deps
 
 
@@ -177,10 +271,10 @@ def _filter_ref_target(
     if walked is not None:
         return walked[0]
     if miss is not None and miss.index == 0 and miss.kind == "no_edge" and path[0] not in known_but_unloaded:
-        raise ValueError(
-            f"Field {field.name!r} on dataset {host.name!r} has a filter "
-            f"referencing {'.'.join((*quals, leaf))!r}, which does not "
-            f"resolve to a joined dataset from {host.name!r}."
+        raise UnresolvableDimensionRelationshipError(
+            reference=".".join((*quals, leaf)), root_dataset=host.name,
+            reason=f"the filter of field {field.name!r} names {path[0]!r}, which does not resolve to a joined dataset "
+                   f"of {host.name!r}.",
         )
     return None
 
@@ -286,15 +380,9 @@ def _classify_hop_path(
     return ("unproven", unproven) if unproven is not None else None
 
 
-def _arity_reference_sources(field: DatasetField) -> list[str]:
-    """The fragments carrying arity: a derived ``DatasetField.sql`` and a ``DatasetField.filter``
-    (a trivial-base ``sql`` is host-local, so it is skipped)."""
-    out: list[str] = []
-    if field.sql is not None and not is_trivial_base(field=field):
-        out.append(field.sql)
-    if field.filter:
-        out.append(field.filter)
-    return out
+def _arity_reference_sources(field: DatasetField, *, host: SlayerDataset) -> list[Fragment]:
+    """The fragments carrying arity: every form of the field's definition and its ``filter``."""
+    return [*value_fragments(field, host=host), *([_native(field.filter)] if field.filter else [])]
 
 
 def _unproven_arity_message(*, field: str, dataset: str, hop: str) -> str:
@@ -313,8 +401,8 @@ def _iter_arity_refs(
     """Yield ``(field, hop_path, leaf, quals)`` for every arity-bearing reference —
     ``quals`` is the raw pre-strip spelling, for the error's ``reference``."""
     for field in dataset.fields:
-        for fragment in _arity_reference_sources(field):
-            for quals, leaf in _fragment_refs(fragment) or []:
+        for fragment in _arity_reference_sources(field, host=dataset):
+            for quals, leaf in _refs(fragment, host=dataset):
                 yield field, _hop_path(quals=quals, host=dataset), leaf, tuple(quals)
 
 
@@ -333,7 +421,7 @@ def _check_reference_arity(
             verdict = _classify_hop_path(host=dataset, path=path, reachable=reachable)
         except CircularRelationshipPathError as exc:
             raise DerivedFieldCircularError(
-                field=field.name, reference=reference, root_dataset=dataset.name,
+                field=field.name, reference=reference, root_dataset=dataset.spelling,
                 revisited=exc.revisited, hop=exc.hop, via=exc.via,
             ) from exc
         if verdict is None:
@@ -353,36 +441,36 @@ def _check_reference_arity(
         )
 
 
-def _definitions(dataset: SlayerDataset) -> Iterator[tuple[DatasetField | None, str]]:
-    """``(field or None for a dataset filter, fragment)`` for every Mode-A definition on ``dataset``."""
+def _definitions(dataset: SlayerDataset) -> Iterator[tuple[DatasetField | None, Fragment]]:
+    """``(field or None for a dataset filter, fragment)`` for every row definition on ``dataset``."""
     for field in dataset.fields:
-        for fragment in _arity_reference_sources(field):
+        for fragment in _arity_reference_sources(field, host=dataset):
             yield field, fragment
     for sql in dataset.filters or []:
-        yield None, sql
+        yield None, _native(sql)
 
 
-def _definition_label(*, field: DatasetField | None, fragment: str) -> str:
-    return f"field {field.name!r}" if field is not None else f"dataset filter {fragment!r}"
+def _definition_label(*, field: DatasetField | None, fragment: Fragment) -> str:
+    return f"field {field.name!r}" if field is not None else f"dataset filter {fragment[0]!r}"
 
 
 def definition_heads(datasets: list[SlayerDataset]) -> list[str]:
-    """The first relationship hops ``datasets``' Mode-A definitions spell, deduplicated in order."""
+    """The first relationship hops ``datasets``' row definitions and metrics spell, deduplicated in order."""
     heads = (
         path[0]
         for dataset in datasets
         for _field, fragment in _definitions(dataset)
-        for quals, _leaf in _fragment_refs(fragment) or []
+        for quals, _leaf in _refs(fragment, host=dataset)
         if (path := _hop_path(quals=quals, host=dataset))
     )
     return list(dict.fromkeys(heads))
 
 
 def check_definition_reach(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:
-    """Reject a Mode-A definition on ``dataset`` naming a dataset no relationship path reaches from it."""
+    """Reject a row definition on ``dataset`` naming a dataset no relationship path reaches from it."""
     datasets = {**reachable, dataset.name: dataset}
     for field, fragment in _definitions(dataset):
-        for quals, leaf in _fragment_refs(fragment) or []:
+        for quals, leaf in _refs(fragment, host=dataset):
             path = _hop_path(quals=quals, host=dataset)
             unreached = unreachable_target(root=dataset, token=path[0], datasets_by_name=datasets) if path else None
             if unreached is not None:
@@ -398,7 +486,7 @@ def check_definition_ambiguity(*, dataset: SlayerDataset, reachable: dict[str, S
     revisit met first on the path is left to the circular verdict."""
     datasets = {**reachable, dataset.name: dataset}
     for field, fragment in _definitions(dataset):
-        for quals, leaf in _fragment_refs(fragment) or []:
+        for quals, leaf in _refs(fragment, host=dataset):
             reference = ".".join((*quals, leaf))
             try:
                 walk(root=dataset, path=_hop_path(quals=quals, host=dataset), datasets_by_name=datasets)
@@ -412,7 +500,7 @@ def check_definition_ambiguity(*, dataset: SlayerDataset, reachable: dict[str, S
                 raise AmbiguousRelationshipPathError(
                     source_dataset=exc.source_dataset, target_dataset=exc.target_dataset,
                     candidates=exc.candidates, token=exc.token,
-                    context=f"Dataset filter {fragment!r} on dataset {dataset.name!r} references {reference!r}",
+                    context=f"Dataset filter {fragment[0]!r} on dataset {dataset.name!r} references {reference!r}",
                 ) from exc
 
 
@@ -465,7 +553,7 @@ def _broken_references(
 ) -> Iterator[tuple[str, str, str]]:
     """``(definition label, reference, how it broke)`` for each of ``host``'s references broken by the save."""
     for field, fragment in _definitions(host):
-        for quals, leaf in _fragment_refs(fragment) or []:
+        for quals, leaf in _refs(fragment, host=host):
             path = _hop_path(quals=quals, host=host)
             broken = _ref_break(host=host, path=path, before=before, after=after) if path else None
             if broken is not None:
@@ -505,11 +593,11 @@ def validate_derived_fields(
 
 
 def filter_references(
-    fragment: str, *, host: SlayerDataset, reachable: dict[str, SlayerDataset],
+    fragment: str, *, host: SlayerDataset, reachable: dict[str, SlayerDataset], dialect: str | None = None,
 ) -> Iterator[tuple[SlayerDataset, str, tuple[str, ...]]]:
-    """``(owner, leaf, datasets on its path)`` for each reference ``fragment`` makes from ``host``,
+    """``(owner, leaf, datasets on its path)`` for each field path ``fragment`` reads from ``host``,
     recursing through the derived fields it names; unresolvable references are skipped."""
-    yield from _references(fragment, host=host, reachable=reachable, via=(), seen=set())
+    yield from _references(_native(fragment), host=host, reachable=reachable, via=(), seen=set(), dialect=dialect)
 
 
 def _resolve_owner(
@@ -527,68 +615,244 @@ def _resolve_owner(
     return None if owner is None else (owner, chain)
 
 
+def windowed_field(field: DatasetField, *, dialect: str | None = None) -> bool:
+    """Whether ``field`` is windowed: as resolved, else its form running on ``dialect`` holds a window (any native
+    form, when the dialect or that form is unknown)."""
+    if field.resolved:
+        return field.windowed
+    if dialect is not None and field.expression is not None:
+        with contextlib.suppress(FieldExpressionError):
+            return holds_window(running_form(owner=field.name, expression=field.expression, dialect=dialect).text)
+    return any(holds_window(text) for text in field.native_texts)
+
+
 def _references(
-    fragment: str, *, host: SlayerDataset, reachable: dict[str, SlayerDataset], via: tuple[str, ...],
-    seen: set[tuple[str, str]],
+    fragment: Fragment, *, host: SlayerDataset, reachable: dict[str, SlayerDataset], via: tuple[str, ...],
+    seen: set[tuple[str, str]], dialect: str | None,
 ) -> Iterator[tuple[SlayerDataset, str, tuple[str, ...]]]:
-    for quals, leaf in _fragment_refs(fragment) or []:
+    """A windowed column reads its owner's dataset: its owner joins the path, its definition is the owner's read; a hop
+    keyed by a windowed column reads that column."""
+    for quals, leaf, quoted in _ref_sites(fragment, host=host):
         resolved = _resolve_owner(quals=quals, host=host, reachable=reachable)
         if resolved is None:
             continue
         owner, chain = resolved
+        yield from _windowed_keys(chain, via=via, reachable=reachable, dialect=dialect)
         on_path = (*via, *(edge.to for edge in chain))
-        yield owner, leaf, on_path
-        field = owner.get_field(leaf, quoted=True)
+        field = owner.get_field(leaf, quoted=quoted)
+        name = leaf if field is None else field.name
+        if field is not None and windowed_field(field, dialect=dialect):
+            yield owner, name, (*on_path, owner.name)
+            continue
+        yield owner, name, on_path
         if field is None or (owner.name, leaf) in seen:
             continue
         seen.add((owner.name, leaf))
-        for inner in _arity_reference_sources(field):
-            yield from _references(inner, host=owner, reachable=reachable, via=on_path, seen=seen)
+        for inner in _running_fragments(field, host=owner, dialect=dialect):
+            yield from _references(inner, host=owner, reachable=reachable, via=on_path, seen=seen, dialect=dialect)
 
 
-def _filtered_reads(dataset: SlayerDataset, *, reachable: dict[str, SlayerDataset]) -> list[str]:
-    """The datasets ``dataset``'s filters read: every dataset on every path they cross."""
-    return list(dict.fromkeys(
-        name
-        for fragment in dataset.filters
-        for _owner, _leaf, path in filter_references(fragment, host=dataset, reachable=reachable)
-        for name in path
-    ))
+def _windowed_keys(
+    chain: list[OrientedRelationship], *, via: tuple[str, ...], reachable: dict[str, SlayerDataset], dialect: str | None,
+) -> Iterator[tuple[SlayerDataset, str, tuple[str, ...]]]:
+    """Each windowed key column ``chain``'s hops join on, read of its dataset."""
+    path = via
+    for edge in chain:
+        for name, keys in ((edge.source_dataset, [s for s, _ in edge.column_pairs]),
+                           (edge.to, [t for _, t in edge.column_pairs])):
+            dataset = reachable.get(name)
+            if dataset is None:
+                continue
+            for key in keys:
+                field = dataset.get_field(key)
+                if field is not None and windowed_field(field, dialect=dialect):
+                    yield dataset, key, (*path, name)
+        path = (*path, edge.to)
 
 
-def _filter_cycle(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> list[str] | None:
-    """The first chain of filtered datasets from ``dataset`` back to itself, else ``None``."""
+def _running_fragments(field: DatasetField, *, host: SlayerDataset, dialect: str | None) -> list[Fragment]:
+    """``field``'s fragments that run on ``dialect``: its running form and ``filter`` (every form when unknown)."""
+    if field.resolved or dialect is None or field.expression is None:
+        return _arity_reference_sources(field, host=host)
+    try:
+        form = running_form(owner=field.name, expression=field.expression, dialect=dialect)
+    except FieldExpressionError:
+        return _arity_reference_sources(field, host=host)
+    return [_native(form.text) if form.native else (form.text, True), *([_native(field.filter)] if field.filter else [])]
+
+
+def _dataset_reads(
+    dataset: SlayerDataset, *, windowed: AbstractSet[str], reachable: dict[str, SlayerDataset], dialect: str | None,
+) -> dict[str, set[str]]:
+    """The datasets ``dataset``'s rows read through its filters and its ``windowed`` columns' definitions, each with
+    the windowed columns read of it."""
+    fragments = [_native(f) for f in dataset.filters]
+    fragments += [fragment for name in sorted(windowed) if (field := dataset.get_field(name)) is not None
+                  for fragment in _running_fragments(field, host=dataset, dialect=dialect)]
+    out: dict[str, set[str]] = {}
+    for fragment in fragments:
+        for owner, leaf, path in _references(fragment, host=dataset, reachable=reachable, via=(), seen=set(),
+                                             dialect=dialect):
+            for name in path:
+                out.setdefault(name, set())
+            field = owner.get_field(leaf, quoted=True)
+            if field is not None and windowed_field(field, dialect=dialect):
+                out[owner.name].add(field.name)
+    return out
+
+
+def _filter_cycle(
+    *, dataset: SlayerDataset, reachable: dict[str, SlayerDataset], dialect: str | None,
+) -> tuple[list[str], str | None] | None:
+    """The first chain of datasets from ``dataset``'s filters back to it, with the windowed column of ``dataset`` that
+    closes it, else ``None``."""
     stack = [dataset.name]
-    done: set[str] = set()
+    done: set[tuple[str, frozenset[str]]] = set()
+    active: set[tuple[str, frozenset[str]]] = set()
 
-    def visit(name: str) -> list[str] | None:
+    def visit(name: str, windowed: frozenset[str]) -> tuple[list[str], str | None] | None:
         current = reachable.get(name)
-        for dep in _filtered_reads(current, reachable=reachable) if current is not None else ():
+        reads = (_dataset_reads(current, windowed=windowed, reachable=reachable, dialect=dialect)
+                 if current is not None else {})
+        for dep, columns in reads.items():
             if dep == dataset.name:
-                return [*stack, dep]
-            if dep in done or dep in stack:
+                return [*stack, dep], min(columns, default=None)
+            key = (dep, frozenset(columns))
+            if key in done or key in active:
                 continue
             stack.append(dep)
-            found = visit(dep)
+            active.add(key)
+            found = visit(dep, frozenset(columns))
             stack.pop()
+            active.discard(key)
             if found is not None:
                 return found
-            done.add(dep)
+            done.add(key)
         return None
 
-    return visit(dataset.name)
+    return visit(dataset.name, frozenset())
 
 
-def check_dataset_filters(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:
-    """Refuse ``dataset``'s filters naming a metric or windowed field (``DatasetFilterError``) or
-    reading its own dataset (:class:`DatasetFilterCycleError`, only a cycle through ``dataset``)."""
+def calls_agg(text: str) -> bool:
+    """Whether Mode-B ``text`` calls ``AGG``; unparseable text is left to binding."""
+    try:
+        parsed = parse_template(text)
+    except Exception:  # noqa: BLE001 — binding reports an unparseable definition
+        return False
+    return any(isinstance(n, (Ref, DottedRef)) and n.evaluated for n in walk_parsed(parsed))
+
+
+def check_field_agg(dataset: SlayerDataset) -> None:
+    """Refuse a field whose Mode-B ``expression`` calls ``AGG`` (``AggInFieldError``)."""
+    for field in dataset.fields:
+        text = portable_text(field.expression)
+        if text is not None and calls_agg(text):
+            raise AggInFieldError(field=field.name)
+
+
+def check_metric_fractions(*, dataset: SlayerDataset, peers: dict[str, SlayerDataset]) -> None:
+    """Refuse a metric calling a built-in percentile with an invalid ``p`` (``AggregationArgumentError``); the
+    aggregated source's owner decides whether the call is built-in."""
+    datasets = {**peers, dataset.name: dataset}
+    for node in _metric_aggregates(dataset):
+        owner = _aggregation_owner(node.source, host=dataset, datasets=datasets)
+        if owner is not None and builtin_semantics(aggregation_definition(owner=owner, agg=node.agg)):
+            check_percentile_fraction(agg=normalize_aggregation_name(node.agg), args=node.args, kwargs=node.kwargs)
+
+
+def _metric_aggregates(dataset: SlayerDataset) -> Iterator[AggCall]:
+    """The aggregate calls in ``dataset``'s Mode-B metrics; an unparseable metric is left to binding."""
+    for metric in dataset.metrics:
+        text = portable_text(metric.expression)
+        try:
+            parsed = parse_template(text) if text is not None else None
+        except Exception:  # noqa: BLE001 — binding reports an unparseable metric
+            continue
+        yield from (n for n in walk_parsed(parsed) if isinstance(n, AggCall)) if parsed is not None else ()
+
+
+def _aggregation_owner(
+    source: object, *, host: SlayerDataset, datasets: dict[str, SlayerDataset],
+) -> SlayerDataset | None:
+    """The dataset declaring ``source``'s aggregation; ``None`` when its path does not resolve."""
+    if not isinstance(source, DottedRef):
+        return host
+    quals = source.parts[:-1]
+    path = _hop_path(quals=quals, host=host)
+    if not path:
+        return host
+    quoted = source.quoted_parts[:-1][len(quals) - len(path):] if source.quoted_parts else ()
+    try:
+        found = walk_terminal(root=host, path=path, datasets_by_name=datasets, quoted=quoted)
+    except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
+        return None
+    return None if found is None else found[0]
+
+
+def check_evaluated_metrics(
+    *, dataset: SlayerDataset, reachable: dict[str, SlayerDataset], model_metrics: AbstractSet[str] = frozenset(),
+    stored: SlayerDataset | None = None,
+) -> None:
+    """Refuse a metric of ``dataset`` whose ``AGG(…)`` is malformed or reads a field or one of the datasource's
+    ``model_metrics`` (``AggArgumentError``, ``AggFilterError``), or evaluates a source measure
+    (``UnevaluableEntityError``); an argument whose path misses is left to query time, and a metric unchanged from a
+    warned ``stored`` one passes."""
+    datasets = {**reachable, dataset.name: dataset}
+    for metric in dataset.metrics:
+        text = portable_text(metric.expression)
+        if text is None or _unchanged_warned(metric, stored=stored):
+            continue
+        if reads_source_measure(text):
+            raise UnevaluableEntityError(entity=f"Metric {metric.name!r}", reason=SOURCE_MEASURE_REASON)
+        for node in walk_parsed(parse_template(text)):
+            if not isinstance(node, (Ref, DottedRef)) or not node.evaluated:
+                continue
+            parts = (node.name,) if isinstance(node, Ref) else node.parts
+            _check_agg_argument(parts, metric_name=metric.name, dataset=dataset, datasets=datasets,
+                                model_metrics=model_metrics)
+
+
+def _unchanged_warned(metric: DatasetMetric, *, stored: SlayerDataset | None) -> bool:
+    old = stored.get_metric(metric.name) if stored is not None else None
+    return old is not None and old.load_warning is not None and old.expression == metric.expression
+
+
+def _check_agg_argument(
+    parts: tuple[str, ...], *, metric_name: str, dataset: SlayerDataset, datasets: dict[str, SlayerDataset],
+    model_metrics: AbstractSet[str],
+) -> None:
+    """Refuse ``AGG(parts)`` reading a field or a model-scoped metric; a path that misses passes."""
+    found = walk_terminal(root=dataset, path=parts[:-1], datasets_by_name=datasets) if parts[:-1] else (
+        dataset, ())
+    if found is None:
+        return
+    terminal = found[0]
+    if terminal.get_metric(parts[-1]) is None and terminal.get_field(parts[-1]) is not None:
+        raise AggArgumentError(expression=f"Metric {metric_name!r}: AGG({'.'.join(parts)})",
+                               reason=f"{'.'.join(parts)!r} is a field")
+    if (len(parts) == 1 and terminal.get_metric(parts[0]) is None and terminal.get_field(parts[0]) is None
+            and parts[0].casefold() in {n.casefold() for n in model_metrics}):
+        raise AggArgumentError(expression=f"Metric {metric_name!r}: AGG({parts[0]})",
+                               reason=f"{parts[0]!r} is a model-scoped metric")
+
+
+def check_dataset_filters(
+    *, dataset: SlayerDataset, reachable: dict[str, SlayerDataset], dialect: str | None = None,
+) -> None:
+    """Refuse ``dataset``'s filters naming a metric (``DatasetFilterError``) or reading its own dataset
+    (:class:`DatasetFilterCycleError`, only a cycle through ``dataset``); an unresolved field is windowed by its form
+    running on ``dialect``."""
     if not dataset.filters:
         return
+    if any(holds_window(f) for f in dataset.filters):
+        # A window reads every row of the dataset the filters define.
+        raise DatasetFilterCycleError([dataset.name, dataset.name])
     datasets = {**reachable, dataset.name: dataset}
     for fragment in dataset.filters:
         validate_dataset_filter(mf=fragment, references=(
-            (owner, leaf) for owner, leaf, _path in filter_references(fragment, host=dataset, reachable=datasets)
+            (owner, leaf) for owner, leaf, _path in filter_references(
+                fragment, host=dataset, reachable=datasets, dialect=dialect)
         ))
-    cycle = _filter_cycle(dataset=dataset, reachable=datasets)
-    if cycle is not None:
-        raise DatasetFilterCycleError(cycle)
+    found = _filter_cycle(dataset=dataset, reachable=datasets, dialect=dialect)
+    if found is not None:
+        raise DatasetFilterCycleError(found[0], windowed=found[1])

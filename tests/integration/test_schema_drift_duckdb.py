@@ -1,7 +1,7 @@
 """Integration tests for ``validate_models`` against a real DuckDB database.
 
 DuckDB lets us exercise live DDL mutations (DROP COLUMN, DROP TABLE) and assert
-that the validator surfaces them correctly without Docker. See DEV-1356.
+that the validator surfaces them correctly without Docker.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def duckdb_drift_env(tmp_path):
-    """Per-test DuckDB file + persisted SlayerModels for orders/customers."""
+    """Per-test DuckDB file + persisted SlayerDatasets for orders/customers."""
     db_path = tmp_path / "drift.duckdb"
     conn = duckdb.connect(str(db_path))
     conn.execute(
@@ -83,9 +83,9 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
+                    DatasetField(name="region", expression="region", datatype=DataType.STRING),
                 ],
             )
         )
@@ -98,12 +98,12 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="sku", sql="sku", datatype=DataType.STRING),
+                    DatasetField(name="sku", expression="sku", datatype=DataType.STRING),
                     DatasetField(
                         name="description",
-                        sql="description",
+                        expression="description",
                         datatype=DataType.STRING,
                     ),
                 ],
@@ -118,13 +118,13 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
+                        name="id", expression="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                    DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", expression="status", datatype=DataType.STRING),
                     DatasetField(
                         name="customer_id",
-                        sql="customer_id",
+                        expression="customer_id",
                         datatype=DataType.FLOAT,
                     ),
                 ],

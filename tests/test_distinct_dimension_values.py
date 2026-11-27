@@ -1,23 +1,23 @@
-"""DEV-1543 — ``distinct_dimension_values`` flag on ``SlayerQuery``.
+"""``distinct_dimension_values`` flag on ``SlayerQuery``.
 
 Default ``True`` preserves the current Cube.js-style auto-dedup behaviour
 (dim-only queries emit ``GROUP BY <dim aliases>``). Setting to ``False``
 emits a flat projection (``SELECT <dims/td-exprs> FROM ... WHERE ...
-ORDER BY ... LIMIT ...``) — no ``GROUP BY``. Any measure reference (in
-``measures``, ``filters``, or ``order``) is rejected with
+ORDER BY ... LIMIT ...``) — no ``GROUP BY``. Any metric reference (in
+``metrics``, ``filters``, or ``order``) is rejected with
 ``DistinctDimensionValuesError``.
 
 Layered validation:
-* Construction-time (Pydantic) — structural checks only: ``measures``
+* Construction-time (Pydantic) — structural checks only: ``metrics``
   non-empty rejected; both ``dimensions`` and ``time_dimensions`` empty
   rejected.
 * Compile-time — authoritative: ``filters`` / ``order`` parsed with
-  full model context (custom aggregations, named measures, post-variable
-  substitution); any measure-reference shape rejected here.
+  full dataset context (custom aggregations, named metrics, post-variable
+  substitution); any metric-reference shape rejected here.
 
 Both halves are live on the typed pipeline: the structural half in
 ``SlayerQuery``'s validator, the compile-time half in
-``stage_planner._reject_measure_refs_for_raw_rows`` plus the aggregate-bucket
+``bind_inputs._reject_metric_refs_for_raw_rows`` plus the aggregate-bucket
 guard in ``plan_query``.
 """
 
@@ -27,7 +27,7 @@ import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from slayer.api.server import QueryRequest, create_app
 from slayer.async_utils import run_sync
@@ -55,13 +55,14 @@ from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
+from tests._mcp_results import text_blocks
 
 
 # ---------------------------------------------------------------------------
 # Known gap on the typed pipeline
 # ---------------------------------------------------------------------------
 
-# DEV-1703 Phase 3: the compile-time half of the DEV-1543 contract now has
+# The compile-time half of the ``distinct_dimension_values`` contract now has
 # a typed owner. ``stage_planner._reject_measure_refs_for_raw_rows`` runs
 # BEFORE binding (so the targeted error beats the binder's generic
 # "cannot resolve" / "function not allowed"), and a post-bind guard on
@@ -78,22 +79,22 @@ def _orders_dataset(
     *,
     metrics: list[DatasetMetric] | None = None,
     aggregations: list[Aggregation] | None = None,
-    joins: list[DatasetRelationship] | None = None,
+    relationships: list[DatasetRelationship] | None = None,
 ) -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
         metrics=metrics or [],
         aggregations=aggregations or [],
-        relationships=joins or [],
+        relationships=relationships or [],
     )
 
 
@@ -103,16 +104,16 @@ def _customers_dataset() -> SlayerDataset:
         sql_table="customers",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="region", expression="region", datatype=DataType.STRING),
         ],
     )
 
 
 async def _engine_with_storage() -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """An engine backed by a YAML store seeded with one ``test_ds``
-    datasource. Caller saves models then runs queries. ``tmp`` returned so
+    datasource. Caller saves datasets then runs queries. ``tmp`` returned so
     the test can ``.cleanup()`` afterwards.
     """
     tmp = tempfile.TemporaryDirectory()
@@ -131,11 +132,11 @@ async def _engine_with_storage() -> tuple[SlayerQueryEngine, tempfile.TemporaryD
 
 class TestConstructionRejects:
     """Cheap structural checks. Deep filter/order parsing moves to
-    query compilation, so cases that need model context live in
+    query compilation, so cases that need dataset context live in
     ``TestCompileRejects`` below."""
 
     def test_measures_non_empty_rejected(self) -> None:
-        """Case 1: ``measures`` non-empty + flag=False → reject at construct.
+        """Case 1: ``metrics`` non-empty + flag=False → reject at construct.
 
         Pydantic v2 wraps ``ValueError``-subclass exceptions (which
         ``DistinctDimensionValuesError`` is) raised in
@@ -169,7 +170,7 @@ class TestConstructionRejects:
         """Case 9: query without the field has the same Pydantic shape."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
         assert q.distinct_dimension_values is True
 
@@ -187,18 +188,18 @@ class TestConstructionAccepts:
         """Case 10: dims only, no filter, flag=False → builds."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
         )
         assert q.distinct_dimension_values is False
 
     def test_dimensions_plus_time_dimensions(self) -> None:
-        """Case 11: dims + time_dims, no measures → builds."""
+        """Case 11: dims + time_dims, no metrics → builds."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             time_dimensions=[
-                TimeDimension(field="created_at", granularity="day"),
+                TimeDimension(field="orders.created_at", granularity="day"),
             ],
             distinct_dimension_values=False,
         )
@@ -209,28 +210,28 @@ class TestConstructionAccepts:
         q = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="created_at", granularity="day"),
+                TimeDimension(field="orders.created_at", granularity="day"),
             ],
             distinct_dimension_values=False,
         )
         assert q.distinct_dimension_values is False
 
     def test_scalar_filter_no_measure_ref(self) -> None:
-        """Case 13: filter that references only base columns → builds."""
+        """Case 13: filter that references only base fields → builds."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["amount > 100"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["orders.amount > 100"],
             distinct_dimension_values=False,
         )
         assert q.distinct_dimension_values is False
 
     def test_order_on_plain_column(self) -> None:
-        """Case 14: plain column order → builds."""
+        """Case 14: plain field order → builds."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            order=[OrderItem(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem(field="orders.status")],
             distinct_dimension_values=False,
         )
         assert q.distinct_dimension_values is False
@@ -240,21 +241,21 @@ class TestConstructionAccepts:
         post-substitution check is what matters."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["amount > {threshold}"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["orders.amount > {threshold}"],
             variables={"threshold": 100},
             distinct_dimension_values=False,
         )
         assert q.distinct_dimension_values is False
 
     def test_quoted_string_with_colon_passes(self) -> None:
-        """Case 14b: quoted-string literal contains a colon — not a measure
+        """Case 14b: quoted-string literal contains a colon — not a metric
         ref. Must NOT be rejected by a naive colon-substring detector
         (Pydantic-time check)."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["status == 'a:b'"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["orders.status == 'a:b'"],
             distinct_dimension_values=False,
         )
         assert q.distinct_dimension_values is False
@@ -266,13 +267,13 @@ class TestCompileAccepts:
 
     async def test_quoted_string_with_colon_survives_compile(self) -> None:
         """Case 14b (full path): the colon-in-quoted-string filter MUST
-        survive compilation too — the post-substitution measure-ref check
+        survive compilation too — the post-substitution metric-ref check
         must not produce a false positive on literal text."""
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["status == 'a:b'"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["orders.status == 'a:b'"],
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(query=q, dataset=model)
@@ -284,8 +285,8 @@ class TestCompileAccepts:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["amount > {threshold}"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["orders.amount > {threshold}"],
             variables={"threshold": 100},
             distinct_dimension_values=False,
         )
@@ -294,7 +295,7 @@ class TestCompileAccepts:
 
 
 # ---------------------------------------------------------------------------
-# Compile-time (semantic) — authoritative measure-reference check
+# Compile-time (semantic) — authoritative metric-reference check
 # ---------------------------------------------------------------------------
 
 
@@ -312,20 +313,20 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["sum(amount) > 100"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["sum(orders.amount) > 100"],
             distinct_dimension_values=False,
         )
         msg = await self._expect_reject(q, model)
-        assert "sum(amount)" in msg or "aggregation" in msg.lower()
+        assert "sum(orders.amount)" in msg or "aggregation" in msg.lower()
 
     async def test_filter_star_count(self) -> None:
         """Case 4: ``"count(*) > 0"`` → reject."""
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["count(*) > 0"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["count(orders.*) > 0"],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
@@ -335,8 +336,8 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["rank(sum(amount), direction='desc') <= 5"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["rank(sum(orders.amount), direction='desc') <= 5"],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
@@ -346,8 +347,8 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["sum(amount) / amount > 0"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["sum(orders.amount) / orders.amount > 0"],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
@@ -357,21 +358,21 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            order=[OrderItem(field="status", raw_expression="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem(field="orders.status", raw_expression="sum(orders.amount)")],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
 
     async def test_order_on_bare_model_measure_name(self) -> None:
-        """Case 15: order column resolves to a saved ``ModelMeasure``."""
+        """Case 15: order field resolves to a saved ``DatasetMetric``."""
         model = _orders_dataset(
             metrics=[DatasetMetric(expression="sum(amount)", name="aov")],
         )
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            order=[OrderItem(field="aov")],
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem(field="orders.aov")],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
@@ -383,8 +384,8 @@ class TestCompileRejects:
         )
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["aov > 100"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["orders.aov > 100"],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
@@ -406,24 +407,24 @@ class TestCompileRejects:
         # Custom aggregation: `weighted_revenue(amount, weight=...)`
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["weighted_revenue(amount, weight=amount) > 0"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["weighted_revenue(orders.amount, weight=orders.amount) > 0"],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
             await _engine_generate(query=q, dataset=model)
 
     async def test_order_arithmetic_over_aggregations(self) -> None:
-        """Codex + CodeRabbit (PR #172): ``raw_formula`` of arithmetic
+        """Codex + CodeRabbit (PR #172): ``raw_expression`` of arithmetic
         over aggregations (``sum(revenue) / count(*)``) parses as
         ``ArithmeticField`` with ``agg_refs`` non-empty. Must reject in
-        raw-row mode — otherwise hidden aggregate measures get
+        raw-row mode — otherwise hidden aggregate metrics get
         materialised and ``GROUP BY`` returns."""
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            order=[OrderItem(field="aov", raw_expression="sum(amount) / count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem(field="orders.aov", raw_expression="sum(orders.amount) / count(orders.*)")],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
@@ -431,12 +432,12 @@ class TestCompileRejects:
 
     async def test_order_function_style_aggregate(self) -> None:
         """Case 16b: ``order=[{"column": "sum(amount)"}]`` — function-style
-        aggregate via raw_formula. (Equivalent to a measure reference.)"""
+        aggregate via raw_expression. (Equivalent to a metric reference.)"""
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            order=[OrderItem(field="sum_amount", raw_expression="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem(field="orders.sum_amount", raw_expression="sum(orders.amount)")],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
@@ -447,9 +448,9 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             filter=["{agg_filter}"],
-            variables={"agg_filter": "sum(amount) > 100"},
+            variables={"agg_filter": "sum(orders.amount) > 100"},
             distinct_dimension_values=False,
         )
         with pytest.raises(ValueError, match="variables supply literal values"):
@@ -467,22 +468,22 @@ class TestErrorMessage:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["sum(amount) > 100"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["sum(orders.amount) > 100"],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
             await _engine_generate(query=q, dataset=model)
         # The offending filter text must appear in the message.
-        assert "sum(amount) > 100" in str(exc.value)
+        assert "sum(orders.amount) > 100" in str(exc.value)
 
     async def test_message_points_at_the_fix(self) -> None:
         """Case 30: error message includes the remediation hint."""
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["sum(amount) > 100"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["sum(orders.amount) > 100"],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
@@ -501,8 +502,8 @@ class TestErrorMessage:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            order=[OrderItem(field="status", raw_expression="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem(field="orders.status", raw_expression="sum(orders.amount)")],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
@@ -512,7 +513,7 @@ class TestErrorMessage:
         assert "sum(amount)" in msg or "order" in msg.lower()
 
     def test_construction_message_names_offending_field(self) -> None:
-        """Construction-time message points at ``measures`` or
+        """Construction-time message points at ``metrics`` or
         ``dimensions/time_dimensions``."""
         status_dim = QueryDimension(field="status")
         count_measure = QueryMetric(metric="count(*)")
@@ -542,7 +543,7 @@ class TestSQLGeneration:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status"), QueryDimension(field="customer_id")],
+            dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.customer_id")],
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(query=q, dataset=model)
@@ -558,7 +559,7 @@ class TestSQLGeneration:
         q = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="created_at", granularity="day"),
+                TimeDimension(field="orders.created_at", granularity="day"),
             ],
             distinct_dimension_values=False,
         )
@@ -572,8 +573,8 @@ class TestSQLGeneration:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            filter=["amount > 100"],
+            dimensions=[QueryDimension(field="orders.status")],
+            filter=["orders.amount > 100"],
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(query=q, dataset=model)
@@ -586,8 +587,8 @@ class TestSQLGeneration:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            order=[OrderItem(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
+            order=[OrderItem(field="orders.status")],
             limit=10,
             distinct_dimension_values=False,
         )
@@ -602,7 +603,7 @@ class TestSQLGeneration:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             # No explicit flag — default True.
         )
         sql = await _engine_generate(query=q, dataset=model)
@@ -610,20 +611,20 @@ class TestSQLGeneration:
 
 
 # ---------------------------------------------------------------------------
-# Cross-model + multi-stage
+# Cross-dataset + multi-stage
 # ---------------------------------------------------------------------------
 
 
 class TestCrossModelDimensions:
     async def test_cross_model_dimensions_no_dedup(self) -> None:
-        """Case 22: ``customers.region`` joins customers; with flag=False,
+        """Case 22: ``customers.region`` walks the relationship to customers; with flag=False,
         no GROUP BY → raw rows surface (duplicates preserved by SQL)."""
         engine, tmp = await _engine_with_storage()
         try:
             cust = _customers_dataset()
             await engine.storage.save_dataset(cust)
             orders = _orders_dataset(
-                joins=[
+                relationships=[
                     DatasetRelationship(
                         to="customers",
                         from_columns=["customer_id"], to_columns=["id"],
@@ -655,13 +656,13 @@ class TestMultiStageDag:
             inner = SlayerQuery(
                 population="orders",
                 name="raw_rows",
-                dimensions=[QueryDimension(field="status"), QueryDimension(field="amount")],
+                dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.amount")],
                 distinct_dimension_values=False,
             )
             outer = SlayerQuery(
                 population="raw_rows",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(amount)")],
+                dimensions=[QueryDimension(field="raw_rows.status")],
+                metrics=[QueryMetric(metric="sum(raw_rows.amount)")],
                 # Outer is default True (with aggregation, GROUP BY is mandatory).
             )
             resp = await engine.execute([inner, outer], dry_run=True)
@@ -717,26 +718,26 @@ def _seed_orders_db_at(db_path) -> None:
 
 
 def _orders_slayer_dataset_for(data_source: str) -> SlayerDataset:
-    """The shared ``SlayerModel`` used by both the async fixture and the
-    sync helper. Five columns; the ``id`` PK is restricted to count
+    """The shared ``SlayerDataset`` used by both the async fixture and the
+    sync helper. Five fields; the ``id`` PK is restricted to count
     aggregations per SLayer defaults but never used as such here."""
     return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.STRING),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", expression="status", datatype=DataType.STRING),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
         ],
     )
 
 
 @pytest.fixture
 async def sqlite_orders_env(tmp_path):
-    """Real SQLite + YAML storage seeded with the shared ``orders`` model.
+    """Real SQLite + YAML storage seeded with the shared ``orders`` dataset.
     The fixture returns the engine; tests use ``engine.storage`` when
     they need the underlying storage backend."""
     db_path = tmp_path / "orders.db"
@@ -757,7 +758,7 @@ class TestEndToEndExecution:
         engine = sqlite_orders_env
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
         )
         resp = await engine.execute(q)
@@ -775,7 +776,7 @@ class TestEndToEndExecution:
         engine = sqlite_orders_env
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
         resp = await engine.execute(q)
         assert resp.row_count == 3
@@ -794,17 +795,17 @@ class TestMCPSurface:
         pattern as ``tests/test_mcp_server.py:_call``."""
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
-        content_blocks, _ = await server.call_tool(
+        content_blocks = text_blocks(await server.call_tool(
             name="query",
             arguments={
                 "query": {
                     "population": "orders",
-                    "dimensions": ["status"],
+                    "dimensions": ["orders.status"],
                     "distinct_dimension_values": False,
                 },
                 "format": "json",
             },
-        )
+        ))
         result = content_blocks[0].text
         payload = json.loads(result)
         # MCP `query` with format=json returns a JSON array of rows.
@@ -817,25 +818,25 @@ class TestMCPSurface:
         raw rows into an outer stage that aggregates."""
         engine = sqlite_orders_env
         server = create_mcp_server(storage=engine.storage)
-        content_blocks, _ = await server.call_tool(
+        content_blocks = text_blocks(await server.call_tool(
             name="query",
             arguments={
                 "query": [
                     {
                         "population": "orders",
                         "name": "raw_rows",
-                        "dimensions": ["status", "amount"],
+                        "dimensions": ["orders.status", "orders.amount"],
                         "distinct_dimension_values": False,
                     },
                     {
                         "population": "raw_rows",
-                        "dimensions": ["status"],
-                        "metrics": [{"metric": "sum(amount)"}],
+                        "dimensions": ["raw_rows.status"],
+                        "metrics": [{"metric": "sum(raw_rows.amount)"}],
                     },
                 ],
                 "format": "json",
             },
-        )
+        ))
         payload = json.loads(content_blocks[0].text)
         # 3 unique status values, all 6 rows aggregated.
         assert isinstance(payload, list)
@@ -844,7 +845,7 @@ class TestMCPSurface:
     async def test_mcp_query_list_outer_flag_false_with_measure_rejects(
         self, sqlite_orders_env,
     ) -> None:
-        """Case 26b: outer stage flag=False AND outer measure ref →
+        """Case 26b: outer stage flag=False AND outer metric ref →
         rejected. The MCP tool surfaces the error (raises or returns an
         error-shaped result — either is acceptable)."""
         engine = sqlite_orders_env
@@ -857,13 +858,13 @@ class TestMCPSurface:
                         {
                             "population": "orders",
                             "name": "raw_rows",
-                            "dimensions": ["status", "amount"],
+                            "dimensions": ["orders.status", "orders.amount"],
                         },
                         {
                             "population": "raw_rows",
-                            "dimensions": ["status"],
-                            # Outer has flag=False but also a measure → reject.
-                            "metrics": [{"metric": "sum(amount)"}],
+                            "dimensions": ["raw_rows.status"],
+                            # Outer has flag=False but also a metric → reject.
+                            "metrics": [{"metric": "sum(raw_rows.amount)"}],
                             "distinct_dimension_values": False,
                         },
                     ],
@@ -888,7 +889,7 @@ class TestRESTSurface:
             "/query",
             json={
                 "population": "orders",
-                "dimensions": ["status"],
+                "dimensions": ["orders.status"],
                 "distinct_dimension_values": False,
             },
         )
@@ -908,13 +909,13 @@ class TestRESTSurface:
                     {
                         "population": "orders",
                         "name": "raw_rows",
-                        "dimensions": ["status", "amount"],
+                        "dimensions": ["orders.status", "orders.amount"],
                         "distinct_dimension_values": False,
                     },
                     {
                         "population": "raw_rows",
-                        "dimensions": ["status"],
-                        "metrics": [{"metric": "sum(amount)"}],
+                        "dimensions": ["raw_rows.status"],
+                        "metrics": [{"metric": "sum(raw_rows.amount)"}],
                     },
                 ],
             },
@@ -949,7 +950,7 @@ class TestSlayerClientBody:
         when the SlayerQuery sets it."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
         )
         body = SlayerClient._build_query_body(q)
@@ -960,13 +961,13 @@ class TestSlayerClientBody:
         inner = SlayerQuery(
             population="orders",
             name="raw_rows",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
         )
         outer = SlayerQuery(
             population="raw_rows",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="raw_rows.status")],
+            metrics=[QueryMetric(metric="sum(raw_rows.amount)")],
         )
         body = SlayerClient._build_query_body([inner, outer])
         assert "queries" in body

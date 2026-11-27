@@ -1,4 +1,4 @@
-"""Shared models, oracles and checks for boolean aggregation parameters and conditional branch types.
+"""Shared datasets, oracles and checks for boolean aggregation parameters and conditional branch types.
 
 Underscore-prefixed so pytest skips collection. Data: the idiom dataset (``tests/_mcp_idiom_fixtures.py``).
 ``orders.true_amount`` is a custom aggregation over a ``{flag}`` placeholder; ``regions.weighted_avg``
@@ -24,7 +24,7 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._mcp_idiom_fixtures import idiom_datasets
 
-PAID = "status = 'paid'"
+PAID = "orders.status = 'paid'"
 #: Orders 1–11: amount and the integer of ``status = 'paid'``.
 _AMOUNTS = [10, 20, 45, 100, 50, 70, 30, 60, 25, 75, 5]
 _PAID01 = [1, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1]
@@ -37,7 +37,7 @@ COVAR_SAMP_PAID = statistics.covariance(_AMOUNTS, _PAID01)
 CORR_PAID = statistics.correlation(_AMOUNTS, _PAID01)
 CREDIT_ABOVE_150_AVG = 250.0
 PAID_TOTAL = 345
-MONTH = [{"field": "order_date", "granularity": "month"}]
+MONTH = [{"field": "orders.order_date", "granularity": "month"}]
 
 
 def dev2177_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
@@ -47,7 +47,7 @@ def dev2177_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
                     params=[AggregationParam(name="flag", sql="TRUE")]),
     ]})
     regions = regions.model_copy(update={"fields": [
-        *regions.fields, DatasetField(name="rank", sql="id", datatype=DataType.INTEGER),
+        *regions.fields, DatasetField(name="rank", expression="id", datatype=DataType.INTEGER),
     ], "aggregations": [
         Aggregation(name="weighted_avg", expression="SUM({value} * {weight}) * 1.0 / SUM({weight})",
                     params=[AggregationParam(name="weight", sql="1")]),
@@ -69,39 +69,39 @@ def num(value: Any) -> float | None:
 
 def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{dataset}.{name}"]
+    return resp.data[0][name]
 
 
 # --------------------------------------------------------------------------- #
 # Boolean aggregation parameters (spec: aggregations/boolean-inputs)
 # --------------------------------------------------------------------------- #
 async def check_boolean_weight(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(metrics=[m(f"weighted_avg(amount, weight={PAID})")]))
+    resp = await engine.execute(q(metrics=[m(f"weighted_avg(orders.amount, weight={PAID})")]))
     assert num(single(resp)) == pytest.approx(PAID_AVG), resp.sql
 
 
 async def check_boolean_other(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(q(metrics=[
-        m(f"covar_samp(amount, other={PAID})", "cv"), m(f"corr(amount, other={PAID})", "cr"),
+        m(f"covar_samp(orders.amount, other={PAID})", "cv"), m(f"corr(orders.amount, other={PAID})", "cr"),
     ]))
     assert num(single(resp, "cv")) == pytest.approx(COVAR_SAMP_PAID), resp.sql
     assert num(single(resp, "cr")) == pytest.approx(CORR_PAID), resp.sql
 
 
 async def check_boolean_weight_under_filter(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(metrics=[m(f"weighted_avg(amount, weight={PAID}) FILTER (WHERE amount > 10)")]))
+    resp = await engine.execute(q(metrics=[m(f"weighted_avg(orders.amount, weight={PAID}) FILTER (WHERE orders.amount > 10)")]))
     assert num(single(resp)) == pytest.approx(PAID_AVG_ABOVE_10), resp.sql
 
 
 async def check_boolean_weight_windowed(engine: SlayerQueryEngine) -> None:
     """Each month's trailing-window value equals ``avg(amount, window=)`` over the paid rows alone."""
     resp = await engine.execute(q(time_dimensions=MONTH, metrics=[
-        m(f"weighted_avg(amount, weight={PAID}, window='90d')"),
+        m(f"weighted_avg(orders.amount, weight={PAID}, window='90d')"),
     ]))
-    restricted = await engine.execute(q(time_dimensions=MONTH, metrics=[m("avg(amount, window='90d')")],
+    restricted = await engine.execute(q(time_dimensions=MONTH, metrics=[m("avg(orders.amount, window='90d')")],
                                          filter=[PAID]))
-    got = {str(r["orders.order_date"])[:7]: num(r["orders.v"]) for r in resp.data}
-    want = {str(r["orders.order_date"])[:7]: num(r["orders.v"]) for r in restricted.data}
+    got = {str(r["orders.order_date"])[:7]: num(r["v"]) for r in resp.data}
+    want = {str(r["orders.order_date"])[:7]: num(r["v"]) for r in restricted.data}
     assert want, (got, want)
     assert got.keys() >= want.keys(), (got, want)
     for month, value in want.items():
@@ -109,43 +109,43 @@ async def check_boolean_weight_windowed(engine: SlayerQueryEngine) -> None:
 
 
 async def check_boolean_weight_partitioned(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(dimensions=["customer_id", "status"], metrics=[
-        m(f"weighted_avg(amount, weight={PAID}, partition_by=customer_id)"),
+    resp = await engine.execute(q(dimensions=["orders.customer_id", "orders.status"], metrics=[
+        m(f"weighted_avg(orders.amount, weight={PAID}, partition_by=orders.customer_id)"),
     ]))
     assert len(resp.data) == 6, resp.data
     for row in resp.data:
-        assert num(row["orders.v"]) == pytest.approx(PAID_AVG_BY_CUSTOMER[int(row["orders.customer_id"])]), resp.sql
+        assert num(row["v"]) == pytest.approx(PAID_AVG_BY_CUSTOMER[int(row["orders.customer_id"])]), resp.sql
 
 
 async def check_boolean_weight_cross_dataset(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": "customers", "dimensions": ["name"],
+        "population": "customers", "dimensions": ["customers.name"],
         "metrics": [m("weighted_avg(orders.amount, weight=orders.status = 'paid')")],
     }))
-    got = {r["customers.name"]: num(r["customers.v"]) for r in resp.data}
+    got = {r["customers.name"]: num(r["v"]) for r in resp.data}
     assert got == pytest.approx(PAID_AVG_BY_NAME), resp.sql
 
 
 async def check_boolean_weight_associated(engine: SlayerQueryEngine) -> None:
     """The association producer picks the boolean parameter per entity before weighting."""
     resp = await engine.execute(q(
-        dimensions=["status"], to_many_handling="associate",
+        dimensions=["orders.status"], to_many_handling="associate",
         metrics=[m("weighted_avg(customers.credit, weight=customers.credit > 150)")],
     ))
-    got = {r["orders.status"]: num(r["orders.v"]) for r in resp.data}
+    got = {r["orders.status"]: num(r["v"]) for r in resp.data}
     assert got == pytest.approx({"open": CREDIT_ABOVE_150_AVG, "paid": CREDIT_ABOVE_150_AVG}), resp.sql
     assert "associated" in {w.kind for w in resp.warnings}
 
 
 async def check_custom_aggregation_receives_raw_boolean(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(metrics=[m(f"true_amount(amount, flag={PAID})")]))
+    resp = await engine.execute(q(metrics=[m(f"true_amount(orders.amount, flag={PAID})")]))
     assert num(single(resp)) == PAID_TOTAL, resp.sql
 
 
 async def check_builtin_named_override_lowers(engine: SlayerQueryEngine) -> None:
     """Regions 2, 3 and 4 weigh 1, North 0."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": "regions", "metrics": [m("weighted_avg(rank, weight=name <> 'North')")],
+        "population": "regions", "metrics": [m("weighted_avg(regions.rank, weight=regions.name <> 'North')")],
     }))
     assert num(single(resp, dataset="regions")) == pytest.approx(3.0), resp.sql
 
@@ -161,9 +161,9 @@ BOOLEAN_PARAMETER_CHECKS = [
 # Conditional branch types (spec: queries/mixed-type-coercion)
 # --------------------------------------------------------------------------- #
 CONCAT_BRANCHES = [
-    "CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END",
-    "CASE WHEN amount > 1 THEN concat('a', 'b') ELSE amount END",
-    "CASE WHEN amount > 1 THEN status || 'b' ELSE amount END",
+    "CASE WHEN orders.amount > 1 THEN 'a' || 'b' ELSE orders.amount END",
+    "CASE WHEN orders.amount > 1 THEN concat('a', 'b') ELSE orders.amount END",
+    "CASE WHEN orders.amount > 1 THEN orders.status || 'b' ELSE orders.amount END",
 ]
 
 

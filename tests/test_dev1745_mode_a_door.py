@@ -1,15 +1,15 @@
-"""DEV-1745 (W1) — the single Mode-A entry point on ``ScopeFrame`` (P-A).
+"""W1 — the single Mode-A entry point on ``ScopeFrame`` (P-A).
 
 Every fragment of free SQL enters a SELECT scope through ONE door that
-prequotes, expands, registers the joins it crosses, and returns an AST. Join
-discovery is a side effect of resolution, never a separate pass.
+prequotes, expands, registers the relationships it crosses, and returns an AST.
+Relationship-path discovery is a side effect of resolution, never a separate pass.
 
 Two public surfaces over one implementation, differing ONLY in the parse helper:
 
-* ``enter_predicate`` — for ``Column.filter`` and ``SlayerModel.filters``,
+* ``enter_predicate`` — for ``DatasetField.filter`` and ``SlayerDataset.filters``,
   which are boolean predicates. Keeps the ``SELECT 1 WHERE ...`` statement-
   keyword guard.
-* ``enter_expression`` — for ``Column.sql``, a scalar expression.
+* ``enter_expression`` — for ``DatasetField.sql``, a scalar expression.
 
 The surface's grammar is a STATIC property of the field, not a runtime choice:
 no content-based dispatch, no "try expression then predicate" retry. Either
@@ -17,7 +17,7 @@ would re-introduce render-time re-classification (a P-D violation).
 
 Deliberately NOT part of the door: a separate qualification pass.
 ``expand_derived_refs_sync`` already qualifies, and qualifies correctly —
-against the OWNING model's canonical alias. It leaves a node alone when the
+against the OWNING dataset's canonical alias. It leaves a node alone when the
 alias path does not resolve, because that is an opaque CTE / subquery
 reference; a blanket pass against ``root_relation`` would corrupt exactly
 those. See ``TestOpaqueReferencesSurvive``.
@@ -25,7 +25,7 @@ those. See ``TestOpaqueReferencesSurvive``.
 Removed by this work: ``include_dotted_derived`` (no caller ever passed it, and
 its documented ``False`` case was unwired) and the three swallow-all
 ``except Exception`` lanes — including the one in ``_filter_join_paths._scan``
-that silently contributed ZERO join paths, turning an unparseable fragment into
+that silently contributed ZERO relationship paths, turning an unparseable fragment into
 missing joins rather than an error.
 """
 
@@ -55,7 +55,7 @@ def _regions() -> SlayerDataset:
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="population", datatype=DataType.FLOAT),
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
+            DatasetField(name="pop_x2", expression="population * 2", datatype=DataType.FLOAT),
         ],
     )
 
@@ -80,7 +80,7 @@ def _orders() -> SlayerDataset:
             DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="status", datatype=DataType.STRING),
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT),
+            DatasetField(name="doubled", expression="amount * 2", datatype=DataType.FLOAT),
             # a reserved-ish name that would shadow a statement keyword
             DatasetField(name="select", datatype=DataType.STRING),
         ],
@@ -158,16 +158,16 @@ class TestQualification:
         )
 
     def test_joined_derived_column_resolves_against_its_owning_model(self) -> None:
-        """A derived column ON customers whose sql names a bare customers
-        column must expand to ``customers.balance`` — never ``orders.balance``.
+        """A derived field ON customers whose sql names a bare customers
+        field must expand to ``customers.balance`` — never ``orders.balance``.
         This is what separates "expansion qualified it, against the owning
-        model" from "something re-qualified it against the scope root"."""
+        dataset" from "something re-qualified it against the scope root"."""
         customers = _customers()
         customers.fields.append(
-            DatasetField(name="balance_x2", sql="balance * 2", datatype=DataType.FLOAT),
+            DatasetField(name="balance_x2", expression="balance * 2", datatype=DataType.FLOAT),
         )
         host = _orders()
-        # a same-named column on the ROOT, so a root-anchored pass is visible
+        # a same-named field on the ROOT, so a root-anchored pass is visible
         host.fields.append(
             DatasetField(name="balance", datatype=DataType.FLOAT),
         )
@@ -185,11 +185,11 @@ class TestQualification:
         assert "customers.balance" in out, out
         assert "orders.balance" not in out, (
             f"derived sql was re-qualified against the scope root instead of "
-            f"its owning model: {out}"
+            f"its owning dataset: {out}"
         )
 
     def test_local_derived_column_is_inlined_and_qualified(self) -> None:
-        out = _sql_of(_scope().enter_expression("doubled"))
+        out = _sql_of(_scope().enter_expression("orders.doubled"))
         assert "doubled" not in out, f"derived name leaked: {out}"
         assert "orders.amount" in out, out
 
@@ -211,7 +211,7 @@ class TestOpaqueReferencesSurvive:
         assert "some_cte.flag" in out, out
 
     def test_subquery_column_is_not_qualified_against_outer_root(self) -> None:
-        # DEV-1752 fixed: qualification is now gated on root scope, so a column
+        # Qualification is gated on root scope, so a column
         # inside a subquery is left to bind in its own scope. See
         # tests/test_dev1752_subquery_scope.py for the full pack.
         out = _sql_of(
@@ -224,26 +224,26 @@ class TestOpaqueReferencesSurvive:
 
 
 # --------------------------------------------------------------------------- #
-# Join registration is a side effect of entering the scope (P-A)
+# Relationship-path registration is a side effect of entering the scope (P-A)
 # --------------------------------------------------------------------------- #
 class TestJoinRegistration:
 
     def test_predicate_crossing_one_hop_registers_it(self) -> None:
         scope = _scope()
         scope.enter_predicate("customers.balance > 1")
-        assert ("customers",) in scope.join_paths.as_list()
+        assert ("customers",) in scope.relationship_paths.as_list()
 
     def test_predicate_crossing_two_hops_registers_every_prefix(self) -> None:
         scope = _scope()
         scope.enter_predicate("customers.regions.population > 1")
-        paths = scope.join_paths.as_list()
+        paths = scope.relationship_paths.as_list()
         assert ("customers",) in paths
         assert ("customers", "regions") in paths
 
     def test_expression_crossing_registers_too(self) -> None:
         scope = _scope()
         scope.enter_expression("customers.regions.population")
-        paths = scope.join_paths.as_list()
+        paths = scope.relationship_paths.as_list()
         # every PREFIX is required, not just the deepest hop — the FROM builder
         # needs the intermediate join to reach the last one
         assert ("customers",) in paths, paths
@@ -252,15 +252,15 @@ class TestJoinRegistration:
     def test_local_predicate_registers_nothing(self) -> None:
         scope = _scope()
         scope.enter_predicate("amount > 1")
-        assert scope.join_paths.as_list() == []
+        assert scope.relationship_paths.as_list() == []
 
     def test_dual_scan_keeps_paths_that_expansion_removes(self) -> None:
-        """The pre-expansion scan is load-bearing (the DEV-1494 contract).
+        """The pre-expansion scan is load-bearing.
 
-        ``customers.flag_const`` is a DERIVED column on customers whose sql is
+        ``customers.flag_const`` is a DERIVED field on customers whose sql is
         the constant ``1``, so expansion rewrites the reference to ``1`` and the
-        join disappears from the expanded AST entirely. The join is only
-        discoverable by scanning BEFORE expansion.
+        relationship disappears from the expanded AST entirely. The relationship
+        is only discoverable by scanning BEFORE expansion.
 
         The crossing ref must be the ONLY one in the predicate — with any other
         surviving ``customers.*`` reference, an implementation that scans only
@@ -269,7 +269,7 @@ class TestJoinRegistration:
         """
         customers = _customers()
         customers.fields.append(
-            DatasetField(name="flag_const", sql="1", datatype=DataType.INTEGER),
+            DatasetField(name="flag_const", expression="1", datatype=DataType.INTEGER),
         )
         host = _orders()
         alloc = AliasAllocator()
@@ -285,16 +285,16 @@ class TestJoinRegistration:
         node = scope.enter_predicate("customers.flag_const = 1")
         # the reference really does vanish from the expanded AST ...
         assert "customers" not in _sql_of(node), _sql_of(node)
-        # ... and the join is still registered
-        assert ("customers",) in scope.join_paths.as_list(), (
+        # ... and the relationship path is still registered
+        assert ("customers",) in scope.relationship_paths.as_list(), (
             "the pre-expansion scan did not run: a crossing ref that inlines "
-            "to a constant lost its join path"
+            "to a constant lost its relationship path"
         )
 
 
 # --------------------------------------------------------------------------- #
 # Failure is loud (D1) — no regex fallback, no raw passthrough, no silent
-# zero-join-paths
+# zero-relationship-paths
 # --------------------------------------------------------------------------- #
 class TestParseFailureRaises:
 
@@ -327,8 +327,8 @@ class TestParseFailureRaises:
         scope = _scope()
         with pytest.raises(SlayerError):
             scope.enter_predicate("customers.balance > ( not sql")
-        # and it certainly must not have quietly succeeded with no joins
-        assert scope.join_paths.as_list() == []
+        # and it certainly must not have quietly succeeded with no relationship paths
+        assert scope.relationship_paths.as_list() == []
 
 
 # --------------------------------------------------------------------------- #
@@ -337,14 +337,14 @@ class TestParseFailureRaises:
 class TestSurfaceGrammar:
 
     def test_predicate_with_statement_keyword_column_parses(self) -> None:
-        """``select`` is a column name here. The predicate parser's
+        """``select`` is a field name here. The predicate parser's
         ``SELECT 1 WHERE ...`` guard exists so this is not read as a
         statement."""
         node = _scope().enter_predicate("\"select\" = 'x'")
         cols = [c for c in node.find_all(exp.Column) if c.name == "select"]
         assert cols, _sql_of(node)
         assert all(c.table == "orders" for c in cols), (
-            f"statement-keyword column was not parsed as a qualified column: "
+            f"statement-keyword field was not parsed as a qualified column: "
             f"{_sql_of(node)}"
         )
 

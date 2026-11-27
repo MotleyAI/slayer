@@ -1,4 +1,4 @@
-"""A stored TEXT column over a live list is a re-type finding, never a deletion (spec: models/schema-drift)."""
+"""A stored TEXT field over a live list is a re-type finding, never a deletion (spec: models/schema-drift)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ LIVE = ("CREATE TABLE contractors (id INTEGER, skills VARCHAR[])",
 
 
 @contextlib.asynccontextmanager
-async def _env(*models: SlayerDataset) -> AsyncGenerator[SlayerQueryEngine]:
+async def _env(*datasets: SlayerDataset) -> AsyncGenerator[SlayerQueryEngine]:
     duckdb = pytest.importorskip("duckdb")
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "live.duckdb")
@@ -33,7 +33,7 @@ async def _env(*models: SlayerDataset) -> AsyncGenerator[SlayerQueryEngine]:
         ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         await storage.save_datasource(ds)
-        for model in models:
+        for model in datasets:
             await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         try:
@@ -95,8 +95,8 @@ class TestQueryTime:
     async def test_a_refused_query_explained(self) -> None:
         async with _env(_contractors(STALE)) as engine:
             with pytest.raises(SchemaDriftError) as info:
-                await engine.execute({"population": "contractors", "metrics": [{"metric": "count(*)", "alias": "n"}],
-                                      "filter": ["skills = 'go'"]})
+                await engine.execute({"population": "contractors", "metrics": [{"metric": "count(contractors.*)", "alias": "n"}],
+                                      "filter": ["contractors.skills = 'go'"]})
         err = info.value
         assert "contractors" in err.datasets
         assert not any(_deletes_skills(e) for e in _dumps(err.to_delete)), err.to_delete

@@ -37,6 +37,8 @@ class DateOnlySite(BaseModel):
     start: int
     end: int
     parts: Tuple[str, ...]
+    # Per segment of ``parts``, whether it was double-quoted.
+    quoted: Tuple[bool, ...] = ()
     operand: str
     date: str
     twin: str
@@ -131,10 +133,11 @@ def _parts(node: object) -> Optional[Tuple[str, ...]]:
     return None
 
 
-def _path_parts(path: str) -> Tuple[str, ...]:
-    """The segments of a dotted path, a quoted one unquoted."""
-    return tuple(p[1:-1].replace('""', '"') if len(p) > 1 and p[0] == p[-1] == '"' else p
-                 for p in (s.strip() for s in re.findall(r'"(?:[^"\n]|"")+"|[^.]+', path)))
+def _path_parts(path: str) -> Tuple[Tuple[str, ...], Tuple[bool, ...]]:
+    """The segments of a dotted path, a quoted one unquoted, and per segment whether it was quoted."""
+    segments = [s.strip() for s in re.findall(r'"(?:[^"\n]|"")+"|[^.]+', path)]
+    quoted = tuple(len(p) > 1 and p[0] == p[-1] == '"' for p in segments)
+    return tuple(p[1:-1].replace('""', '"') if q else p for p, q in zip(segments, quoted)), quoted
 
 
 def _bounded(text: str, *, start: int, end: int) -> bool:
@@ -173,8 +176,9 @@ def _between(text: str, *, low: StringLiteralSpan, high: StringLiteralSpan):
     else:
         below, upper = _whole_day("<=", high.value)
         twin = f"({operand} >= {low_text} and {operand} {below} '{upper}')"
-    parts = _path_parts(operand)
-    site = DateOnlySite(start=m.start(), end=high.end, parts=parts, operand=operand, date=high.value, twin=twin)
+    parts, quoted = _path_parts(operand)
+    site = DateOnlySite(start=m.start(), end=high.end, parts=parts, quoted=quoted, operand=operand, date=high.value,
+                        twin=twin)
     return (parts, "<=", high.value), site
 
 
@@ -186,8 +190,9 @@ def _operand_left(text: str, lit: StringLiteralSpan):
     new_op, value = _whole_day(op, lit.value)
     pad = " " if new_op[0].isalpha() else ""
     twin = f"{operand}{m.group(2) or pad}{new_op}{m.group(4) or pad}'{value}'"
-    parts = _path_parts(operand)
-    site = DateOnlySite(start=m.start(), end=lit.end, parts=parts, operand=operand, date=lit.value, twin=twin)
+    parts, quoted = _path_parts(operand)
+    site = DateOnlySite(start=m.start(), end=lit.end, parts=parts, quoted=quoted, operand=operand, date=lit.value,
+                        twin=twin)
     return (parts, op, lit.value), site
 
 
@@ -204,6 +209,7 @@ def _literal_left(text: str, lit: StringLiteralSpan):
         twin = f"'{value}'{m.group(1)}{_MIRROR[new_op]}{m.group(3)}{operand}"
     else:
         twin = f"{operand} {new_op} '{value}'"
-    parts = _path_parts(operand)
-    site = DateOnlySite(start=lit.start, end=m.end(), parts=parts, operand=operand, date=lit.value, twin=twin)
+    parts, quoted = _path_parts(operand)
+    site = DateOnlySite(start=lit.start, end=m.end(), parts=parts, quoted=quoted, operand=operand, date=lit.value,
+                        twin=twin)
     return (parts, op, lit.value), site

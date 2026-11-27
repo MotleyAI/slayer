@@ -1,17 +1,17 @@
-"""Shared fixtures for DEV-1866 — optional query population, dimension-determined default.
+"""Shared fixtures for optional query population, dimension-determined default.
 
 Underscore-prefixed so pytest skips collection here. Provides several small
 topologies, each isolated in its own datasource so a rootless query's anchor
 names scope to exactly one datasource:
 
 * ``ds_chain``  — orders → customers → regions, all edges declared many-to-one.
-  ``region`` is a plain column on ``customers`` (the canonical "coarse side").
+  ``region`` is a plain field on ``customers`` (the canonical "coarse side").
   Unique-minimal determinations; the only topology seeded with real rows.
-* ``ds_pair``   — ``prof`` ↔ ``acct`` one-to-one; two viable candidates ⇒ tie.
+* ``ds_pair``   — ``prof`` ↔ ``acct`` one-to-one both ways; Ossie qualifies both, so native rules tie.
 * ``ds_fan``    — ``basket`` with two child tables (``basket_items``,
   ``basket_pays``); sibling dims have no to-one determiner ⇒ no viable candidate.
 * ``ds_ambig``  — ``shipment`` with two unnamed edges to ``depot`` ⇒ ambiguous hop.
-* ``ds_widgets_a`` / ``ds_widgets_b`` — a ``widgets`` model in each, for the
+* ``ds_widgets_a`` / ``ds_widgets_b`` — a ``widgets`` dataset in each, for the
   datasource-scoping (ambiguous / zero-candidate) cases.
 
 Chain dataset (hand-computed; every executed expectation derives from here)
@@ -65,10 +65,10 @@ DS_NAMED = "ds_named"
 
 
 # --------------------------------------------------------------------------- #
-# Model builders.
+# Dataset builders.
 # --------------------------------------------------------------------------- #
 def chain_datasets() -> list[SlayerDataset]:
-    """orders → customers → regions; region is a column on customers."""
+    """orders → customers → regions; region is a field on customers."""
     regions = SlayerDataset(
         name="regions", data_source=DS_CHAIN, sql_table="regions",
         fields=[
@@ -120,12 +120,20 @@ def chain_datasets_by_name() -> dict[str, SlayerDataset]:
 
 
 def pair_datasets() -> list[SlayerDataset]:
-    """prof ↔ acct one-to-one — both sides to-one, so two viable candidates tie."""
+    """prof ↔ acct one-to-one, declared both ways: each reaches the other by an Ossie step, so Ossie qualifies both
+    and the two viable one-hop candidates tie."""
     acct = SlayerDataset(
         name="acct", data_source=DS_PAIR, sql_table="acct",
         fields=[
             DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="prof_id", datatype=DataType.INTEGER, unique=True),
             DatasetField(name="email", datatype=DataType.STRING),
+        ],
+        relationships=[
+            DatasetRelationship(
+                to="prof", name="prof", from_columns=["prof_id"], to_columns=["id"],
+                cardinality=RelationshipCardinality.ONE_TO_ONE,
+            ),
         ],
     )
     prof = SlayerDataset(
@@ -137,7 +145,7 @@ def pair_datasets() -> list[SlayerDataset]:
         ],
         relationships=[
             DatasetRelationship(
-                to="acct", from_columns=["acct_id"], to_columns=["id"],
+                to="acct", name="acct", from_columns=["acct_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.ONE_TO_ONE,
             ),
         ],
@@ -216,7 +224,7 @@ def ambig_datasets() -> list[SlayerDataset]:
 def unknown_datasets() -> list[SlayerDataset]:
     """hits → sess over an undeclared-cardinality hop into a keyless target.
 
-    ``sess`` has no primary key or unique column, so the hop is neither declared
+    ``sess`` has no primary key or unique field, so the hop is neither declared
     to-one nor unique-key covered — unknown cardinality, which does not count as
     determination in either direction.
     """
@@ -276,8 +284,8 @@ def keycov_datasets() -> list[SlayerDataset]:
 
 
 def named_datasets() -> list[SlayerDataset]:
-    """tickets → agents over a *named* join ("reporter"); agents owns a saved measure,
-    and column ``score`` deliberately shares a name with a custom aggregation."""
+    """tickets → agents over a *named* relationship ("reporter"); agents owns a saved metric,
+    and field ``score`` deliberately shares a name with a custom aggregation."""
     agents = SlayerDataset(
         name="agents", data_source=DS_NAMED, sql_table="agents",
         fields=[
@@ -337,9 +345,9 @@ _ALL_TOPOLOGIES: list[tuple[str, list[SlayerDataset]]] = [
 
 
 async def make_inference_storage() -> YAMLStorage:
-    """A YAMLStorage with every topology's models saved (no DB, no rows).
+    """A YAMLStorage with every topology's datasets saved (no DB, no rows).
 
-    Models are saved with ``_validate=False`` because the datasources point at
+    Datasets are saved with ``_validate=False`` because the datasources point at
     :memory: SQLite files with no tables — inference is metadata-only.
     """
     d = tempfile.mkdtemp()

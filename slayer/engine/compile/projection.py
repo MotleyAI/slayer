@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from typing import AbstractSet, Dict, FrozenSet, List, Optional
+from typing import Dict, FrozenSet, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
-from slayer.engine.elaborate_env import (
-    check_canonical_alias_shadows_field,
-    check_duplicate_metric_name,
-    check_metric_name_collision,
-)
+from slayer.engine.key_metadata import SlotTyping
+from slayer.engine.elaborate_env import check_canonical_alias_shadows_field, check_duplicate_metric_name
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -34,8 +30,7 @@ from slayer.core.keys import (
     TransformKey,
     VALUE_KEY_TYPES,
     ValueKey,
-    field_leaf,
-    field_path,
+    WindowKey,
 )
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.planned import SlotId, ValueSlot
@@ -48,22 +43,11 @@ __all__ = [
     "ProjectionPlanner",
     "ValueRegistry",
     "filter_referenced_slot_ids",
-    "free_metric_name",
 ]
 
 # Hoisted from the two signatures below: a paren inside a keyword-only default
 # string breaks rope's patchedast (dr-refactor), so keep the literal here.
 _HOST_FALLBACK_NAME = "(host)"
-
-
-def free_metric_name(*, declared: str, canonical: Optional[str], taken: AbstractSet[str]) -> str:
-    """``canonical`` when free, else the first free ``<declared>_<n>`` from n = 2."""
-    if canonical and canonical != declared and canonical not in taken:
-        return canonical
-    n = 2
-    while f"{declared}_{n}" in taken:
-        n += 1
-    return f"{declared}_{n}"
 
 
 # ValueRegistry
@@ -94,9 +78,11 @@ class ValueRegistry:
     def __init__(
         self,
         *,
+        typing: SlotTyping,
         source_field_names: Optional[FrozenSet[str]] = None,
         host_dataset_name: str = _HOST_FALLBACK_NAME,
     ) -> None:
+        self._typing = typing
         self._source_fields: FrozenSet[str] = (
             source_field_names or frozenset()
         )
@@ -108,8 +94,6 @@ class ValueRegistry:
         # Every alias name already taken (public names + each slot's declared_name);
         # hidden slots are uniquified against it so no alias maps to two expressions.
         self._taken_names: set = set()
-        # Multiset of reserved names, so a collision suggestion can discount the colliding metric's own.
-        self._reserved: Counter[str] = Counter()
 
     def _next_id(self) -> SlotId:
         self._counter += 1
@@ -120,20 +104,6 @@ class ValueRegistry:
         for name in names:
             if name:
                 self._taken_names.add(name)
-                self._reserved[name] += 1
-
-    def _collision_suggestion(
-        self, *, declared_name: str, public_name: Optional[str], canonical_alias: Optional[str],
-    ) -> str:
-        """``rename it, e.g. to '<free name>'`` — free of source fields and every other name in the query."""
-        own = Counter(n for n in (declared_name, public_name, canonical_alias) if n)
-        taken = (
-            self._source_fields
-            | (self._taken_names - self._reserved.keys())
-            | (self._reserved - own).keys()
-        )
-        free = free_metric_name(declared=public_name or declared_name, canonical=canonical_alias, taken=taken)
-        return f"rename it, e.g. to {free!r}"
 
     def _unique_hidden_name(self, declared_name: str) -> str:
         """``declared_name`` suffixed ``_2``/``_3``/… if taken — structural hidden names collide by construction (``cumsum(a)+cumsum(b)`` both ``_cumsum_inner``)."""
@@ -144,57 +114,8 @@ class ValueRegistry:
             n += 1
         return f"{declared_name}_{n}"
 
-    def _validate_alias_collisions(
-        self,
-        *,
-        key: ValueKey,
-        declared_name: str,
-        public_name: Optional[str],
-        canonical_alias: Optional[str],
-    ) -> None:
-        """Alias-collision validations (P4): a public name or renamed canonical alias shadowing a source field raises; self-named dimensions are exempt."""
-        if isinstance(key, ListSetKey):
-            key = key.source
-        is_self_named_dimension = (
-            isinstance(key, FieldKey)
-            and key.path == ()
-            and public_name == key.leaf
-        ) or (
-            isinstance(key, FieldSqlKey)
-            and key.path == ()
-            and public_name == key.field_name
-        ) or (
-            isinstance(key, TimeTruncKey)
-            and isinstance(key.source, (FieldKey, FieldSqlKey))
-            and field_path(key.source) == ()
-            and public_name == field_leaf(key.source)
-        )
-        # An unnamed ``<agg>(*)`` (StarKey) is exempt: its canonical alias (``_count``)
-        # is a structural marker, not a field ref. An explicit user name still raises.
-        is_unnamed_star_agg = (
-            isinstance(key, AggregateKey)
-            and isinstance(getattr(key, "source", None), StarKey)
-            and canonical_alias is None
-        )
-        # A pathed field ref only flattens to a ``__`` name at a stage boundary;
-        # that collision is owned by the stage-schema guard, so exempt it here.
-        is_pathed_projection = (
-            isinstance(key, (FieldKey, FieldSqlKey)) and key.path != ()
-        )
-        collides = (
-            public_name is not None
-            and public_name in self._source_fields
-            and not is_self_named_dimension
-            and not is_unnamed_star_agg
-            and not is_pathed_projection
-        )
-        check_metric_name_collision(
-            name=public_name if collides else None,
-            dataset=self._host_dataset_name,
-            suggestion=self._collision_suggestion(
-                declared_name=declared_name, public_name=public_name, canonical_alias=canonical_alias,
-            ) if collides else None,
-        )
+    def _validate_alias_collisions(self, *, declared_name: str, canonical_alias: Optional[str]) -> None:
+        """A renamed metric's canonical alias may not shadow a source field (a user-written name may)."""
         check_canonical_alias_shadows_field(
             expression=declared_name,
             canonical=canonical_alias if (
@@ -223,12 +144,7 @@ class ValueRegistry:
         description: Optional[str] = None,
         is_dimension: bool = False,
     ) -> SlotId:
-        self._validate_alias_collisions(
-            key=key,
-            declared_name=declared_name,
-            public_name=public_name,
-            canonical_alias=canonical_alias,
-        )
+        self._validate_alias_collisions(declared_name=declared_name, canonical_alias=canonical_alias)
 
         existing_sid = self._by_key.get(key)
         if existing_sid is not None:
@@ -267,6 +183,11 @@ class ValueRegistry:
         if public_name is not None:
             self._taken_names.add(public_name)
         public_aliases = [public_name] if public_name is not None else []
+        slot_type = type if type is not None else self._typing.type_of(key)
+        if element_type is None:
+            element_type = self._typing.element_type_of(key, slot_type)
+        if not type_is_explicit:
+            preserve_native_type = preserve_native_type or self._typing.preserves_native_type(key, slot_type)
         slot = ValueSlot(
             id=sid,
             key=key,
@@ -276,7 +197,7 @@ class ValueRegistry:
             hidden=hidden,
             phase=phase,
             label=label,
-            type=type,
+            type=slot_type,
             element_type=element_type,
             type_is_explicit=type_is_explicit,
             preserve_native_type=preserve_native_type,
@@ -325,8 +246,10 @@ class ValueRegistry:
         )
         if element_type is not None and slot.element_type is None:
             updates["element_type"] = element_type
-        if type_is_explicit and type is not None and slot.type in (None, type):
+        if type_is_explicit and type is not None and (slot.type == type or not slot.type_is_explicit):
+            updates["type"] = type
             updates["type_is_explicit"] = True
+            updates["element_type"] = (element_type or slot.element_type) if type is DataType.ARRAY else None
         if preserve_native_type and not slot.preserve_native_type:
             updates["preserve_native_type"] = True
         if updates:
@@ -397,8 +320,8 @@ def _iter_slot_deps(key: ValueKey):
     if isinstance(key, AggregateKey):
         yield key
         return
-    if isinstance(key, TransformKey):
-        # input / partition_keys / time_key get their own slots so the generator
+    if isinstance(key, (TransformKey, WindowKey)):
+        # input / partition_keys / time_key (a window's operands and keys) get their own slots so the generator
         # renders PARTITION BY / ORDER BY against named projections.
         yield key
         for child in key.children():
@@ -454,10 +377,12 @@ class ProjectionPlanner:
         metrics: List[DeclaredMetric],
         filters: List[BoundFilter],
         order: List[OrderSpec],
+        typing: SlotTyping,
         source_field_names: Optional[FrozenSet[str]] = None,
         host_dataset_name: str = _HOST_FALLBACK_NAME,
     ) -> ProjectionPlan:
         registry = ValueRegistry(
+            typing=typing,
             source_field_names=source_field_names,
             host_dataset_name=host_dataset_name,
         )
@@ -544,6 +469,8 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         return alias
     if isinstance(key, TransformKey):
         return f"_{key.op}_inner"
+    if isinstance(key, WindowKey):
+        return f"_{key.function}_window"
     if isinstance(key, ArithmeticKey):
         return f"_arith_{key.op}"
     if isinstance(key, ScalarCallKey):

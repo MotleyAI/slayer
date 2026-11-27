@@ -1,4 +1,4 @@
-"""Model filters whose dataset reaches itself are refused, at both save doors and at query time."""
+"""Dataset filters that reach their own dataset are refused, at both save doors and at query time."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ async def _stored_filters(engine: SlayerQueryEngine, name: str) -> list[str]:
 
 
 async def _ids(engine: SlayerQueryEngine, source: str) -> set[int]:
-    resp = await engine.execute(SlayerQuery.model_validate({"population": source, "dimensions": ["id"]}))
+    resp = await engine.execute(SlayerQuery.model_validate({"population": source, "dimensions": [f"{source}.id"]}))
     return ids(resp, source)
 
 
@@ -78,7 +78,7 @@ class TestSaveRefusesCycles:
 
     async def test_cycle_through_a_derived_column(self, engine, door):
         await _save(engine, _dataset("a", "b", filters=["a_to_b.flag = 1"]), door=door)
-        b = _dataset("b", "a", "c", filters=["a_flag = 1"], extra=[DatasetField(name="a_flag", datatype=DataType.INTEGER, sql="b_to_a.flag")])
+        b = _dataset("b", "a", "c", filters=["b.a_flag = 1"], extra=[DatasetField(name="a_flag", datatype=DataType.INTEGER, expression="b_to_a.flag")])
         with pytest.raises(DatasetFilterCycleError):
             await _save(engine, b, door=door)
         assert await _stored_filters(engine, "b") == []

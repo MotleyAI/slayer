@@ -41,7 +41,7 @@ async def exec_engine(request):
 
 
 def _q(mode=None):
-    kw = {"dimensions": ["region"], "metrics": [reagg("avg", INNER_CITY, name="acc")]}
+    kw = {"dimensions": ["sales.region"], "metrics": [reagg("avg", INNER_CITY, name="acc")]}
     if mode is not None:
         kw["to_many_handling"] = mode
     return sales_q(**kw)
@@ -53,7 +53,7 @@ class TestBroadcast:
         explicit broadcast — EVERY region row carries the global average of city
         totals, and the warning names region with a non-empty reason plus the remedy."""
         resp = await exec_engine.execute(_q("broadcast"))
-        vals = {k[0]: v["sales.acc"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["acc"] for k, v in region_key(resp).items()}
         # the global value lands on every region row, not just a couple.
         for value in vals.values():
             assert float(value) == pytest.approx(BROADCAST_GLOBAL_AVG_CITY)
@@ -71,7 +71,7 @@ class TestAssociate:
         associate — each region aggregates the distinct city cells associated with
         it; Alpha's total counts in both North and South."""
         resp = await exec_engine.execute(_q(mode))
-        vals = {k[0]: v["sales.acc"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["acc"] for k, v in region_key(resp).items()}
         for region, expected in ASSOCIATE_AVG_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
         (w,) = associated_warnings(resp)
@@ -81,8 +81,8 @@ class TestAssociate:
         """The two modes are observably different on this shape."""
         assoc = await exec_engine.execute(_q("associate"))
         bcast = await exec_engine.execute(_q("broadcast"))
-        a = {k[0]: v["sales.acc"] for k, v in region_key(assoc).items()}
-        b = {k[0]: v["sales.acc"] for k, v in region_key(bcast).items()}
+        a = {k[0]: v["acc"] for k, v in region_key(assoc).items()}
+        b = {k[0]: v["acc"] for k, v in region_key(bcast).items()}
         assert float(a["North"]) != pytest.approx(float(b["North"]))
 
 
@@ -96,7 +96,7 @@ class TestErrorMode:
         msg = str(ei.value)
         assert not isinstance(ei.value, NotImplementedError)
         # a genuine error-mode refusal, not the generic expression-nesting gate
-        # (whose message echoes 'partition_by' from the formula).
+        # (whose message echoes 'partition_by' from the expression).
         assert "nested inside the expression aggregated" not in msg
         assert "region" in msg
         assert "partition_by" in msg
@@ -110,8 +110,8 @@ class TestExplicitOuterKeyUnattributable:
         # product is a query dimension but not a function of the [city,region]
         # operand cells, so it is unattributable to the operand dataset.
         return sales_q(
-            dimensions=["region", "product"], to_many_handling=mode,
-            metrics=[reagg("avg", INNER_CR, name="acc", partition_by="product")])
+            dimensions=["sales.region", "sales.product"], to_many_handling=mode,
+            metrics=[reagg("avg", INNER_CR, name="acc", partition_by="sales.product")])
 
     async def test_broadcast_mode_refuses(self, exec_engine):
         query = self._pq("broadcast")
@@ -137,13 +137,13 @@ class TestExpressionGrainNonTransitivity:
         carries its band's cell value and region broadcasts with a warning."""
         band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         resp = await exec_engine.execute(sales_q(
-            dimensions=[band, "region"],
+            dimensions=[band, "sales.region"],
             metrics=[QueryMetric(
-                metric="avg(sum(amount, partition_by=spend_band))", alias="abt")],
+                metric="avg(sum(sales.amount, partition_by=spend_band))", alias="abt")],
             to_many_handling="broadcast"))
-        by = rows_by(resp, "sales.spend_band", "sales.region")
+        by = rows_by(resp, "spend_band", "sales.region")
         for (bandv, _region), cell in by.items():
-            assert float(cell["sales.abt"]) == pytest.approx(
+            assert float(cell["abt"]) == pytest.approx(
                 SHAPE_B_BAND_TOTAL[bandv])
         (w,) = broadcast_warnings(resp)
         assert any(d.dimension == "region" for d in w.dimensions)
@@ -157,10 +157,10 @@ class TestJoinedDimensionSeeding:
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
             metrics=[QueryMetric(
-                metric="avg(sum(amount, partition_by=amount))", alias="a")],
+                metric="avg(sum(corders.amount, partition_by=corders.amount))", alias="a")],
             to_many_handling="broadcast"))
         assert len(resp.data) == 2  # one row per region, no hidden duplicates
-        vals = {row["corders.customers.regions.name"]: float(row["corders.a"])
+        vals = {row["customers.regions.name"]: float(row["a"])
                 for row in resp.data}
         assert vals == {"North": 42.5, "South": 42.5}  # global avg of the 4 cells
         (w,) = broadcast_warnings(resp)

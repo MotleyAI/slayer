@@ -1,4 +1,4 @@
-"""DEV-1853 — edge-aware route search (``slayer.core.relationship_search``) and executable root recommendation.
+"""Edge-aware route search (``slayer.core.relationship_search``) and executable root recommendation.
 
 The graph spans the bidirectional edge set: parallel edges are distinct
 routes, recommendations emit edge-name tokens where a hop needs one, and an
@@ -58,7 +58,7 @@ class TestParallelEdgesAreDistinctRoutes:
 
 class TestEdgeNameShadowsModelToken:
     def test_shadowed_bare_token_is_not_executable(self) -> None:
-        # Edge a↔b named "c" shadows the bare model token "c" (names resolve
+        # Edge a↔b named "c" shadows the bare dataset token "c" (names resolve
         # first), so the a↔c hop has no executable token — unroutable, never
         # a path that would land on the wrong endpoint.
         models = edge_graph(nodes={"a", "b", "c"}, edges=[("a", "b", "c"), ("a", "c", None)])
@@ -98,8 +98,8 @@ class TestRecommendRootModel:
         assert rec.reachable is True
         assert rec.population is not None
         paths = {ip.input_item: ip.path for ip in rec.item_paths}
-        crossing = next(p for p in paths.values() if "." in p)
-        assert crossing.split(".")[0] in {"billing_customer",
+        crossing = next(p for p in paths.values() if p.count(".") > 1)
+        assert crossing.split(".")[1] in {"billing_customer",
                                           "shipping_customer"}, crossing
         # Executable means executable: the emitted paths bind and run.
         resp = await named_rec_engine.execute(SlayerQuery.model_validate(
@@ -116,7 +116,7 @@ class TestRecommendRootModel:
 
     async def test_reverse_reachability_growth(self) -> None:
         # a → b and c → b share no directed common root today; the
-        # bidirectional graph makes every model a valid root.
+        # bidirectional graph makes every dataset a valid root.
         def leaf(name: str, extra: str, joins=None) -> SlayerDataset:
             return SlayerDataset(
                 name=name, data_source="test", sql_table=name,
@@ -133,7 +133,7 @@ class TestRecommendRootModel:
         ]
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine_for(models, d)
-            rec = await engine.recommend_population(["a.x", "c.z"])
+            rec = await engine.recommend_population(["a.x", "c.z"], root_hint="a")
             assert rec.reachable is True
             assert {ip.input_item for ip in rec.item_paths} == {"a.x", "c.z"}
 
@@ -164,6 +164,10 @@ class TestPeerLoadsAreConcurrent:
                 return [("db", name) for name in peers]
 
             load_datasets = StorageBackend.load_datasets
+            _standalone_identities = StorageBackend._standalone_identities
+
+            async def _document_data_sources(self) -> list[str]:
+                return []
 
             async def get_dataset(self, name: str, data_source=None) -> SlayerDataset:
                 self.in_flight += 1

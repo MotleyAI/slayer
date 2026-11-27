@@ -1,7 +1,7 @@
 """Tests for importing DB column/table/dataset comments during ingestion.
 
-Column comments land on ``Column.description``, table comments on
-``SlayerModel.description``, and (BigQuery only) the dataset description on
+Column comments land on ``DatasetField.description``, table comments on
+``SlayerDataset.description``, and (BigQuery only) the dataset description on
 ``DatasourceConfig.description`` — always fill-if-empty, never overwriting.
 """
 
@@ -559,7 +559,7 @@ class TestIdempotentDescriptionFill:
         addition = _addition_for("orders", result.additions)
         assert addition is not None
         assert "discount" in addition.new_fields
-        # New columns carry their description implicitly — not double-counted.
+        # New fields carry their description implicitly — not double-counted.
         assert "discount" not in addition.described_fields
         loaded = await storage.get_dataset("orders", data_source="ds")
         assert _col(loaded, "discount").description == "Discount applied"
@@ -573,7 +573,7 @@ class TestAdditiveMergeDescriptions:
             data_source="ds",
             description=description,
             fields=[
-                DatasetField(name="a", sql="a", datatype=DataType.INTEGER, description=col_description)
+                DatasetField(name="a", expression="a", datatype=DataType.INTEGER, description=col_description)
             ],
         )
 
@@ -584,7 +584,7 @@ class TestAdditiveMergeDescriptions:
             data_source="ds",
             description="fresh model desc",
             fields=[
-                DatasetField(name="a", sql="a", datatype=DataType.INTEGER, description="fresh col desc")
+                DatasetField(name="a", expression="a", datatype=DataType.INTEGER, description="fresh col desc")
             ],
         )
 
@@ -816,7 +816,7 @@ class TestIdempotentDatasourceDescription:
             e.dataset_name == "" and "datasource" in e.error.lower()
             for e in result.errors
         )
-        # Model ingestion itself still succeeded.
+        # Dataset ingestion itself still succeeded.
         assert _addition_for("t", result.additions) is not None
 
 

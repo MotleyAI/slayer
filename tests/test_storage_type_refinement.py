@@ -1,11 +1,10 @@
-"""DEV-1361: storage-driven type refinement on load.
+"""Storage-driven type refinement on load.
 
 The v4→v5 dict migrator does coarse rename only (``number`` → ``DOUBLE``).
 A separate sync helper, ``slayer.live_schema.type_refinement.refine_dict_with_live_schema``,
-introspects the model's datasource and refines ``DOUBLE`` → ``INT`` for base
-columns whose live SQL type is integer. Storage backends call this helper
-during ``get_model`` and write back the refined dict so subsequent loads are
-free.
+introspects the dataset's datasource and refines ``DOUBLE`` → ``INT`` for base
+fields whose live SQL type is integer. Storage backends call this helper
+during ``get_dataset`` in memory; ``slayer storage upgrade`` persists the result.
 
 Hard-fail behavior: if the datasource is unreachable, the SQLAlchemy connect
 error propagates out of ``get_model``. Same effective behavior as a query
@@ -66,7 +65,7 @@ def sqlite_with_int_double_text():
     """A real SQLite file with three columns of distinct types so live
     introspection produces a meaningful Dict[str, DataType].
 
-    DEV-1538: SQLite-aware refinement is probe-driven, so the fixture
+    SQLite-aware refinement is probe-driven, so the fixture
     inserts integer rows into ``id`` and ``qty`` (the columns the tests
     expect to narrow DOUBLE → INT). Without data, the probe returns
     ``None`` and the narrowing wouldn't fire.
@@ -77,7 +76,7 @@ def sqlite_with_int_double_text():
             conn.execute(
                 "CREATE TABLE items (id INTEGER PRIMARY KEY, amount REAL, name TEXT, qty INTEGER)"
             )
-            # DEV-1538: integer rows so the probe positively certifies INT
+            # Integer rows so the probe positively certifies INT
             # for id and qty. amount has no rows here on purpose — that
             # gives the probe no evidence and exercises the
             # "REAL-declared, empty storage" path that
@@ -103,7 +102,7 @@ class V4Store(TypedDict):
 
 @pytest.fixture
 async def storage_with_v4_model(sqlite_with_int_double_text) -> AsyncGenerator[V4Store, None]:
-    """A YAMLStorage backend with a hand-written v4 model on disk pointing at
+    """A YAMLStorage backend with a hand-written v4 dataset on disk pointing at
     the ``items`` table. ``id`` and ``qty`` are INT in the live DB but stored
     as legacy ``number`` in the YAML — refinement should narrow them to
     ``INT`` on first load. ``amount`` is REAL in the live DB → stays
@@ -128,7 +127,7 @@ async def storage_with_v4_model(sqlite_with_int_double_text) -> AsyncGenerator[V
             f,
         )
 
-    # v4 model file at the v4 namespaced layout. All numeric columns use the
+    # v4 dataset file at the v4 namespaced layout. All numeric fields use the
     # legacy ``number`` value; the migrator coarsens them to ``DOUBLE`` on
     # load, then introspection refines INT-backed ones back to ``INT``.
     models_dir = os.path.join(base, "models", "live")
@@ -146,7 +145,7 @@ async def storage_with_v4_model(sqlite_with_int_double_text) -> AsyncGenerator[V
                     {"name": "amount", "sql": "amount", "type": "number"},
                     {"name": "name", "sql": "name", "type": "string"},
                     {"name": "qty", "sql": "qty", "type": "number"},
-                    # Derived (non-base) numeric column: refinement must leave
+                    # Derived (non-base) numeric field: refinement must leave
                     # this alone because its sql isn't a bare identifier.
                     {"name": "double_amount", "sql": "items.amount * 2", "type": "number"},
                 ],
@@ -182,8 +181,8 @@ class TestRefineDictWithLiveSchema:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "id", "sql": "id", "datatype": "Float", "primary_key": True},
-                {"name": "qty", "sql": "qty", "datatype": "Float"},
+                {"name": "id", "expression": "id", "datatype": "Float", "primary_key": True},
+                {"name": "qty", "expression": "qty", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
@@ -198,7 +197,7 @@ class TestRefineDictWithLiveSchema:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "amount", "sql": "amount", "datatype": "Float"},
+                {"name": "amount", "expression": "amount", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
@@ -212,8 +211,8 @@ class TestRefineDictWithLiveSchema:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "name", "sql": "name", "datatype": "String"},
-                {"name": "amount", "sql": "amount", "datatype": "Float"},
+                {"name": "name", "expression": "name", "datatype": "String"},
+                {"name": "amount", "expression": "amount", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
@@ -227,9 +226,9 @@ class TestRefineDictWithLiveSchema:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                # Non-bare sql: this is a derived column whose live type is
+                # Non-bare sql: this is a derived field whose live type is
                 # unknown — refinement must NOT touch it even if id is INT.
-                {"name": "double_id", "sql": "id * 2", "datatype": "Float"},
+                {"name": "double_id", "expression": "id * 2", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
@@ -238,13 +237,13 @@ class TestRefineDictWithLiveSchema:
         assert d["fields"][0]["datatype"] == "Float"
 
     async def test_skips_query_backed_models(self) -> None:
-        """Models without ``sql_table`` (e.g. query-backed) must short-circuit."""
+        """Datasets without ``sql_table`` (e.g. query-backed) must short-circuit."""
         d = {
             "name": "rollup",
             "data_source": "live",
-            "source_queries": [{"population": "items", "metrics": [{"metric": "sum(qty)"}]}],
+            "source_queries": [{"population": "items", "metrics": [{"metric": "sum(items.qty)"}]}],
             "fields": [
-                {"name": "qty_sum", "sql": "qty_sum", "datatype": "Float"},
+                {"name": "qty_sum", "expression": "qty_sum", "datatype": "Float"},
             ],
         }
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
@@ -253,13 +252,13 @@ class TestRefineDictWithLiveSchema:
         assert d["fields"][0]["datatype"] == "Float"
 
     async def test_skips_sql_mode_models(self) -> None:
-        """Models in ``sql`` source-mode (explicit subquery) must short-circuit."""
+        """Datasets in ``sql`` source-mode (explicit subquery) must short-circuit."""
         d = {
             "name": "rollup",
             "sql": "SELECT * FROM items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "Float"},
+                {"name": "qty", "expression": "qty", "datatype": "Float"},
             ],
         }
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
@@ -268,14 +267,13 @@ class TestRefineDictWithLiveSchema:
         assert d["fields"][0]["datatype"] == "Float"
 
     async def test_unreachable_datasource_propagates(self) -> None:
-        """DS unreachable → SQLAlchemy connect error propagates. Hard-fail per
-        DEV-1361 plan."""
+        """DS unreachable → SQLAlchemy connect error propagates (hard-fail)."""
         d = {
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "Float"},
+                {"name": "qty", "expression": "qty", "datatype": "Float"},
             ],
         }
         # An unreachable Postgres URL → connect raises during introspection.
@@ -293,7 +291,7 @@ class TestRefineDictWithLiveSchema:
 
 
 # ---------------------------------------------------------------------------
-# YAMLStorage end-to-end: refinement + write-back on first load
+# YAMLStorage end-to-end: refinement on load
 # ---------------------------------------------------------------------------
 
 
@@ -307,49 +305,22 @@ class TestYamlStorageRefinementOnLoad:
         assert types["qty"] == DataType.INTEGER
         assert types["amount"] == DataType.FLOAT
         assert types["name"] == DataType.STRING
-        # Non-base derived column stays at DOUBLE (no refinement attempted).
+        # Non-base derived field stays at DOUBLE (no refinement attempted).
         assert types["double_amount"] == DataType.FLOAT
 
-    async def test_first_load_writes_back_v5_with_refined_types(
-        self, storage_with_v4_model: V4Store
-    ) -> None:
-        await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
-        # Re-read raw YAML; the storage layer writes back at CURRENT_VERSIONS,
-        # whatever that currently is. Pre-DEV-1480 this was hard-coded to 6;
-        # post-bump it's whatever migrations.py declares.
+    async def test_first_load_refines_in_memory_only(self, storage_with_v4_model: V4Store) -> None:
         with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
-            raw = yaml.safe_load(f)
-        assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        types_by_name = {c["name"]: c["datatype"] for c in raw["fields"]}
-        assert types_by_name["id"] == "Integer"
-        assert types_by_name["qty"] == "Integer"
-        assert types_by_name["amount"] == "Float"
-        assert types_by_name["name"] == "String"
-        assert types_by_name["double_amount"] == "Float"
-
-    async def test_second_load_does_not_introspect(self, storage_with_v4_model: V4Store) -> None:
-        """After write-back, the on-disk dict is v5 with refined types. The
-        migrator chain returns early (version >= current) and the storage
-        backend's refinement-helper invocation gate doesn't trigger."""
-        # First load: triggers refinement.
+            before = f.read()
         await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
-
-        # Now spy on _live_schema_for_datasource — it must NOT be called the
-        # second time around, because the model on disk is now v5 with refined
-        # types and the migrator chain returns immediately.
-        with patch(
-            "slayer.live_schema.schema_drift._live_schema_for_datasource",
-            wraps=_unreachable,
-        ) as spy:
-            await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
-            spy.assert_not_called()
+        with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            assert f.read() == before
 
     async def test_missing_datasource_entry_raises_on_v4_load(
         self, sqlite_with_int_double_text
     ) -> None:
-        """If the v4 model exists but its referenced datasource entry is gone,
-        ``get_model`` must raise — silently skipping refinement and writing the
-        v5 dict back would freeze base integer columns at ``DOUBLE`` forever
+        """If the v4 dataset exists but its referenced datasource entry is gone,
+        ``get_dataset`` must raise — silently skipping refinement and writing the
+        v5 dict back would freeze base integer fields at ``DOUBLE`` forever
         (next load short-circuits on the version check).
         """
         base = sqlite_with_int_double_text["tmpdir"]
@@ -377,12 +348,11 @@ class TestYamlStorageRefinementOnLoad:
         self, sqlite_with_int_double_text, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If introspection fails during first-load refinement, the error
-        propagates out of get_model — the v4 model isn't silently kept at
+        propagates out of get_dataset — the v4 dataset isn't silently kept at
         coarse types.
 
-        DEV-1538 update: the SQLite branch of ``refine_dict_with_live_schema``
-        opens its own SA engine. DEV-1551 update: that engine now comes from
-        ``engine_factory.get_engine``. Patch the factory directly so a
+        The SQLite branch of ``refine_dict_with_live_schema`` opens its own SA
+        engine via ``engine_factory.get_engine``. Patch the factory directly so a
         connect failure propagates identically.
         """
         base = sqlite_with_int_double_text["tmpdir"]
@@ -415,7 +385,7 @@ class TestYamlStorageRefinementOnLoad:
         def _boom(*_args, **_kw):
             raise OperationalError("simulated", None, Exception("connection refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
 
-        # DEV-1551: every engine consumer goes through engine_factory.get_engine;
+        # Every engine consumer goes through engine_factory.get_engine;
         # patching it surfaces the same connect failure the legacy
         # type_refinement.sa.create_engine patch used to.
         engine_factory.reset_cache()
@@ -434,17 +404,17 @@ def _unreachable(**kw):  # used as a wraps target only — the spy.assert_not_ca
 
 
 # ---------------------------------------------------------------------------
-# DEV-1538: load-time SQLite affinity probe on legacy-dict migration.
+# Load-time SQLite affinity probe on legacy-dict migration.
 #
 # The v5 refinement is wrong on SQLite because it trusts the declared
-# affinity. The DEV-1538 fix:
+# affinity. The fix:
 #
-# 1. SQLite branch in ``refine_dict_with_live_schema`` runs the per-column
-#    value probe for every persisted INT base column AND skips the existing
+# 1. SQLite branch in ``refine_dict_with_live_schema`` runs the per-field
+#    value probe for every persisted INT base field AND skips the existing
 #    DOUBLE → INT narrowing entirely.
-# 2. Already-v7 dicts on SQLite remain untouched on load — DEV-1538 only
+# 2. Already-v7 dicts on SQLite remain untouched on load — the probe only
 #    affects the migration-write-back path. Re-ingest is the auto-heal for
-#    v7 models.
+#    v7 datasets.
 # 3. The narrowing is unchanged on non-SQLite datasources.
 # ---------------------------------------------------------------------------
 
@@ -461,7 +431,7 @@ def _create_sqlite_with_int_storage(db_path: str, values: list) -> None:
 
 
 class TestRefineSqliteAffinityProbe:
-    """DEV-1538: ``refine_dict_with_live_schema`` SQLite branch."""
+    """``refine_dict_with_live_schema`` SQLite branch."""
 
     def _ds_for(self, db_path: str) -> DatasourceConfig:
         return DatasourceConfig(name="live", type="sqlite", database=db_path)
@@ -478,7 +448,7 @@ class TestRefineSqliteAffinityProbe:
             "data_source": "live",
             "fields": [
                 {
-                    "name": "qty", "sql": "qty",
+                    "name": "qty", "expression": "qty",
                     "datatype": "Integer",
                     "format": {"type": "integer"},
                 },
@@ -494,10 +464,10 @@ class TestRefineSqliteAffinityProbe:
     async def test_sqlite_double_narrows_to_int_when_probe_certifies_int(
         self, tmp_path: Path
     ) -> None:
-        """On SQLite, the DEV-1361 DOUBLE → INT narrowing is now probe-
-        verified rather than declared-type-driven. With all-integer
-        storage, the probe certifies INT and the narrowing fires (the
-        DEV-1361 contract is preserved on SQLite when the probe agrees).
+        """On SQLite, the DOUBLE → INT narrowing is probe-verified
+        rather than declared-type-driven. With all-integer storage, the
+        probe certifies INT and the narrowing fires (the narrowing
+        contract is preserved on SQLite when the probe agrees).
         """
         db_path = str(tmp_path / "live.db")
         _create_sqlite_with_int_storage(db_path, [1, 2, 3])
@@ -507,7 +477,7 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "Float"},
+                {"name": "qty", "expression": "qty", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(db_path)
@@ -517,8 +487,8 @@ class TestRefineSqliteAffinityProbe:
     async def test_sqlite_double_stays_double_when_probe_says_double(
         self, tmp_path: Path
     ) -> None:
-        """A persisted DOUBLE column stays DOUBLE when the probe sees REAL
-        values — the DEV-1361 narrowing would have flipped it to INT based
+        """A persisted DOUBLE field stays DOUBLE when the probe sees REAL
+        values — the DOUBLE → INT narrowing would have flipped it to INT based
         on the declared affinity, but the probe knows better."""
         db_path = str(tmp_path / "live.db")
         _create_sqlite_with_int_storage(db_path, [1, 0.5, 0.7])
@@ -528,7 +498,7 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "Float"},
+                {"name": "qty", "expression": "qty", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(db_path)
@@ -548,7 +518,7 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "Float"},
+                {"name": "qty", "expression": "qty", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(db_path)
@@ -560,7 +530,7 @@ class TestRefineSqliteAffinityProbe:
         assert d["fields"][0]["datatype"] == "Float"
 
     async def test_postgres_still_narrows_double_to_int(self) -> None:
-        """Sanity: the DEV-1361 narrowing rule is preserved for non-SQLite
+        """Sanity: the DOUBLE → INT narrowing rule is preserved for non-SQLite
         datasources. (Postgres datasource is unreachable here, but the
         SQLite-only carve-out must not apply.)"""
         d = {
@@ -568,7 +538,7 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "Float"},
+                {"name": "qty", "expression": "qty", "datatype": "Float"},
             ],
         }
         # Use a closed-port Postgres URL; the connect must raise (not
@@ -598,7 +568,7 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "Integer"},
+                {"name": "qty", "expression": "qty", "datatype": "Integer"},
             ],
         }
         ds = self._ds_for(db_path)
@@ -606,7 +576,7 @@ class TestRefineSqliteAffinityProbe:
         assert d["fields"][0]["datatype"] == "Integer"
 
     async def test_custom_format_preserved_on_widening(self, tmp_path: Path) -> None:
-        """A user-set custom format on a widening column is left untouched."""
+        """A user-set custom format on a widening field is left untouched."""
         db_path = str(tmp_path / "live.db")
         _create_sqlite_with_int_storage(db_path, [1, 0.5, 0.7])
 
@@ -616,7 +586,7 @@ class TestRefineSqliteAffinityProbe:
             "data_source": "live",
             "fields": [
                 {
-                    "name": "qty", "sql": "qty",
+                    "name": "qty", "expression": "qty",
                     "datatype": "Integer",
                     "format": {
                         "type": "currency",
@@ -637,7 +607,7 @@ class TestRefineSqliteAffinityProbe:
     async def test_sqlite_int_with_text_storage_widens_to_text(
         self, tmp_path: Path
     ) -> None:
-        """Persisted INT column whose live storage is non-coercible TEXT
+        """Persisted INT field whose live storage is non-coercible TEXT
         widens to TEXT and the auto-default integer format is cleared."""
         db_path = str(tmp_path / "live.db")
         _create_sqlite_with_int_storage(db_path, [1, "abc", "xyz"])
@@ -648,7 +618,7 @@ class TestRefineSqliteAffinityProbe:
             "data_source": "live",
             "fields": [
                 {
-                    "name": "qty", "sql": "qty",
+                    "name": "qty", "expression": "qty",
                     "datatype": "Integer",
                     "format": {"type": "integer"},
                 },
@@ -663,11 +633,11 @@ class TestRefineSqliteAffinityProbe:
 
 
 class TestHasRefineableColumnsSqliteIntBranch:
-    """DEV-1538: SQLite-INT widening is gated by ``has_sqlite_widenable_columns``
-    (best-effort, no DS hard-fail). DEV-1361 DOUBLE narrowing stays gated by
+    """SQLite-INT widening is gated by ``has_sqlite_widenable_columns``
+    (best-effort, no DS hard-fail). DOUBLE narrowing stays gated by
     ``has_refineable_columns`` (DS required). The split was added after Codex
     caught a regression where the broadened predicate made non-SQLite legacy
-    INT-only dicts hard-fail on missing DS — pre-DEV-1538 they didn't."""
+    INT-only dicts hard-fail on missing DS — before the probe they didn't."""
 
     def test_sqlite_int_base_column_is_widenable_not_refineable(self) -> None:
         d = {
@@ -675,10 +645,10 @@ class TestHasRefineableColumnsSqliteIntBranch:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "Integer"},
+                {"name": "qty", "expression": "qty", "datatype": "Integer"},
             ],
         }
-        # INT base columns are *widenable* (best-effort), not *refineable*
+        # INT base fields are *widenable* (best-effort), not *refineable*
         # (mandatory DS); this asymmetry keeps non-SQLite legacy INT-only
         # dicts loadable when the datasource entry is gone.
         assert has_sqlite_widenable_fields(d) is True
@@ -690,7 +660,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "amount", "sql": "amount", "datatype": "Float"},
+                {"name": "amount", "expression": "amount", "datatype": "Float"},
             ],
         }
         assert has_refineable_fields(d) is True
@@ -699,22 +669,22 @@ class TestHasRefineableColumnsSqliteIntBranch:
     async def test_sqlite_legacy_dict_with_int_loads_when_datasource_missing(
         self, tmp_path: Path, caplog
     ) -> None:
-        """DEV-1538: when a legacy dict has ONLY INT base columns (no
+        """When a legacy dict has ONLY INT base fields (no
         DOUBLE), a missing datasource is NOT a hard fail. The persisted
-        INT is a safe default — re-ingest will heal any mis-typed columns
+        INT is a safe default — re-ingest will heal any mis-typed fields
         once the DS is back. A WARNING is logged so the skip is visible.
 
         This is the corrected behavior after Codex caught a regression
         where the original predicate broadening made non-SQLite legacy
-        INT-only dicts hard-fail on missing DS (pre-DEV-1538 they didn't).
+        INT-only dicts hard-fail on missing DS (before the probe they didn't).
         """
         base = str(tmp_path)
         models_dir = os.path.join(base, "models", "live")
         os.makedirs(models_dir, exist_ok=True)
         # Use a recent legacy version that genuinely carries the modern
-        # "INT" type token. (Pre-DEV-1361 v4 dicts only know the legacy
+        # "INT" type token. (v4 dicts only know the legacy
         # "number" / "string" tokens — pinning "version": 4 with "type":
-        # "INT" wouldn't represent any real on-disk model shape.)
+        # "INT" wouldn't represent any real on-disk dataset shape.)
         legacy_version = _NEWEST_REFINED_VERSION
         with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
@@ -730,7 +700,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
                 f,
             )
         # Don't register the datasource — load should succeed (skip probe,
-        # log warning), NOT hard-fail like a DOUBLE-base-column dict would.
+        # log warning), NOT hard-fail like a DOUBLE-base-field dict would.
         storage = YAMLStorage(base_dir=base)
         with caplog.at_level(logging.WARNING, logger="slayer.storage.base"):
             loaded = await storage.get_dataset("items", data_source="live")
@@ -738,15 +708,15 @@ class TestHasRefineableColumnsSqliteIntBranch:
         col = next(c for c in loaded.fields if c.name == "qty")
         # Persisted INT preserved as the safe default.
         assert col.datatype is DataType.INTEGER
-        # Warning emitted naming the model + datasource.
+        # Warning emitted naming the dataset + datasource.
         msgs = [r.getMessage() for r in caplog.records]
         assert any("items" in m and "live" in m for m in msgs), msgs
 
     async def test_legacy_dict_with_double_still_raises_when_datasource_missing(
         self, tmp_path: Path
     ) -> None:
-        """The DEV-1361 hard-fail contract is preserved: a legacy dict with
-        ANY DOUBLE base column still hard-fails when the datasource is
+        """The hard-fail contract is preserved: a legacy dict with
+        ANY DOUBLE base field still hard-fails when the datasource is
         missing (live introspection is required to narrow safely)."""
         base = str(tmp_path)
         models_dir = os.path.join(base, "models", "live")
@@ -760,7 +730,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
                     "sql_table": "items",
                     "data_source": "live",
                     "columns": [
-                        # DOUBLE base column → DEV-1361 narrowing required.
+                        # DOUBLE base field → narrowing required.
                         {"name": "amount", "sql": "amount", "type": "DOUBLE"},
                     ],
                 },
@@ -795,7 +765,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
 
 
 class TestV7SqliteModelNotAutoRepairedOnLoad:
-    """DEV-1538 non-goal: already-current-version SQLite models with the
+    """Non-goal: already-current-version SQLite datasets with the
     wrong INT type are NOT auto-repaired on load. Re-ingest is the
     auto-heal path. Loading must not trigger the probe."""
 
@@ -830,12 +800,12 @@ class TestV7SqliteModelNotAutoRepairedOnLoad:
                     "data_source": "live",
                     "fields": [
                         {
-                            "name": "id", "sql": "id",
+                            "name": "id", "expression": "id",
                             "datatype": "Integer", "primary_key": True,
                         },
                         # WRONG persisted type: live storage is REAL but
                         # persisted INT. Load must NOT widen it.
-                        {"name": "qty", "sql": "qty", "datatype": "Integer"},
+                        {"name": "qty", "expression": "qty", "datatype": "Integer"},
                     ],
                 },
                 f,
@@ -903,10 +873,10 @@ class TestCliMigrateTypes:
 
     async def test_missing_datasource_raises_for_refineable_model(self, tmp_path) -> None:  # NOSONAR(S7503) — pytest-asyncio test body; sync run via _run_storage
         """Mirror of the ABC's raise: the CLI must fail loudly rather than
-        silently report 'nothing to refine' for a v4 model whose datasource
+        silently report 'nothing to refine' for a v4 dataset whose datasource
         entry has been removed."""
         base = str(tmp_path)
-        # Lay down a v4 YAML model with a refineable DOUBLE base column but
+        # Lay down a v4 YAML dataset with a refineable DOUBLE base field but
         # no datasources/<name>.yaml file alongside it.
         models_dir = os.path.join(base, "models", "live")
         os.makedirs(models_dir, exist_ok=True)
@@ -929,7 +899,7 @@ class TestCliMigrateTypes:
             )
 
     async def test_missing_datasource_silent_for_text_only_model(self, tmp_path) -> None:  # NOSONAR(S7503) — pytest-asyncio test body; sync run via _run_storage
-        """Models with no refineable DOUBLE base columns (text-only here) must
+        """Datasets with no refineable DOUBLE base fields (text-only here) must
         load through the CLI without requiring a live datasource entry."""
         base = str(tmp_path)
         models_dir = os.path.join(base, "models", "live")
@@ -956,10 +926,10 @@ class TestCliMigrateTypes:
     def test_sqlite_int_only_legacy_dict_widens_via_cli(
         self, tmp_path, capsys,
     ) -> None:
-        """DEV-1538: ``slayer storage migrate-types`` must also surface
-        SQLite INT-only legacy models for widening (not just DOUBLE-only
+        """``slayer storage migrate-types`` must also surface
+        SQLite INT-only legacy datasets for widening (not just DOUBLE-only
         ones — the post-split CLI gate would otherwise skip them). The
-        CLI prints a before/after diff for the widened column."""
+        CLI prints a before/after diff for the widened field."""
         base = str(tmp_path)
         # Real SQLite DB with REAL storage for the INT-declared column.
         db_path = os.path.join(base, "live.db")
@@ -1000,7 +970,7 @@ class TestCliMigrateTypes:
     def test_missing_datasource_skips_silently_for_sqlite_int_only(
         self, tmp_path, capsys,
     ) -> None:
-        """DEV-1538 best-effort: an INT-only SQLite legacy dict with no
+        """Best-effort: an INT-only SQLite legacy dict with no
         registered datasource must NOT raise — the CLI logs a skip and
         returns False (re-run after restoring the datasource). The DOUBLE
         contract is independent and tested separately."""

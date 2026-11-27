@@ -18,9 +18,9 @@ So now in the context of a query with a known time dimension and known granulari
 
 Here we see the power of dynamic expressions - compare that e.g. to the Cube.js syntax that would require us to define the time-shifted version as a separate pre-defined measure in a cube, that hard-wires the time dimension and shift amount, and then yet another pre-defined measure that uses that to calculate the “change” quantity we want (now have fun pre-defining these measures for all needed time dimension/granularity combinations, and once you’ve done so have even more fun squishing the resulting cube model into agent context). 
 
-The final time-related transform currently available in SLayer is **last()**. This is different from the previous transforms because taking the last value (for every combination of other dimensions in the query) is guaranteed to change the cardinality by **collapsing the time dimension**, so again needs a subquery that can be joined to the rest of the query by the values of the remaining dimensions. 
+The final time-related operation is **last()**, an aggregation over an aggregate: it picks the value of the latest time bucket. This is different from the transforms above because taking the last value (for every combination of other dimensions in the query) consumes the time dimension and so changes the cardinality, again needing a subquery that is joined to the rest of the query by the values of the remaining dimensions. 
 
-Again, **this needs no additional arguments because we already know the time dimension and granularity from the query**. So if you want to only show e.g. revenue by customer only for the customers whose MoM spending has decreased in the last month, you can just group by customer_name and filter by last(change(sum(revenue))) < 0.
+Again, **this needs no additional arguments because we already know the time dimension and granularity from the query**. So if you want to only show e.g. revenue by customer only for the customers whose MoM spending has decreased in the last month, you can just group by `customers.name` and filter by `last(change(sum(orders.order_total))) < 0`.
 
 Each of these concepts is very **simple and natural at the semantic level**, but requires **nontrivial SQL semantics** (typically via a subquery) to implement. **SLayer offloads the effort of creating these from the agent, saving tokens, reducing error risk, and freeing the agent’s cognitive capacity and context for tasks you care about.**
 
@@ -30,22 +30,22 @@ Here is a complete example query on the demo for “monthly revenue for the last
 {
   "population": "orders",
   "metrics": [
-    "sum(order_total)",
-    "time_shift(sum(order_total), -1, 'year')"
+    "sum(orders.order_total)",
+    "time_shift(sum(orders.order_total), -1, 'year')"
   ],
   "dimensions": ["stores.regions.name"],
   "time_dimensions": [{
-    "field": "ordered_at",
+    "field": "orders.ordered_at",
     "granularity": "month",
     "date_range": "last 12 months"
   }],
-  "filter": ["last(cumsum(sum(order_total))) > 10000"]
+  "filter": ["last(cumsum(sum(orders.order_total))) > 10000"]
 }
 ```
 
 What would it take to define this in the semantic layer you’re currently using?
 
-Time *bounds* are natural too: nobody should compute dates by hand to ask for "last quarter". A `date_range` or filter takes periods and relative tokens directly — `"date_range": "last 3 months"`, `"date_range": ["2025-Q1", null]`, `"filter": ["created_at in 'this year'", "date_trunc('month', shipped_at) = date_trunc('month', created_at)"]` — each a half-open range resolved once per query, so trailing windows and `time_shift` still reach back past it; see [Time](../../concepts/time.md) for the full grammar.
+Time *bounds* are natural too: nobody should compute dates by hand to ask for "last quarter". A `date_range` or filter takes periods and relative tokens directly — `"date_range": "last 3 months"`, `"date_range": ["2025-Q1", null]`, `"filter": ["orders.created_at in 'this year'", "date_trunc('month', orders.shipped_at) = date_trunc('month', orders.created_at)"]` — each a half-open range resolved once per query, so trailing windows and `time_shift` still reach back past it; see [Time](../../concepts/time.md) for the full grammar.
 
 ---
 

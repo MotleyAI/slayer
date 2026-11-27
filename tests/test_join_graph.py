@@ -1,4 +1,4 @@
-"""Reachability and shortest routes over the bidirectional join multigraph (``slayer.core.relationship_search``).
+"""Reachability and shortest routes over the two-way relationship multigraph (``slayer.core.relationship_search``).
 
 Every declared edge is traversable in both directions and parallel edges between
 one pair are distinct routes. ``shortest_route`` returns the executable hop-token
@@ -14,16 +14,16 @@ from slayer.core.relationship_search import reachable, shortest_route
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 
 
-def _m(name: str, joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _m(name: str, relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name,
         data_source="mydb",
         sql_table=name,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="x_id", datatype=DataType.INTEGER),
         ],
-        relationships=joins or [],
+        relationships=relationships or [],
     )
 
 
@@ -75,7 +75,7 @@ class TestReachability:
         assert _reach(models, "order_items") == {"order_items", "orders"}
 
     def test_edge_to_unknown_target_is_skipped(self) -> None:
-        # Join target not in the loaded model set → edge dropped, no crash.
+        # Relationship target not in the loaded dataset set → edge dropped, no crash.
         models = [_m("orders", [_left("missing")])]
         assert _reach(models, "orders") == {"orders"}
 

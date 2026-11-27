@@ -34,7 +34,7 @@ from slayer.live_schema.schema_drift import EditDatasetDelete, validate_datasour
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient, SqlClient
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._cast_fixtures import check_try_cast_targets
+from tests._cast_fixtures import check_author_casts, check_try_cast_targets
 from tests._dev2120_fixtures import (
     DOCS_ROWS,
     LIB,
@@ -56,6 +56,7 @@ from tests._sql_mode_retype_fixtures import (
     stale_sql_dataset,
 )
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
+from tests.integration import _dev2458_matrix as dev2458
 from tests._reserved_alias_probe import (
     BIGQUERY_KEYWORDS,
     keyword_universe,
@@ -187,7 +188,7 @@ class TestBigQueryCommentIngestion:
         models, _ = bq_datasets
         cols = {c.name: c for c in models["orders"].fields}
         assert cols["payload"].description == "Structured payload"
-        # Flattened RECORD subfields (dotted names) never become columns.
+        # Flattened RECORD subfields (dotted names) never become fields.
         assert not any("." in name for name in cols)
 
     def test_types_sanity(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
@@ -397,6 +398,10 @@ async def test_try_cast_integer_targets(bq_dev2120_storage) -> None:
     await check_try_cast_targets(SlayerQueryEngine(storage=bq_dev2120_storage), dataset=LIB.name)
 
 
+async def test_author_casts(bq_dev2120_storage) -> None:
+    await check_author_casts(SlayerQueryEngine(storage=bq_dev2120_storage), dataset=LIB.name)
+
+
 async def test_dev2120_native_json_column(bq_dev2120_storage) -> None:
     await check_native_json(SlayerQueryEngine(storage=bq_dev2120_storage))
 
@@ -413,28 +418,28 @@ async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage: StorageBackend
     engine = SlayerQueryEngine(storage=bq_dev2120_storage)
     for column in ("zoned_ts", "wall_ts"):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "events", "dimensions": ["id", {"field": f"date_add({column}, 1, 'day')", "alias": "v"}],
-            "filter": [f"{column} < now()", f"{column} > date_add(now(), -36500, 'day')"],
+            "population": "events", "dimensions": ["events.id", {"field": f"date_add(events.{column}, 1, 'day')", "alias": "v"}],
+            "filter": [f"events.{column} < now()", f"events.{column} > date_add(now(), -36500, 'day')"],
         }))
-        got = {int(r["events.id"]): r["events.v"] for r in resp.data}
+        got = {int(r["events.id"]): r["v"] for r in resp.data}
         assert got == {1: datetime(2024, 3, 1, 10, 0), 2: datetime(2025, 6, 2, 23, 30)}, (column, resp.sql)
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "events",
-            "dimensions": ["id", column, {"field": f"date_trunc('month', {column})", "alias": "bucket"}],
+            "dimensions": ["events.id", f"events.{column}", {"field": f"date_trunc('month', events.{column})", "alias": "bucket"}],
         }))
-        rows = {int(r["events.id"]): (r[f"events.{column}"], r["events.bucket"]) for r in resp.data}
+        rows = {int(r["events.id"]): (r[f"events.{column}"], r["bucket"]) for r in resp.data}
         assert rows == {1: (datetime(2024, 2, 29, 10, 0), datetime(2024, 2, 1)),
                         2: (datetime(2025, 6, 1, 23, 30), datetime(2025, 6, 1))}, (column, resp.sql)
 
 
 # ---------------------------------------------------------------------------
-# List columns: REPEATED fields (spec: models/list-columns, models/schema-drift, queries/list-functions,
+# List fields: REPEATED fields (spec: models/list-columns, models/schema-drift, queries/list-functions,
 # queries/list-children, aggregations/collect)
 # ---------------------------------------------------------------------------
 
 
 def _stale_contractors(data_source: str) -> SlayerDataset:
-    """``contractors`` as stored before list columns: ``skills`` as TEXT."""
+    """``contractors`` as stored before list fields: ``skills`` as TEXT."""
     return SlayerDataset(name="stale", sql_table="contractors", data_source=data_source, fields=[
         DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="skills", datatype=DataType.STRING)])
 
@@ -474,7 +479,7 @@ def test_repeated_field_ingested(bq_lists) -> None:
 
 async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> None:
     engine = SlayerQueryEngine(storage=bq_lists[0])
-    stale = SlayerQuery.model_validate({"population": "stale", "dimensions": ["skills"]})
+    stale = SlayerQuery.model_validate({"population": "stale", "dimensions": ["stale.skills"]})
     with pytest.raises(SchemaDriftError) as info:
         await engine.execute(stale)
     assert "skills" in str(info.value), str(info.value)
@@ -484,7 +489,7 @@ async def test_refused_group_by_on_a_stale_list_column_is_drift(bq_lists) -> Non
 # NUMERIC / BIGNUMERIC ingest as DOUBLE: collect's typed ``[]`` fallback must unify with their ARRAY_AGG.
 _AMOUNT_ROWS = ("(1, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (2, 'a', NUMERIC '2.25', BIGNUMERIC '2.25', 2), "
                 "(3, 'a', NUMERIC '1.5', BIGNUMERIC '1.5', 1), (4, 'b', NULL, NULL, NULL)")
-_AMOUNT_COLUMNS = ("n", "big", "i")
+_AMOUNT_FIELDS = ("n", "big", "i")
 
 
 @pytest.fixture(scope="module")
@@ -503,26 +508,26 @@ def bq_amounts(bq_dataset, tmp_path_factory):
 
 async def test_collect_over_exact_numerics(bq_amounts) -> None:
     resp = await SlayerQueryEngine(storage=bq_amounts).execute(SlayerQuery.model_validate({
-        "population": "amounts", "dimensions": ["team"],
-        "metrics": [{"metric": f"collect({c})", "alias": f"{c}_set"} for c in _AMOUNT_COLUMNS],
+        "population": "amounts", "dimensions": ["amounts.team"],
+        "metrics": [{"metric": f"collect(amounts.{c})", "alias": f"{c}_set"} for c in _AMOUNT_FIELDS],
     }))
-    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_COLUMNS}
+    got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"{c}_set"]) or ()] for c in _AMOUNT_FIELDS}
            for r in resp.data}
     assert got == {"a": {"n": [1.5, 2.25], "big": [1.5, 2.25], "i": [1.0, 2.0]},
                    "b": {"n": [], "big": [], "i": []}}, resp.sql
-    assert all(r[f"amounts.{c}_set"] is not None for r in resp.data for c in _AMOUNT_COLUMNS), resp.data
+    assert all(r[f"{c}_set"] is not None for r in resp.data for c in _AMOUNT_FIELDS), resp.data
 
 
-# Last in the module: re-ingest re-types the shared ``stale`` model too. The BigQuery driver reports a
+# Last in the module: re-ingest re-types the shared ``stale`` dataset too. The BigQuery driver reports a
 # REPEATED result column by its element type, so only sqlglot typing finds the list (no untypeable shape).
-@pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores", untypeable=None))
+@pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", field="scores", untypeable=None))
 async def test_sql_mode_list_retype(bq_lists: tuple[StorageBackend, Any], sql: str, column: str, element: DataType) -> None:
     storage, ds = bq_lists
     engine = SlayerQueryEngine(storage=storage)
-    await storage.save_dataset(stale_sql_dataset(sql=sql, column=column, data_source=ds.name))
-    await check_validation_finding(engine, data_source=ds.name, column=column)
-    await check_query_carries_finding(engine, column=column)
-    await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)
+    await storage.save_dataset(stale_sql_dataset(sql=sql, field=column, data_source=ds.name))
+    await check_validation_finding(engine, data_source=ds.name, field=column)
+    await check_query_carries_finding(engine, field=column)
+    await check_reingest_retypes(engine, datasource=ds, table="contractors", field=column, element=element)
 
 
 # ---------------------------------------------------------------------------
@@ -552,3 +557,25 @@ def test_warm_statement_costs_one_request(bq_dataset, monkeypatch: pytest.Monkey
         sql=lambda marker: f"SELECT '{marker}' AS m",
     )
     assert_one_request_each(sent)
+
+
+# --------------------------------------------------------------------------- #
+# Spec: aggregations/distinct-and-percentiles — the analytic PERCENTILE_DISC collapsed by MAX (NULL keys, no GROUP BY,
+# several keys) and percentile_approx as the exact percentile.
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def bq_dev2458(bq_dataset, tmp_path_factory):
+    client, dataset_id = bq_dataset
+    for stmt in dev2458.statements(dialect="bigquery", prefix=f"{dataset_id}."):
+        client.query(stmt).result()
+    ds = _ds_config(dataset_id)
+    storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_dev2458")))
+    run_sync(storage.save_datasource(ds))
+    for model in dev2458.datasets(data_source=ds.name):
+        run_sync(storage.save_dataset(model))
+    return storage
+
+
+@pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_exact], ids=lambda c: c.__name__)
+async def test_distinct_and_percentiles(bq_dev2458, check) -> None:
+    await dev2458.run_check(check, storage=bq_dev2458)

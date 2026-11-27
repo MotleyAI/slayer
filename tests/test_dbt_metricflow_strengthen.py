@@ -54,10 +54,10 @@ def _metric(result: ConversionResult, name: str, dataset: str = "orders"):
     return next(m for m in _dataset(result, dataset).metrics if m.name == name)
 
 
-def _column_for(result: ConversionResult, expression: str, dataset: str = "orders"):
-    """The Column referenced by the leading ``<agg>(<col>, ...)`` in a formula."""
+def _field_for(result: ConversionResult, expression: str, dataset: str = "orders"):
+    """The field referenced by the leading ``<agg>(<col>, ...)`` in an expression."""
     match = re.match(r"\s*\w+\(\s*(\w+)\s*[,)]", expression)
-    assert match is not None, f"formula not in <agg>(<col>...) form: {expression!r}"
+    assert match is not None, f"expression not in <agg>(<col>...) form: {expression!r}"
     return next(c for c in _dataset(result, dataset).fields if c.name == match.group(1))
 
 
@@ -106,8 +106,9 @@ def test_percentile_without_value_clean_fails() -> None:
     assert any("p_nope" in (e.metric_name or e.message) for e in entries)
 
 
-@pytest.mark.parametrize("flag", ["use_discrete_percentile", "use_approximate_percentile"])
-def test_percentile_discrete_or_approx_flag_clean_fails(flag: str) -> None:
+@pytest.mark.parametrize(("flag", "agg"), [("use_discrete_percentile", "percentile_disc"),
+                                           ("use_approximate_percentile", "percentile_approx")])
+def test_percentile_discrete_or_approx_flag_converts(flag: str, agg: str) -> None:
     params = DbtMeasureAggParams(percentile=0.9, **{flag: True})
     project = DbtProject(
         semantic_models=[
@@ -119,8 +120,7 @@ def test_percentile_discrete_or_approx_flag_clean_fails(flag: str) -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "p_flag" for m in _dataset(result).metrics)
-    assert any("p_flag" in (e.metric_name or e.message) for e in _all_report_entries(result))
+    assert _metric(result, "p_flag").expression == f"{agg}(latency, p=0.9)"
 
 
 # ───────────────────────── Part 1.2 — ratio nullif guard ─────────────────────────
@@ -169,8 +169,8 @@ def test_sum_boolean_wraps_case_when() -> None:
     )
     result = _convert(project)
     m = _metric(result, "paid_orders")
-    assert re.fullmatch(r"sum\(\w+\)", m.expression)
-    col = _column_for(result, m.expression)
+    assert re.fullmatch(r"sum\(\w+\)", m.text)
+    col = _field_for(result, m.text)
     assert col.sql is not None
     norm = col.sql.upper().replace(" ", "")
     assert "CASEWHEN" in norm
@@ -210,8 +210,8 @@ def test_offset_window_maps_to_time_shift() -> None:
     )
     result = _convert(project)
     growth = _metric(result, "revenue_growth")
-    norm = growth.expression.replace(" ", "")
-    assert "time_shift(" in growth.expression
+    norm = growth.text.replace(" ", "")
+    assert "time_shift(" in growth.text
     assert "-1" in norm
     assert "month" in norm.lower()
 
@@ -235,7 +235,7 @@ def test_negative_offset_window_shifts_forward() -> None:
             ),
         ],
     )
-    shifted = parse_expr(_metric(_convert(project), "revenue_lead").expression)
+    shifted = parse_expr(_metric(_convert(project), "revenue_lead").text)
     assert isinstance(shifted, TransformCall)
     assert shifted.args[0] == Literal(value=Decimal(1))
 
@@ -295,7 +295,7 @@ def test_metric_level_filter_pushes_into_leaf_column() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_revenue")
-    col = _column_for(result, m.expression)
+    col = _field_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
@@ -332,7 +332,7 @@ def test_ratio_per_input_filters_push_down_independently() -> None:
     assert any(f and "region" in f and "US" in f for f in filters)
     assert any(f and "dept" in f and "sales" in f for f in filters)
     # nullif guard preserved around the (now filtered) denominator
-    assert "nullif(" in _metric(result, "us_margin_ratio").expression
+    assert "nullif(" in _metric(result, "us_margin_ratio").text
 
 
 def test_filter_accepts_list_intersection() -> None:
@@ -358,7 +358,7 @@ def test_filter_accepts_list_intersection() -> None:
     )
     result = _convert(project)
     m = _metric(result, "scoped_revenue")
-    col = _column_for(result, m.expression)
+    col = _field_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
     assert "status" in col.filter
@@ -413,7 +413,7 @@ def test_conversion_metric_clean_fails_with_category() -> None:
 def test_conversion_metric_stashes_funnel_params_in_meta() -> None:
     """A fully-resolved single-model funnel (both measures on one model) drops
     cleanly and stashes its funnel details (base/conversion measure, entity,
-    calculation) into that model's meta — nothing silently lost, consistent
+    calculation) into that dataset's meta — nothing silently lost, consistent
     with the other clean-fail branches."""
     project = DbtProject(
         semantic_models=[
@@ -578,7 +578,7 @@ def test_clean_fail_stashes_raw_construct_in_meta() -> None:
     ))
     model = _dataset(result)
     blob = model.meta or {}
-    # The dropped semantics are retained in the model's meta, not thrown away.
+    # The dropped semantics are retained in the dataset's meta, not thrown away.
     assert any(
         "non_additive" in str(k).lower() or "non_additive" in str(v).lower()
         for k, v in blob.items()
@@ -655,8 +655,8 @@ def test_offset_window_plural_granularity_normalized() -> None:
         ],
     )
     result = _convert(project)
-    f = _metric(result, "rev_2w").expression.replace(" ", "").lower()
-    assert "time_shift(" in _metric(result, "rev_2w").expression
+    f = _metric(result, "rev_2w").text.replace(" ", "").lower()
+    assert "time_shift(" in _metric(result, "rev_2w").text
     assert "-2" in f
     assert "week" in f
     assert "weeks" not in f
@@ -691,7 +691,7 @@ def test_offset_window_custom_granularity_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
-# ───────────────── Part 3.4 — filtered-column dedup ─────────────────
+# ───────────────── Part 3.4 — filtered-field dedup ─────────────────
 
 
 def test_same_measure_different_filters_make_distinct_columns() -> None:
@@ -710,8 +710,8 @@ def test_same_measure_different_filters_make_distinct_columns() -> None:
         ],
     )
     result = _convert(project)
-    us_col = _column_for(result, _metric(result, "us_rev").expression)
-    eu_col = _column_for(result, _metric(result, "eu_rev").expression)
+    us_col = _field_for(result, _metric(result, "us_rev").text)
+    eu_col = _field_for(result, _metric(result, "eu_rev").text)
     assert us_col.name != eu_col.name
     assert "US" in (us_col.filter or "")
     assert "EU" in (eu_col.filter or "")
@@ -733,12 +733,12 @@ def test_same_measure_same_filter_reuses_one_column() -> None:
         ],
     )
     result = _convert(project)
-    a = _column_for(result, _metric(result, "us_rev_a").expression)
-    b = _column_for(result, _metric(result, "us_rev_b").expression)
+    a = _field_for(result, _metric(result, "us_rev_a").text)
+    b = _field_for(result, _metric(result, "us_rev_b").text)
     assert a.name == b.name
 
 
-# ───────────────── Part 3.4 — cross-model filter reachability ─────────────────
+# ───────────────── Part 3.4 — cross-dataset filter reachability ─────────────────
 
 
 def _orders_customers_project(metric: DbtMetric) -> DbtProject:
@@ -771,14 +771,14 @@ def test_cross_model_filter_pushes_down_when_join_reachable() -> None:
     )
     result = _convert(_orders_customers_project(metric))
     m = _metric(result, "us_revenue", dataset="orders")
-    col = _column_for(result, m.expression, dataset="orders")
+    col = _field_for(result, m.text, dataset="orders")
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
 
 
 def test_cross_model_filter_unreachable_clean_fails() -> None:
-    # 'warehouse__zone' references an entity that orders has no join to.
+    # 'warehouse__zone' references an entity that orders has no relationship to.
     metric = DbtMetric(
         name="zone_revenue",
         type="simple",
@@ -792,10 +792,10 @@ def test_cross_model_filter_unreachable_clean_fails() -> None:
 
 
 def test_cross_model_filter_multi_hop_clean_fails() -> None:
-    """A filter on a model two hops away (orders → customers → regions) is
+    """A filter on a dataset two hops away (orders → customers → regions) is
     clean-failed: the dbt filter converter only emits a one-hop
     ``regions.zone`` path, which would not resolve from orders (it needs the
-    full ``customers__regions.zone`` join path). Full multi-hop support is
+    full ``customers__regions.zone`` relationship path). Full multi-hop support is
     tracked separately (DEV-1445)."""
     project = DbtProject(
         semantic_models=[
@@ -837,7 +837,7 @@ def test_cross_model_filter_multi_hop_clean_fails() -> None:
 
 def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
     """A filter on a foreign entity that no model owns as primary clean-fails:
-    convert_dbt_filter would otherwise fall back to a bare, invalid column."""
+    convert_dbt_filter would otherwise fall back to a bare, invalid field."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -867,7 +867,7 @@ def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
 
 def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
     """A simple metric whose filter lives only on type_params.measure.filter is
-    materialized as a filtered measure; a derived reference to it must use that
+    materialized as a filtered metric; a derived reference to it must use that
     filtered metric, not collapse to the unfiltered base measure."""
     project = DbtProject(
         semantic_models=[
@@ -893,11 +893,11 @@ def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
         ],
     )
     result = _convert(project)
-    # The derived formula references the filtered metric, not the bare base measure.
-    assert "web_revenue" in _metric(result, "web_rev_plus_one").expression
+    # The derived expression references the filtered metric, not the bare base measure.
+    assert "web_revenue" in _metric(result, "web_rev_plus_one").text
     # And web_revenue itself materialized with a channel filter.
     web = _metric(result, "web_revenue")
-    col = _column_for(result, web.expression)
+    col = _field_for(result, web.text)
     assert col.filter is not None
     assert "channel" in col.filter
 
@@ -955,7 +955,7 @@ def test_derived_input_filter_over_fill_nulls_metric_converts() -> None:
     )
     result = _convert(project)
     measure = next(m for m in _dataset(result).metrics if m.name == "us_gap_rev")
-    assert measure.expression.replace(" ", "").startswith("coalesce(")
+    assert measure.text.replace(" ", "").startswith("coalesce(")
     assert any(c.filter and "region" in c.filter and "US" in c.filter for c in _dataset(result).fields)
 
 
@@ -985,7 +985,7 @@ def test_ratio_input_filter_over_fill_nulls_metric_keeps_the_fill() -> None:
     )
     result = _convert(project)
     measure = next(m for m in _dataset(result).metrics if m.name == "us_rev_per_order")
-    assert "coalesce(" in measure.expression.replace(" ", "")
+    assert "coalesce(" in measure.text.replace(" ", "")
 
 
 def test_input_filter_intersects_referenced_metric_filter() -> None:
@@ -1021,7 +1021,7 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_web_revenue")
-    col = _column_for(result, m.expression)
+    col = _field_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
@@ -1030,9 +1030,9 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
 
 
 def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
-    """A foreign entity owned as primary by more than one model can't be
-    unambiguously qualified to a single join, so it clean-fails instead of
-    being lowered to a possibly-wrong model."""
+    """A foreign entity owned as primary by more than one semantic model can't be
+    unambiguously qualified to a single relationship, so it clean-fails instead of
+    being lowered to a possibly-wrong dataset."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -1072,7 +1072,7 @@ def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
 
 def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
     """A derived metric whose input is an unsupported (non-materialized) simple
-    metric must clean-fail, not emit a formula referencing a missing measure."""
+    metric must clean-fail, not emit an expression referencing a missing metric."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(name="orders", model="orders",
@@ -1243,11 +1243,11 @@ def test_semantic_model_label_preserved_in_meta() -> None:
     assert (_dataset(result).meta or {}).get("label") == "Customer Orders"
 
 
-# ───────────────── Part 4 — percentile dialect caveat (MySQL / T-SQL) ─────────────────
+# ───────────────── Part 4 — percentile on MySQL / T-SQL ─────────────────
 
 
 @pytest.mark.parametrize("dialect", ["mysql", "tsql"])
-def test_percentile_on_unsupported_dialect_is_dropped(dialect: str) -> None:
+def test_percentile_is_kept_on_mysql_and_sql_server(dialect: str) -> None:
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -1260,8 +1260,8 @@ def test_percentile_on_unsupported_dialect_is_dropped(dialect: str) -> None:
     result = DbtToSlayerConverter(
         project=project, data_source="test", target_dialect=dialect
     ).convert()
-    assert all(m.name != "p95" for model in result.datasets for m in model.metrics)
-    assert any("p95" in e.message and "not supported" in e.message for e in _all_report_entries(result))
+    texts = {m.name: m.text for model in result.datasets for m in model.metrics}
+    assert texts == {"p95": "percentile(latency, p=0.95)"}
 
 
 # ───────── Filtered special aggs / derived input filters ─────────
@@ -1285,14 +1285,17 @@ def test_filtered_percentile_metric_preserves_p() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_latency_p95")
-    assert re.fullmatch(r"percentile\(\w+, p=0\.95\)", m.expression)
-    col = _column_for(result, m.expression)
+    assert re.fullmatch(r"percentile\(\w+, p=0\.95\)", m.text)
+    col = _field_for(result, m.text)
     assert col.filter is not None
     assert "region" in col.filter
 
 
-@pytest.mark.parametrize("agg", ["percentile", "median"])
-def test_filtered_metric_the_dialect_refuses_is_dropped(agg: str) -> None:
+@pytest.mark.parametrize(("agg", "measure_text", "metric_text"), [
+    ("percentile", "percentile(latency, p=0.95)", "percentile(latency_agg_filtered, p=0.95)"),
+    ("median", "median(latency)", "median(latency_agg_filtered)"),
+])
+def test_filtered_metric_is_kept_on_mysql(agg: str, measure_text: str, metric_text: str) -> None:
     params = DbtMeasureAggParams(percentile=0.95) if agg == "percentile" else None
     project = DbtProject(
         semantic_models=[DbtSemanticModel(name="orders", model="orders", measures=[
@@ -1302,10 +1305,8 @@ def test_filtered_metric_the_dialect_refuses_is_dropped(agg: str) -> None:
                            filter="{{ Dimension('orders__region') }} = 'US'")],
     )
     result = DbtToSlayerConverter(project=project, data_source="test", target_dialect="mysql").convert()
-    assert all(m.name not in ("latency_agg", "us_latency") for model in result.datasets for m in model.metrics)
-    messages = [e.message for e in _all_report_entries(result)]
-    assert any("latency_agg" in msg and "not supported" in msg for msg in messages), messages
-    assert any("us_latency" in msg and "was dropped" in msg for msg in messages), messages
+    texts = {m.name: m.text for model in result.datasets for m in model.metrics}
+    assert texts == {"latency_agg": measure_text, "us_latency": metric_text}
 
 
 def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
@@ -1326,8 +1327,8 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
     )
     result = _convert(project)
     m = _metric(result, "us_paid_orders")
-    assert re.fullmatch(r"sum\(\w+\)", m.expression)
-    col = _column_for(result, m.expression)
+    assert re.fullmatch(r"sum\(\w+\)", m.text)
+    col = _field_for(result, m.text)
     assert col.datatype == DataType.INTEGER
     norm = (col.sql or "").upper().replace(" ", "")
     assert "CASEWHEN" in norm
@@ -1338,7 +1339,7 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
 
 def test_derived_input_filter_pushes_down() -> None:
     """A per-input filter on a derived metric's single-aggregate input pushes
-    into that input's leaf column."""
+    into that input's leaf field."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -1435,7 +1436,7 @@ def test_offset_window_object_form_parses() -> None:
         ],
     )
     result = _convert(project)
-    f = _metric(result, "rev_obj_offset").expression.replace(" ", "").lower()
+    f = _metric(result, "rev_obj_offset").text.replace(" ", "").lower()
     assert "time_shift(" in f
     assert "-1" in f
     assert "month" in f

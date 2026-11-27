@@ -1,11 +1,11 @@
-"""DEV-1908 — the cancelling walk in ``core/join_walker.py`` (D1, D2, D4).
+"""The cancelling walk in ``core/join_walker.py`` (D1, D2, D4).
 
 ``walk_cancelling`` resolves a definition default's qualifier ``tokens`` in the
 owner's frame (the owner is ``root`` walked along ``owner_path``). A token equal
 to the name of a dataset already on ``root + owner_path`` truncates the absolute
 path back to that dataset — keeping ``owner_path``'s own spelling of it — then
 resolution continues forward from there; an incident edge-name token always hops
-(precedence edge name → path model → hop) and never cancels. Returns the absolute
+(precedence edge name → path dataset → hop) and never cancels. Returns the absolute
 token path (from ``root``) or ``None`` on a miss/revisit; ambiguity raises. Plain
 ``walk`` is untouched and still refuses revisits.
 """
@@ -15,14 +15,14 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import RelationshipCardinality
-from slayer.core.errors import AmbiguousRelationshipPathError, CircularRelationshipPathError
+from slayer.core.errors import AmbiguousHopError, AmbiguousRelationshipPathError, CircularRelationshipPathError
 from slayer.core.relationship_walker import walk, walk_cancelling
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 
 
-def _m(name: str, cols: list[str], joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _m(name: str, cols: list[str], relationships: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="ds", sql_table=name,
-                       fields=[DatasetField(name=c) for c in cols], relationships=joins or [])
+                       fields=[DatasetField(name=c) for c in cols], relationships=relationships or [])
 
 
 def _named_chain() -> dict[str, SlayerDataset]:
@@ -102,14 +102,11 @@ class TestEdgeNames:
         assert walk_cancelling(root=M["orders"], owner_path=OWNER_PATH,
                                tokens=("loop",), datasets_by_name=M) is None
 
-    def test_precedence_edge_name_wins_over_the_path_model(self):
-        # `customers` is BOTH an edge name (regions → plans) and a visited model.
-        # The edge name wins: it hops to plans, it does not cancel to ("billing_customer",).
+    def test_an_edge_name_that_is_another_edges_target_is_ambiguous(self):
+        # `customers` names regions' edge into plans and is the target of regions' edge into customers.
         M = _edge_name_collision()
-        result = walk_cancelling(root=M["orders"], owner_path=OWNER_PATH,
-                                 tokens=("customers",), datasets_by_name=M)
-        assert result == ("billing_customer", "regions", "customers")
-        assert result != ("billing_customer",)
+        with pytest.raises(AmbiguousHopError):
+            walk_cancelling(root=M["orders"], owner_path=OWNER_PATH, tokens=("customers",), datasets_by_name=M)
 
 
 class TestMissAndAmbiguity:
@@ -127,7 +124,7 @@ class TestMissAndAmbiguity:
 
 class TestPlainWalkUnchanged:
     def test_plain_walk_still_refuses_revisits(self):
-        # DEV-1952: the plain walk refuses a revisit with a typed raise; only
+        # The plain walk refuses a revisit with a typed raise; only
         # ``walk_cancelling`` cancels.
         M = _named_chain()
         with pytest.raises(CircularRelationshipPathError):

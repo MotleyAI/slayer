@@ -42,6 +42,7 @@ from slayer.dbt.models import (
     DbtDimension,
     DbtEntity,
     DbtMeasure,
+    DbtMeasureAggParams,
     DbtMetric,
     DbtMetricInput,
     DbtMetricTimeWindow,
@@ -69,7 +70,14 @@ from slayer.importers.column_types import (
     untyped_message,
 )
 from slayer.importers.metrics import metric_problems
-from slayer.importers.physical import UndecidableIdentifierCaseError, physical_identifier, unreadable_fields
+from slayer.importers.physical import (
+    UndecidableIdentifierCaseError,
+    finished_field,
+    finished_fields,
+    physical_identifier,
+    raw_name,
+    unreadable_fields,
+)
 from slayer.database.client import SqlClient
 # The conversion-report types are shared with the OSI importer. They
 # live in the neutral ``slayer.ingest_report`` module and are re-exported here so
@@ -115,7 +123,7 @@ _STANDARD_GRAINS: frozenset = frozenset({
 
 # Shared workaround text for an unreachable cross-model filter (used by the
 # simple / ratio / derived push-down paths).
-_RELATIONSHIP_REACHABILITY_SUGGESTION = "Add the required join, or filter on a local dimension."
+_RELATIONSHIP_REACHABILITY_SUGGESTION = "Add the required relationship, or filter on a local dimension."
 
 
 class DbtConversionError(Exception):
@@ -135,6 +143,13 @@ def _map_agg(dbt_agg: str) -> str:
     return mapped
 
 
+def _percentile_agg(params: DbtMeasureAggParams) -> str:
+    """dbt's percentile flags as the aggregation; a discrete one is exact even when approximate is asked."""
+    if params.use_discrete_percentile:
+        return "percentile_disc"
+    return "percentile_approx" if params.use_approximate_percentile else "percentile"
+
+
 def _is_simple_identifier(s: str) -> bool:
     """A bare SQL column reference (no operators, calls, or dots)."""
     return bool(_IDENTIFIER_RE.match(s))
@@ -152,10 +167,17 @@ def _key_field(*, expr: str, cols: list[DatasetField]) -> DatasetField | None:
     return next((c for c in owners if c.name == phys), owners[0] if owners else None)
 
 
-def _free_key_name(*, expr: str, cols: list[DatasetField], taken: set) -> str | None:
-    """The name for a new field reading entity ``expr``, unless non-bare or already taken."""
+def _new_key_field(*, expr: str, cols: list[DatasetField], taken: set, hidden: bool) -> DatasetField | None:
+    """A new field reading entity ``expr``'s column, named after it when free, else hidden ``<column>_raw``;
+    ``None`` when ``expr`` is not one column."""
     phys = _entity_column(expr)
-    return phys if phys and not name_taken(phys, [*taken, *(c.name for c in cols)]) else None
+    if phys is None:
+        return None
+    names = [*taken, *(c.name for c in cols)]
+    if not name_taken(phys, names):
+        return DatasetField(name=phys, datatype=DataType.FLOAT, hidden=hidden)
+    return DatasetField(name=raw_name(phys, taken=names), expression=expr.strip(), datatype=DataType.FLOAT,
+                        hidden=True)
 
 
 def _aggregated_field(expression: str) -> tuple[str, str] | None:
@@ -187,7 +209,7 @@ def _convert_dimension(dim: DbtDimension) -> DatasetField:
 
     return DatasetField(
         name=dim.name,
-        sql=sql,
+        expression=sql,
         datatype=data_type,
         description=dim.description,
         label=dim.label,
@@ -208,8 +230,7 @@ def _declare_primary_entity(*, sm: DbtSemanticModel, primary_entity: str, cols: 
     """Mark the field reading ``sm``'s primary entity as PK, adding one when the name is free."""
     pe_expr = next((e.expr or e.name for e in sm.entities if e.name == primary_entity), primary_entity)
     pk = _key_field(expr=pe_expr, cols=cols)
-    if pk is None and (name := _free_key_name(expr=pe_expr, cols=cols, taken=set())):
-        pk = DatasetField(name=name, datatype=DataType.FLOAT)
+    if pk is None and (pk := _new_key_field(expr=pe_expr, cols=cols, taken=set(), hidden=False)) is not None:
         cols.append(pk)
     if pk is not None:
         pk.primary_key = True
@@ -249,8 +270,8 @@ class DbtToSlayerConverter:
         self._datasets_by_name: dict[str, SlayerDataset] = {}
         # {model_name: DbtSemanticModel} for looking up entities
         self._dbt_models_by_name: dict[str, DbtSemanticModel] = {}
-        # Filtered-field dedup: {(model, column_expr, normalized_filter): col_name}
-        self._filtered_columns: dict[tuple[str, str, str | None], str] = {}
+        # Filtered-field dedup: {(dataset, column_expr, normalized_filter): col_name}
+        self._filtered_fields: dict[tuple[str, str, str | None], str] = {}
         # {regular_model_name: raw_code} — used to inline SQL into semantic
         # models whose underlying dbt model is a query rather than a table.
         self._regular_models_sql: dict[str, str] = {
@@ -268,6 +289,7 @@ class DbtToSlayerConverter:
         """Read the project with ``dialect``'s identifier rules and its dbt adapter's quoting policy."""
         self._sql_dialect = dialect
         self._dialect = self._live.dialect = dialect.sqlglot_name if dialect is not None else None
+        self._token = self._dialect.upper() if self._dialect is not None else None
         # Reports of reading the project's SQL and relation names, which happens once.
         self._fold_warnings: list[ConversionWarning] = []
         self._relations = RelationNames(project=self.project, dialect=dialect, warn=self._fold_warnings.append)
@@ -307,7 +329,7 @@ class DbtToSlayerConverter:
         self._unconverted = []
         self._datasets_by_name = {}
         self._dbt_models_by_name = {}
-        self._filtered_columns = {}
+        self._filtered_fields = {}
 
     def _convert(self) -> ConversionResult:
         self._reset()
@@ -552,7 +574,7 @@ class DbtToSlayerConverter:
             model_meta.setdefault("label", sm.label)
 
         live = self._live_source(sql_table=sql_table, sql=sql_source)
-        cols = self._drop_masked(sm, [_convert_dimension(d) for d in sm.dimensions], live=live)
+        cols = self._drop_unreadable(sm, [_convert_dimension(d) for d in sm.dimensions], live=live)
         for entity in sm.entities:
             if entity.type in ("primary", "unique"):
                 self._declare_primary_key(sm_name=sm.name, entity=entity, cols=cols)
@@ -584,7 +606,7 @@ class DbtToSlayerConverter:
             data_source=self.data_source,
             description=sm.description,
             default_time_dimension=default_time_dim or None,
-            fields=cols,
+            fields=finished_fields(cols, dataset=sm.name, token=self._token, dialect=self._dialect),
             metrics=metrics,
             relationships=relationships,
             meta=model_meta or None,
@@ -603,13 +625,15 @@ class DbtToSlayerConverter:
     def _settle_fields(
         self, *, sm: DbtSemanticModel, cols: list[DatasetField], metrics: list[DatasetMetric], live: LiveSource | None,
     ) -> tuple[list[DatasetField], list[DatasetMetric]]:
-        """Drop fields reading a masked physical column, type the rest, and drop metrics SLayer cannot read."""
-        cols = self._drop_masked(sm, cols, live=live)
+        """Drop fields reading an ambiguous physical column, type the rest, and drop metrics SLayer cannot read."""
+        cols = self._drop_unreadable(sm, cols, live=live)
         dbt_aggs = {m.name: m.agg.lower() for m in sm.measures}
-        sources = {m.name or "": src for m in metrics if (src := _aggregated_field(m.expression)) is not None}
+        sources = {m.name or "": src for m in metrics if (src := _aggregated_field(m.text)) is not None}
         aggs_of: dict[str, list[str]] = defaultdict(list)
         for name, (col_name, agg) in sources.items():
-            aggs_of[col_name].append("sum_boolean" if dbt_aggs.get(name) == "sum_boolean" else agg)
+            # dbt's own aggregation types its input: ``sum_boolean`` a boolean, ``percentile`` a number.
+            dbt_agg = dbt_aggs.get(name)
+            aggs_of[col_name].append(dbt_agg if dbt_agg in ("sum_boolean", "percentile") else agg)
         dims = {d.name for d in sm.dimensions}
         untyped = {c.name for c in cols if not self._type_field(
             sm=sm, col=c, live=live, aggs=aggs_of.get(c.name, []), dimension=c.name in dims)}
@@ -630,12 +654,13 @@ class DbtToSlayerConverter:
         used = {sources[m.name][0] for m in kept if m.name in sources}
         return [c for c in cols if c.name not in untyped or c.name in used], kept
 
-    def _drop_masked(self, sm: DbtSemanticModel, cols: list[DatasetField], *, live: LiveSource | None) -> list[DatasetField]:
-        """``cols`` without those reading a physical column another field's name holds (or their own name)."""
+    def _drop_unreadable(self, sm: DbtSemanticModel, cols: list[DatasetField], *,
+                         live: LiveSource | None) -> list[DatasetField]:
+        """``cols`` without those whose SQL does not parse or reads an ambiguous physical column."""
         dropped = unreadable_fields(cols, dialect=self._dialect, live=live.names if live is not None else ())
         for name, problem in dropped.items():
             self._warnings.append(ConversionWarning(
-                dataset_name=sm.name, category="masked_column", severity="dropped",
+                dataset_name=sm.name, category="unreadable_column", severity="dropped",
                 message=f"Field {name!r} on '{sm.name}' dropped: {problem}."))
         return [c for c in cols if c.name not in dropped]
 
@@ -648,7 +673,7 @@ class DbtToSlayerConverter:
         found: Typed | None = None
         if live is not None:
             found = (live.field(physical_identifier(col, dialect=self._dialect)) if physical is not None
-                     else live.probe(col.sql or col.name))
+                     else live.probe(col.definition_sql or col.name))
         declared = self._declared_type(sm=sm, physical=physical)
         if found is not None and declared is not None and contradicts(declared, found):
             self._warnings.append(ConversionWarning(
@@ -659,7 +684,7 @@ class DbtToSlayerConverter:
             (t for a in aggs if (t := implied_type(a)) is not None), None)
         if found is None:
             return dimension or not aggs
-        col.datatype, col.element_type = found
+        col.assign(datatype=found[0], element_type=found[1])
         if col.datatype not in NUMERIC_DATATYPES:
             col.format = None
         return True
@@ -740,15 +765,14 @@ class DbtToSlayerConverter:
         expr = entity.expr or entity.name
         col = _key_field(expr=expr, cols=cols)
         if col is None:
-            name = _free_key_name(expr=expr, cols=cols, taken=set())
-            if name is None:
+            col = _new_key_field(expr=expr, cols=cols, taken=set(), hidden=False)
+            if col is None:
                 self._warnings.append(ConversionWarning(
                     dataset_name=sm_name, category="join", severity="dropped",
-                    message=(f"Entity '{entity.name}' expr {expr!r} is not a free column "
+                    message=(f"Entity '{entity.name}' expr {expr!r} is not a column "
                              f"identifier; no primary key declared."),
                 ))
                 return
-            col = DatasetField(name=name, datatype=DataType.FLOAT)
             cols.append(col)
         col.primary_key = True
         # Keep what the field already has.
@@ -762,14 +786,11 @@ class DbtToSlayerConverter:
 
     @staticmethod
     def _declare_key(*, key: str, cols: list[DatasetField], metric_names: set) -> str | None:
-        """The name of the field reading physical ``key``, adding a hidden one when the name is free."""
+        """The name of the field reading physical ``key``, adding a hidden one when none does."""
         col = _key_field(expr=key, cols=cols)
-        if col is not None:
-            return col.name
-        name = _free_key_name(expr=key, cols=cols, taken=metric_names)
-        if name is not None:
-            cols.append(DatasetField(name=name, datatype=DataType.FLOAT, hidden=True))
-        return name
+        if col is None and (col := _new_key_field(expr=key, cols=cols, taken=metric_names, hidden=True)) is not None:
+            cols.append(col)
+        return col.name if col is not None else None
 
     @staticmethod
     def _entity_meta(entity) -> dict[str, Any] | None:
@@ -814,7 +835,7 @@ class DbtToSlayerConverter:
                 col_name = _alloc_field_name(f"{m.name}_col", taken=taken)
                 fields.append(DatasetField(
                     name=col_name,
-                    sql=f"CASE WHEN ({m.expr or m.name}) THEN 1 ELSE 0 END",
+                    expression=f"CASE WHEN ({m.expr or m.name}) THEN 1 ELSE 0 END",
                     datatype=DataType.INTEGER,
                     meta=_meta_of(m.config),
                 ))
@@ -829,7 +850,7 @@ class DbtToSlayerConverter:
             )
             fields.append(DatasetField(
                 name=col_name,
-                sql=expr_key if expr_key != col_name else None,
+                expression=expr_key if expr_key != col_name else None,
                 datatype=DataType.FLOAT,
                 format=_FLOAT_FORMAT,
             ))
@@ -867,7 +888,7 @@ class DbtToSlayerConverter:
         self, m: DbtMeasure, col_name: str, sm_name: str, dataset_meta: dict[str, Any]
     ) -> str | None:
         """Build the ``<agg>(<col>)`` expression for a dbt measure, or ``None`` if
-        it clean-fails (percentile without a value / discrete-approx flags)."""
+        it clean-fails (a percentile without a value)."""
         mapped = _map_agg(m.agg)
         suffix = mapped
         if mapped == "percentile":
@@ -881,19 +902,8 @@ class DbtToSlayerConverter:
                     raw={"agg": m.agg, "agg_params": ap.model_dump() if ap else None},
                 )
                 return None
-            if ap.use_discrete_percentile or ap.use_approximate_percentile:
-                self._fail_measure(
-                    m, sm_name, dataset_meta,
-                    category="percentile", severity="dropped",
-                    message=(
-                        f"Measure '{m.name}' uses discrete/approximate percentile; "
-                        f"only continuous-exact PERCENTILE_CONT is supported."
-                    ),
-                    suggestion="Remove use_discrete_percentile / use_approximate_percentile.",
-                    raw={"agg_params": ap.model_dump()},
-                )
-                return None
-            suffix = f"percentile(p={ap.percentile})"
+            mapped = _percentile_agg(ap)
+            suffix = f"{mapped}(p={ap.percentile})"
         if (refusal := dialect_refusal(mapped, dialect=self._sql_dialect)) is not None:
             self._fail_measure(m, sm_name, dataset_meta, category="percentile", severity="dropped",
                                message=f"Measure '{m.name}' dropped: {refusal}", raw={"agg": m.agg})
@@ -1211,7 +1221,7 @@ class DbtToSlayerConverter:
         source_sm = self._find_measure_model(metric_name)
         slayer_dataset = self._datasets_by_name.get(source_sm.name) if source_sm is not None else None
         base = next(
-            (m.expression for m in slayer_dataset.metrics if m.name == metric_name), None,
+            (m.text for m in slayer_dataset.metrics if m.name == metric_name), None,
         ) if slayer_dataset is not None else None
         if slayer_dataset is None or base is None:
             self._fail_metric(
@@ -1746,12 +1756,12 @@ class DbtToSlayerConverter:
                 return False, (
                     f"filter dimension '{entity_name}__{dim_name}' references entity "
                     f"'{entity_name}', which is owned by multiple models {owners}; "
-                    f"the filter cannot be unambiguously qualified to one join"
+                    f"the filter cannot be unambiguously qualified to one relationship"
                 )
-            return True, None  # one-hop join → <owner>.<dim>
+            return True, None  # one-hop relationship → <owner>.<dim>
         return False, (
             f"filter dimension '{entity_name}__{dim_name}' is not reachable from "
-            f"dataset '{source_sm.name}' via a direct join (multi-hop cross-model "
+            f"dataset '{source_sm.name}' via a direct relationship (multi-hop cross-dataset "
             f"filters are not exactly expressible)"
         )
 
@@ -1764,11 +1774,11 @@ class DbtToSlayerConverter:
         dbt_measure: DbtMeasure,
         raw_filter: str,
     ) -> str | None:
-        """Get-or-create the filtered leaf DatasetField for ``(model, expr, filter)``
+        """Get-or-create the filtered leaf DatasetField for ``(dataset, expr, filter)``
         and return the aggregate expression over it (or ``None`` on a
         clean-fail that has already been routed to the report).
 
-        Dedup key is ``(model, column_expr, normalized_filter)`` — the
+        Dedup key is ``(dataset, column_expr, normalized_filter)`` — the
         aggregation lives on the expression, so multiple aggregations over the
         same filtered field share one DatasetField. Special measure forms are
         preserved exactly: ``sum_boolean`` builds the CASE-WHEN INT field and
@@ -1785,25 +1795,25 @@ class DbtToSlayerConverter:
         if leaf is None:
             return None  # clean-failed inside _filtered_leaf_spec
         column_expr, col_type, col_format, agg_call = leaf
-        source = _aggregated_field(base.expression)
+        source = _aggregated_field(base.text)
         typed = slayer_dataset.get_field(source[0]) if source is not None and col_type is not DataType.INTEGER else None
         element_type = typed.element_type if typed is not None else None
         col_type = typed.datatype if typed is not None else col_type
 
         slayer_filter = self._convert_filter(raw_filter, source_sm)
         key = (slayer_dataset.name, column_expr, slayer_filter)
-        col_name = self._filtered_columns.get(key)
+        col_name = self._filtered_fields.get(key)
         if col_name is None:
             col_name = self._alloc_field_name(slayer_dataset, f"{dbt_measure.name}_filtered")
-            slayer_dataset.fields.append(DatasetField(
+            slayer_dataset.fields.append(finished_field(DatasetField(
                 name=col_name,
-                sql=column_expr,
+                expression=column_expr,
                 datatype=col_type,
                 element_type=element_type,
                 format=col_format if col_type in NUMERIC_DATATYPES else None,
                 filter=slayer_filter,
-            ))
-            self._filtered_columns[key] = col_name
+            ), token=self._token))
+            self._filtered_fields[key] = col_name
         return functional_agg_text(source=col_name, suffix=agg_call)
 
     def _filtered_leaf_spec(
@@ -1843,17 +1853,17 @@ class DbtToSlayerConverter:
         mapped = _map_agg(dbt_measure.agg)
         if mapped == "percentile":
             ap = dbt_measure.agg_params
-            if ap is None or ap.percentile is None or ap.use_discrete_percentile or ap.use_approximate_percentile:
+            if ap is None or ap.percentile is None:
                 self._fail_metric(
                     metric, category="percentile", severity="dropped",
                     message=(
                         f"Filtered metric '{metric.name}' wraps a percentile measure "
-                        f"with no usable continuous percentile value."
+                        f"with no percentile value."
                     ),
-                    suggestion="Set agg_params.percentile (continuous, in [0, 1]).",
+                    suggestion="Set agg_params.percentile (in [0, 1]).",
                 )
                 return None
-            return column_expr, DataType.FLOAT, _FLOAT_FORMAT, f"percentile(p={ap.percentile})"
+            return column_expr, DataType.FLOAT, _FLOAT_FORMAT, f"{_percentile_agg(ap)}(p={ap.percentile})"
         return column_expr, DataType.FLOAT, _FLOAT_FORMAT, mapped
 
     @staticmethod

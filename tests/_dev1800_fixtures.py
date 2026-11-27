@@ -1,11 +1,11 @@
-"""Shared fixtures for DEV-1800 — change/change_pct over a cross-model inner
+"""Shared fixtures for change/change_pct over a cross-dataset inner
 aggregate combined into a composite.
 
 The failing composite class (``change(cm) + sum(amount)`` etc.) is exercised on
-the DEV-1750 dataset (imported where used — it carries ``wscaled_sum`` and
+the ``_dev1750_fixtures`` dataset (imported where used — it carries ``wscaled_sum`` and
 multi-order customers). This module adds the *attributable* dataset: the
-cross-model inner varies along the query's time axis (customer signup month),
-so ``change``/``change_pct`` of a cross-model aggregate has hand-computable
+cross-dataset inner varies along the query's time axis (customer signup month),
+so ``change``/``change_pct`` of a cross-dataset aggregate has hand-computable
 per-period values.
 
 Underscore-prefixed so pytest skips collection here (like ``_engine_helpers``).
@@ -55,10 +55,10 @@ from tests._engine_helpers import seeded_exec_engine
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers.
+# Datasets — orders (host) → customers.
 # --------------------------------------------------------------------------- #
 def customers_dataset() -> SlayerDataset:
-    """``spend`` is the cross-model (target-grain) inner; ``signup_at`` is the
+    """``spend`` is the cross-dataset (target-grain) inner; ``signup_at`` is the
     attributable time axis the inner varies along."""
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",

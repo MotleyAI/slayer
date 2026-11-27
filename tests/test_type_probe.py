@@ -133,7 +133,8 @@ def test_door_executes_the_probe_verbatim(sqlite_engine: sa.Engine) -> None:
     assert get_result_column_types_sync(probe, engine=sqlite_engine, db_type="sqlite") == _TYPED
     statement, *census = seen
     assert statement == probe.sql
-    assert census == [probe.census_sql(["a", "b"], dialect=SqliteDialect())]
+    assert census == [probe.census_sql(["a", "b"], dialect=SqliteDialect()),
+                      probe.declared_sql(dialect=SqliteDialect())]
 
 
 _TYPED = {"a": ResultColumnType(type=DataType.INTEGER), "b": ResultColumnType(type=DataType.STRING)}
@@ -246,12 +247,12 @@ def test_parse_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
         parse_query(sql=sql, target_dialect=postgres, parse_dialect=postgres)
 
 
-# ── engine model typing ───────────────────────────────────────────────────
+# ── engine dataset typing ─────────────────────────────────────────────────
 
 def _orders(sql_table: str = "orders") -> SlayerDataset:
     return SlayerDataset(name="orders", sql_table=sql_table, data_source="test", fields=[
-        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-        DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="revenue", expression="amount", datatype=DataType.FLOAT),
     ])
 
 

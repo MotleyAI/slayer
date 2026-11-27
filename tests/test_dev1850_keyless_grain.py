@@ -1,7 +1,7 @@
-"""DEV-1850 — keyless-grain dual-role cross-model partitioned aggregate.
+"""Keyless-grain dual-role cross-dataset partitioned aggregate.
 
-Exact local/cross-model parity for a partitioned aggregate whose partition key
-is absent from the query dimensions. A combined-position consumer (measure,
+Exact local/cross-dataset parity for a partitioned aggregate whose partition key
+is absent from the query dimensions. A combined-position consumer (metric,
 arithmetic/scalar composite, transform input, raw ORDER BY target, filter-only
 reference) fails at plan time with the SAME ``not a query dimension`` ValueError
 the local twin raises — never the internal ``missing a host / producer``
@@ -9,10 +9,10 @@ RuntimeError. A row-scope reference (filter over the computed dimension's own
 aggregate, ORDER BY the dimension's name) executes row-routed exactly as it does
 locally, with one producer relation and no combined twin.
 
-Feature-missing today: the cross-model combined-consumer and row-scope shapes
-raise the internal RuntimeError (the retired DEV-1838 pin
+Feature-missing today: the cross-dataset combined-consumer and row-scope shapes
+raise the internal RuntimeError (the retired pin
 ``test_dual_role_without_partition_key_in_grain_unsupported`` documented it).
-The local twins, the already-clean cross-model measure-only / filter-only
+The local twins, the already-clean cross-dataset metric-only / filter-only
 errors, and the keyless banded-only shape are green today and stay green.
 """
 
@@ -22,6 +22,7 @@ import pytest
 
 from slayer.ir.planned import MaskTyping
 from slayer.engine.cardinality.relationship_safety import crossing_local_root_predicate
+from slayer.engine.elaborate import resolve_homes
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.elaborate_env import type_and_split_filters
@@ -31,21 +32,34 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1838_fixtures import (
     SPEND_BAND,
+    _seed_duckdb,
+    _seed_sqlite,
     cte_aliases,
     dev1838_datasets,
     gen,
     make_exec_engine,
     q,
 )
+from tests._engine_helpers import seeded_exec_engine
+from tests._trusted import trusting_all
 
-LOCAL_AGG = "sum(amount, partition_by=city)"
+LOCAL_AGG = "sum(orders.amount, partition_by=orders.city)"
 CM_AGG = "sum(customers.spend, partition_by=customers.tier)"
-LOCAL_BAND = "CASE WHEN sum(amount, partition_by=city) > 25 THEN 'hi' ELSE 'lo' END"
+LOCAL_BAND = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 25 THEN 'hi' ELSE 'lo' END"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend(request):
     async for engine in make_exec_engine(request):
+        yield request.param, engine
+
+
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def trusted_backend(request):
+    """``exec_backend`` over trusted relationships: pins the single-producer lowering."""
+    seed = _seed_duckdb if request.param == "duckdb" else _seed_sqlite
+    async with seeded_exec_engine(dialect=request.param, seed=seed,
+                                  datasets=trusting_all(dev1838_datasets())) as (engine, _db):
         yield request.param, engine
 
 
@@ -58,12 +72,12 @@ def _dim(expression: str, name: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Combined-position consumers reject the keyless grain — local == cross-model.
+# Combined-position consumers reject the keyless grain — local == cross-dataset.
 # --------------------------------------------------------------------------- #
 _COMBINED_CONSUMER_CASES = [
     # A computed dimension banding the aggregate AND a combined consumer of it,
-    # with the partition key absent from the dimensions. Cross-model RuntimeError
-    # today; local twin already clean. (dims, measures, order, filters, key)
+    # with the partition key absent from the dimensions. Cross-dataset RuntimeError
+    # today; local twin already clean. (dims, metrics, order, filters, key)
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
         [QueryMetric(metric=LOCAL_AGG, alias="rt")],
@@ -76,13 +90,13 @@ _COMBINED_CONSUMER_CASES = [
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [QueryMetric(metric="sum(amount)", alias="m")],
+        [QueryMetric(metric="sum(orders.amount)", alias="m")],
         [{"field": LOCAL_AGG, "direction": "asc"}], None, "city",
         id="raw_order_target-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [QueryMetric(metric="sum(amount)", alias="m")],
+        [QueryMetric(metric="sum(orders.amount)", alias="m")],
         [{"field": CM_AGG, "direction": "asc"}], None, "customers.tier",
         id="raw_order_target-cross_model",
     ),
@@ -117,13 +131,13 @@ _COMBINED_CONSUMER_CASES = [
         None, None, "customers.tier", id="transform_input-cross_model",
     ),
     # Already-clean today (no computed dimension): the aggregate is consumed only
-    # as a measure, or only in a filter — a combined position, so it stays rejected.
+    # as a metric, or only in a filter — a combined position, so it stays rejected.
     pytest.param(
-        ["status"], [QueryMetric(metric=CM_AGG, alias="rt")],
+        ["orders.status"], [QueryMetric(metric=CM_AGG, alias="rt")],
         None, None, "customers.tier", id="measure_only-cross_model",
     ),
     pytest.param(
-        ["status"], [QueryMetric(metric="sum(amount)", alias="m")],
+        ["orders.status"], [QueryMetric(metric="sum(orders.amount)", alias="m")],
         None, [f"{CM_AGG} > 100"], "customers.tier", id="filter_only-cross_model",
     ),
 ]
@@ -156,7 +170,7 @@ _ERROR_TEMPLATE = (
 
 
 async def test_keyless_dual_role_error_shape_matches_local() -> None:
-    """The cross-model clean error is identical IN SHAPE to the local twin's —
+    """The cross-dataset clean error is identical IN SHAPE to the local twin's —
     same wording, differing only in the offending key and the available dims."""
     local_query = q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
@@ -179,14 +193,14 @@ async def test_keyless_dual_role_error_shape_matches_local() -> None:
 # --------------------------------------------------------------------------- #
 # Dimension-only consumption keeps the finer-grain exemption (executes keyless).
 # --------------------------------------------------------------------------- #
-async def test_keyless_banded_only_executes(exec_backend) -> None:
-    dialect, engine = exec_backend
+async def test_keyless_banded_only_executes(trusted_backend) -> None:
+    dialect, engine = trusted_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
     )
     resp = await engine.execute(query)
-    got = {r["orders.sband"]: r["orders.m"] for r in resp.data}
+    got = {r["sband"]: r["m"] for r in resp.data}
     assert got == {"hi": pytest.approx(40.0), "lo": pytest.approx(77.0)}
     dry = await engine.execute(query, dry_run=True)
     assert _cm_count(dry.sql, dialect) == 1, cte_aliases(
@@ -195,23 +209,23 @@ async def test_keyless_banded_only_executes(exec_backend) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Row-scope references execute row-routed — cross-model mirrors local exactly.
+# Row-scope references execute row-routed — cross-dataset mirrors local exactly.
 # --------------------------------------------------------------------------- #
 async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
-    exec_backend,
+    trusted_backend,
 ) -> None:
     """The filter references the same aggregate the dimension bands: row-routed,
     the predicate applies per base row against the attached per-tier value before
     aggregation. Only silver rows (spend 210 > 100) survive → the 'lo' group is
     removed and 'hi' keeps its value. One producer, no combined twin."""
-    dialect, engine = exec_backend
+    dialect, engine = trusted_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         filter=[f"{CM_AGG} > 100"],
     )
     resp = await engine.execute(query)
-    got = {r["orders.sband"]: r["orders.m"] for r in resp.data}
+    got = {r["sband"]: r["m"] for r in resp.data}
     assert got == {"hi": pytest.approx(40.0)}
     dry = await engine.execute(query, dry_run=True)
     assert _cm_count(dry.sql, dialect) == 1, cte_aliases(
@@ -220,7 +234,7 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
 
 
 def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None:
-    """The dim's OWN cross-model aggregate in a filter types as FIELD (row-scoped, attached), not measure."""
+    """The dim's OWN cross-dataset aggregate in a filter types as FIELD (row-scoped, attached), not metric."""
     models = dev1838_datasets()
     bundle = ResolvedSourceBundle(
         dialect="postgres",
@@ -228,31 +242,32 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
     )
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         filter=[f"{CM_AGG} > 100"],
     )
-    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    scope = resolve_scope(bundle=bundle)
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
-    crossing_root = crossing_local_root_predicate(scope=scope, bundle=bundle)
+    homes = resolve_homes(prebound, bundle=bundle, scope=scope)
+    crossing_root = crossing_local_root_predicate(scope=scope, bundle=bundle, homes=homes)
     _, typings = type_and_split_filters(
-        prebound, crossing_root=crossing_root,
+        prebound, crossing_root=crossing_root, homes=homes,
     )
     assert [(t.typing, t.stratum) for t in typings] == [(MaskTyping.FIELD, 1)]
 
 
 async def test_keyless_order_by_dimension_name_cross_model_row_routes(
-    exec_backend,
+    trusted_backend,
 ) -> None:
     """ORDER BY the computed dimension's NAME sorts by the banded value and stays
     row-routed — no combined attach synthesized for the order reference."""
-    dialect, engine = exec_backend
+    dialect, engine = trusted_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
-        order=[{"field": "sband", "direction": "asc"}],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
+        order=[{"field": "orders.sband", "direction": "asc"}],
     )
     resp = await engine.execute(query)
-    rows = [(r["orders.sband"], r["orders.m"]) for r in resp.data]
+    rows = [(r["sband"], r["m"]) for r in resp.data]
     assert rows == [("hi", pytest.approx(40.0)), ("lo", pytest.approx(77.0))]
     dry = await engine.execute(query, dry_run=True)
     assert _cm_count(dry.sql, dialect) == 1, cte_aliases(
@@ -260,17 +275,17 @@ async def test_keyless_order_by_dimension_name_cross_model_row_routes(
     )
 
 
-# Local twins — the mirror the cross-model shapes must match (green today).
+# Local twins — the mirror the cross-dataset shapes must match (green today).
 async def test_keyless_filter_over_own_local_aggregate_row_routes(
     exec_backend,
 ) -> None:
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         filter=[f"{LOCAL_AGG} > 25"],
     ))
-    got = {r["orders.cband"]: r["orders.m"] for r in resp.data}
+    got = {r["cband"]: r["m"] for r in resp.data}
     assert got == {"hi": pytest.approx(107.0)}
 
 
@@ -280,8 +295,8 @@ async def test_keyless_order_by_dimension_name_local_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
-        order=[{"field": "cband", "direction": "asc"}],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
+        order=[{"field": "orders.cband", "direction": "asc"}],
     ))
-    rows = [(r["orders.cband"], r["orders.m"]) for r in resp.data]
+    rows = [(r["cband"], r["m"]) for r in resp.data]
     assert rows == [("hi", pytest.approx(107.0)), ("lo", pytest.approx(10.0))]

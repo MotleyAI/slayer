@@ -1,4 +1,4 @@
-"""``SlayerQuery.extensions``: typed at construction, closed, one per model, advertised on every surface."""
+"""``SlayerQuery.extensions``: typed at construction, closed, one per dataset, advertised on every surface."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
 
 from slayer.api.server import QueryRequest, create_app
@@ -16,6 +16,7 @@ from slayer.core.models import DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import DatasetExtension, QueryRefinement, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._query_input_fixtures import refusal
 
 CUSTOMERS_EXT = {
     "dataset": "customers",
@@ -26,8 +27,8 @@ ORDERS_EXT = {"dataset": "orders", "metrics": [{"name": "double_amount", "expres
 #: ``ORDERS_EXT`` as a versioned (1.x) body spells it.
 ORDERS_EXT_1X = {"source_name": "orders", "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}]}
 WITH_FILTERS = {"dataset": "customers", "filters": ["credit > 5"]}
-MEASURES_ONLY = {"dataset": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
-ONE_MEASURE = [{"metric": "count(*)"}]
+METRICS_ONLY = {"dataset": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
+ONE_METRIC = [{"metric": "count(orders.*)"}]
 
 
 def _query(**raw: Any) -> SlayerQuery:
@@ -97,7 +98,8 @@ class TestRejected:
     def test_unknown_extension_key_is_named(self) -> None:
         with pytest.raises(ValidationError) as info:
             _query(population="orders", extensions=[WITH_FILTERS])
-        assert {(e["type"], str(e["loc"][-1])) for e in info.value.errors()} == {("extra_forbidden", "filters")}
+        err, loc = refusal(info.value)
+        assert (err.key, loc) == ("filters", ("extensions", 0))
 
     def test_an_extension_without_a_dataset(self) -> None:
         with pytest.raises(ValidationError, match="dataset"):
@@ -106,12 +108,12 @@ class TestRejected:
     def test_refinements_carry_no_extensions(self) -> None:
         with pytest.raises(ValidationError) as info:
             QueryRefinement.model_validate({"extensions": [CUSTOMERS_EXT]})
-        assert {(e["type"], str(e["loc"][-1])) for e in info.value.errors()} == {("extra_forbidden", "extensions")}
+        assert refusal(info.value)[0].key == "extensions"
 
     def test_a_model_s_stage_with_a_duplicate_is_rejected_too(self) -> None:
         with pytest.raises(ValidationError) as info:
             SlayerDataset.model_validate({"name": "qb", "source_queries": [{
-                "population": "orders", "metrics": ONE_MEASURE,
+                "population": "orders", "metrics": ONE_METRIC,
                 "extensions": [{"dataset": "customers"}, {"dataset": "customers"}]}]})
         _assert_rejected_naming(info.value, "customers")
 
@@ -137,7 +139,7 @@ class TestSchema:
 
     async def test_mcp_query_tool_carries_the_definitions(self, mcp_server) -> None:
         tools = {t.name: t for t in await mcp_server.list_tools()}
-        schema = tools["query"].inputSchema
+        schema = tools["query"].input_schema
         assert "DatasetExtension" in schema.get("$defs", {})
         assert "SlayerDataset" not in schema.get("$defs", {})
         assert '"extensions"' in json.dumps(schema)
@@ -151,7 +153,7 @@ class TestSchema:
 
 class TestRestAndMcp:
     def test_rest_body_types_extensions_and_feeds_the_query(self) -> None:
-        req = QueryRequest.model_validate({"population": "orders", "extensions": [ORDERS_EXT], "metrics": ["count(*)"]})
+        req = QueryRequest.model_validate({"population": "orders", "extensions": [ORDERS_EXT], "metrics": ["count(orders.*)"]})
         assert isinstance((req.extensions or [])[0], DatasetExtension)
         q = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert q.extensions == req.extensions
@@ -167,13 +169,13 @@ class TestRestAndMcp:
     ], ids=["unknown-key", "duplicate"])
     def test_rest_body_rejects_malformed_extensions_with_422(self, rest_client, extensions) -> None:
         resp = rest_client.post("/query", json={
-            "population": "orders", "extensions": extensions, "metrics": ONE_MEASURE, "dry_run": True})
+            "population": "orders", "extensions": extensions, "metrics": ONE_METRIC, "dry_run": True})
         assert resp.status_code == 422, resp.text
 
     async def test_mcp_query_tool_rejects_an_unknown_extension_key(self, mcp_server) -> None:
         with pytest.raises(ToolError, match="filters"):
             await mcp_server.call_tool(name="query", arguments={
-                "query": {"population": "orders", "extensions": [WITH_FILTERS], "metrics": ONE_MEASURE},
+                "query": {"population": "orders", "extensions": [WITH_FILTERS], "metrics": ONE_METRIC},
                 "dry_run": True,
             })
 
@@ -181,16 +183,16 @@ class TestRestAndMcp:
 class TestRoundTrip:
     @pytest.mark.parametrize("mode", ["python", "json"])
     def test_dump_then_validate_equals_the_original(self, mode) -> None:
-        q = _query(population="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT], metrics=["count(*)"])
+        q = _query(population="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT], metrics=["count(orders.*)"])
         again = SlayerQuery.model_validate(q.model_dump(mode=mode))
         assert again == q
         assert all(isinstance(e, DatasetExtension) for e in again.extensions or [])
 
     def test_exclude_none_dump_is_what_the_author_wrote(self) -> None:
-        q = _query(population="orders", extensions=[MEASURES_ONLY])
+        q = _query(population="orders", extensions=[METRICS_ONLY])
         dumped = q.model_dump(exclude_none=True)
         assert dumped["population"] == "orders"
-        assert dumped["extensions"] == [MEASURES_ONLY]
+        assert dumped["extensions"] == [METRICS_ONLY]
 
     def test_no_extensions_key_when_unset(self) -> None:
         assert "extensions" not in SlayerQuery(population="orders").model_dump(exclude_none=True)

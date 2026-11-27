@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1846 composite-input ``time_shift`` /
+"""Shared fixtures for composite-input ``time_shift`` /
 ``consecutive_periods``. Underscore-prefixed so pytest skips collection.
 
 sales(id, region_id, store, status, revenue, qty, cost, weight, sku, ordered_at)
@@ -53,8 +53,8 @@ def regions_dataset() -> SlayerDataset:
 
 
 def sales_dataset() -> SlayerDataset:
-    """Host: ``wrevenue_sum`` crosses ``sales → regions`` (join-crossing leaf);
-    ``hi_rev`` is a column-filtered projection of ``revenue``."""
+    """Host: ``wrevenue_sum`` crosses ``sales → regions`` (relationship-crossing leaf);
+    ``hi_rev`` is a field-filtered projection of ``revenue``."""
     return SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
         default_time_dimension="ordered_at",
@@ -68,7 +68,7 @@ def sales_dataset() -> SlayerDataset:
             DatasetField(name="cost", datatype=DataType.FLOAT),
             DatasetField(name="weight", datatype=DataType.FLOAT),
             DatasetField(name="sku", datatype=DataType.STRING),
-            DatasetField(name="hi_rev", datatype=DataType.FLOAT, sql="revenue",
+            DatasetField(name="hi_rev", datatype=DataType.FLOAT, expression="revenue",
                    filter="revenue > 15"),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
@@ -97,9 +97,9 @@ async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
     )
 
 
-def month_td(column: str = "ordered_at") -> List[TimeDimension]:
+def month_td(field: str = "sales.ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        field=column,
+        field=field,
         granularity=TimeGranularity.MONTH,
     )]
 

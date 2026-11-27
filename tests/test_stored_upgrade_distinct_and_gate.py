@@ -17,7 +17,8 @@ from slayer.memories.models import Memory
 from slayer.database import engine_factory
 from slayer.storage.document_keys import dataset_in, keys_for
 from slayer.storage.migrations import CURRENT_VERSIONS
-from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, measure_total, raw_store, run
+from slayer.storage.sql_string_migration import rewrite_query_strings
+from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, metric_total, raw_store, run
 
 _COLUMNS = [
     {"name": "order_id", "type": "INT", "primary_key": True},
@@ -38,7 +39,7 @@ def _model_doc(*, version: int, measures: list[dict], name: str = "orders", **ex
 
 
 def _formulas(doc: dict) -> list[str]:
-    return [m.expression for m in SlayerDataset.model_validate(doc).metrics]
+    return [m.text for m in SlayerDataset.model_validate(doc).metrics]
 
 
 def _query(*, version: int, **fields: Any) -> SlayerQuery:
@@ -47,10 +48,10 @@ def _query(*, version: int, **fields: Any) -> SlayerQuery:
 
 class TestVersions:
     def test_versions_bumped(self) -> None:
-        assert CURRENT_VERSIONS["SlayerModel"] == 26
-        assert CURRENT_VERSIONS["SlayerQuery"] == 16
-        assert CURRENT_VERSIONS["DatasourceConfig"] == 3
-        assert CURRENT_VERSIONS["Memory"] == 12
+        assert CURRENT_VERSIONS["SlayerModel"] == 32
+        assert CURRENT_VERSIONS["SlayerQuery"] == 20
+        assert CURRENT_VERSIONS["DatasourceConfig"] == 4
+        assert CURRENT_VERSIONS["Memory"] == 15
 
 
 #: (stored v17 text, the text it loads as).
@@ -127,8 +128,8 @@ class TestDistinctResults:
         model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
         assert [m.expression for m in model.metrics] == ['sum("distinct")']
-        resp = await run(storage, {"population": "orders", "metrics": ["total"]})
-        assert measure_total(resp, measure="total") == DISTINCT_TOTAL
+        resp = await run(storage, {"population": "orders", "metrics": ["orders.total"]})
+        assert metric_total(resp, metric="total") == DISTINCT_TOTAL
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_memory_query_sums_the_column(self, tmp_path: Path, distinct_ds: DatasourceConfig,
@@ -139,7 +140,7 @@ class TestDistinctResults:
                                   memories=[memory_v2(memory_id="m_d", version=6, query=query)])
         mem = await storage.get_memory("m_d")
         assert mem.query is not None
-        assert measure_total(await run(storage, mem.query), measure="d") == DISTINCT_TOTAL
+        assert metric_total(await run(storage, mem.query), metric="d") == DISTINCT_TOTAL
 
 
 @contextmanager
@@ -208,9 +209,13 @@ class TestOldGrammarGate:
         assert not [m for m in messages if secret in m], messages
 
     @pytest.mark.parametrize("pad", [" ", "\n  "], ids=["space", "newline"])
-    def test_old_text_with_leading_whitespace_is_upgraded(self, pad: str) -> None:
-        query = _query(version=6, filters=[f'{pad}status == "paid"'])
-        assert query.filter == [f"{pad}status = 'paid'"]
+    def test_old_text_with_leading_whitespace_is_left_unchanged(self, pad: str,
+                                                                caplog: pytest.LogCaptureFixture) -> None:
+        stored = f'{pad}status == "paid"'
+        with _messages(caplog) as messages:
+            out = rewrite_query_strings({"version": 6, "name": "gate_q", "source_model": "orders", "filters": [stored]})
+        assert out["filters"] == [stored]
+        assert _warned(messages, document="gate_q", field=("filters[0]",)), messages
 
     def test_saved_query(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:

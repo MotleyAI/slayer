@@ -50,7 +50,8 @@ from slayer.core.time_spine import is_spine_query
 from slayer.engine.bundle_builder import stored_dataset
 from slayer.engine.field_dependency import definition_reads
 from slayer.engine.extensions import FieldKind, QueryScope, query_field_texts, query_scopes
-from slayer.engine.population.inference import infer_population, infer_spine_population
+from slayer.engine.population.inference import infer_rows, infer_spine_population
+from slayer.engine.population.row_supply import plan_rows
 from slayer.core.syntax import (
     AggCall,
     DottedRef,
@@ -582,9 +583,21 @@ class _ExtensionScope(BaseModel):
                     out.append(EntityResolution(canonical_forms=[f"{target.data_source}.{target.name}.{leaf}"]))
             return out
         metric = owner.get_metric(name)
-        if metric is None or not metric.expression:
+        if metric is None or not metric.text:
             return []
-        return [r for token in _field_entity_tokens("expression", metric.expression) for r in await self.resolve(token, host=owner)]
+        return [r for token in _field_entity_tokens("expression", metric.text) for r in await self.resolve(token, host=owner)]
+
+
+async def _inferred_host(query: SlayerQuery, *, storage: StorageBackend) -> tuple[str, str]:
+    """The dataset a rootless ``query`` reports (its dimension anchor), else the one the engine plans it from (the
+    unit's supplying home), and its datasource."""
+    if is_spine_query(query):
+        choice = await infer_spine_population(query=query, storage=storage)
+        return choice.dataset_name, choice.data_source
+    rows = await infer_rows(query=query, storage=storage, raw_rows=not query.distinct_dimension_values)
+    plan = plan_rows(rows.query, anchor=rows.anchor, datasets_by_name=rows.datasets_by_name)
+    reported = plan.reported if plan.reported in rows.datasets_by_name else None
+    return reported or plan.population, rows.data_source
 
 
 async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[SlayerQuery, SlayerDataset]:
@@ -593,11 +606,9 @@ async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[Slaye
     data_source = None
     if src is None:
         try:
-            choice = await (infer_spine_population if is_spine_query(query) else infer_population)(
-                query=query, storage=storage)
+            src, data_source = await _inferred_host(query, storage=storage)
         except PopulationInferenceError as exc:
             raise EntityResolutionError(f"Could not infer the query's population: {exc}") from exc
-        src, data_source = choice.dataset_name, choice.data_source
         query = query.model_copy(update={"population": src})
     dataset = await stored_dataset(storage, name=src, data_source=data_source)
     if dataset is None:

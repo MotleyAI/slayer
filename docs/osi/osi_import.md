@@ -1,6 +1,6 @@
-# Importing OSI (Open Semantic Interchange) Configs
+# Importing Ossie (OSI) Documents
 
-SLayer can import [Ossie / Open Semantic Interchange](https://github.com/apache/ossie) (OSI) semantic-model documents and convert them into SLayer datasets. OSI is a vendor-neutral YAML/JSON standard for datasets, relationships, and metrics.
+SLayer imports [Ossie / Open Semantic Interchange](https://github.com/apache/ossie) (OSI) semantic-model documents natively: each valid document is stored as written, as a [semantic model](../concepts/semantic-models.md) of the datasource, and its datasets, relationships and metrics are queryable at once. Nothing is converted. Ossie [ontology and mapping documents](../concepts/ontologies.md) import too.
 
 ## Quick Start
 
@@ -8,67 +8,85 @@ SLayer can import [Ossie / Open Semantic Interchange](https://github.com/apache/
 slayer import-osi ./osi_configs --datasource my_postgres --storage ./slayer_data
 ```
 
-This reads every `.yaml`/`.yml`/`.json` file in the path (a single file or a directory), converts each OSI dataset into a SLayer dataset, and saves the datasets to storage. A **reachable datasource is required**: column types come from live introspection of `--datasource`, and OSI's semantic metadata is overlaid on top.
+This reads every `.yaml`/`.yml`/`.json` file in the path (a single file or a directory). The datasource must be configured, but it need not be reachable: importing a current-shape document never connects to the database. Each document is stored under the document's `name`; importing a document of a name that already exists replaces it.
+
+The command prints each stored document, then a report, then a `stored / refused` tally. It exits non-zero when any file was refused; the other files are still stored.
+
+From Python:
+
+```python
+from slayer.osi.importer import import_osi
+
+result = await import_osi(storage=storage, path="./osi_configs", data_source="my_postgres", engine=engine)
+result.stored           # names of the stored semantic models
+result.ontologies       # names of the stored ontologies
+result.mappings         # names of the stored mappings
+print(result.render_report())
+```
 
 ## Document Shapes
 
-A current-spec document holds one semantic model at its root (`version`, `name`, `datasets`, and optionally `description`, `ai_context`, `relationships`, `metrics`, `nonportable_extensions`). An older document wrapping its models in `semantic_model` (an array or a single object) still imports, each wrapped model as its own semantic model. A file that mixes both shapes, holds neither (such as an Ossie ontology or ontology-mapping document), has an empty `semantic_model`, or wraps its models while declaring `0.3.0.dev0` (whose documents are flat only) is skipped with a warning; the other files still import.
+**Current documents.** A flat document declaring `version: 0.3.0.dev0` (`version`, `name`, `datasets`, and optionally `description`, `ai_context`, `relationships`, `metrics`, `nonportable_extensions`) is checked for Ossie validity and stored with its text unchanged, comments included.
 
-Spec versions `1.0`, `0.1.0`, `0.1.1`, `0.2.0.dev0` and `0.3.0.dev0` parse silently; an unknown version is warned about but still parsed.
+**Earlier flat documents.** A flat document declaring `1.0`, `0.1.0`, `0.1.1` or `0.2.0.dev0` is upgraded as Ossie's migration guidance prescribes (its `version` set to `0.3.0.dev0`, root-level `dialects` and `vendors` removed), then validated and stored. The report lists each change. Any other version is refused.
 
-## What Gets Converted
+**Legacy wrapper documents.** A document whose models sit under `semantic_model` (an array or a single object) is split into one flat document per model. A legacy dataset exposed every source column, so the importer introspects each one and declares every source column no field declares as a field, typed from the database; this upgrade alone needs a reachable datasource. A model-level metric's bare reference that exactly one dataset declares is qualified (`SUM(amount)` becomes `SUM(orders.amount)`); an ambiguous one is stored as written and reported as not evaluable. The report lists each split, added field and rewritten metric.
 
-| OSI construct | SLayer target |
+**Legacy `custom_extensions`.** Entries under `custom_extensions`, whose `data` is a JSON string (SLayer 1.8 exports), are read at every level as `nonportable_extensions` entries with the decoded object, after the entity's own entries. The report holds one entry per document.
+
+**Ontology and mapping documents.** An ontology (root `ontology`) is stored once per store, whatever `--datasource` names; a mapping (root `concept_mappings`, `ontology_ref` and `semantic_model_ref`) is stored in `--datasource`. Within one import, ontologies are imported first, semantic models next and mappings last, so a mapping resolves against the documents of the same import whatever the file order; a mapping whose ontology or semantic model was refused in the same import is refused too. Each is checked and stored as described in [Ontologies and mappings](../concepts/ontologies.md).
+
+**Embedded `ontology_mappings`.** An ontology carrying the deprecated `ontology_mappings` is upgraded: each entry's inline semantic model is imported into `--datasource`, each entry becomes a standalone mapping named by the entry's `name`, and the ontology is stored without them. The report holds one `upgraded` entry. When any part is refused, nothing of the document is stored.
+
+## Refused Documents
+
+A document that is not valid Ossie stores nothing and is refused with every reason, each naming its entity:
+
+- YAML or JSON text repeating a mapping key at any depth (each repeat named with its line; repeated `<<` merge directives are allowed), or holding a scalar YAML cannot build, such as `2024-02-30` (these are then the only reasons reported);
+- a root mixing the flat and wrapper shapes, or holding none of a semantic-model, ontology or mapping document's root keys;
+- an empty `semantic_model`, or a wrapper declaring `0.3.0.dev0` (whose documents are flat);
+- a key Ossie does not define, or an unknown version;
+- a duplicate name, compared as Ossie compares identifiers;
+- a key or relationship naming an undeclared field, mismatched relationship key lengths, or a relationship naming a dataset outside the document;
+- a metric reference that breaks Ossie's metric scoping;
+- an expression with neither `sql` nor a `dialects` entry;
+- an extension whose `data` is not a JSON object (a list, a scalar, or an object holding a date, a timestamp, `.inf`/`.nan` or a non-string key at any depth);
+- a dataset or model-scoped metric name already used by another document or a standalone dataset of the datasource ([one namespace per datasource](../concepts/semantic-models.md#one-namespace-per-datasource)).
+
+## The Import Report
+
+Each report entry names its document and entity:
+
+| Kind | Meaning |
 |---|---|
-| `datasets[]` | one `SlayerDataset` each (name = dataset name) |
-| dataset `source` (`db.schema.table`) | `sql_table` + `schema`; a query source → `sql` mode |
-| dataset `fields[]` | the dataset's fields (see [Fields](#fields)) |
-| dataset `primary_key` | `DatasetField.primary_key = true` |
-| `relationships[]` (`from` → `to`) | a LEFT `DatasetRelationship` on the `from` dataset, [`cardinality`](../concepts/models.md#relationship-cardinality) `many_to_one` (`from` = many, `to` = one) |
-| `datasets[].metrics[]` | a `DatasetMetric` on that dataset |
-| `metrics[]` | a `DatasetMetric` on an anchor dataset (see [Metrics](#metrics)) |
-| `ai_context` (instructions + synonyms) | entity `description` + `meta["osi_ai_context"]` |
-| `unique_keys` / `nonportable_extensions` | dataset/field `meta`; a single-field unique key also sets `DatasetField.unique` |
+| `upgraded` | an earlier version upgraded to `0.3.0.dev0` |
+| `legacy_extensions` | legacy `custom_extensions` read as `nonportable_extensions` |
+| `split` | a legacy wrapper model, or a document of a merged export, stored as its own document |
+| `field_added` | a legacy dataset's source column declared as a field |
+| `qualified` | a legacy model-level metric's bare reference qualified |
+| `not_evaluable` | an entity SLayer [cannot evaluate yet](../concepts/semantic-models.md#what-loads-but-cannot-be-evaluated-yet); it is stored and fails only when a query reads it |
+| `replaced` | an existing document of the same name replaced |
+| `moved_metric` | a 1.x-imported metric anchored on a dataset is now the document's model-scoped metric |
+| `unexpressed` | a field of a replaced 1.x dataset that the document no longer declares; its settings were not carried |
+| `standalone` | a dataset of a merged export stored as a standalone dataset |
+| `not_checked` | a mapping's expressions whose type is unknown, so not checked against their concepts |
 
-A `SLAYER` non-portable extension written by [`slayer export-osi`](osi_export.md) restores the SLayer structure it carries (join types and directions, metric expressions, field filters, dataset sources, SLayer-only fields and metrics) wherever the document is unedited since export, and otherwise the Ossie content is imported and the report names the entity.
+Whether SLayer can evaluate an entity is never checked at import: upstream's TPC-DS example, for instance, is stored whole, and its window-function metrics evaluate. A `FIRST_VALUE` / `LAST_VALUE` window keeps its form: it is never rewritten into SLayer's `first` / `last`, which skip NULL ranking keys.
 
-An extension entry whose `data` is not a JSON object (a list, a scalar, or an object holding a date, a timestamp, `.inf`/`.nan` or a non-string key) is dropped and reported; the rest of the entity imports. The legacy key `custom_extensions`, whose `data` is a JSON string (documents exported by SLayer 1.8), is still read at every level, with one informational report entry per document suggesting a re-export.
+## Re-importing a 1.x Import
 
-### Fields
+SLayer 1.x converted each document into standalone datasets and attached each model-level metric to an anchor dataset. Importing the same document again replaces those datasets with the native document:
 
-A current-spec dataset exposes **exactly its declared fields**: a field renaming a source column (`order_id: o_orderkey`) hides `o_orderkey`, and source columns no field declares are not on the dataset. Field expressions may still read any source column, and every column they read must exist in the live source. A dataset with no fields imports with no visible fields and a warning. Older wrapped documents keep every introspected column and overlay their fields on top. When a dataset's query source outputs a label more than once (`SELECT o.id, c.id, …`), every field reading that label is dropped with a report as ambiguous. A field reading a source column whose name another field holds, or transforming the source column of its own name (`status: UPPER(status)`), is dropped with a report (an older wrapped document keeps the source column).
+- each anchored metric becomes the document's model-scoped metric, queried by bare name (`revenue_per_customer`, no longer `orders.revenue_per_customer`), and the report lists the move;
+- SLayer-only settings added to the replaced datasets (formats, hidden flags, row filters, access tags, custom aggregations, extra metrics) are carried into `SLAYER` entries of the document;
+- dataset names are kept, so saved queries, stages and memories referring to them keep resolving.
 
-A field's declared `datatype` is kept as written, whatever the database reports, and a disagreement adds an informational report entry; a field without one takes the type the database reports (`Float` when it reports none). SLayer's datatypes are Ossie's names, so a metric's declared `datatype` is kept as written too.
+Until re-imported, 1.x-converted datasets keep loading unchanged.
 
-A field is a time dimension when `dimension.is_time` is `true`, or when `is_time` is unset and its `datatype` is `Date`, `Time`, `DateTime` or `DateTimeTz` (an explicit `is_time: false` wins). The role never changes the field's type: it is recorded as `meta["osi_is_time"]`, and only a `Date`, `DateTime` or `DateTimeTz` time-dimension field can become the dataset's `default_time_dimension`.
+## Re-importing an Export
 
-### Keys and Relationships
+A document written by [`slayer export-osi`](osi_export.md) for a datasource holding several documents and standalone datasets records where each came from. Importing it into an empty datasource splits it back into the same documents and standalone datasets.
 
-In a current-spec document, every name in `primary_key`, `unique_keys`, `from_columns` and `to_columns` must be a declared field of its dataset; anything else is reported and not applied. A relationship keyed on a computed field is reported as not representable, and a relationship resolves its datasets only within its own document. A valid `primary_key` replaces the introspected one; without one, a field renaming an introspected key column keeps the key flag. An empty `primary_key` or `unique_keys` entry is reported and ignored (an empty `primary_key` leaves the dataset without a key).
+## After the Import
 
-### Metrics
-
-An OSI metric holds a raw SQL aggregation, which SLayer converts into an expression:
-
-- `SUM(amount)` → `sum(amount)`, `COUNT(*)` → `count(*)`, `COUNT(DISTINCT id)` → `count_distinct(id)`
-- arithmetic, constants and allowlisted scalar functions pass through: `SUM(a) / NULLIF(COUNT(*), 0)` → `sum(a) / nullif(count(*), 0)`
-- `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)` → `percentile(x, p=0.9)` (`0.5` → `median(x)`); `PERCENTILE_DISC`, and a percentile the target dialect cannot compute, is reported as unconverted
-- `STDDEV_SAMP`, `STDDEV_POP`, `VAR_SAMP`, `VAR_POP(x)` → `stddev_samp(x)` etc., `CORR`, `COVAR_SAMP`, `COVAR_POP(x, y)` → `corr(x, other=y)` etc., and `APPROX_COUNT_DISTINCT(x)` → `count_distinct_approx(x)`
-- an aggregate operand is written inline when the expression language expresses it — `SUM(quantity * amount)` → `sum(quantity * amount)`, `CASE`/`IFF`, comparisons, `AND`/`OR`/`NOT`, `IS NULL` — and otherwise becomes a hidden helper field on its single owning dataset, typed from the database
-- `agg(x) FILTER (WHERE p)` → `agg(CASE WHEN p THEN x END)`; a date string compared in `p` means what Ossie says, so `created_at <= '2024-04-10'` stops at its midnight (`COUNT(*)` counts `CASE WHEN p THEN 1 END`); the predicate must be row-level and read only the aggregate's dataset, and groups are never removed
-- `ARRAY_AGG(DISTINCT x)` → `collect(x)`, `ARRAY_CONTAINS(a, v)` and `v = ANY(a)` → `contains(a, v)`, `ARRAY_LENGTH(a)` and `CARDINALITY(a)` → `length(a)` (in a field, stored as SLayer's own SQL for the datasource), with SLayer's NULL conventions: `collect` drops NULL inputs and gives `[]` for none, `contains` is NULL for a NULL list or value and FALSE when the value is absent, and `length` counts non-NULL elements
-- a string literal keeps its `'` (written `''`) and backslash characters
-
-`SUM`/`AVG`/`MIN`/`MAX` over `DISTINCT`, any aggregate but `COUNT(x)` over a list field (`MAX(tags)`, `COUNT(DISTINCT tags)`), window functions, and a `CASE` outside any aggregate are reported as unconverted.
-
-A **dataset-scoped** metric references its own dataset's fields unqualified (`SUM(amount)`). A **model-scoped** metric references fields as `dataset.field` (`SUM(orders.amount) / COUNT(DISTINCT customers.id)`) and is attached to an **anchor** dataset: among the datasets that reach every referenced dataset over the relationships, preferably one that never crosses a relationship in its fan-out direction (usually the fact table), then the fewest total hops, a referenced dataset, and the smallest name; an operand reading several datasets must reach them all over to-one relationships. A dataset-scoped metric reads a column of its own source directly as `source.column` (`SUM(source.quantity)`, `source` matched case-insensitively): it reads a field passing that column through unchanged, else a hidden helper field, and is reported as unconverted when a field named `source` exists, the column is missing or ambiguous, or a field holding its name does not read it unchanged; older wrapped documents and model-scoped metrics do not read `source.column`. Unquoted names match declared fields case-insensitively and quoted names exactly; a dataset whose field and dataset-metric names repeat, in any case, is refused, since Ossie requires them unique. Older wrapped documents may also reference columns unqualified when exactly one dataset has them. A metric's `datatype` is kept in `meta["osi_datatype"]` and never changes the result type.
-
-## Dialect Selection
-
-Each expression is read from exactly one candidate, the first available in this order: the `--dialect` override; the top-level `sql`; an `OSSIE_SQL_2026` entry; an `ANSI_SQL` entry; an entry in the datasource's own dialect (`POSTGRES`, `DUCKDB`, `TSQL`, …); any other SQL dialect SLayer can read (with an informational report entry). Within one step the first entry wins. An expression with only non-SQL dialects (`MDX`, `DAX`, `TABLEAU`, …) is reported, never raised.
-
-`OSSIE_SQL_2026` and `ANSI_SQL` are read with Ossie's portable function set (`IFF`, `ZEROIFNULL`, `DATEADD`, `STARTSWITH`, `||`, …), and every stored field SQL is rendered in the datasource's dialect (for example `||` becomes `CONCAT` on MySQL). An expression already in the datasource's own dialect is stored verbatim, apart from its unquoted names, which every expression and dataset `source` stores as the datasource's database folds them (`OrderAmount` → `orderamount` on Postgres, Redshift, Snowflake and Oracle; a column qualified by another dataset's name is kept as written).
-
-## Clean-Fail Report
-
-Anything that cannot be expressed exactly is reported (never silently dropped): each entry lists the entity, a reason, and any workaround. Examples are an unreadable or unparseable expression, a field reading a column the source lacks, a relationship with mismatched key lengths or an undeclared key, a dataset whose source cannot be introspected, an illegal name (containing `.`/`:`), a metric whose datasets no relationship path connects, and an orphan `COUNT(*)` (a column-less model-scoped metric with no unique fact table, so its grain is ambiguous). The CLI prints a grouped report and a `datasets / unconverted / dropped` tally at the end.
+The stored document behaves as described in [Semantic models](../concepts/semantic-models.md): its datasets expose exactly their declared fields, a field without a `datatype` is typed from the live column at query time, `ai_context` and other vendors' extensions show in `inspect` and search, and dataset tools edit the document in place. A field reading a column the source lacks is [schema drift](../concepts/schema-drift.md), reported by `slayer validate-datasets`.

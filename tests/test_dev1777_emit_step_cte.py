@@ -1,6 +1,6 @@
-"""DEV-1777 sub-item 1: ``_emit_step_cte`` is the one shell shared by the four
+"""``_emit_step_cte`` is the one shell shared by the four
 transform-chain step-CTE sites (window / unmaterialised-POST, in the host and
-cross-model chains). These pin the shell directly and deterministically:
+cross-dataset chains). These pin the shell directly and deterministically:
 
 * the multi-slot-in-one-batch body, pinned in caller-supplied slot order;
 * a step's own aliases publish after its SELECT, so siblings never read each other;
@@ -44,7 +44,7 @@ def _slot(name: str, *, type_: DataType | None = None, public_aliases: list[str]
     return ValueSlot(
         id=name, key=FieldKey(path=(), leaf=name), declared_name=name,
         public_aliases=[name] if public_aliases is None else public_aliases, phase=Phase.ROW,
-        type=type_, type_is_explicit=type_ is not None,
+        type=type_ or DataType.STRING, type_is_explicit=type_ is not None,
     )
 
 
@@ -69,10 +69,10 @@ def test_single_slot_emits_step_cte_and_advances_chain() -> None:
     assert ctes[-1].depends_on == ["base"]
     sql = ctes[-1].query.sql(dialect="postgres")
     assert '"orders.d0"' in sql          # carried alias, in plan order
-    assert 'AS "orders.s1"' in sql        # rendered column, source-qualified
+    assert 'AS "s1"' in sql        # rendered column
     assert "FROM base" in sql
-    assert aliases["sid1"] == ["orders.s1"]
-    assert avail["sid1"] == "orders.s1"
+    assert aliases["sid1"] == ["s1"]
+    assert avail["sid1"] == "s1"
 
 
 def test_multi_slot_one_batch_preserves_caller_order() -> None:
@@ -91,10 +91,10 @@ def test_multi_slot_one_batch_preserves_caller_order() -> None:
     )
     assert new_tail == "step1"
     sql = ctes[-1].query.sql(dialect="postgres")
-    assert '"orders.a"' in sql
-    assert '"orders.b"' in sql
+    assert '"a"' in sql
+    assert '"b"' in sql
     # Deterministic: the caller's slot order is the emitted column order.
-    assert sql.index('"orders.a"') < sql.index('"orders.b"')
+    assert sql.index('"a"') < sql.index('"b"')
 
 
 def test_step_aliases_publish_after_its_select() -> None:
@@ -125,7 +125,7 @@ def test_step_aliases_publish_after_its_select() -> None:
 
 
 def test_multi_alias_slot_emits_one_column_per_public_alias() -> None:
-    # DEV-1798 (C13): a slot projected under two names surfaces both, rendered
+    # A slot projected under two names surfaces both, rendered
     # once and emitted per name; the FIRST name stays the canonical handle.
     gen = _gen()
     ctes = _base_ctes()
@@ -152,9 +152,9 @@ def test_multi_alias_slot_emits_one_column_per_public_alias() -> None:
         render=render,
     )
     projection = [e.alias_or_name for e in ctes[-1].query.expressions]
-    assert projection == ["orders.a", "orders.b"]
-    assert aliases["sid"] == ["orders.a", "orders.b"]
-    assert avail["sid"] == "orders.a"
+    assert projection == ["a", "b"]
+    assert aliases["sid"] == ["a", "b"]
+    assert avail["sid"] == "a"
     assert len(calls) == 1
 
 
@@ -201,14 +201,14 @@ def test_typed_slot_is_cast_wrapped() -> None:
 
 def _post_slot(slot_id: str, key: ValueKey, *, needs_field: bool = False) -> ValueSlot:
     stage = Stage(kind=StageKind.DERIVED, level=1)
-    return ValueSlot(id=slot_id, key=key, declared_name=slot_id, phase=Phase.ROW, stage=stage, needs_field=needs_field)
+    return ValueSlot(type=DataType.INTEGER, id=slot_id, key=key, declared_name=slot_id, phase=Phase.ROW, stage=stage, needs_field=needs_field)
 
 
 def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
     # The detection loop feeding block C (F1) and block D (F2): DERIVED
     # Arithmetic and ScalarCall slots needing a column are detected; TransformKey
     # (materialised by a layer), an already-materialised slot, a mask-only slot
-    # (needs_field=False), and a plain ColumnKey are skipped.
+    # (needs_field=False), and a plain FieldKey are skipped.
     arith = _post_slot("arith", ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(1)),)), needs_field=True)
     scalar = _post_slot("scalar", ScalarCallKey(name="abs", args=(FieldKey(leaf="x"),)), needs_field=True)
     transform = _post_slot("xf", TransformKey(op="cumsum", input=FieldKey(leaf="x")))

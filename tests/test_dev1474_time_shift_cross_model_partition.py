@@ -1,16 +1,15 @@
-"""DEV-1711 Stage 7 — time_shift CTEs on ScopeFrame (cross-model partitions).
+"""time_shift CTEs on ScopeFrame (cross-dataset partitions).
 
 Migrates ``_emit_time_shift_ctes_for_planned`` onto a ``ScopeFrame`` so the
 shifted CTE's partition keys and time expressions all enter through
-``resolve()`` (Law 1: anchor + register the join it crosses) and the CTE's FROM
-is built from the scope's registered ``join_paths``. This closes DEV-1474 and
-several adjacent silent-broadcast defects the same joinless-shifted-CTE
-limitation caused.
+``resolve()`` (Law 1: anchor + register the relationship it crosses) and the CTE's FROM
+is built from the scope's registered ``join_paths``. This closes the
+silent-broadcast defects the joinless-shifted-CTE limitation caused.
 
 Failure taxonomy this file pins (each verified against the pre-Stage-7 code so
 every test fails for the RIGHT reason — feature missing, not setup):
 
-* **cross-model ``ColumnKey`` partition** (``stores.name``) → today raises
+* **cross-dataset ``ColumnKey`` partition** (``stores.name``) → today raises
   ``NotImplementedError: stage 7b.12``. The QoQ demo shape.
 * **derived (``ColumnSqlKey``) dim partition** (local ``upper(status)`` or
   joined ``stores.tier``) → today SILENTLY skipped by the auto-partition walk →
@@ -20,9 +19,9 @@ every test fails for the RIGHT reason — feature missing, not setup):
   values do.
 * **secondary ``TimeTruncKey`` dim** → same silent broadcast across the second
   time bucket.
-* **joined-column ROW filter** → today raises via ``_guard_no_joined_refs`` (the
-  shifted CTE carried no joins). The guard is lifted: the scope now pulls the
-  filter's join.
+* **joined-field ROW filter** → today raises via ``_guard_no_joined_refs`` (the
+  shifted CTE carried no relationships). The guard is lifted: the scope now pulls the
+  filter's relationship.
 * **plain ``=`` sjoin equality** → NULL dim / NULL time-bucket rows silently
   drop their shifted value. The grain join-back becomes null-safe (Codex F2 —
   the sjoin IS a grain join-back), so a NULL-store group keeps its prev value.
@@ -47,6 +46,7 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -58,28 +58,29 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import _engine_generate
+from tests._trusted import trusting, trusting_all
 
 
 # --------------------------------------------------------------------------- #
-# Model builders — orders → stores → regions (the QoQ demo chain).
+# Dataset builders — orders → stores → regions (the QoQ demo chain).
 # --------------------------------------------------------------------------- #
 def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _stores(*, extra=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.STRING),
-        DatasetField(name="opened_at", sql="opened_at", datatype=DataType.DATETIME),
-        DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
+        DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", expression="name", datatype=DataType.STRING),
+        DatasetField(name="opened_at", expression="opened_at", datatype=DataType.DATETIME),
+        DatasetField(name="region_id", expression="region_id", datatype=DataType.INTEGER),
     ]
     cols += extra or []
     return SlayerDataset(
@@ -90,13 +91,13 @@ def _stores(*, extra=None) -> SlayerDataset:
 
 def _orders(*, extra=None, filters=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
-        DatasetField(name="status", sql="status", datatype=DataType.STRING),
-        DatasetField(name="status_up", sql="upper(status)", datatype=DataType.STRING),
-        DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME),
-        DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.DATETIME),
-        DatasetField(name="store_id", sql="store_id", datatype=DataType.INTEGER),
-        DatasetField(name="order_total", sql="order_total", datatype=DataType.FLOAT),
+        DatasetField(name="id", expression="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="status", expression="status", datatype=DataType.STRING),
+        DatasetField(name="status_up", expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="upper(status)") for d in ("CLICKHOUSE", "DUCKDB", "MYSQL", "POSTGRES", "SQLITE")]), datatype=DataType.STRING),
+        DatasetField(name="ordered_at", expression="ordered_at", datatype=DataType.DATETIME),
+        DatasetField(name="delivery_at", expression="delivery_at", datatype=DataType.DATETIME),
+        DatasetField(name="store_id", expression="store_id", datatype=DataType.INTEGER),
+        DatasetField(name="order_total", expression="order_total", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     return SlayerDataset(
@@ -109,7 +110,7 @@ def _orders(*, extra=None, filters=None) -> SlayerDataset:
 
 async def _gen(query, dataset, *, extra_datasets=None, dialect="postgres") -> str:
     return await _engine_generate(
-        query=query, dataset=dataset, extra_datasets=extra_datasets or [],
+        query=query, dataset=trusting(dataset), extra_datasets=trusting_all(extra_datasets or []),
         dialect=dialect, validate=False,
     )
 
@@ -160,29 +161,34 @@ def _shifted_where(sql: str) -> str:
 
 # A quoted-identifier char (double-quote for most dialects, backtick for MySQL).
 _Q = r"[\"`]"
+# SQLite compares two temporal values as canonical text.
+_SQLITE_CANONICAL = r"(?:SLAYER_TIMESTAMP_TEXT\(\s*)?"
 
 
 def _assert_grain_pair(
     on_pred: str, col_regex: str, *, marker: str = "IS NOT DISTINCT FROM",
-    lookup: bool = False,
+    lookup: bool = False, population: str = "orders",
 ) -> None:
     """Assert the sjoin ON contains a genuine null-safe grain pair for the column
-    matched by ``col_regex``: ``base."<…col…>" <marker> shifted_x."<same alias>"``.
+    matched by ``col_regex``: ``base."<key>" <marker> shifted_x."<key flattened>"``,
+    the shifted side being the key minus the population, ``.`` → ``__``.
 
-    Stronger than a bare substring: it requires the column on BOTH sides (a
-    back-reference forces the SAME quoted alias), joined by the null-safe operator
-    — so an implementation that drops one side, omits the pair, or leaves a plain
-    ``=`` cannot pass. Hop separators tolerate either the dotted (``stores.name``)
-    or flattened (``stores__name``) alias form via ``[._]+`` inside ``col_regex``.
-    ``lookup`` marks the shift axis, whose base side carries the offset.
+    Stronger than a bare substring: it requires the column on BOTH sides, joined
+    by the null-safe operator — so an implementation that drops one side, omits
+    the pair, or leaves a plain ``=`` cannot pass. ``lookup`` marks the shift
+    axis, whose base side carries the offset.
     """
     m = re.escape(marker.strip())
     pat = re.compile(
         r"base\." + _Q + r"([^\"`]*(?:" + col_regex + r")[^\"`]*)" + _Q
-        + (r"([^\n]*?)" if lookup else r"()\s*")
-        + m + r"\s*shifted_\w+\." + _Q + r"\1" + _Q
+        + (r"([^\n]*?)" if lookup else r"()\)?\s*")
+        + m + r"\s*" + _SQLITE_CANONICAL + r"shifted_\w+\." + _Q + r"([^\"`]*)" + _Q
     )
-    found = pat.search(on_pred)
+
+    def _flat(key: str) -> str:
+        return key.removeprefix(f"{population}.").replace(".", "__")
+
+    found = next((f for f in pat.finditer(on_pred) if f.group(3) == _flat(f.group(1))), None)
     assert found, (
         f"no null-safe grain pair for /{col_regex}/ [{marker}] in ON:\n{on_pred}"
     )
@@ -204,28 +210,28 @@ def _qoq_query(*, metric_expression: str, metric_name: str) -> SlayerQuery:
     return SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
-            field="ordered_at",
+            field="orders.ordered_at",
             granularity=TimeGranularity.QUARTER,
         )],
         dimensions=[QueryDimension(field="stores.name")],
         metrics=[
-            QueryMetric(metric="sum(order_total)"),
+            QueryMetric(metric="sum(orders.order_total)"),
             QueryMetric(metric=metric_expression, alias=metric_name),
         ],
-        order=[OrderItem(field="ordered_at", direction="asc")],
+        order=[OrderItem(field="orders.ordered_at", direction="asc")],
     )
 
 
 # =========================================================================== #
-# SQL-shape — cross-model / derived / secondary-TD partitions.
+# SQL-shape — cross-dataset / derived / secondary-TD partitions.
 # =========================================================================== #
 class TestShiftedCtePartitionShape:
     async def test_qoq_single_hop_partition_joins_and_projects(self) -> None:
-        """DEV-1474 core: ``change(sum(order_total))`` with ``stores.name`` — the
+        """Core: ``change(sum(order_total))`` with ``stores.name`` — the
         shifted CTE pulls ``LEFT JOIN stores`` (Law 1), projects the joined dim,
         and the sjoin joins back on it. Today: ``NotImplementedError 7b.12``."""
         sql = await _gen(
-            _qoq_query(metric_expression="change(sum(order_total))", metric_name="qoq"),
+            _qoq_query(metric_expression="change(sum(orders.order_total))", metric_name="qoq"),
             _orders(), extra_datasets=[_stores(), _regions()],
         )
         shifted = _shifted_body(sql)
@@ -247,13 +253,13 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.QUARTER,
             )],
             dimensions=[QueryDimension(field="stores.regions.name")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -276,13 +282,13 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[QueryDimension(field="status_up")],
+            dimensions=[QueryDimension(field="orders.status_up")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -300,28 +306,28 @@ class TestShiftedCtePartitionShape:
 
     async def test_derived_joined_dim_partition_not_broadcast(self) -> None:
         """A derived JOINED dim (``stores.tier = upper(name)``) must partition the
-        shifted CTE: the join is pulled AND the expanded expression is grouped.
+        shifted CTE: the relationship is pulled AND the expanded expression is grouped.
         Today: silently skipped → broadcast across tiers (scope_closed passes)."""
         stores = _stores(extra=[
-            DatasetField(name="tier", sql="upper(name)", datatype=DataType.STRING),
+            DatasetField(name="tier", expression="upper(name)", datatype=DataType.STRING),
         ])
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[QueryDimension(field="stores.tier")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[stores, _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The derived JOINED expression is expanded (UPPER(stores.name), NOT the
-        # bare column) and grouped in the shifted CTE.
+        # bare field) and grouped in the shifted CTE.
         assert shifted.count("UPPER(stores.name)") >= 2, shifted  # SELECT + GROUP BY
         assert re.search(r"GROUP BY[\s\S]*UPPER\(stores\.name\)", shifted), shifted
         on = _sjoin_on(sql)
@@ -337,15 +343,15 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="ordered_at",
+                TimeDimension(field="orders.ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(field="delivery_at",
+                TimeDimension(field="orders.delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
-            main_time_dimension="ordered_at",
+            main_time_dimension="orders.ordered_at",
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -362,21 +368,21 @@ class TestShiftedCtePartitionShape:
         assert_scope_closed(sql)
 
     async def test_explicit_partition_by_rejected_on_time_shift(self) -> None:
-        """DEV-1739 D6: explicit ``partition_by=`` on ``time_shift`` is rejected at
+        """Explicit ``partition_by=`` on ``time_shift`` is rejected at
         bind time. The auto-include of query dimensions does the shift join-back;
         the explicit form was a no-op under the uniform rule, so it now raises
         rather than silently accepting an inert kwarg."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[QueryDimension(field="stores.name")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="sum(orders.order_total)"),
                 QueryMetric(
-                    metric="time_shift(sum(order_total), -1, partition_by=stores.name)",
+                    metric="time_shift(sum(orders.order_total), -1, partition_by=stores.name)",
                     alias="prev",
                 ),
             ],
@@ -386,7 +392,7 @@ class TestShiftedCtePartitionShape:
             await _gen(query, orders, extra_datasets=[stores, regions])
 
     async def test_joined_time_axis_pulls_join_into_shifted_cte(self) -> None:
-        """When the SHIFT-axis time dimension is itself a joined column
+        """When the SHIFT-axis time dimension is itself a joined field
         (``stores.opened_at``), routing it through the scope pulls ``LEFT JOIN
         stores`` into the shifted CTE. Today: the shifted CTE references an
         unbound ``stores`` alias → scope leak."""
@@ -397,14 +403,14 @@ class TestShiftedCtePartitionShape:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
-        # The shift-axis time expression IS the joined column — not some unrelated
+        # The shift-axis time expression IS the joined field — not some unrelated
         # join that happens to be present; the offset lives in the join-back.
         assert "stores.opened_at" in shifted, shifted
         # The sole grain pair is the (joined) shifted time axis.
@@ -415,23 +421,23 @@ class TestShiftedCtePartitionShape:
 
 
 # =========================================================================== #
-# SQL-shape — joined-column ROW filter (guard lifted).
+# SQL-shape — joined-field ROW filter (guard lifted).
 # =========================================================================== #
 class TestShiftedCteJoinedFilter:
     async def test_query_filter_crossing_join_lifts_guard(self) -> None:
-        """A query ROW filter crossing the orders→stores join (``stores.name =
+        """A query ROW filter crossing the orders→stores relationship (``stores.name =
         'North'``) combined with a time_shift: the shifted CTE now joins stores
         and applies the filter. Today: ``NotImplementedError`` from
         ``_guard_no_joined_refs``."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
             filter=["stores.name = 'North'"],
         )
@@ -439,7 +445,7 @@ class TestShiftedCteJoinedFilter:
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The filter predicate is PRESERVED in the shifted CTE's WHERE (not merely
-        # the column appearing somewhere) — the re-aggregation runs over the same
+        # the field appearing somewhere) — the re-aggregation runs over the same
         # filtered population as _base.
         where = _shifted_where(sql)
         assert "stores.name" in where, where
@@ -447,19 +453,19 @@ class TestShiftedCteJoinedFilter:
         assert_scope_closed(sql)
 
     async def test_model_filter_mode_a_crossing_join_lifts_guard(self) -> None:
-        """Same, for a Mode-A MODEL filter (``stores.name IS NOT NULL``) that
-        crosses the join — the shifted CTE re-aggregates over the same filtered
-        population, joins pulled."""
+        """Same, for a Mode-A DATASET filter (``stores.name IS NOT NULL``) that
+        crosses the relationship — the shifted CTE re-aggregates over the same filtered
+        population, relationships pulled."""
         model = _orders(filters=["stores.name IS NOT NULL"])
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, model, extra_datasets=[_stores(), _regions()])
@@ -470,7 +476,7 @@ class TestShiftedCteJoinedFilter:
         # The predicate reaches the shifted CTE as an AST now that Mode-A text
         # enters through the one door, so sqlglot emits its canonical negated
         # form. The host path always re-parsed and rendered this way; the
-        # shifted path's raw-text passthrough was the odd one out (DEV-1745 W1).
+        # shifted path's raw-text passthrough was the odd one out.
         upper = where.upper()
         assert "IS NOT NULL" in upper or "NOT STORES.NAME IS NULL" in upper, where
         assert_scope_closed(sql)
@@ -498,18 +504,18 @@ class TestShiftedCteNullSafeJoinBack:
         bucket must match, not silently drop. Today: plain ``=``.
 
         Uses a LOCAL-dim partition so the sjoin is emitted on the pre-Stage-7
-        pipeline (a cross-model partition raises 7b.12 first) — this pins the
-        null-safe EQUALITY spelling specifically, independent of the join-pull."""
+        pipeline (a cross-dataset partition raises 7b.12 first) — this pins the
+        null-safe EQUALITY spelling specifically, independent of the relationship pull."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), dialect=dialect)
@@ -534,17 +540,17 @@ class TestLocalOnlyTimeShiftUnchanged:
     async def test_local_partition_stays_joinless(self) -> None:
         """A time_shift partitioned only on a LOCAL bare dimension (``status``)
         must keep the shifted CTE's FROM bare — widening the FROM for the
-        cross-model case must never leak a join into the local path."""
+        cross-dataset case must never leak a join into the local path."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -567,21 +573,21 @@ class TestJoinedSecondaryTimeDimension:
     async def test_joined_secondary_td_registers_join_and_partitions(self) -> None:
         """A LOCAL shift axis (``ordered_at``) with a JOINED secondary time
         dimension (``stores.opened_at`` @quarter): the secondary TimeTruncKey must
-        register its crossed join into the shifted CTE AND stay part of the grain.
-        Exercises the plan's requirement that a secondary TimeTruncKey pulls joins
+        register its crossed relationship into the shifted CTE AND stay part of the grain.
+        Exercises the plan's requirement that a secondary TimeTruncKey pulls relationships
         while remaining a shifted-grain partition."""
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="ordered_at",
+                TimeDimension(field="orders.ordered_at",
                               granularity=TimeGranularity.MONTH),
                 TimeDimension(field="stores.opened_at",
                               granularity=TimeGranularity.QUARTER),
             ],
-            main_time_dimension="ordered_at",
+            main_time_dimension="orders.ordered_at",
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -719,10 +725,10 @@ class TestQoQExecutionGroundTruth:
         matches hand-computed per-store deltas, including the NULL-store group
         (whose non-null prev proves the null-safe join-back)."""
         resp = await qoq_engine.execute(_qoq_query(
-            metric_expression="change(sum(order_total))", metric_name="qoq",
+            metric_expression="change(sum(orders.order_total))", metric_name="qoq",
         ))
         by = {
-            (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r
+            (r["stores.name"], _quarter_key(r["orders.ordered_at"])): r
             for r in resp.data
         }
         # Base per-quarter sums (guards the aggregation under the partition).
@@ -731,38 +737,38 @@ class TestQoQExecutionGroundTruth:
         assert float(by[(None, "2024-01")]["orders.order_total_sum"]) == pytest.approx(10.0)
 
         # Q1 (earliest) has no prior quarter → change is NULL for every store.
-        assert by[("North", "2024-01")]["orders.qoq"] is None
-        assert by[("South", "2024-01")]["orders.qoq"] is None
-        assert by[(None, "2024-01")]["orders.qoq"] is None
+        assert by[("North", "2024-01")]["qoq"] is None
+        assert by[("South", "2024-01")]["qoq"] is None
+        assert by[(None, "2024-01")]["qoq"] is None
 
         # QoQ deltas — each store's series compared only against itself.
-        assert float(by[("North", "2024-04")]["orders.qoq"]) == pytest.approx(150.0)
-        assert float(by[("North", "2024-07")]["orders.qoq"]) == pytest.approx(-50.0)
-        assert float(by[("South", "2024-04")]["orders.qoq"]) == pytest.approx(-120.0)
-        assert float(by[("South", "2024-07")]["orders.qoq"]) == pytest.approx(320.0)
+        assert float(by[("North", "2024-04")]["qoq"]) == pytest.approx(150.0)
+        assert float(by[("North", "2024-07")]["qoq"]) == pytest.approx(-50.0)
+        assert float(by[("South", "2024-04")]["qoq"]) == pytest.approx(-120.0)
+        assert float(by[("South", "2024-07")]["qoq"]) == pytest.approx(320.0)
 
         # The NULL-store group: prev is found across the NULL grain (null-safe
         # join-back) — a plain ``=`` join-back would drop these to NULL.
-        assert float(by[(None, "2024-04")]["orders.qoq"]) == pytest.approx(10.0)
-        assert float(by[(None, "2024-07")]["orders.qoq"]) == pytest.approx(-15.0)
+        assert float(by[(None, "2024-04")]["qoq"]) == pytest.approx(10.0)
+        assert float(by[(None, "2024-07")]["qoq"]) == pytest.approx(-15.0)
 
     async def test_change_pct_per_store_matches_hand_computed(self, qoq_engine) -> None:
         """``change_pct`` percentages per store (NULL prior → NULL)."""
         resp = await qoq_engine.execute(_qoq_query(
-            metric_expression="change_pct(sum(order_total))", metric_name="qoq_pct",
+            metric_expression="change_pct(sum(orders.order_total))", metric_name="qoq_pct",
         ))
         by = {
-            (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r
+            (r["stores.name"], _quarter_key(r["orders.ordered_at"])): r
             for r in resp.data
         }
-        assert by[("North", "2024-01")]["orders.qoq_pct"] is None
-        assert float(by[("North", "2024-04")]["orders.qoq_pct"]) == pytest.approx(1.0)
-        assert float(by[("North", "2024-07")]["orders.qoq_pct"]) == pytest.approx(-50.0 / 300.0)
-        assert float(by[("South", "2024-04")]["orders.qoq_pct"]) == pytest.approx(-0.6)
-        assert float(by[("South", "2024-07")]["orders.qoq_pct"]) == pytest.approx(4.0)
+        assert by[("North", "2024-01")]["qoq_pct"] is None
+        assert float(by[("North", "2024-04")]["qoq_pct"]) == pytest.approx(1.0)
+        assert float(by[("North", "2024-07")]["qoq_pct"]) == pytest.approx(-50.0 / 300.0)
+        assert float(by[("South", "2024-04")]["qoq_pct"]) == pytest.approx(-0.6)
+        assert float(by[("South", "2024-07")]["qoq_pct"]) == pytest.approx(4.0)
         # NULL-store percentages also require the null-safe join-back.
-        assert float(by[(None, "2024-04")]["orders.qoq_pct"]) == pytest.approx(1.0)
-        assert float(by[(None, "2024-07")]["orders.qoq_pct"]) == pytest.approx(-0.75)
+        assert float(by[(None, "2024-04")]["qoq_pct"]) == pytest.approx(1.0)
+        assert float(by[(None, "2024-07")]["qoq_pct"]) == pytest.approx(-0.75)
 
 
 class TestSecondaryTimeDimensionExecution:
@@ -776,15 +782,15 @@ class TestSecondaryTimeDimensionExecution:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="ordered_at",
+                TimeDimension(field="orders.ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(field="delivery_at",
+                TimeDimension(field="orders.delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
-            main_time_dimension="ordered_at",
+            main_time_dimension="orders.ordered_at",
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         resp = await secondary_td_engine.execute(query)
@@ -794,6 +800,6 @@ class TestSecondaryTimeDimensionExecution:
         }
         # Feb-ordered, Q1-delivered: prev = Jan-ordered / Q1-delivered = 100
         # (NOT 130 = all-of-January broadcast).
-        assert float(by[("2024-02", "2024-01")]["orders.prev"]) == pytest.approx(100.0)
+        assert float(by[("2024-02", "2024-01")]["prev"]) == pytest.approx(100.0)
         # Feb-ordered, Q2-delivered: prev = Jan-ordered / Q2-delivered = 30.
-        assert float(by[("2024-02", "2024-04")]["orders.prev"]) == pytest.approx(30.0)
+        assert float(by[("2024-02", "2024-04")]["prev"]) == pytest.approx(30.0)

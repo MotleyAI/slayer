@@ -12,7 +12,7 @@ Substitution spans SLayer's [two expression layers](../../concepts/references.md
   from the query's `variables` (`'{s}'` for text, a bare number or boolean, a list
   as a whole `IN` list), never a name. Metric expressions, computed
   dimensions, `order` expressions, `date_range` bounds and the population's saved
-  metrics take placeholders too (`"metrics": ["sum(order_total) * {rate} / 100"]`).
+  metrics take placeholders too (`"metrics": ["sum(orders.order_total) * {rate} / 100"]`).
 - **Mode A — raw SQL.** A stored dataset's `sql` and `filters`, and every `DatasetField`'s
   `sql` and `filter`, are raw SQL over the underlying table. A `{var}` here binds
   as a literal of that SQL, so it takes effect **before** aggregation — inside a
@@ -30,7 +30,7 @@ SQL — not as a filter on the result.
 | -- | -- |
 | `SlayerDataset.filters` | a dataset-level always-applied `WHERE` predicate |
 | `SlayerDataset.sql` | the raw SQL body of an `sql`-mode dataset (WHERE, projected scalars, anywhere) |
-| `DatasetField.sql` | a field's row-level SQL expression |
+| a field's dialect entry | a field's row-level SQL in its datasource's dialect |
 | `DatasetField.filter` | a field's `CASE WHEN` conditional (a per-metric windowed sum with scalar bounds) |
 
 A stored dataset `orders_over_floor` (`sql_table: orders`) with the filter
@@ -42,7 +42,7 @@ A stored dataset `orders_over_floor` (`sql_table: orders`) with the filter
 ```json
 {
   "population": "orders_over_floor",
-  "metrics": ["count(*)"],
+  "metrics": ["count(orders_over_floor.*)"],
   "variables": {"floor": 50}
 }
 ```
@@ -76,7 +76,7 @@ is queried by name:
 ```json
 {
   "population": "orders_by_store",
-  "metrics": ["count(*)"],
+  "metrics": ["count(orders_by_store.*)"],
   "variables": {"stores": ["Brooklyn", "Philadelphia"]}
 }
 ```
@@ -111,12 +111,11 @@ query or per call.
   that is no literal in its slot (`"0 OR 1=1"` for a bare `{floor}`) is
   rejected before any SQL runs.
 
-Substitution currently applies to a query's **population dataset itself**; nested
-`source_queries` stages, relationship targets, and cross-dataset targets are a tracked
-follow-up.
+Substitution applies to every dataset a query reads, each with its own defaults
+under the query's variables.
 
-See [Variables in dataset SQL](../../concepts/models.md#variables-in-dataset-sql) and
-[Variables](../../concepts/queries.md#variables) for the reference
+See [Variables in dataset SQL](../../concepts/datasets.md#variables-in-dataset-sql) and
+[Variables](../../concepts/filters.md#variables) for the reference
 details.
 
 ---

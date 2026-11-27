@@ -1,37 +1,42 @@
 # Aggregations
 
-An aggregation is a function call over a field, a joined field (dotted path) or a
-row-level expression, which may reach across to-one relationships (`sum(amount * customers.credit)`
-from `orders`). It is valid in every expression position: metrics,
-filters, order, and computed dimensions.
+An aggregation is a function call over a field, a joined field or a row-level
+expression, each reference starting at its dataset; it may reach across to-one
+relationships (`sum(orders.amount * customers.credit)`). It is valid in every expression
+position: metrics, filters, order, and computed dimensions.
 
 ## Catalogue
 
-`count(*)`, `count(x)`, `count_distinct(x)` (or `count(distinct x)`),
-`count_distinct_approx(x)`, `sum`, `avg`, `min`, `max`, `median(x)`,
-`percentile(x, p=0.95)`, `weighted_avg(x, weight=w)`, `stddev_samp`, `stddev_pop`,
+`count(<dataset>.*)`, `count(x)`, `count_distinct(x)` (or `count(distinct x)`),
+`count_distinct_approx(x)`, `sum`, `avg`, `min`, `max`, `sum_distinct(x)` (or
+`sum(distinct x)`), `avg_distinct(x)`, `median(x)`, `percentile(x, p=0.95)` (or
+`PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY x)`), `percentile_disc(x, p=0.95)` (an observed value of any
+ordered type; or `PERCENTILE_DISC(…) WITHIN GROUP (…)`), `percentile_approx(x, p=0.95)` (or
+`APPROX_PERCENTILE(x, 0.95)`; exact where the database has no approximation), `weighted_avg(x, weight=w)`, `stddev_samp`, `stddev_pop`,
 `var_samp`, `var_pop`, `corr(x, other=y)`, `covar_samp(x, other=y)`,
-`covar_pop(x, other=y)`, `first(x[, time_col])` / `last(x[, time_col])` (the earliest /
-latest record's value in each group), `collect(x)` (the distinct sorted values in each
+`covar_pop(x, other=y)`, `first(x[, key])` / `last(x[, key])` (the earliest /
+latest record's value in each group; over an aggregate, `last(sum(x))`, the latest time bucket's value, the bucket
+consumed from its grain), `collect(x)` (the distinct sorted values in each
 group, as a list), plus the dataset's custom aggregations
 (`inspect` the dataset to list them). Any field argument may be a row-level expression:
-`weighted_avg(x, weight=qty * 2)`, `last(x, coalesce(updated_at, created_at))`.
+`weighted_avg(x, weight=orders.qty * 2)`, `last(x, coalesce(orders.updated_at, orders.created_at))`.
 In an aggregation or transform call, `name = value` is a keyword argument when `name` is
-one of its parameters (`weighted_avg(x, weight = qty)`) and a comparison otherwise
-(`sum(status = 'paid')` counts the paid rows); write `sum((weight = 1))` to compare a field
-named like a parameter. In a scalar function (`iif(status = 'paid', …)`) `=` compares.
+one of its parameters (`weighted_avg(x, weight = orders.qty)`) and a comparison otherwise
+(`sum(orders.status = 'paid')` counts the paid rows). In a scalar function
+(`iif(orders.status = 'paid', …)`) `=` compares.
 
 A sole primary-key field only takes `count`, `count_distinct`,
 `count_distinct_approx`, `min`, `max` and `collect`; a field's `allowed_aggregations` may
-restrict it further. Expressions are not gated: `sum(price * quantity)` works.
+restrict it further. Expressions are not gated: `sum(orders.price * orders.quantity)` works.
 
 ## Expressions and booleans
 
-`sum(amount - cost)`, `count_distinct(upper(email))`, `percentile(price * qty, p=0.5)`.
-A comparison aggregates as 1 / 0: `sum(amount > 15)` counts the rows above 15. A
-conditional aggregate uses `iif`: `sum(iif(status = 'paid', amount, 0))`; always give
-it a `name`. `agg(x) FILTER (WHERE c)` aggregates only the rows where the row-level
-condition `c` holds: `sum(amount) FILTER (WHERE status = 'paid')`.
+`sum(orders.amount - orders.cost)`, `count_distinct(upper(customers.email))`,
+`percentile(orders.price * orders.qty, p=0.5)`. A comparison aggregates as 1 / 0:
+`sum(orders.amount > 15)` counts the rows above 15. A conditional aggregate uses `iif`:
+`sum(iif(orders.status = 'paid', orders.amount, 0))`; always give it an `alias`.
+`agg(x) FILTER (WHERE c)` aggregates only the rows where the row-level condition `c`
+holds: `sum(orders.amount) FILTER (WHERE orders.status = 'paid')`.
 
 ## Empty input
 
@@ -40,10 +45,11 @@ An aggregate over no rows (a parent without joined rows, an empty window) is 0 f
 
 ## Result names
 
-`sum(amount)` on `orders` returns `orders.amount_sum`, `count(*)` returns
-`orders._count`, an expression is sanitized (`sum(amount - cost)` → `amount_cost_sum`).
-A `name` overrides it. A name equal to a field of the source dataset is refused with a
-suggested free name.
+`sum(orders.amount)` returns `orders.amount_sum` and `count(orders.*)` returns
+`orders._count`, whatever the population; an expression is sanitized after its common
+dataset (`sum(orders.amount - orders.cost)` → `orders.amount_cost_sum`). An `alias` is the
+key itself. An alias equal to a field of the source dataset is refused with a suggested
+free name.
 
 ## partition_by
 
@@ -66,8 +72,8 @@ MySQL and SQL Server.
 
 ## Nesting
 
-`avg(sum(amount, partition_by=[region, city]), partition_by=[region])` averages the
-per-city totals in each region: the outer aggregation runs over one row per inner
-group, never over the base rows. The top-level `partition_by` must be a subset of the
-query's dimensions; inner ones need not be. An outer aggregation's parameters must be
-fixed by the inner grain, e.g. `weight=count(id, partition_by=[region, city])`.
+`avg(sum(orders.amount, partition_by=[stores.region, stores.city]), partition_by=[stores.region])`
+averages the per-city totals in each region: the outer aggregation runs over one row per
+inner group, never over the base rows. The top-level `partition_by` must be a subset of
+the query's dimensions; inner ones need not be. An outer aggregation's parameters must be
+fixed by the inner grain, e.g. `weight=count(orders.id, partition_by=[stores.region, stores.city])`.

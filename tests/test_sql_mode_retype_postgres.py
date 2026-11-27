@@ -1,4 +1,4 @@
-"""An ``sql``-mode model's stale non-list column over a live Postgres list (spec: models/schema-drift)."""
+"""An ``sql``-mode dataset's stale non-list field over a live Postgres list (spec: models/schema-drift)."""
 
 from typing import Any
 
@@ -37,11 +37,11 @@ async def pg(postgresql, tmp_path):
         yield engine, ds
 
 
-@pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores",
+@pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", field="scores",
                                                                   untypeable="same_list"))
 async def test_sql_mode_list_retype(pg: tuple[SlayerQueryEngine, Any], sql: str, column: str, element: DataType) -> None:
     engine, ds = pg
-    await engine.storage.save_dataset(stale_sql_dataset(sql=sql, column=column, data_source=ds.name))
-    await check_validation_finding(engine, data_source=ds.name, column=column)
-    await check_query_carries_finding(engine, column=column)
-    await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)
+    await engine.storage.save_dataset(stale_sql_dataset(sql=sql, field=column, data_source=ds.name))
+    await check_validation_finding(engine, data_source=ds.name, field=column)
+    await check_query_carries_finding(engine, field=column)
+    await check_reingest_retypes(engine, datasource=ds, table="contractors", field=column, element=element)

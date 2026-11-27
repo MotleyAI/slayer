@@ -1,4 +1,4 @@
-"""DEV-1866 — population inference selection + determination-item extraction.
+"""Population inference selection + determination-item extraction.
 
 Metadata-only: exercises the selection core (``infer_population``) and the
 determination-item extractor (``determination_items``) against small
@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import TimeGranularity
+from slayer.core.errors import PopulationErrorReason, PopulationInferenceError
 from slayer.core.query import QueryDimension, SlayerQuery, TimeDimension
 from slayer.engine.population.inference import (
     PopulationChoice,
@@ -63,7 +64,7 @@ class TestSourceModelOptional:
 # --------------------------------------------------------------------------- #
 class TestSelection:
     async def test_canonical_picks_coarse_side(self, storage) -> None:
-        """dims on customers + a measure on orders ⇒ population = customers."""
+        """dims on customers + a metric on orders ⇒ population = customers."""
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
@@ -89,8 +90,8 @@ class TestSelection:
         )
         assert with_measure.dataset_name == without_measure.dataset_name == "customers"
 
-    async def test_field_filter_pulls_population_to_its_owner(self, storage) -> None:
-        """A field-typed filter on orders makes orders.status a determination item."""
+    async def test_field_filter_never_moves_the_anchor(self, storage) -> None:
+        """A field-typed filter on orders is not a determination item."""
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
@@ -98,7 +99,7 @@ class TestSelection:
             ),
             storage=storage,
         )
-        assert choice.dataset_name == "orders"
+        assert choice.dataset_name == "customers"
 
     async def test_measure_typed_filter_does_not_participate(self, storage) -> None:
         """An aggregation-bearing filter is dropped ⇒ population unchanged."""
@@ -112,7 +113,7 @@ class TestSelection:
         assert choice.dataset_name == "customers"
 
     async def test_saved_measure_filter_does_not_participate(self, storage) -> None:
-        """A filter on a saved measure (orders.revenue) is dropped ⇒ customers."""
+        """A filter on a saved metric (orders.revenue) is dropped ⇒ customers."""
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
@@ -125,7 +126,7 @@ class TestSelection:
     async def test_saved_measure_filter_via_named_join_does_not_participate(
         self, storage
     ) -> None:
-        """Saved measure behind a named join (``tickets.reporter.handled``) is dropped ⇒ tickets."""
+        """Saved metric behind a named relationship (``tickets.reporter.handled``) is dropped ⇒ tickets."""
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["tickets.subject"],
@@ -184,18 +185,15 @@ class TestSelection:
         )
         assert choice.dataset_name == "customers"
 
-    async def test_measure_anchor_never_shifts_datasource(self, storage) -> None:
-        """A measure referencing a model in another datasource must not affect
-        scoping — measures never participate in inference."""
-        choice = await infer_population(
-            query=SlayerQuery.model_validate({
-                "dimensions": ["customers.region"],
-                "metrics": [{"metric": "count(widgets.x)", "alias": "wc"}],
-            }),
-            storage=storage,
-        )
-        assert choice.dataset_name == "customers"
-        assert choice.data_source == DS_CHAIN
+    async def test_metric_anchors_scope_the_datasource(self, storage) -> None:
+        """A metric homed in another datasource joins scoping: no datasource holds both, so it fails closed."""
+        query = SlayerQuery.model_validate({
+            "dimensions": ["customers.region"],
+            "metrics": [{"metric": "count(widgets.x)", "alias": "wc"}],
+        })
+        with pytest.raises(PopulationInferenceError) as ei:
+            await infer_population(query=query, storage=storage)
+        assert ei.value.reason is PopulationErrorReason.NO_DATASOURCE
 
 
 # --------------------------------------------------------------------------- #
@@ -207,12 +205,12 @@ class TestDeterminationItems:
             query, datasets_by_name=chain_datasets_by_name(), **kw
         ))
 
-    def test_dimensions_and_field_filters_participate(self) -> None:
+    def test_field_filters_never_participate(self) -> None:
         items = self._items(SlayerQuery(
             dimensions=["customers.region"],
             filter=["orders.status = 'ok'"],
         ))
-        assert items == {"customers.region", "orders.status"}
+        assert items == {"customers.region"}
 
     def test_time_dimensions_participate(self) -> None:
         items = self._items(SlayerQuery(
@@ -245,7 +243,7 @@ class TestDeterminationItems:
         assert items == {"customers.region"}
 
     def test_saved_measure_via_named_join_ref_dropped(self) -> None:
-        """Owner found by walking the join path ⇒ a named-join saved measure is dropped."""
+        """Owner found by walking the relationship path ⇒ a named-relationship saved metric is dropped."""
         items = set(determination_items(
             SlayerQuery(
                 dimensions=["tickets.subject"],
@@ -255,8 +253,8 @@ class TestDeterminationItems:
         ))
         assert items == {"tickets.subject"}
 
-    def test_column_sharing_an_aggregation_name_is_kept(self) -> None:
-        """A real column sharing an aggregation's name stays a determination item (column precedence)."""
+    def test_filter_column_sharing_an_aggregation_name_does_not_participate(self) -> None:
+        """A filter on a field sharing an aggregation's name is still a filter, never a determination item."""
         items = set(determination_items(
             SlayerQuery(
                 dimensions=["tickets.subject"],
@@ -264,7 +262,7 @@ class TestDeterminationItems:
             ),
             datasets_by_name=named_datasets_by_name(),
         ))
-        assert items == {"tickets.subject", "tickets.reporter.score"}
+        assert items == {"tickets.subject"}
 
     def test_aggregation_filter_dropped(self) -> None:
         items = self._items(SlayerQuery(

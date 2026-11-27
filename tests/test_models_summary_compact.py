@@ -1,18 +1,18 @@
-"""models_summary compact-by-default.
+"""datasets_summary compact-by-default.
 
 Tests cover:
-* MCP tool ``models_summary(compact: bool = True)``.
-* compact=True markdown renders: name, description, ``Columns: N`` line,
-  ``Measures: <names>`` line, ``Joins to: ...``. NO per-column table,
-  NO per-measure formula block.
+* MCP tool ``datasets_summary(compact: bool = True)``.
+* compact=True markdown renders: name, description, ``Fields: N`` line,
+  ``Metrics: <names>`` line, ``Relationships to: ...``. NO per-field table,
+  NO per-metric expression block.
 * compact=True JSON renders the new shape (Codex#6):
-  ``{name, description, column_count, measure_names, joins_to}``.
+  ``{name, description, field_count, metric_names, relationships_to}``.
 * compact=False markdown retains the verbose shape's load-bearing
-  sections (column table, per-measure formula block).
-* compact=False JSON retains the structured ``columns`` / ``measures``
+  sections (field table, per-metric expression block).
+* compact=False JSON retains the structured ``fields`` / ``metrics``
   payloads.
 * Empty datasource string is identical across modes.
-* No-joins / no-measures branches.
+* No-relationships / no-metrics branches.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def yaml_storage() -> Generator[YAMLStorage, None, None]:
 
 
 async def _call(mcp_server, *, name: str, arguments: dict) -> str:
-    content_blocks, _ = await mcp_server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await mcp_server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 
@@ -90,7 +90,7 @@ async def _seed_orders(storage: YAMLStorage) -> None:
 async def test_compact_markdown_keeps_name_and_description(
     yaml_storage: YAMLStorage,
 ) -> None:
-    """The plan requires model name + description as the first two lines."""
+    """The plan requires dataset name + description as the first two lines."""
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
     result = await _call(mcp, name="datasets_summary", arguments={
@@ -137,7 +137,7 @@ async def test_compact_markdown_emits_measure_names_only(
         "datasource_name": "mydb", "compact": True,
     })
     assert "Metrics: revenue, orders_count" in result
-    # The formula must NOT leak into compact output.
+    # The expression must NOT leak into compact output.
     assert "sum(amount)" not in result
     assert "count(*)" not in result
 
@@ -304,5 +304,5 @@ async def test_tool_descriptor_lists_compact_arg(
     mcp = create_mcp_server(storage=yaml_storage)
     tools = await mcp.list_tools()
     tool: Any = next(t for t in tools if t.name == "datasets_summary")
-    schema = tool.inputSchema
+    schema = tool.input_schema
     assert "compact" in schema["properties"]

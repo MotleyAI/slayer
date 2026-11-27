@@ -1,4 +1,4 @@
-"""DEV-1935 golden SQL — the boolean-total pushdown shapes across the seven
+"""Golden SQL — the boolean-total pushdown shapes across the seven
 Tier-1 dialects. Each ``mixed_or``/``multi_branch`` shape restricts the population
 by one correlated EXISTS whose subquery holds the whole boolean predicate (the
 disjunction stays inside the EXISTS, never an operand of the outer OR); a
@@ -9,7 +9,7 @@ materialised branch to the outer query and quantifies only the rest.
 Today every ``mixed_or``/``multi_branch`` case fails closed or drops-and-warns, so
 the committed baseline records that; ``test_new_shapes_generate_sql`` is the RED
 tripwire that flips to real SQL once the lowering lands, re-blessed per the
-DEV-1742 ALLOWED_DELTAS protocol.
+ALLOWED_DELTAS protocol.
 """
 
 from __future__ import annotations
@@ -42,30 +42,30 @@ def _cases() -> dict:
         # spine shape when the predicate can hold on the hop's null-extended row.
         "mixed_or/structural": {
             "source": "customers",
-            "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
                    "filter": [OR_MIX_LOCAL]}},
         "mixed_or/gold_null_extended": {
             "source": "customers",
-            "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
                    "filter": [GOLD_OR_OK]}},
         "mixed_or/negation": {
             "source": "customers",
-            "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
                    "filter": [NOT_GOLD_AND_OK]}},
-        # is_null/* — a null-test on a related column reads as absence (spine).
+        # is_null/* — a null-test on a related field reads as absence (spine).
         "is_null/absence": {
             "source": "customers",
-            "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
                    "filter": [NO_ORDERS]}},
         # multi_branch/* — cross-path refs spanning several branches, or an atom
         # comparing two branches — judged on the product.
         "multi_branch/or": {
             "source": "customers",
-            "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
                    "filter": [NEW_OR_EVENT]}},
         "multi_branch/atom": {
             "source": "customers",
-            "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],
+            "kw": {"metrics": [{"metric": "sum(customers.spend)", "alias": "sp"}],
                    "filter": [ATOM_TWO_BRANCH]}},
         # materialised/host_base — a materialised branch (orders.id dimension) binds
         # to the outer query; only the regions branch is quantified.
@@ -80,8 +80,8 @@ def _cases() -> dict:
         # producer/* — a host-rooted producer inherits the population semi-join.
         "producer/mixed_or_partitioned": {
             "source": "customers",
-            "kw": {"dimensions": ["tier"],
-                   "metrics": [{"metric": "sum(spend, partition_by=tier)",
+            "kw": {"dimensions": ["customers.tier"],
+                   "metrics": [{"metric": "sum(customers.spend, partition_by=customers.tier)",
                                  "alias": "pt"}],
                    "filter": [OR_MIX_LOCAL]}},
     }

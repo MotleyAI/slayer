@@ -1,4 +1,4 @@
-"""Save-time aggregation-formula parse check at every engine create/edit door."""
+"""Save-time aggregation-expression parse check at every engine create/edit door."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from slayer.cli import main as cli_main
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationArgumentError, SlayerError
 from slayer.core.models import (
-    Aggregation, AggregationParam, DatasetField, DatasourceConfig, SlayerDataset,
+    Aggregation, AggregationParam, DatasetField, DatasetMetric, DatasetRelationship, DatasourceConfig, SlayerDataset,
 )
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -50,8 +50,8 @@ def _dataset(expression: str, *, name: str = "orders", data_source: str = _DS,
         sql=sql,
         data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
         ],
         aggregations=[Aggregation(name=agg, expression=expression)],
     )
@@ -157,7 +157,7 @@ class TestEngineCheck:
         monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
         model = SlayerDataset(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])],
+            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])],
             aggregations=[Aggregation(name="custom_agg", expression=_BROKEN)],
         )
         with pytest.raises(SqlTemplateError, match="custom_agg"):
@@ -177,7 +177,7 @@ class TestEngineCheck:
         # `#` is a comment in MySQL, so `{mask}` is never read there (it is on SQLite).
         model = SlayerDataset(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])],
+            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])],
             aggregations=[Aggregation.model_validate({
                 "name": "masked", "expression": "SUM({value}) # {mask}",
                 "params": [{"name": "mask", "sql": "1"}],
@@ -246,6 +246,58 @@ class TestUnreferencedParams:
             await engine.save_dataset(model)
 
 
+_WEIGHTED = Aggregation(name="percentile", expression="SUM({value} * {weight}) / SUM({weight})",
+                        params=[AggregationParam(name="weight", sql="1")])
+
+
+def _customers(*aggs: Aggregation) -> SlayerDataset:
+    return SlayerDataset(
+        name="customers", sql_table="customers", data_source=_DS, aggregations=list(aggs),
+        fields=[DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+                DatasetField(name="weight", expression="weight", datatype=DataType.FLOAT)],
+    )
+
+
+def _with_metric(metric: str, *aggs: Aggregation) -> SlayerDataset:
+    return _with(Aggregation(name="custom_agg", expression="SUM({value})")).model_copy(update={
+        "aggregations": [Aggregation(name="custom_agg", expression="SUM({value})"), *aggs],
+        "fields": [*_dataset("SUM({value})").fields, DatasetField(name="customer_id", expression="id")],
+        "relationships": [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
+        "metrics": [DatasetMetric(name="m", expression=metric)],
+    })
+
+
+class TestPercentileFraction:
+    async def test_a_formula_less_override_keeps_the_fraction_check(self, tmp_path: Path) -> None:
+        store = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await store.save_dataset(_customers())
+        override = Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.25")])
+        model = _with_metric("percentile(amount, p=1.5)", override)
+        with pytest.raises(AggregationArgumentError, match=r"must be in \[0, 1\]; got 1\.5\.$"):
+            await store.save_dataset(model)
+
+    async def test_the_sources_owner_decides_the_check(self, tmp_path: Path) -> None:
+        store = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await store.save_dataset(_customers(_WEIGHTED))
+        await store.save_dataset(_with_metric("percentile(customers.amount, customers.weight)"))
+        assert await store.get_dataset("orders", data_source=_DS) is not None
+
+    async def test_a_quoted_hop_resolves_as_binding_does(self, tmp_path: Path) -> None:
+        """``"Customers"`` names no edge exactly: the save leaves the path to binding, as for any miss."""
+        store = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await store.save_dataset(_customers())
+        await store.save_dataset(_with_metric('percentile("Customers".amount, 1.5)'))
+        assert await store.get_dataset("orders", data_source=_DS) is not None
+
+    async def test_a_built_in_on_the_sources_owner_is_checked(self, tmp_path: Path) -> None:
+        store = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await store.save_dataset(_customers())
+        model = _with_metric("percentile(customers.amount, customers.weight)", _WEIGHTED)
+        with pytest.raises(AggregationArgumentError, match=r"must be a numeric literal in \[0, 1\]"):
+            await store.save_dataset(model)
+
+
 @pytest.fixture
 def rest(seeded) -> tuple[TestClient, YAMLStorage]:
     _engine, store = seeded
@@ -289,8 +341,8 @@ class TestRest:
             assert resp.status_code == 400, resp.text
             return resp.json()["detail"]
 
-        twin = detail("custom_agg(amount, (bogus=1))")
-        message = detail("custom_agg(amount, bogus=1)")
+        twin = detail("custom_agg(orders.amount, (orders.bogus=1))")
+        message = detail("custom_agg(orders.amount, bogus=1)")
         assert "got 'bogus'" not in message
         assert "==" not in message
         assert ("bogus" in message) == ("bogus" in twin)
@@ -323,13 +375,13 @@ def mcp(seeded) -> tuple[Any, SlayerQueryEngine, YAMLStorage]:
 
 
 async def _call(*, server: Any, name: str, arguments: dict[str, Any]) -> str:
-    blocks, _ = await server.call_tool(name=name, arguments=arguments)
+    blocks = (await server.call_tool(name=name, arguments=arguments)).content
     return blocks[0].text
 
 
-_COLUMNS = [
-    {"name": "id", "sql": "id", "datatype": "number", "primary_key": True},
-    {"name": "amount", "sql": "amount", "datatype": "number"},
+_FIELDS = [
+    {"name": "id", "expression": "id", "datatype": "number", "primary_key": True},
+    {"name": "amount", "expression": "amount", "datatype": "number"},
 ]
 
 
@@ -337,7 +389,7 @@ class TestMcp:
     async def test_create_model_rejects_broken_formula(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, _engine, store = mcp
         out = await _call(server=server, name="create_dataset", arguments={
-            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _COLUMNS,
+            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _FIELDS,
             "aggregations": [{"name": "custom_agg", "expression": _BROKEN}],
         })
         assert "Error" in out
@@ -348,7 +400,7 @@ class TestMcp:
     async def test_create_model_with_aggregation_is_queryable(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
         out = await _call(server=server, name="create_dataset", arguments={
-            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _COLUMNS,
+            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _FIELDS,
             "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
         assert "created" in out, out
@@ -356,14 +408,14 @@ class TestMcp:
         assert saved is not None
         assert [a.name for a in saved.aggregations] == ["sum_sq"]
         resp = await engine.execute(SlayerQuery(
-            population="orders", metrics=[QueryMetric(metric="sum_sq(amount)", alias="m")],
+            population="orders", metrics=[QueryMetric(metric="sum_sq(orders.amount)", alias="m")],
         ))
-        assert resp.data[0]["orders.m"] == pytest.approx(13.0)
+        assert resp.data[0]["m"] == pytest.approx(13.0)
 
     async def test_create_model_aggregations_with_query_rejected(self, mcp) -> None:
         server, _engine, _store = mcp
         out = await _call(server=server, name="create_dataset", arguments={
-            "name": "qb", "query": {"population": "orders", "metrics": ["count(*)"]},
+            "name": "qb", "query": {"population": "orders", "metrics": ["count(orders.*)"]},
             "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
         assert "Error" in out
@@ -444,7 +496,7 @@ async def test_ranked_formula_rejected_before_backing_query_expansion(
     monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
     model = SlayerDataset(
         name="obs", data_source=_DS,
-        source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])],
+        source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])],
         aggregations=[Aggregation(name="last", expression="MAX({value})")],
     )
     with pytest.raises(AggregationArgumentError, match="ranked aggregation cannot take an expression"):

@@ -1,4 +1,4 @@
-"""DEV-1740 Part B1 — row-level expression dimensions (no aggregate inside).
+"""Part B1 — row-level expression dimensions (no aggregate inside).
 
 These need no second pass: the expression goes straight into SELECT + GROUP BY.
 Executed values on SQLite AND DuckDB, the no-second-pass SQL shape, name
@@ -34,32 +34,32 @@ LOWER_CITY_TOTAL = {"paris": 7000.0, "berlin": 9000.0, "lyon": 1000.0,
 class TestRowLevelValues:
     async def test_scalar_expression_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[{"field": "lower(city)", "alias": "lc"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=[{"field": "lower(orders.city)", "alias": "lc"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
-        got = {r["orders.lc"]: float(r["orders.rev"]) for r in resp.data}
+        got = {r["lc"]: float(r["rev"]) for r in resp.data}
         assert got == {k: pytest.approx(v) for k, v in LOWER_CITY_TOTAL.items()}
 
     async def test_case_band_over_plain_column(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[{
-                "field": "CASE WHEN amount > 2000 THEN 'big' ELSE 'small' END",
+                "field": "CASE WHEN orders.amount > 2000 THEN 'big' ELSE 'small' END",
                 "alias": "sz",
             }],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
-        got = {r["orders.sz"]: float(r["orders.rev"]) for r in resp.data}
+        got = {r["sz"]: float(r["rev"]) for r in resp.data}
         assert got == {k: pytest.approx(v) for k, v in BIG_SMALL.items()}
 
 
 class TestNoSecondPass:
     async def test_row_level_dim_emits_no_isolated_regroup_cte(self) -> None:
         sql = await gen(_q(
-            dimensions=["region", {"field": "lower(city)", "alias": "lc"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=["orders.region", {"field": "lower(orders.city)", "alias": "lc"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
         # ``_cm_`` is the isolated-aggregate (regroup) CTE prefix used by the B2
-        # desugar and DEV-1739. A purely row-level expression dimension must not
+        # desugar and the partitioned-metric path. A purely row-level expression dimension must not
         # trigger it — pinned so a needless extra scan is caught.
         assert "_cm_" not in sql
         assert "IS NOT DISTINCT FROM" not in sql.upper()
@@ -72,7 +72,7 @@ class TestJoinedColumnInExpression:
         # JOIN customers (a throwaway-scope render dropped the registration).
         sql = await gen(_q(
             dimensions=[{"field": "upper(customers.tier)", "alias": "T"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
         assert "JOIN" in sql.upper()
         assert "customers" in sql
@@ -82,46 +82,46 @@ class TestJoinedColumnInExpression:
         # 2 & 4 → orders 3,4,7,8,9 = 17000.
         resp = await exec_engine.execute(_q(
             dimensions=[{"field": "upper(customers.tier)", "alias": "T"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         ))
-        got = {r["orders.T"]: float(r["orders.rev"]) for r in resp.data}
+        got = {r["T"]: float(r["rev"]) for r in resp.data}
         assert got == {"GOLD": pytest.approx(8000.0), "SILVER": pytest.approx(17000.0)}
 
 
 class TestNameReferences:
     async def test_order_by_computed_name(self, exec_engine) -> None:
-        # Order by the COMPUTED dimension's name (not a measure).
+        # Order by the COMPUTED dimension's name (not a metric).
         resp = await exec_engine.execute(_q(
-            dimensions=[{"field": "lower(city)", "alias": "lc"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=[{"field": "lower(orders.city)", "alias": "lc"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
             order=[{"field": "lc", "direction": "asc"}],
         ))
-        lcs = [r["orders.lc"] for r in resp.data if r["orders.lc"] is not None]
+        lcs = [r["lc"] for r in resp.data if r["lc"] is not None]
         assert lcs == sorted(lcs)
 
     async def test_filter_by_computed_name(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            dimensions=[{"field": "lower(city)", "alias": "lc"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=[{"field": "lower(orders.city)", "alias": "lc"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
             filter=["lc == 'paris'"],
         ))
         assert len(resp.data) == 1
-        assert resp.data[0]["orders.lc"] == "paris"
-        assert float(resp.data[0]["orders.rev"]) == pytest.approx(7000.0)
+        assert resp.data[0]["lc"] == "paris"
+        assert float(resp.data[0]["rev"]) == pytest.approx(7000.0)
 
 
 class TestDedupInteraction:
     async def test_dim_only_dedups_computed_values(self, exec_engine) -> None:
-        # No measures: distinct computed values (5 cities incl. the NULL group).
+        # No metrics: distinct computed values (5 cities incl. the NULL group).
         resp = await exec_engine.execute(_q(
-            dimensions=[{"field": "lower(city)", "alias": "lc"}],
+            dimensions=[{"field": "lower(orders.city)", "alias": "lc"}],
         ))
         assert len(resp.data) == 5
 
     async def test_ddv_false_projects_per_row(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[{
-                "field": "CASE WHEN amount > 2000 THEN 'big' ELSE 'small' END",
+                "field": "CASE WHEN orders.amount > 2000 THEN 'big' ELSE 'small' END",
                 "alias": "sz",
             }],
             distinct_dimension_values=False,
@@ -130,23 +130,23 @@ class TestDedupInteraction:
 
 
 class TestCollisionFailsClosed:
-    async def test_name_colliding_with_a_column_raises(self) -> None:
-        # ``channel`` is a real column (a legal plain dimension on its own, so
-        # today this query plans fine — the collision guard is what must make it
-        # fail). Naming a computed dimension ``channel`` shadows that column and
-        # must be rejected fail-closed.
+    async def test_name_equal_to_a_field_is_accepted(self) -> None:
+        # ``channel`` is a field of ``orders``; a computed dimension may still take its name (fields are always
+        # qualified, names bare).
         q = _q(
-            dimensions=["region", {"field": "lower(city)", "alias": "channel"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=["orders.region", {"field": "lower(orders.city)", "alias": "channel"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         )
-        with pytest.raises(ValueError, match=r"(?i)collid|conflict|already|exists|shadow"):
-            await gen(q)
+        sql = await gen(q)
+        assert 'LOWER(orders.city) AS "channel"' in sql
+        assert 'AS "orders.region"' in sql
+        assert 'AS "rev"' in sql
 
     async def test_name_colliding_with_a_measure_raises(self) -> None:
-        # A computed dimension named the same as a query measure must fail closed.
+        # A computed dimension named the same as a query metric must fail closed.
         q = _q(
-            dimensions=["region", {"field": "lower(city)", "alias": "rev"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=["orders.region", {"field": "lower(orders.city)", "alias": "rev"}],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
         )
         with pytest.raises(ValueError, match=r"(?i)collid|conflict|already|exists|shadow"):
             await gen(q)

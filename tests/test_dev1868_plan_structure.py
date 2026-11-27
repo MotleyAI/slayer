@@ -1,4 +1,4 @@
-"""DEV-1868 plan-structure pins (design D2/D3/D7): producer count, substitution
+"""Plan-structure pins (design D2/D3/D7): producer count, substitution
 ownership, attach phase, complete join grain; composites become combined slots;
 the row-leaf time_shift rejection fires at plan time."""
 
@@ -12,9 +12,11 @@ from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     ScalarCallKey,
+    TransformKey,
     walk_value_keys,
 )
 from slayer.engine.plan import plan_query
+from slayer.ir.planned import regroup_producer_identity
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from slayer.core.query import QueryMetric
@@ -39,7 +41,7 @@ def _bundle46() -> ResolvedSourceBundle:
 def _q46(**kw) -> SlayerQuery:
     kw.setdefault("population", "sales")
     kw.setdefault("time_dimensions",
-                  [{"field": "ordered_at", "granularity": "month"}])
+                  [{"field": "sales.ordered_at", "granularity": "month"}])
     return SlayerQuery(**kw)
 
 
@@ -61,7 +63,7 @@ class TestSharedInnerProducerShape:
         planned = plan_query(query=q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filter=[f"{CM_PART_TIER} > 100"],
-            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")]),
+            metrics=[QueryMetric(metric=f"rank({CM_PART_TIER}, direction='desc')", alias="c")]),
             bundle=_bundle36())
         attaches = [a for a in planned.regroup_attach_plans
                     if a.producer_root_dataset == "customers"]
@@ -78,31 +80,34 @@ class TestSharedInnerProducerShape:
         def _reads_placeholder(slot) -> bool:
             return any(k == sub.placeholder for k in walk_value_keys(slot.key))
 
-        transform_slots = [slots[sid] for layer in planned.transform_layers
-                           for sid in layer.slot_ids]
-        assert any(_reads_placeholder(s) for s in transform_slots)
         mask_slots = [slots[m.slot_id] for m in planned.masks]
         assert any(_reads_placeholder(s) for s in mask_slots)
-        # The original cross-model aggregate survives in no slot.
+        # The original cross-dataset aggregate survives in no slot.
         assert not [s.id for s in slots.values()
                     if any(k == sub.original_key for k in walk_value_keys(s.key))]
+        # The rank evaluates in its own producer, which attaches the same inner producer (rendered once).
+        [domain] = [a for a in planned.regroup_attach_plans
+                    if isinstance(a.substitutions[0].original_key, TransformKey)]
+        [inner] = [a for a in domain.producer_plan.regroup_attach_plans if a.producer_root_dataset == "customers"]
+        assert regroup_producer_identity(inner) == regroup_producer_identity(attach)
 
     async def test_emitted_sql_has_one_producer_relation(self) -> None:
         sql = await gen(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             filter=[f"{CM_PART_TIER} > 100"],
-            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")]))
-        assert len(set(re.findall(r"_cm_\w+", sql))) == 1, sql
+            metrics=[QueryMetric(metric=f"rank({CM_PART_TIER}, direction='desc')", alias="c")]))
+        names = set(re.findall(r"_cm_\w+", sql))
+        assert len({n for n in names if "spend_sum" in n}) == 1, sql
 
 
 class TestCompositesBecomeCombinedSlots:
-    """D3: every cross-model composite shape plans as a placeholder-substituted
+    """D3: every cross-dataset composite shape plans as a placeholder-substituted
     AGGREGATE slot with target-rooted producers — none reaches the seam."""
 
     @pytest.mark.parametrize("formula, n_producers", [
-        ("sum(amount) / sum(customers.spend)", 1),
+        ("sum(orders.amount) / sum(customers.spend)", 1),
         ("sum(customers.spend) * 2", 1),
-        ("round(sum(customers.spend) / sum(amount), 2)", 1),
+        ("round(sum(customers.spend) / sum(orders.amount), 2)", 1),
         ("sum(customers.spend) - max(customers.spend)", 2),
     ])
     def test_composite_plans_with_producers(
@@ -126,7 +131,7 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_mixed_composite_rejected_by_plan_query(self) -> None:
         query = _q46(
-            metrics=[QueryMetric(metric="time_shift(sum(revenue) * weight, -1)",
+            metrics=[QueryMetric(metric="time_shift(sum(sales.revenue) * sales.weight, -1)",
                                    alias="t")])
         bundle = _bundle46()
         with pytest.raises(ValueError) as ei:
@@ -138,7 +143,7 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_row_predicate_rejected_by_plan_query(self) -> None:
         query = _q46(
-            metrics=[QueryMetric(metric="time_shift(store in ('A', 'B'), -1)",
+            metrics=[QueryMetric(metric="time_shift(sales.store in ('A', 'B'), -1)",
                                    alias="t")])
         bundle = _bundle46()
         with pytest.raises(ValueError) as ei:

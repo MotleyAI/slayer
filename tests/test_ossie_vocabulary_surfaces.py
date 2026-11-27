@@ -25,7 +25,7 @@ from slayer.memories.help_seed import HELP_TOPICS, seed_help_memories
 from slayer.storage.base import StorageBackend
 from tests._cli_inprocess import CliResult, run_cli_in_process
 from tests._deprecated_input_helpers import deprecated_in, mcp_payload, recorded
-from tests._model_access_fixtures import mcp_text
+from tests._dataset_access_fixtures import mcp_text
 from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store
 from tests._stored_upgrade_fixtures import DS
 
@@ -73,7 +73,7 @@ class TestMcpTools:
     async def test_tool_descriptions_use_the_new_words(self, tmp_path: Path) -> None:
         tools = await create_mcp_server(storage=await seeded(tmp_path), _seed_help=False).list_tools()
         for tool in tools:
-            text = f"{tool.description}\n{json.dumps(tool.inputSchema)}"
+            text = f"{tool.description}\n{json.dumps(tool.input_schema)}"
             assert not RETIRED_WORDS.findall(text), (tool.name, RETIRED_WORDS.findall(text))
             assert not RETIRED_IDENTIFIERS.findall(text), (tool.name, RETIRED_IDENTIFIERS.findall(text))
 
@@ -90,7 +90,7 @@ class TestMcpArguments:
         with recorded():
             reply = json.loads(await mcp_text(
                 storage, "edit_dataset", model_name="orders", data_source=DS,
-                columns=[{"name": "big", "sql": "amount > 30", "datatype": "Boolean"}],
+                columns=[{"name": "big", "expression": "amount > 30", "datatype": "Boolean"}],
                 measures=[{"name": "n", "expression": "count(*)"}],
                 joins=[{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}],
             ))
@@ -132,10 +132,10 @@ class TestMcpArguments:
     async def test_old_query_keys_convert_in_the_query_tool(self, tmp_path: Path) -> None:
         storage = await seeded(tmp_path)
         new = mcp_payload(await mcp_text(
-            storage, "query", query={"population": "orders", "metrics": ["sum(amount)"]}, format="json"))
+            storage, "query", query={"population": "orders", "metrics": ["sum(orders.amount)"]}, format="json"))
         with recorded():
             old = mcp_payload(await mcp_text(
-                storage, "query", query={"source_model": "orders", "measures": ["sum(amount)"]}, format="json"))
+                storage, "query", query={"source_model": "orders", "measures": ["sum(orders.amount)"]}, format="json"))
         assert old["data"] == new["data"]
         assert sorted((w["old"], w["new"]) for w in deprecated_in(old["warnings"])) == [
             ("measures", "metrics"), ("source_model", "population")]

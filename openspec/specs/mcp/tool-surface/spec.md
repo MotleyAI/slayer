@@ -55,7 +55,7 @@ The `query` tool description SHALL open with `ONE QUESTION = ONE QUERY. Build th
 
 ### Requirement: Query-language guidance lives on the owning schema field, once
 Each piece of query-language guidance SHALL appear in exactly one place across the `query` tool description and every description in its input schema (field- and definition-level), namely the field where an agent writes that value:
-- `metrics`: aggregation call form; `agg(x) FILTER (WHERE c)` aggregating only the rows where `c` holds; arithmetic combining aggregates over different models, with a cross-model ratio example rooted at customers; `partition_by=` with keys spelled like the query's dimensions (dotted paths), a share-of-group example and `partition_by=[]` for the grand total; `window=` with compact durations (`'90d'`, `'3m'`); nested aggregation; one line per transform (`cumsum`, `change` / `change_pct`, `time_shift`, `lag` / `lead`, `rank` / `dense_rank` with required direction, `ntile`, `consecutive_periods`); a joined model's aggregate is computed over that model's own rows and split per group by association across dimensions it cannot be attributed to, repeating its total instead only when `to_many_handling` is `broadcast`; aggregates over several child models in one query (orders and returns from customers) are each computed over their own rows; a child row without a parent counts in the NULL row of a parent dimension when that row exists and in an ungrouped total, and is never added again; an aggregate over a model no join path reaches from the population is computed over that model's own rows and repeated on every row, per bucket when a `time_spine` time dimension attributes it through that model's own axis, with an `unrelated_dataset` warning.
+- `metrics`: aggregation call form; `agg(x) FILTER (WHERE c)` aggregating only the rows where `c` holds; arithmetic combining aggregates over different models, with a cross-model ratio example rooted at customers; `partition_by=` with keys spelled like the query's dimensions (dotted paths), a share-of-group example and `partition_by=[]` for the grand total; `window=` with compact durations (`'90d'`, `'3m'`); nested aggregation; one line per transform (`cumsum`, `change` / `change_pct`, `time_shift`, `lag` / `lead`, `rank` / `dense_rank` with required direction, `ntile`, `consecutive_periods`); a joined model's aggregate is computed over that model's own rows and split per group by association across dimensions it cannot be attributed to, its total repeated on every group instead with `partition_by=[]`; aggregates over several child models in one query (orders and returns from customers) are each computed over their own rows; a child row without a parent counts in the NULL row of a parent dimension when that row exists and in an ungrouped total, and is never added again; an aggregate over a model no join path reaches from the population is computed over that model's own rows and repeated on every row, per bucket when a `time_spine` time dimension attributes it through that model's own axis, with an `unrelated_dataset` warning.
 - `dimensions`: group by naturally readable labels: a name, never an id alone unless ids are asked for, and the id and the name when a name may repeat.
 - `filter`: routing to row / aggregate / post-aggregation filtering; the SQL operators, including `IS [NOT] TRUE` / `IS [NOT] FALSE`, `IS [NOT] DISTINCT FROM` and `CAST`; the list functions `contains`, `contains_any` and `contains_all`; transforms in filters (top N per group via a rank); the anti-join (a joined model's key `is null`); the time-point forms.
 - `variables` (a query object's): a placeholder binds a literal value only — its text inside quotes (`'{s}'`), a number, numeric string or boolean in a bare slot, a list as the whole right-hand side of `IN` or as a list-function argument (an empty list only as a list-function argument) — and a placeholder in a name position is an error.
@@ -108,50 +108,50 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 - an aggregation with `window=` includes rows before the range in the first in-range buckets;
 - `cumsum` with a `date_range` accumulates from the range start only;
 - `ntile(x, n=4)` puts the lowest values in bucket 1;
-- `agg(x) FILTER (WHERE c)` aggregates only the rows where `c` holds: `count(*) FILTER (WHERE status = 'paid')` counts the paid rows;
+- `agg(x) FILTER (WHERE c)` aggregates only the rows where `c` holds: `count(orders.*) FILTER (WHERE orders.status = 'paid')` counts the paid rows;
 - a filter `<joined dataset>.<key> is null` keeps exactly the rows with no joined row;
 - a query rooted at a model keeps every row of that model, counting 0 where no joined rows exist;
 - ordering by an undisplayed aggregate with a `limit` returns the top rows by that aggregate without projecting it;
 - a filter on `rank(..., partition_by=customers.regions.name, direction='desc') <= N` keeps the top N per region;
 - `x / x(partition_by=customers.regions.name)` and `x / x(partition_by=[])` give the share of region and of grand total;
-- a joined model's aggregate sliced by a non-attributable dimension splits per group by association by default and broadcasts its total under `broadcast`;
+- a joined model's aggregate sliced by a non-attributable dimension splits per group by association by default, and with `partition_by=[]` repeats its total on every group;
 - a nested aggregation averages the inner per-group values within the outer group;
-- a granularity call as a dimension (`date_trunc('month', created_at)`) and the time-dimension string `"date_trunc('month', created_at)"` bucket like the equivalent `{"field": ..., "granularity": "month"}` time dimension;
-- a computed dimension `iif(sum(amount, partition_by=customers.id) > 150, 'high', 'low')` labels each row by its customer's total;
-- an outer stage reads an inner dotted dimension by its flattened `__` name (`customers.regions.name` as `customers__regions__name`);
+- a granularity call as a dimension (`date_trunc('month', orders.created_at)`) and the time-dimension string `"date_trunc('month', orders.created_at)"` bucket like the equivalent `{"field": ..., "granularity": "month"}` time dimension;
+- a computed dimension `iif(sum(orders.amount, partition_by=customers.id) > 150, 'high', 'low')` labels each row by its customer's total;
+- an outer stage reads an inner dotted dimension by its flattened `__` name (`customers.regions.name` as `<stage>.customers__regions__name`);
 - a monthly time dimension on `time_spine.timestamp` with a `date_range` returns every month of the range, months without rows included (count 0, other aggregates NULL);
 - rooted at customers, `sum(orders.amount)` and `sum(returns.amount)` in one query each equal the sum over that child model's own rows;
 - rooted at customers and grouped by a parent dimension, a child row without a parent counts in that dimension's NULL row when the population has one and in no row otherwise, and an ungrouped aggregate includes it;
-- rooted at customers, `sum(orders.amount) / count(*)` divides the orders' total by the number of customers;
-- rooted at customers, `count(events.id) / count(*)` with `events` joined to nothing divides the events' total by the number of customers and warns `unrelated_dataset`;
+- rooted at customers, `sum(orders.amount) / count(customers.*)` divides the orders' total by the number of customers;
+- rooted at customers, `count(events.id) / count(customers.*)` with `events` joined to nothing divides the events' total by the number of customers and warns `unrelated_dataset`;
 - a filter on a transform's value (`rank(...) <= N`, `cumsum(...) > X`) applies after the transform, which is computed over every row the other filters keep;
 - a time filter on the bucketed time column restricts `cumsum`, `lag`, `lead`, `consecutive_periods`, `rank` / `ntile` over buckets and `partition_by` totals to the kept buckets, while `change`, `change_pct`, `time_shift` and `window=` read past it;
 - a filter on a dimension restricts `rank`, `dense_rank`, `ntile`, `partition_by` shares and totals and nested aggregates to the kept peers; a filter on a non-time column restricts the rows `window=` reads, before the range as well;
 - an inner stage computing a rank over all rows and an outer stage filtering one row returns that row's rank among all rows;
-- a time-point filter is a half-open period: `order_date >= '2025-Q1'` keeps rows from the start of the quarter, `order_date <= '2025-Q1'` rows through its end, and `order_date in '2025-Q1'` rows inside it;
-- `x ~ '^A[0-9]{3}'` keeps the rows whose value matches the pattern, its braces read as regex text;
-- `flag IS NOT TRUE` keeps the rows where `flag` is false or NULL, and `x IS DISTINCT FROM 'a'` keeps the rows where `x` is NULL or another value;
-- over a list column, `contains(tags, 'x')` and `tags.value = 'x'` keep the rows whose list holds `x`, `contains_any(tags, [...])` the rows whose list shares an element with the literal, and `contains_all(tags, [...])` the rows whose list holds every element of it;
-- a variable inside quotes (`status = '{s}'`) binds its text as one string literal; a list variable as the whole right-hand side of `IN` (`status in ({statuses})`) keeps the rows whose value is in the list, and an empty list there fails with an error naming the variable, while an empty list as a list-function argument (`contains_all(tags, {wanted})`) binds as an empty list.
+- a time-point filter is a half-open period: `orders.order_date >= '2025-Q1'` keeps rows from the start of the quarter, `orders.order_date <= '2025-Q1'` rows through its end, and `orders.order_date in '2025-Q1'` rows inside it;
+- `items.code ~ '^A[0-9]{3}'` keeps the rows whose value matches the pattern, its braces read as regex text;
+- `items.flag IS NOT TRUE` keeps the rows where `flag` is false or NULL, and `items.status IS DISTINCT FROM 'a'` keeps the rows where `status` is NULL or another value;
+- over a list column, `contains(items.tags, 'x')` and `items.tags.value = 'x'` keep the rows whose list holds `x`, `contains_any(items.tags, [...])` the rows whose list shares an element with the literal, and `contains_all(items.tags, [...])` the rows whose list holds every element of it;
+- a variable inside quotes (`items.status = '{s}'`) binds its text as one string literal; a list variable as the whole right-hand side of `IN` (`items.status in ({statuses})`) keeps the rows whose value is in the list, and an empty list there fails with an error naming the variable, while an empty list as a list-function argument (`contains_all(items.tags, {wanted})`) binds as an empty list.
 
 #### Scenario: Lookback before date_range
-- **WHEN** a monthly query with `date_range` `"2025"` measures `change(sum(amount))`
+- **WHEN** a monthly query with `date_range` `"2025"` measures `change(sum(orders.amount))`
 - **THEN** January 2025's change is computed against December 2024
 
 #### Scenario: Year-over-year time shift
-- **WHEN** a monthly query with `date_range` `"2025"` measures `time_shift(sum(amount), -1, 'year')`
+- **WHEN** a monthly query with `date_range` `"2025"` measures `time_shift(sum(orders.amount), -1, 'year')`
 - **THEN** each month carries the amount of the same month of 2024
 
 #### Scenario: Running total starts at the range
-- **WHEN** a monthly query with `date_range` `"2025"` measures `cumsum(sum(amount))`
+- **WHEN** a monthly query with `date_range` `"2025"` measures `cumsum(sum(orders.amount))`
 - **THEN** January 2025's value excludes 2024 amounts
 
 #### Scenario: ntile puts the lowest values first
-- **WHEN** a query grouped by customer name measures `ntile(sum(amount), n=4)`
+- **WHEN** a query grouped by customer name measures `ntile(sum(orders.amount), n=4)`
 - **THEN** the customers with the lowest totals are in bucket 1 and those with the highest in bucket 4
 
 #### Scenario: A FILTER clause restricts the aggregated rows
-- **WHEN** a query on orders measures `count(*) FILTER (WHERE status = 'paid')` and `count(*)`
+- **WHEN** a query on orders measures `count(orders.*) FILTER (WHERE orders.status = 'paid')` and `count(orders.*)`
 - **THEN** the first value counts only the paid orders and the second every order
 
 #### Scenario: Anti-join
@@ -160,14 +160,14 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 
 #### Scenario: Cross-model aggregate broadcast vs associate
 - **WHEN** a query rooted at orders, grouped by order status, measures `sum(customers.credit)`
-- **THEN** by default each row carries the credit of the distinct customers with orders in that status with an associated-cells warning, and with `to_many_handling` `broadcast` each row carries the total credit of all customers with a broadcast warning
+- **THEN** by default each row carries the credit of the distinct customers with orders in that status with an associated-cells warning, and `sum(customers.credit, partition_by=[])` carries the total credit of all customers on each row with no warning
 
 #### Scenario: Granularity calls bucket like a time dimension
-- **WHEN** one query groups by the dimension `date_trunc('month', created_at)`, another by the time dimension `"date_trunc('month', created_at)"`, and a third by `{"field": "created_at", "granularity": "month"}`, each measuring `count(*)`
+- **WHEN** one query groups by the dimension `date_trunc('month', orders.created_at)`, another by the time dimension `"date_trunc('month', orders.created_at)"`, and a third by `{"field": "orders.created_at", "granularity": "month"}`, each measuring `count(orders.*)`
 - **THEN** all three return the same monthly buckets and counts
 
 #### Scenario: A computed dimension over a fixed-grain aggregate
-- **WHEN** a query on orders groups by the computed dimension `iif(sum(amount, partition_by=customers.id) > 150, 'high', 'low')` named `spend_band` and measures `count(*)`
+- **WHEN** a query on orders groups by the computed dimension `iif(sum(orders.amount, partition_by=customers.id) > 150, 'high', 'low')` named `spend_band` and measures `count(orders.*)`
 - **THEN** each order is counted in the band of its customer's total amount
 
 #### Scenario: Time spine returns empty buckets
@@ -187,16 +187,16 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 - **THEN** no NULL-region row is returned and the parentless orders count in no row
 
 #### Scenario: Cross-model ratio
-- **WHEN** a query rooted at customers measures `sum(orders.amount) / count(*)`
+- **WHEN** a query rooted at customers measures `sum(orders.amount) / count(customers.*)`
 - **THEN** the value equals the orders' total divided by the number of customers
 
 #### Scenario: A filter on a transform's value applies after it
-- **WHEN** a monthly query over all months measures `cumsum(sum(amount))` and filters on that running total exceeding a threshold
+- **WHEN** a monthly query over all months measures `cumsum(sum(orders.amount))` and filters on that running total exceeding a threshold
 - **THEN** the kept months carry the running total accumulated over every month, not only the kept ones
 
 #### Scenario: A time filter restricts cross-row values except calendar look-backs
 - **WHEN** a monthly query filters the bucketed time column to two months and measures one cross-row value
-- **THEN** `cumsum`, `lag`, `lead`, `consecutive_periods`, `rank` / `ntile` over months and `sum(amount, partition_by=[])` are computed over the two kept months only, while `change`, `change_pct`, `time_shift` and `window=` equal their values in the unfiltered query
+- **THEN** `cumsum`, `lag`, `lead`, `consecutive_periods`, `rank` / `ntile` over months and `sum(orders.amount, partition_by=[])` are computed over the two kept months only, while `change`, `change_pct`, `time_shift` and `window=` equal their values in the unfiltered query
 
 #### Scenario: A dimension filter restricts peer values
 - **WHEN** a query grouped by region name and customer name filters one customer and measures a rank, dense rank, ntile, share of region, grand total or nested average
@@ -207,35 +207,35 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 - **THEN** that customer carries its rank among all customers
 
 #### Scenario: Unrelated-model ratio
-- **WHEN** a query rooted at customers measures `count(events.id) / count(*)` and no join path connects `events` to `customers`
+- **WHEN** a query rooted at customers measures `count(events.id) / count(customers.*)` and no join path connects `events` to `customers`
 - **THEN** the value equals the number of events divided by the number of customers, and the response carries an `unrelated_dataset` warning
 
 #### Scenario: Time points are half-open periods
-- **WHEN** queries on orders measure `count(*)` with the filters `order_date >= '2025-Q1'`, `order_date <= '2025-Q1'` and `order_date in '2025-Q1'` in turn
+- **WHEN** queries on orders measure `count(orders.*)` with the filters `orders.order_date >= '2025-Q1'`, `orders.order_date <= '2025-Q1'` and `orders.order_date in '2025-Q1'` in turn
 - **THEN** the first counts the orders from 2025-01-01 on, the second the orders up to and including 2025-03-31, and the third the orders inside the first quarter of 2025
 
 #### Scenario: Regex braces are pattern text
-- **WHEN** a query filters `code ~ '^A[0-9]{3}'` with no variables supplied
+- **WHEN** a query filters `items.code ~ '^A[0-9]{3}'` with no variables supplied
 - **THEN** it keeps exactly the rows whose code starts with `A` and three digits
 
 #### Scenario: Null-aware boolean and distinctness tests
-- **WHEN** a query filters `flag IS NOT TRUE`, and another filters `status IS DISTINCT FROM 'paid'`
+- **WHEN** a query filters `items.flag IS NOT TRUE`, and another filters `items.status IS DISTINCT FROM 'paid'`
 - **THEN** the first keeps the rows whose `flag` is false or NULL, and the second the rows whose status is NULL or not `paid`
 
 #### Scenario: List-column filters
-- **WHEN** queries over a model with a list column `tags` filter `contains(tags, 'x')`, `tags.value = 'x'`, `contains_any(tags, ['x', 'y'])` and `contains_all(tags, ['x', 'y'])` in turn
+- **WHEN** queries over `items`, whose list column is `tags`, filter `contains(items.tags, 'x')`, `items.tags.value = 'x'`, `contains_any(items.tags, ['x', 'y'])` and `contains_all(items.tags, ['x', 'y'])` in turn
 - **THEN** the first two keep the rows whose list holds `x`, the third the rows whose list holds `x` or `y`, and the fourth the rows whose list holds both
 
 #### Scenario: A quoted variable binds one string literal
-- **WHEN** a filter is `status = '{s}'` with `variables={"s": "paid"}`
+- **WHEN** a filter is `items.status = '{s}'` with `variables={"s": "paid"}`
 - **THEN** it keeps the rows whose status is `paid`
 
 #### Scenario: A list variable fills a whole IN list
-- **WHEN** a filter is `status in ({statuses})` with `variables={"statuses": ["paid", "shipped"]}`
+- **WHEN** a filter is `items.status in ({statuses})` with `variables={"statuses": ["paid", "shipped"]}`
 - **THEN** it keeps the rows whose status is `paid` or `shipped`
 
 #### Scenario: An empty list variable binds only as a list-function argument
-- **WHEN** a filter is `status in ({statuses})` with `statuses` set to `[]`, and another is `contains_all(tags, {wanted})` with `wanted` set to `[]`
+- **WHEN** a filter is `items.status in ({statuses})` with `statuses` set to `[]`, and another is `contains_all(items.tags, {wanted})` with `wanted` set to `[]`
 - **THEN** the first fails with an error naming `statuses` as an empty list, and the second keeps every row whose `tags` is not NULL
 
 ### Requirement: Help topics hold the long-form reference and are reachable
@@ -326,3 +326,97 @@ When a database failure stops the `query`, `create_dataset`, `validate_datasets`
 #### Scenario: Rejected model SQL is a validation finding
 - **WHEN** `validate_datasets` runs against a reachable database that rejects a SQL model's own SQL
 - **THEN** the result is not an error and reports that model with an `invalid_sql` finding
+
+### Requirement: Documented examples are written qualified
+Every query, reference and expression example in the tool descriptions, their input schemas, the server instructions and the help topics SHALL be written in the qualified syntax of `queries/references`: every field and dataset metric written as `<dataset>.<name>` (or with an explicit route), every row count as `count(<dataset>.*)`, every later-stage reference as `<stage>.<column>`, and no bare name other than an alias declared by the same example.
+
+#### Scenario: No example uses a pre-2.0 spelling
+- **WHEN** every example query in the `query` tool description, its input schema, the server instructions and every help topic body is executed against a datasource seeded with the datasets it names
+- **THEN** none emits a `deprecated_input` warning
+
+#### Scenario: Unqualified row counts are not documented
+- **WHEN** the same texts are collected
+- **THEN** no example contains `count(*)`
+
+### Requirement: create_datasource auto-ingest runs the idempotent ingest
+When the `create_datasource` tool auto-ingests, it SHALL ingest the datasource exactly as `ingest_datasource` would with the same scope: it SHALL create missing datasets and additively merge existing ones, never overwriting a stored dataset's user metadata. Its result SHALL be the datasource line ("Datasource '<name>' created" or "replaced", with the connection test message) followed by the same rendering `ingest_datasource` returns, failed key reads included, plus the explore hint when datasets were created. A database failure during the ingest SHALL be reported as "Auto-ingestion failed: <friendly database error>" after the datasource line.
+
+#### Scenario: Fresh create
+- **WHEN** `create_datasource` creates a SQLite datasource over a database with tables `a` and `b`
+- **THEN** datasets `a` and `b` are stored, and the result names both under the new-datasets section
+
+#### Scenario: Re-create keeps dataset edits
+- **WHEN** dataset `a` of datasource `app` is stored with a user-written description, and `create_datasource` is called again for `app`
+- **THEN** the result says the datasource was replaced, and dataset `a` keeps its user-written description
+
+#### Scenario: Database failure during ingest
+- **WHEN** the ingest fails with a database error after the datasource is saved
+- **THEN** the result contains "Auto-ingestion failed:" with the friendly database error, and the datasource is stored
+
+### Requirement: The semantic-model tools fit the surface rules
+The tools `create_semantic_model`, `edit_semantic_model` and `delete_semantic_model` SHALL obey every rule of this capability: their descriptions SHALL fit the client description budget, and every parameter SHALL be described in the input schema. `edit_dataset` and `create_dataset` SHALL describe their `semantic_model` behaviour, and `delete_semantic_model` SHALL state that it deletes the document's datasets.
+
+#### Scenario: The new tools fit the budget
+- **WHEN** the MCP server lists its tools
+- **THEN** each semantic-model tool's description fits the budget and every parameter carries a description
+
+### Requirement: Query guidance names bare model-scoped metrics and AGG
+The query tool's schema guidance SHALL state, once, on the field that owns metric references, that a bare name is a query alias or a model-scoped metric and that `AGG(dataset.metric)` evaluates a dataset metric; a help topic SHALL hold the long-form reference for model-scoped metrics, reachable from the server instructions.
+
+#### Scenario: A documented bare-metric query works as documented
+- **WHEN** the documented example query naming a model-scoped metric by bare name runs on the demo
+- **THEN** it returns the documented result
+
+### Requirement: Startup preparation never delays the handshake
+`slayer mcp` SHALL answer the MCP handshake (`initialize` and `tools/list`) without waiting for startup
+preparation. Startup preparation is the demo setup requested by `--demo` followed by the startup ingest
+requested by `--ingest-on-startup` or `SLAYER_INGEST_ON_STARTUP`; it SHALL run in the background once the
+server starts. Every tool call SHALL wait until preparation has finished and then run normally. While a call
+waits, the server SHALL send it progress notifications when the request carries a progress token. A
+cancelled call SHALL NOT stop preparation for other calls. When the demo setup fails, the server SHALL keep
+running and every tool call SHALL return the error `Failed to set up the Jaffle Shop demo: <reason>`, which
+is also written to stderr. A startup-ingest failure — of a datasource or of individual tables — SHALL be
+reported on stderr and SHALL NOT fail tool calls. Preparation SHALL write nothing to stdout. Without
+startup preparation, tool calls SHALL NOT wait. `slayer serve` SHALL keep finishing its preparation before
+it starts serving.
+
+#### Scenario: The handshake answers during the demo build
+- **WHEN** `slayer mcp --demo` starts on empty storage and the client sends `initialize` and `tools/list`
+  while the demo is still being built
+- **THEN** both answer without waiting for the build
+
+#### Scenario: A tool call waits for the demo
+- **WHEN** the client calls `query` on the demo while the demo is still being built
+- **THEN** the call returns the query's rows once the build has finished
+
+#### Scenario: Progress while waiting
+- **WHEN** a tool call carrying a progress token waits for preparation
+- **THEN** the client receives progress notifications for that call until it runs
+
+#### Scenario: A cancelled call does not stop preparation
+- **WHEN** one of two waiting tool calls is cancelled
+- **THEN** preparation continues and the other call returns its result
+
+#### Scenario: A failed demo setup becomes a tool error
+- **WHEN** the demo setup fails
+- **THEN** the server keeps running, every tool call returns `Failed to set up the Jaffle Shop demo:`
+  followed by the reason, and stderr holds the reason
+
+#### Scenario: Startup ingest runs behind the gate
+- **WHEN** `slayer mcp --ingest-on-startup` starts and one configured datasource fails to ingest
+- **THEN** the handshake answers without waiting for the ingest, stderr reports the failed datasource,
+  and tool calls succeed once the ingest has finished
+
+### Requirement: The ontology tools fit the surface rules
+The tools `create_ontology`, `edit_ontology`, `delete_ontology`, `create_ontology_mapping`, `edit_ontology_mapping` and `delete_ontology_mapping` SHALL obey every rule of this capability: their descriptions SHALL fit the client description budget, and every parameter SHALL be described in the input schema. `inspect`'s `entity_type` description SHALL list `ontology` and `ontology_mapping`.
+
+#### Scenario: The ontology tools fit the budget
+- **WHEN** the MCP server lists its tools
+- **THEN** each ontology tool's description fits the budget, every parameter carries a description, and `inspect`'s `entity_type` description names `ontology` and `ontology_mapping`
+
+### Requirement: Search and validate_datasets describe their ontology use within the budget
+The `search` tool's description of `entities` SHALL name the `concept:<Concept>` and `concept:<Ontology>.<Concept>` references, and the `validate_datasets` description SHALL state that it also reports ontology findings (identifier, multiplicity, constraint and required-link checks, and what is not checked), each within the client description budget.
+
+#### Scenario: The descriptions fit and name the ontology use
+- **WHEN** the MCP server lists its tools
+- **THEN** `search`'s `entities` description names `concept:<Concept>`, `validate_datasets`' description names ontology findings, and both fit the budget

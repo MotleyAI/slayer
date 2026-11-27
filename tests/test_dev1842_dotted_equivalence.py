@@ -1,10 +1,10 @@
-"""A dotted saved-measure reference is bound-tree-
-identical to the hand-written host-prefixed formula.
+"""A dotted saved-metric reference is bound-tree-
+identical to the hand-written host-prefixed expression.
 
 Each ``EQUIV_PAIRS`` entry pairs a dotted spelling (``customers.aov``) with its
 hand-expanded twin. The guarantee is total: identical generated SQL (byte-for-
 byte) AND identical executed values on SQLite and DuckDB, across composite,
-nested-saved, self-qualified, nested-join, column-filter, partitioned, transform,
+nested-saved, self-qualified, nested-relationship, field-filter, partitioned, transform,
 mixed local+dotted, and computed-dimension-source forms.
 """
 
@@ -37,7 +37,7 @@ async def exec_backend(request):
 
 def _needs_time(expression: str) -> bool:
     # The transform pair's DOTTED spelling (``customers.spend_run``) hides its
-    # cumsum behind the measure name, so match the pair as well as the literal.
+    # cumsum behind the metric name, so match the pair as well as the literal.
     return "cumsum" in expression or expression in TRANSFORM_PAIR
 
 
@@ -77,8 +77,8 @@ class TestExecutedValueEquality:
         dotted_resp = await engine.execute(_metric_query(dotted))
         hand_resp = await engine.execute(_metric_query(hand))
         assert _canon(dotted_resp) == _canon(hand_resp)
-        # The measure actually projected a value (not an all-NULL degenerate).
-        assert any(r.get("orders.x") is not None for r in dotted_resp.data)
+        # The metric actually projected a value (not an all-NULL degenerate).
+        assert any(r.get("x") is not None for r in dotted_resp.data)
 
 
 def _approx(actual, expected) -> None:
@@ -100,30 +100,30 @@ class TestExecutedValuesAgainstOracles:
             metrics=[{"metric": "customers.pop_total", "alias": "x"}],
             to_many_handling="broadcast"))
         for row in resp.data:
-            _approx(row["orders.x"], POP_TOTAL)
+            _approx(row["x"], POP_TOTAL)
 
     async def test_partitioned_matches_spend_by_tier(self, exec_backend) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
             metrics=[{"metric": "customers.spend_by_tier", "alias": "x"}]))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         for tier, expected in SPEND_BY_TIER.items():
-            _approx(by[(tier,)]["orders.x"], expected)
-        _approx(by[(None,)]["orders.x"], None)
+            _approx(by[(tier,)]["x"], expected)
+        _approx(by[(None,)]["x"], None)
 
     async def test_filtered_matches_gold_spend_by_region(self, exec_backend) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.regions.name"],
             metrics=[{"metric": "customers.gold_spend_total", "alias": "x"}]))
-        by = rows_by(resp, "orders.customers.regions.name")
+        by = rows_by(resp, "customers.regions.name")
         for name, expected in GOLD_SPEND_BY_REGION.items():
-            _approx(by[(name,)]["orders.x"], expected)
+            _approx(by[(name,)]["x"], expected)
 
 
 class TestComputedDimensionSource:
-    """1.1 — a dotted saved measure used inside a computed-dimension expression
+    """1.1 — a dotted saved metric used inside a computed-dimension expression
     (the aggregate carries ``partition_by=`` as computed dimensions require)."""
 
     _HAND = ("CASE WHEN sum(customers.spend, partition_by=customers.tier) > 100 "
@@ -133,7 +133,7 @@ class TestComputedDimensionSource:
     def _dim_query(self, expr: str):
         return q(
             dimensions=[{"field": expr, "alias": "band"}],
-            metrics=[{"metric": "sum(amount)", "alias": "a"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
         )
 
     async def test_computed_dimension_sql_equals_hand(self) -> None:
@@ -149,8 +149,8 @@ class TestComputedDimensionSource:
 
 
 class TestUnsafeInputParity:
-    """1.2 — a column filter crossing the OWNER's UNPROVEN join inherits the
-    cross-model unsafe-input rejection. The dotted spelling raises the SAME error
+    """1.2 — a field filter crossing the OWNER's UNPROVEN relationship inherits the
+    cross-dataset unsafe-input rejection. The dotted spelling raises the SAME error
     as the hand-written form (parity is 'both raise', not 'same values')."""
 
     @pytest.mark.parametrize("label", list(PARITY_ERROR_PAIRS))

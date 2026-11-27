@@ -1,5 +1,5 @@
-"""Every position that accepts an aggregation takes the functional spelling: query measures, filters, order,
-model measures (saved and hand-authored YAML), ModelExtension, inline source_model, source_queries stages,
+"""Every position that accepts an aggregation takes the functional spelling: query metrics, filters, order,
+dataset metrics (saved and hand-authored YAML), DatasetExtension, inline population, source_queries stages,
 transforms and arithmetic, and computed dimensions (with their guards)."""
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def _orders(**overrides) -> SlayerDataset:
         ],
     )
     fields.update(overrides)
-    return SlayerDataset(**fields)
+    return SlayerDataset.model_validate(fields)
 
 
 def _customers(**overrides) -> SlayerDataset:
@@ -68,7 +68,7 @@ def _customers(**overrides) -> SlayerDataset:
         ],
     )
     fields.update(overrides)
-    return SlayerDataset(**fields)
+    return SlayerDataset.model_validate(fields)
 
 
 async def _dry(
@@ -98,40 +98,40 @@ def _q(**kw) -> SlayerQuery:
 
 
 # ===========================================================================
-# Query measures.
+# Query metrics.
 # ===========================================================================
 
 
 class TestMeasurePosition:
     async def test_simple_measure(self) -> None:
-        f = await _dry(_q(metrics=["sum(revenue)"], dimensions=["status"]))
+        f = await _dry(_q(metrics=["sum(orders.revenue)"], dimensions=["orders.status"]))
         assert "orders.revenue_sum" in f.columns
 
     async def test_star_count_measure(self) -> None:
-        f = await _dry(_q(metrics=["count(*)"], dimensions=["status"]))
+        f = await _dry(_q(metrics=["count(orders.*)"], dimensions=["orders.status"]))
         assert "orders._count" in f.columns
 
     async def test_cross_model_measure(self) -> None:
-        f = await _dry(_q(metrics=["sum(customers.score)"], dimensions=["status"]))
-        assert "orders.customers.score_sum" in f.columns
+        f = await _dry(_q(metrics=["sum(customers.score)"], dimensions=["orders.status"]))
+        assert "customers.score_sum" in f.columns
 
     async def test_cross_model_star_count(self) -> None:
-        f = await _dry(_q(metrics=["count(customers.*)"], dimensions=["status"]))
-        assert "orders.customers._count" in f.columns
+        f = await _dry(_q(metrics=["count(customers.*)"], dimensions=["orders.status"]))
+        assert "customers._count" in f.columns
 
     async def test_percentile_measure(self) -> None:
-        f = await _dry(_q(metrics=["percentile(price, p=0.9)"]))
+        f = await _dry(_q(metrics=["percentile(orders.price, p=0.9)"]))
         assert "orders.price_percentile_p_0_9" in f.columns
 
     async def test_windowed_measure(self) -> None:
-        td = [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)]
-        await _dry(_q(metrics=["sum(revenue, window='90d')"], dimensions=["status"], time_dimensions=td))
+        td = [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)]
+        await _dry(_q(metrics=["sum(orders.revenue, window='90d')"], dimensions=["orders.status"], time_dimensions=td))
 
     async def test_weighted_avg_measure(self) -> None:
-        await _dry(_q(metrics=["weighted_avg(revenue, weight=price)"]))
+        await _dry(_q(metrics=["weighted_avg(orders.revenue, weight=orders.price)"]))
 
     async def test_ranked_last_measure(self) -> None:
-        await _dry(_q(metrics=["last(balance, updated_at)"]))
+        await _dry(_q(metrics=["last(orders.balance, orders.updated_at)"]))
 
 
 # ===========================================================================
@@ -141,18 +141,18 @@ class TestMeasurePosition:
 
 class TestFilterPosition:
     async def test_having_filter(self) -> None:
-        f = await _dry(_q(metrics=["sum(revenue)"], dimensions=["status"], filter=["sum(revenue) > 100"]))
+        f = await _dry(_q(metrics=["sum(orders.revenue)"], dimensions=["orders.status"], filter=["sum(orders.revenue) > 100"]))
         assert "HAVING" in f.sql.upper()
 
     async def test_arithmetic_filter(self) -> None:
-        await _dry(_q(metrics=["sum(revenue)"], dimensions=["status"], filter=["sum(revenue) / count(*) > 5"]))
+        await _dry(_q(metrics=["sum(orders.revenue)"], dimensions=["orders.status"], filter=["sum(orders.revenue) / count(orders.*) > 5"]))
 
     def test_construction_time_custom_agg_filter(self) -> None:
-        # No model context at construction — the unknown functional name defers to binding.
+        # No dataset context at construction — the unknown functional name defers to binding.
         q = SlayerQuery(
             population="orders",
-            metrics=["my_agg(price)"],
-            filter=["my_agg(price) > 0"],
+            metrics=["my_agg(orders.price)"],
+            filter=["my_agg(orders.price) > 0"],
         )
         assert q.filter
 
@@ -164,51 +164,51 @@ class TestFilterPosition:
 
 class TestOrderPosition:
     async def test_order_by_functional_agg(self) -> None:
-        f = await _dry(_q(metrics=["sum(revenue)"], dimensions=["status"],
-                          order=[OrderItem.model_validate({"field": "sum(revenue)", "direction": "desc"})]))
+        f = await _dry(_q(metrics=["sum(orders.revenue)"], dimensions=["orders.status"],
+                          order=[OrderItem.model_validate({"field": "sum(orders.revenue)", "direction": "desc"})]))
         assert "ORDER BY" in f.sql.upper()
 
     async def test_order_by_functional_star_count(self) -> None:
-        await _dry(_q(metrics=["count(*)"], dimensions=["status"],
-                      order=[OrderItem.model_validate({"field": "count(*)", "direction": "desc"})]))
+        await _dry(_q(metrics=["count(orders.*)"], dimensions=["orders.status"],
+                      order=[OrderItem.model_validate({"field": "count(orders.*)", "direction": "desc"})]))
 
     async def test_order_custom_agg_placeholder(self) -> None:
         model = _orders(
             aggregations=[Aggregation(name="my_agg", expression="AVG({value})")]
         )
-        await _dry(_q(metrics=["my_agg(price)"], dimensions=["status"],
-                      order=[OrderItem.model_validate({"field": "my_agg(price)", "direction": "desc"})]), dataset=model)
+        await _dry(_q(metrics=["my_agg(orders.price)"], dimensions=["orders.status"],
+                      order=[OrderItem.model_validate({"field": "my_agg(orders.price)", "direction": "desc"})]), dataset=model)
 
     async def test_order_serialization_round_trip(self) -> None:
         q1 = _q(
-            metrics=["sum(revenue)"],
-            dimensions=["status"],
-            order=[OrderItem(field="sum(revenue)", direction="desc")],
+            metrics=["sum(orders.revenue)"],
+            dimensions=["orders.status"],
+            order=[OrderItem(field="sum(orders.revenue)", direction="desc")],
         )
         q2 = SlayerQuery.model_validate(q1.model_dump())
         # The author's functional spelling survives coercion and round-trip.
         assert q1.order is not None
         assert q2.order is not None
-        assert q1.order[0].raw_expression == "sum(revenue)"
-        assert q2.order[0].raw_expression == "sum(revenue)"
+        assert q1.order[0].raw_expression == "sum(orders.revenue)"
+        assert q2.order[0].raw_expression == "sum(orders.revenue)"
         r1 = await _dry(q1)
         r2 = await _dry(q2)
         assert r1.sql == r2.sql
 
 
 # ===========================================================================
-# Model measures — saved and hand-authored YAML.
+# Dataset metrics — saved and hand-authored YAML.
 # ===========================================================================
 
 
 class TestModelMeasurePosition:
     async def test_saved_model_measure(self) -> None:
         model = _orders(metrics=[DatasetMetric(name="rev", expression="sum(revenue)")])
-        f = await _dry(_q(metrics=["rev"], dimensions=["status"]), dataset=model)
+        f = await _dry(_q(metrics=["orders.rev"], dimensions=["orders.status"]), dataset=model)
         assert "orders.rev" in f.columns
 
     async def test_hand_authored_yaml_measure(self, tmp_path) -> None:
-        # The functional formula is edited into the YAML directly (no save pass).
+        # The functional expression is edited into the YAML directly (no save pass).
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
         await storage.save_dataset(_orders(metrics=[DatasetMetric(name="rev", expression="max(revenue)")]))
@@ -216,16 +216,16 @@ class TestModelMeasurePosition:
         path = tmp_path / "models" / "test" / "orders.yaml"
         text = path.read_text()
         assert "max(revenue)" in text
-        path.write_text(text.replace("max(revenue)", "sum(revenue)"))
+        path.write_text(text.replace("max(revenue)", "sum(orders.revenue)"))
         engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path)))
-        resp = await engine.execute(_q(metrics=["rev"], dimensions=["status"]), dry_run=True)
+        resp = await engine.execute(_q(metrics=["orders.rev"], dimensions=["orders.status"]), dry_run=True)
         assert resp.sql is not None
         assert "SUM(" in resp.sql.upper()
         assert "orders.rev" in resp.columns
 
 
 # ===========================================================================
-# ModelExtension and inline source_model.
+# DatasetExtension and inline population.
 # ===========================================================================
 
 
@@ -235,8 +235,8 @@ class TestExtensionPositions:
         f = await _dry(SlayerQuery.model_validate({
             "population": "orders",
             "extensions": [ext],
-            "metrics": ["rev"],
-            "dimensions": ["status"],
+            "metrics": ["orders.rev"],
+            "dimensions": ["orders.status"],
         }))
         assert "orders.rev" in f.columns
 
@@ -248,8 +248,8 @@ class TestExtensionPositions:
         f = await _dry(SlayerQuery.model_validate({
             "population": "orders",
             "extensions": [inline],
-            "metrics": ["rev"],
-            "dimensions": ["status"],
+            "metrics": ["orders.rev"],
+            "dimensions": ["orders.status"],
         }))
         assert "orders.rev" in f.columns
 
@@ -264,13 +264,13 @@ class TestStagePositions:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(revenue)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.revenue)"}],
         })
         root = SlayerQuery.model_validate({
             "population": "stage1",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "max(revenue_sum)"}],
+            "dimensions": ["stage1.status"],
+            "metrics": [{"metric": "max(stage1.revenue_sum)"}],
         })
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -290,15 +290,15 @@ class TestStagePositions:
             source_queries=[
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "dimensions": ["status"],
-                    "metrics": [{"metric": "sum(revenue)", "alias": "rev"}],
+                    "dimensions": ["orders.status"],
+                    "metrics": [{"metric": "sum(orders.revenue)", "alias": "rev"}],
                 })
             ],
         )
         query = SlayerQuery.model_validate({
             "population": "daily",
-            "dimensions": ["status"],
-            "metrics": ["max(rev)"],
+            "dimensions": ["daily.status"],
+            "metrics": ["max(daily.rev)"],
         })
         f = await _dry(query, dataset=_orders(), extra_datasets=[_customers(), backed])
         assert "daily.rev_max" in f.columns
@@ -311,25 +311,25 @@ class TestStagePositions:
 
 class TestCompositePositions:
     async def test_transform_over_functional_agg(self) -> None:
-        td = [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)]
-        await _dry(_q(metrics=["cumsum(sum(revenue))"], time_dimensions=td))
+        td = [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)]
+        await _dry(_q(metrics=["cumsum(sum(orders.revenue))"], time_dimensions=td))
 
     async def test_arithmetic_of_functional_aggs(self) -> None:
-        f = await _dry(_q(metrics=[{"metric": "sum(revenue) / count(*)", "alias": "aov"}], dimensions=["status"]))
-        assert "orders.aov" in f.columns
+        f = await _dry(_q(metrics=[{"metric": "sum(orders.revenue) / count(orders.*)", "alias": "aov"}], dimensions=["orders.status"]))
+        assert "aov" in f.columns
 
 
 # ===========================================================================
 # Computed dimensions — guards.
 # ===========================================================================
 
-_CASE_FUNC = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
+_CASE_FUNC = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _band_query(expr: str, **kw) -> SlayerQuery:
     kw.setdefault("population", "orders")
-    kw.setdefault("dimensions", ["region", {"field": expr, "alias": "band"}])
-    kw.setdefault("metrics", [QueryMetric(metric="sum(amount)", alias="t")])
+    kw.setdefault("dimensions", ["orders.region", {"field": expr, "alias": "band"}])
+    kw.setdefault("metrics", [QueryMetric(metric="sum(orders.amount)", alias="t")])
     return SlayerQuery(**kw)
 
 
@@ -338,7 +338,7 @@ class TestComputedDimensionPosition:
         assert await gen40(_band_query(_CASE_FUNC))
 
     async def test_bare_aggregate_guard(self) -> None:
-        query = _band_query("CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END")
+        query = _band_query("CASE WHEN sum(orders.amount) > 5000 THEN 1 ELSE 0 END")
         with pytest.raises(ValueError, match="partition_by"):
             await gen40(query)
 
@@ -389,10 +389,10 @@ class TestExecuted:
         )
         f = await engine.execute(
             _q(
-                metrics=["sum(revenue)", "count(*)"],
-                dimensions=[QueryDimension(field="status")],
-                filter=["sum(revenue) > 10"],
-                order=[OrderItem(field="sum(revenue)", direction="desc")],
+                metrics=["sum(orders.revenue)", "count(orders.*)"],
+                dimensions=[QueryDimension(field="orders.status")],
+                filter=["sum(orders.revenue) > 10"],
+                order=[OrderItem(field="sum(orders.revenue)", direction="desc")],
             )
         )
         assert list(f.columns) == ["orders.status", "orders.revenue_sum", "orders._count"]

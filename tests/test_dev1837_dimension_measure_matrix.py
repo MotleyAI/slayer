@@ -1,4 +1,4 @@
-"""The dimension-family × measure-family compatibility matrix,
+"""The dimension-family × metric-family compatibility matrix,
 executed on SQLite + DuckDB. The matrix is the migration's tracked frontier:
 supported cells assert hand-computed oracles (``tests/_dev1837_fixtures.py``);
 still-guarded cells strict-xfail pointing at their stage issue, so a lift
@@ -6,23 +6,23 @@ XPASSes and forces the cell flip (design D6). It shrinking to empty is the
 migration's definition of done.
 
 Scenario coverage map (spec: openspec …/specs/queries/computed-dimensions):
-  Banded dimension with a time-shift measure ......... band-time_shift cell
+  Banded dimension with a time-shift metric .......... band-time_shift cell
   Banded dimension with change and change_pct ........ band-change / band-change_pct
   Banded dimension with a running total .............. band-cumsum
   Bare partitioned aggregate as dim + transform ...... bare-* transform cells
-  Transform-root dimension with a transform measure .. rank-* transform cells
+  Transform-root dimension with a transform metric ... rank-* transform cells
   Union-grain (mixed) dimension family .............. mixed-* cells
-  Banded dimension with a bare windowed measure ...... band-wm
+  Banded dimension with a bare windowed metric ....... band-wm
   Bare partitioned aggregate as dim + bare last ...... bare-rk
   Transform-root dim + bare windowed / ranked ........ rank-wm / rank-rk
   Scalar-expression dim + bare windowed / last ....... expr-wm / expr-rk
-  Alongside a partitioned measure .................... TestCoexistenceTriples
-  Adding a transform/wm/rk measure is card-neutral ... TestCardinalityNeutrality
+  Alongside a partitioned metric ..................... TestCoexistenceTriples
+  Adding a transform/wm/rk metric is card-neutral .... TestCardinalityNeutrality
   Running total partitions by a computed dimension ... expr-cumsum
   Attached value never widens the grain .............. TestPartitionedShiftFix
   Explicit partition_by on the transform wins ........ TestExplicitTransformPartition
 (…/specs/queries/partitioned-aggregates):
-  Partitioned measure with a time-shift executes ..... TestPartitionedShiftFix
+  Partitioned metric with a time-shift executes ...... TestPartitionedShiftFix
   Shifted re-aggregation grain excludes the value .... TestPartitionedShiftFix
 """
 
@@ -46,7 +46,7 @@ from tests._dev1837_fixtures import (
     REGION_TOTAL,
     TD_TRANSFORM_OPS,
     TRAILING_90D_REGION,
-    TRANSFORM_FORMULAS,
+    TRANSFORM_EXPRESSIONS,
     TRANSFORM_X,
     dim_key,
     make_exec_engine,
@@ -63,30 +63,30 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-ATTACH_MEASURES = {
-    "plain": "sum(amount)",
-    "part": "sum(amount, partition_by=region)",
-    "win_part": "sum(amount, window='90d', partition_by=region)",
-    "last_part": "last(amount, partition_by=region)",
-    "wm": "sum(amount, window='1y')",
-    "rk": "last(amount)",
+ATTACH_METRICS = {
+    "plain": "sum(orders.amount)",
+    "part": "sum(orders.amount, partition_by=orders.region)",
+    "win_part": "sum(orders.amount, window='90d', partition_by=orders.region)",
+    "last_part": "last(orders.amount, partition_by=orders.region)",
+    "wm": "sum(orders.amount, window='1y')",
+    "rk": "last(orders.amount)",
     "cm": "sum(customers.spend)",
 }
 TD_ATTACH = frozenset({"win_part", "wm"})
 
 #: Still-guarded cells → the stage issue their strict-xfail points at. The
 #: wm/rk column and the last column have flipped — the four
-#: ``(family, cm)`` cells (row attach × cross-model measure) are now supported
+#: ``(family, cm)`` cells (row attach × cross-dataset metric) are now supported
 #: (target-rooted producers), so they move to the supported table with the
 #: broadcast oracle (``x = CM_TOTAL``). Nothing remains guarded here.
 XFAIL_CELLS: dict[tuple[str, str], str] = {}
 
 DIM_FAMILIES = tuple(DIM_FAMILY_DIMS)
-MEASURE_KEYS = tuple(ATTACH_MEASURES) + tuple(TRANSFORM_FORMULAS)
+METRIC_KEYS = tuple(ATTACH_METRICS) + tuple(TRANSFORM_EXPRESSIONS)
 
 
 def _expression(meas: str) -> str:
-    return ATTACH_MEASURES.get(meas) or TRANSFORM_FORMULAS[meas]
+    return ATTACH_METRICS.get(meas) or TRANSFORM_EXPRESSIONS[meas]
 
 
 def _needs_td(meas: str) -> bool:
@@ -94,7 +94,7 @@ def _needs_td(meas: str) -> bool:
 
 
 def _cell_query(family: str, meas: str, *, include_x: bool = True):
-    measures = [QueryMetric(metric="sum(amount)", alias="m")]
+    measures = [QueryMetric(metric="sum(orders.amount)", alias="m")]
     if include_x:
         measures.append(QueryMetric(metric=_expression(meas), alias="x"))
     kwargs = {"dimensions": DIM_FAMILY_DIMS[family], "metrics": measures}
@@ -107,7 +107,7 @@ def _expected_maps(family: str, meas: str):
     """``(m oracle, x oracle)`` keyed by the cell's group key."""
     m_map = GROUP_M_MONTH[family] if _needs_td(meas) else GROUP_M[family]
     keys = m_map.keys()
-    if meas in TRANSFORM_FORMULAS:
+    if meas in TRANSFORM_EXPRESSIONS:
         x_map = with_nulls(keys, TRANSFORM_X[(family, meas)])
     elif meas == "plain":
         x_map = dict(m_map)
@@ -130,7 +130,7 @@ def _expected_maps(family: str, meas: str):
 def _keyed(resp, *, family: str, with_month: bool, cols=("m", "x")) -> dict:
     out = {
         dim_key(r, family=family, with_month=with_month):
-            tuple(r[f"orders.{c}"] for c in cols)
+            tuple(r[c] for c in cols)
         for r in resp.data
     }
     # Codex F5 — a dict build silently collapses duplicate group keys; the
@@ -150,7 +150,7 @@ def _assert_x(actual, expected, *, key) -> None:
 
 
 _SUPPORTED = [
-    (f, m) for f in DIM_FAMILIES for m in MEASURE_KEYS if (f, m) not in XFAIL_CELLS
+    (f, m) for f in DIM_FAMILIES for m in METRIC_KEYS if (f, m) not in XFAIL_CELLS
 ]
 _GUARDED = [
     pytest.param(
@@ -224,9 +224,9 @@ class TestCoexistenceTriples:
 
     async def _assert_triple(self, exec_backend, *, family: str, op: str) -> None:
         dialect, engine = exec_backend
-        m = QueryMetric(metric="sum(amount)", alias="m")
-        rt = QueryMetric(metric="sum(amount, partition_by=region)", alias="rt")
-        x = QueryMetric(metric=TRANSFORM_FORMULAS[op], alias="x")
+        m = QueryMetric(metric="sum(orders.amount)", alias="m")
+        rt = QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt")
+        x = QueryMetric(metric=TRANSFORM_EXPRESSIONS[op], alias="x")
         query = self._triple_query(family, metrics=[m, rt, x])
         m_map = GROUP_M_MONTH[family]
         x_map = with_nulls(m_map.keys(), TRANSFORM_X[(family, op)])
@@ -239,7 +239,7 @@ class TestCoexistenceTriples:
             assert float(rt_actual) == pytest.approx(REGION_TOTAL[key[0]]), f"{key}: rt"
             _assert_x(x_actual, x_map[key], key=key)
 
-        # Solo runs: each measure alone at the same grain yields the same value.
+        # Solo runs: each metric alone at the same grain yields the same value.
         for name, measure in (("m", m), ("rt", rt), ("x", x)):
             solo = await engine.execute(
                 self._triple_query(family, metrics=[measure]),
@@ -276,13 +276,13 @@ class TestCoexistenceTriples:
     ) -> None:
         """Design D4's load-bearing case: the rank-dim producer carries an
         internal WITH of its own, so its hoisted CTEs must keep their
-        dependency edges through the cross-model prelude (Codex F6)."""
+        dependency edges through the cross-dataset prelude (Codex F6)."""
         await self._assert_triple(exec_backend, family="rank", op=op)
 
 
 class TestPartitionedShiftFix:
     """The placeholder-leak fix (``queries/partitioned-aggregates`` delta): a
-    partitioned measure + a temporal transform must execute, and the shifted
+    partitioned metric + a temporal transform must execute, and the shifted
     re-aggregation groups by the query grain only — never the attached value."""
 
     @pytest.mark.parametrize("op", ["time_shift", "change", "change_pct"])
@@ -291,11 +291,11 @@ class TestPartitionedShiftFix:
     ) -> None:
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
-                QueryMetric(metric=TRANSFORM_FORMULAS[op], alias="x"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric=TRANSFORM_EXPRESSIONS[op], alias="x"),
             ],
         )
         x_map = with_nulls(GROUP_M_MONTH["col"].keys(), TRANSFORM_X[("col", op)])
@@ -316,11 +316,11 @@ class TestPartitionedShiftFix:
     ) -> None:
         dialect, engine = exec_backend
         dry = await engine.execute(q(
-            dimensions=["region"],
+            dimensions=["orders.region"],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
-                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         ), dry_run=True)
         body = _extract_cte_body(dry.sql, r"shifted_\w+")
@@ -341,7 +341,7 @@ class TestPartitionedShiftFix:
 
 class TestCardinalityNeutrality:
     """Codex F7 — adding a transform, bare windowed, or bare first/last
-    measure must not move the result grain of an aggregation-derived
+    metric must not move the result grain of an aggregation-derived
     dimension (band, bare, AND transform-root)."""
 
     @pytest.mark.parametrize("family", ["band", "bare", "rank"])
@@ -372,15 +372,15 @@ class TestConsecutivePeriodsReset:
             dimensions=[DIM_FAMILY_DIMS["band"][1]],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(
-                    metric="consecutive_periods(sum(amount) != 40)", alias="x",
+                    metric="consecutive_periods(sum(orders.amount) != 40)", alias="x",
                 ),
             ],
         ))
         got = {
-            (int(r["orders.band"]), str(r["orders.ordered_at"])[:7]):
-                int(r["orders.x"])
+            (int(r["band"]), str(r["orders.ordered_at"])[:7]):
+                int(r["x"])
             for r in resp.data
         }
         assert got == {
@@ -398,14 +398,14 @@ class TestExplicitTransformPartition:
         resp = await engine.execute(q(
             dimensions=DIM_FAMILY_DIMS["band"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(
-                    metric="rank(sum(amount), partition_by=region, direction='desc')", alias="x",
+                    metric="rank(sum(orders.amount), partition_by=orders.region, direction='desc')", alias="x",
                 ),
             ],
         ))
         got = {
-            dim_key(r, family="band", with_month=False): int(r["orders.x"])
+            dim_key(r, family="band", with_month=False): int(r["x"])
             for r in resp.data
         }
         # Within-region rank of the band totals: North 60, 40 → 1, 2; the

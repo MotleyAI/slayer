@@ -1,12 +1,12 @@
-"""Shared fixtures for DEV-1838 — node discipline: producer interning,
+"""Shared fixtures for node discipline: producer interning,
 family unification under per-role crossing-input safety, CTE-body lifts.
 
 Underscore-prefixed so pytest skips collection (like ``tests/_dev1739_fixtures.py``,
 whose dual-engine pattern this mirrors). One hand-computed dataset seeded into
 SQLite AND DuckDB; ``make_exec_engine`` yields an engine per backend.
 
-Join-arity design (the point of this chain)
--------------------------------------------
+Relationship-arity design (the point of this chain)
+---------------------------------------------------
 ``orders → customers``           safe: customers.id is PK (structural proof)
 ``customers → regions``          safe: regions.id is PK (structural proof)
 ``customers → segments``         UNPROVEN + genuinely fanning: segments.code has
@@ -15,12 +15,12 @@ Join-arity design (the point of this chain)
                                  orders 1 and 3
 
 Per-role probes on the host (all host-rooted producers):
-``gold_amount``   Column.filter over the PROVEN hop (customers.tier)  → safe
-``alpha_amount``  Column.filter over the UNPROVEN 2nd hop (segments)  → fans
-``rush_amount``   Column.filter over the UNPROVEN 1:N hop (tags)      → fans
-``wscaled_sum``   aggregation param over PROVEN hops (regions.weight) → safe
-``tscaled_sum``   aggregation param over the UNPROVEN 1:N (tags)      → fans
-host-grain wrap   ORDER BY an unprojected joined column               → legal
+``gold_amount``   DatasetField.filter over the PROVEN hop (customers.tier)  → safe
+``alpha_amount``  DatasetField.filter over the UNPROVEN 2nd hop (segments)  → fans
+``rush_amount``   DatasetField.filter over the UNPROVEN 1:N hop (tags)      → fans
+``wscaled_sum``   aggregation param over PROVEN hops (regions.weight)       → safe
+``tscaled_sum``   aggregation param over the UNPROVEN 1:N (tags)            → fans
+host-grain wrap   ORDER BY an unprojected joined field                      → legal
 
 Dataset (hand-computed; every executed expectation derives from here)
 ---------------------------------------------------------------------
@@ -54,7 +54,7 @@ rush_amount true intent (orders 1,3 once each): ok=40; FANNED (order 1 ×2 tags
 keeps 1 match = 10, order 3 ×2 rush = 60): ok=70.
 wscaled_sum = SUM(amount * regions.weight): ok = 10*2+30*2+5*3+5*3 = 110,
 new = 20*2 = 40 (c4 NULL region and the orphan contribute NULL).
-tscaled_sum = SUM(amount * tags.factor) over the fanning join:
+tscaled_sum = SUM(amount * tags.factor) over the fanning relationship:
 ok = 10*2+10*1+30*3+30*0.5 = 135, new = 40*0.2 = 8.
 tags.factor per status: MIN ok=0.5 new=0.2 (ASC → new first);
 MAX ok=3.0 new=0.2 (DESC → ok first).
@@ -96,7 +96,7 @@ from tests._engine_helpers import _engine_generate
 
 
 # --------------------------------------------------------------------------- #
-# Models — orders (host) → customers → {regions, segments}; orders → tags.
+# Datasets — orders (host) → customers → {regions, segments}; orders → tags.
 # --------------------------------------------------------------------------- #
 def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -167,15 +167,15 @@ def orders_dataset() -> SlayerDataset:
             DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="ordered_at", datatype=DataType.DATETIME),
-            # Same-model filtered column (no isolation):
-            DatasetField(name="ok_amount", datatype=DataType.FLOAT, sql="amount",
+            # Same-dataset filtered field (no isolation):
+            DatasetField(name="ok_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="status = 'ok'"),
             # Filtered-local probes (CASE-WHEN at aggregation time):
-            DatasetField(name="gold_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="gold_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="customers.tier = 'gold'"),
-            DatasetField(name="alpha_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="alpha_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="customers.segments.label = 'Alpha'"),
-            DatasetField(name="rush_amount", datatype=DataType.FLOAT, sql="amount",
+            DatasetField(name="rush_amount", datatype=DataType.FLOAT, expression="amount",
                    filter="tags.kind = 'rush'"),
         ],
         relationships=[
@@ -213,18 +213,18 @@ def q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "ordered_at") -> List[TimeDimension]:
+def month_td(field: str = "orders.ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        field=column,
+        field=field,
         granularity=TimeGranularity.MONTH,
     )]
 
 
 #: Computed dimension banding the city totals at > 25 (row regroup attach).
-BAND25 = "CASE WHEN sum(amount, partition_by=city) > 25 THEN 1 ELSE 0 END"
+BAND25 = "CASE WHEN sum(orders.amount, partition_by=orders.city) > 25 THEN 1 ELSE 0 END"
 BAND = {"field": BAND25, "alias": "band"}
 
-#: Cross-model banded dimension (customers-rooted producer, per-tier spend).
+#: Cross-dataset banded dimension (customers-rooted producer, per-tier spend).
 SPEND_BAND = (
     "CASE WHEN sum(customers.spend, partition_by=customers.tier) > 100 "
     "THEN 'hi' ELSE 'lo' END"
@@ -273,7 +273,7 @@ BAND_WM = {
     (None, 1, "2024-03"): (7.0, 7.0),
 }
 
-#: Nested-attach lift oracles (post-DEV-1838; these shapes are broken today).
+#: Nested-attach lift oracles.
 #: band + gold_amount:sum — (status, band) → (m, g).
 BAND_GOLD = {
     ("new", 1): (60.0, 20.0), ("ok", 0): (10.0, None), ("ok", 1): (47.0, 10.0),

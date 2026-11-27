@@ -1,7 +1,7 @@
-"""Shared fixtures for DEV-1842 — dotted references to another model's saved
-measures (``customers.aov`` from an ``orders``-rooted query).
+"""Shared fixtures for dotted references to another dataset's saved
+metrics (``customers.aov`` from an ``orders``-rooted query).
 
-Reuses the DEV-1836 dataset/schema and layers saved measures onto ``customers``
+Reuses the ``_dev1836_fixtures`` seed data/schema and layers saved metrics onto ``customers``
 and ``orders``; every equality test pairs a dotted form with its hand-expanded
 twin (bound-tree-identical). Underscore-prefixed so pytest skips collection.
 """
@@ -29,8 +29,8 @@ from tests._dev1836_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-# Re-export the DEV-1836 oracles so DEV-1842 executed-value tests read from one
-# place. (The dataset is identical; only the model definitions gain measures.)
+# Re-export the ``_dev1836_fixtures`` oracles so executed-value tests read from one
+# place. (The seed data is identical; only the dataset definitions gain metrics.)
 from tests._dev1836_fixtures import (  # noqa: E402,F401  (re-export)
     GOLD_SPEND_BY_REGION,
     POP_TOTAL,
@@ -40,11 +40,11 @@ from tests._dev1836_fixtures import (  # noqa: E402,F401  (re-export)
 )
 
 
-# Saved measures on ``customers`` — each exercises one re-anchoring kind
-# (composite, nested/recursive, self-qualified, own-join, column-filter local /
+# Saved metrics on ``customers`` — each exercises one re-anchoring kind
+# (composite, nested/recursive, self-qualified, own-relationship, field-filter local /
 # proven-hop / unproven-hop, partition_by local / grand, transform, typed,
-# round-trip, cross-model cycle). See EQUIV_PAIRS for the hand-expanded twins.
-CUSTOMER_MEASURES: List[DatasetMetric] = [
+# round-trip, cross-dataset cycle). See EQUIV_PAIRS for the hand-expanded twins.
+CUSTOMER_METRICS: List[DatasetMetric] = [
     DatasetMetric(name="aov", expression="sum(spend) / count(*)"),
     DatasetMetric(name="aov_big", expression="aov * 2"),
     DatasetMetric(name="self_aov", expression="sum(customers.spend) / count(customers.*)"),
@@ -60,20 +60,20 @@ CUSTOMER_MEASURES: List[DatasetMetric] = [
     DatasetMetric(name="cyc_c", expression="orders.cyc_o"),
 ]
 
-# On ``orders`` — host measures whose bare-name resolution recurses into a
-# dotted cross-model reference, plus the cross-model cycle partner.
-ORDERS_MEASURES: List[DatasetMetric] = [
+# On ``orders`` — host metrics whose bare-name resolution recurses into a
+# dotted cross-dataset reference, plus the cross-dataset cycle partner.
+ORDERS_METRICS: List[DatasetMetric] = [
     DatasetMetric(name="host_runs_dotted", expression="cumsum(customers.aov)"),
     DatasetMetric(name="host_mix", expression="sum(amount) / customers.aov"),
     DatasetMetric(name="cyc_o", expression="customers.cyc_c"),
 ]
 
 
-# Models — DEV-1836 shapes with the saved measures overlaid.
-#: A filtered column whose predicate crosses the PROVEN customers → regions hop
-#: (safe cross-model input, so ``sum(north_spend)`` executes; cf. ``vip_spend``).
+# Datasets — ``_dev1836_fixtures`` shapes with the saved metrics overlaid.
+#: A filtered field whose predicate crosses the PROVEN customers → regions hop
+#: (safe cross-dataset input, so ``sum(north_spend)`` executes; cf. ``vip_spend``).
 _NORTH_SPEND = DatasetField(
-    name="north_spend", datatype=DataType.FLOAT, sql="spend",
+    name="north_spend", datatype=DataType.FLOAT, expression="spend",
     filter="regions.name = 'North'",
 )
 
@@ -82,12 +82,12 @@ def customers_dataset() -> SlayerDataset:
     base = _customers_1836()
     return base.model_copy(update={
         "fields": list(base.fields) + [_NORTH_SPEND],
-        "metrics": CUSTOMER_MEASURES,
+        "metrics": CUSTOMER_METRICS,
     })
 
 
 def orders_dataset() -> SlayerDataset:
-    return _orders_1836().model_copy(update={"metrics": ORDERS_MEASURES})
+    return _orders_1836().model_copy(update={"metrics": ORDERS_METRICS})
 
 
 def dev1842_datasets() -> List[SlayerDataset]:
@@ -101,9 +101,9 @@ def q(**kw):
     return SlayerQuery(**kw)
 
 
-def month_td(column: str = "ordered_at"):
+def month_td(field: str = "orders.ordered_at"):
     return [TimeDimension(
-        field=column, granularity=TimeGranularity.MONTH,
+        field=field, granularity=TimeGranularity.MONTH,
     )]
 
 
@@ -140,9 +140,9 @@ def broadcast_warnings(resp: SlayerResponse) -> list[BroadcastGrainWarningPayloa
             if isinstance(w, BroadcastGrainWarningPayload)]
 
 
-#: (dotted saved-measure spelling, hand-expanded host-prefixed twin). Every pair
+#: (dotted saved-metric spelling, hand-expanded host-prefixed twin). Every pair
 #: MUST be bound-tree-identical — identical SQL and executed values. The hand
-#: forms are all DEV-1836-supported cross-model spellings that work today.
+#: forms are all supported cross-dataset spellings that work today.
 EQUIV_PAIRS = {
     "simple_composite": ("customers.aov", "sum(customers.spend) / count(customers.*)"),
     "nested_saved": ("customers.aov_big",
@@ -158,16 +158,16 @@ EQUIV_PAIRS = {
                         "sum(customers.spend, partition_by=[])"),
     "host_wraps_dotted": ("cumsum(customers.aov)",
                           "cumsum(sum(customers.spend) / count(customers.*))"),
-    "host_mixes_dotted": ("sum(amount) / customers.aov",
-                          "sum(amount) / (sum(customers.spend) / count(customers.*))"),
+    "host_mixes_dotted": ("sum(orders.amount) / customers.aov",
+                          "sum(orders.amount) / (sum(customers.spend) / count(customers.*))"),
 }
 
 #: The transform pair needs a host time dimension; kept separate so callers can
 #: attach ``time_dimensions`` for both spellings.
 TRANSFORM_PAIR = ("customers.spend_run", "cumsum(sum(customers.spend))")
 
-#: Pairs where the hand form itself is REJECTED today by a DEV-1836 guard (an
-#: input crossing an unproven join hop). The dotted form must inherit the same
+#: Pairs where the hand form itself is REJECTED today by a cross-dataset guard (an
+#: input crossing an unproven relationship hop). The dotted form must inherit the same
 #: rejection — parity is "both raise the same error", not "same values".
 PARITY_ERROR_PAIRS = {
     "filter_unproven_hop": ("customers.vip_spend_total", "sum(customers.vip_spend)"),
@@ -175,7 +175,7 @@ PARITY_ERROR_PAIRS = {
 
 
 __all__ = [
-    "CUSTOMER_MEASURES", "ORDERS_MEASURES",
+    "CUSTOMER_METRICS", "ORDERS_METRICS",
     "customers_dataset", "orders_dataset", "regions_dataset", "segments_dataset",
     "dev1842_datasets", "q", "month_td", "gen", "make_exec_engine",
     "rows_by", "broadcast_warnings",

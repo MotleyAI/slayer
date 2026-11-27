@@ -1,4 +1,4 @@
-"""Opt-in data-profiling cardinality detection via ``engine.detect_join_cardinality``."""
+"""Opt-in data-profiling cardinality detection via ``engine.detect_relationship_cardinality``."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from slayer.core.errors import ForcedFilterError
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.engine.cardinality.inference import CardinalityVerdict, RelationshipCardinalityReport
-from slayer.engine.query_engine import SlayerQueryEngine, _physical_keys
+from slayer.engine.query_engine import SlayerQueryEngine, _key_reads
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -70,7 +70,7 @@ def _seed_db(db_path: str) -> None:
 
 
 def _col(name: str, *, pk: bool = False, dtype: DataType = DataType.INTEGER) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=dtype, primary_key=pk)
+    return DatasetField(name=name, expression=name, datatype=dtype, primary_key=pk)
 
 
 def _datasets() -> list[SlayerDataset]:
@@ -274,24 +274,24 @@ class TestVerdicts:
         assert f.detected is RelationshipCardinality.MANY_TO_ONE
         assert f.verdict is CardinalityVerdict.REFINES
 
-    def test_expression_join_key_rejected_at_construction(self) -> None:
-        # An expression-backed join key is not a base column: the model never builds.
+    def test_computed_join_key_accepted_at_construction(self) -> None:
+        # A computed key over the dataset's own source is a valid relationship key.
         columns = [
             _col("id", pk=True),
-            DatasetField(name="ck", sql="customer_id + 0", datatype=DataType.INTEGER),
+            DatasetField(name="ck", expression="customer_id + 0", datatype=DataType.INTEGER),
         ]
         joins = [DatasetRelationship(to="customers", from_columns=["ck"], to_columns=["id"])]
-        with pytest.raises(ValueError, match=r"orders_expr.*customers.*'ck'"):
-            SlayerDataset(
-                name="orders_expr", sql_table="orders", data_source="ds",
-                fields=columns, relationships=joins,
-            )
+        model = SlayerDataset(
+            name="orders_expr", sql_table="orders", data_source="ds",
+            fields=columns, relationships=joins,
+        )
+        assert model.relationships[0].column_pairs == [("ck", "id")]
 
     async def test_skipped_unsupported_for_sql_mode_model(
         self, workspace: Path
     ) -> None:
         engine, storage, _ = await _build_engine(workspace)
-        # A sql-mode source model with a join is out of scope for v1 profiling.
+        # A sql-mode source dataset with a relationship is out of scope for v1 profiling.
         raw = SlayerDataset(
             name="raw_orders",
             sql="SELECT id, customer_id FROM orders",
@@ -332,9 +332,9 @@ class TestUniqueContradictions:
         assert next(c for c in reloaded.fields if c.name == "customer_id").unique is True
 
     async def test_sole_pk_column_with_dups_is_reported(self, workspace: Path) -> None:
-        """A column that IS the whole primary key does claim solo uniqueness."""
+        """A field that IS the whole primary key does claim solo uniqueness."""
         engine, storage, _ = await _build_engine(workspace)
-        # cart_lines.cart_id has dups; declare it the sole PK of a probe model.
+        # cart_lines.cart_id has dups; declare it the sole PK of a probe dataset.
         probe = SlayerDataset(
             name="solo_pk_lines",
             sql_table="cart_lines",
@@ -397,7 +397,7 @@ class TestPersistence:
 
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders.relationships[0].cardinality is RelationshipCardinality.MANY_TO_ONE
-        # Correct per-(model, join) identity — a different join gets its own value.
+        # Correct per-(dataset, relationship) identity — a different relationship gets its own value.
         profiles = await storage.get_dataset("user_profiles", data_source="ds")
         assert profiles.relationships[0].cardinality is RelationshipCardinality.ONE_TO_ONE
 
@@ -497,9 +497,9 @@ class TestSideStatsSqlShape:
 
     def test_keys_read_as_slayer_reads_them_on_snowflake(self) -> None:
         model = SlayerDataset(name="orders", data_source="ds", sql_table="orders", fields=[
-            DatasetField(name="customer_id", datatype=DataType.INTEGER), DatasetField(name="exact", sql='"exact_key"', datatype=DataType.INTEGER)])
+            DatasetField(name="customer_id", datatype=DataType.INTEGER), DatasetField(name="exact", expression='"exact_key"', datatype=DataType.INTEGER)])
         rows_sql, _ = _side_stats_sql(
-            table="orders", key_cols=_physical_keys(dataset=model, keys=["customer_id", "exact"]),
+            table="orders", key_cols=_key_reads(dataset=model, keys=["customer_id", "exact"], dialect="snowflake"),
             sqlglot_name="snowflake",
         )
         assert "FROM orders" in rows_sql
@@ -640,7 +640,7 @@ class TestEmptyPopulationIsNoEvidence:
 
 
 class TestScanFailureIsContained:
-    """One unreadable join must not abort the whole report."""
+    """One unreadable relationship must not abort the whole report."""
 
     async def test_failed_scan_becomes_a_finding(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
@@ -662,7 +662,7 @@ class TestScanFailureIsContained:
         assert failed.detected is None
         assert "table is on fire" in (failed.note or "")
 
-        # Every other join still reports.
+        # Every other relationship still reports.
         healthy = _find(report, "orders", "customers")
         assert healthy.detected is RelationshipCardinality.MANY_TO_ONE
 

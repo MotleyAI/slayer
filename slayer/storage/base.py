@@ -2,45 +2,70 @@
 
 import asyncio
 import contextlib
+import copy
+import functools
 from functools import partial
 import logging
 import os
 import sys
 import uuid
 import warnings
+
+import yaml
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Awaitable, Callable, Generator, Hashable, Iterable, Mapping, Sequence, Set as AbstractSet
 
+from pydantic import BaseModel
 from typing_extensions import deprecated
 
 from slayer.core.deprecation import outside_stacklevel
-from slayer.core.enums import DataType, RESERVED_NAMES, TEMPORAL_DATATYPES, TimeGranularity, stored_datatype
-from slayer.core.granularity import resolve_granularity, unknown_granularity_message
-from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset, spine_variant_warnings
+from slayer.core.enums import DataType, RESERVED_NAMES, TimeGranularity
+from slayer.core.granularity import granularity_key, resolve_granularity, unknown_granularity_message
+from slayer.core.stored_rewrites import collecting_rewrites
+from slayer.core.time_spine import (
+    TIME_SPINE_DATASET, check_default_time_dimension, is_spine_spelling, spine_dataset, spine_variant_warnings,
+)
 from slayer.core.errors import (
     AmbiguousDatasetError,
     AmbiguousReferenceError,
+    BrokenDependent,
     CaseCollisionError,
     ColonSpellingError,
+    EnforcedKeyError,
+    GranularityDefinitionError,
     IdCollisionError,
+    NamespaceCollisionError,
+    OntologiesUnsupportedError,
+    OntologyDocumentInvalidError,
+    OntologyMappingInvalidError,
+    OssieDocumentInvalidError,
     RelationshipTargetCaseError,
+    UndeterminedDatasourceError,
+    UnreadableDocumentError,
+    SemanticModelsUnsupportedError,
     MemoryNotFoundError,
-    DefaultTimeDimensionTypeError,
     ReservedFunctionNameError,
     ReservedDatasetNameError,
     StoredDocumentLoadError,
     TimeSpineError,
     UnknownGranularityError,
 )
-from slayer.engine.field_dependency import check_dataset_filters, validate_derived_fields, warn_broken_dependents
-from slayer.core.relationship_walker import edges_between
-from slayer.core.names import folded_collisions, match_name
+from slayer.engine.definitions import check_portable_fields
+from slayer.engine.field_dependency import (
+    check_dataset_filters, check_evaluated_metrics, check_field_agg, check_metric_fractions, validate_derived_fields,
+    warn_broken_dependents,
+)
+from slayer.core.relationship_walker import edges_between, unique_key_sets
+from slayer.core.names import folded_collisions
 from slayer.core.legacy_spellings import LegacySpan, emit_deprecations
+from slayer.core.field_expression import stored_definition_text
 from slayer.core.models import (
     DatasourceConfig,
+    DatasetField,
     DatasetRelationship,
     SlayerDataset,
     _validate_field_name,
@@ -51,15 +76,21 @@ from slayer.core.models import (
     shadows_library_function,
 )
 from slayer.core.query import SlayerQuery, mode_a_texts
+from slayer.core.semantic_model import OSSIE_VERSION, ModelScopedMetric, ossie_validity_errors
 from slayer.core.syntax import parse_expr
 from slayer.core.vocabulary import bridge_renamed_hooks, method_twin
 from slayer.core.warnings import (
     DeprecatedSpellingWarning,
     LibraryNameShadowWarning,
+    OntologyMismatchWarning,
     SlayerLibraryNameShadowWarning,
+    SlayerOntologyMismatchWarning,
+    SlayerWarning,
     SlayerNameCollisionWarning,
     SlayerSpineRelationshipDroppedWarning,
+    SlayerStoredUpgradeNeededWarning,
     SpineRelationshipDroppedWarning,
+    StoredUpgradeNeededWarning,
     caller_announces,
 )
 from slayer.embeddings.models import Embedding
@@ -71,7 +102,8 @@ from slayer.memories.models import (
 )
 from slayer.storage import migrations as _mig
 from slayer.storage.date_only_migration import (
-    StoredDatasets, below_date_only_upgrade, is_exact_inverse_relationship, needs_typing, stored_type, typing_with, upgraded_text,
+    UPGRADED_AT, StoredDatasets, holds_extension_date_literal, is_exact_inverse_relationship, needs_typing, stored_type,
+    typing_with,
 )
 from slayer.storage.document_keys import (
     CURRENT_KEYS,
@@ -82,10 +114,13 @@ from slayer.storage.document_keys import (
     with_relationship_pairs,
 )
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
+from slayer.storage.field_expression_migration import FIELD_EXPRESSION_VERSION, respell_source_paths
+from slayer.storage.instant_field_migration import INSTANT_FIELD_VERSION, typed_instant_fields
 from slayer.storage.granularity_rename import (
     Renames,
-    granularity_renames,
+    datasource_renames,
     memory_source_dataset,
+    pending_renames,
     rename_in_memory,
     rename_in_dataset,
     renamed_datasource,
@@ -96,17 +131,39 @@ from slayer.storage.mode_b_texts import (
     rewrite_memory_doc,
     rewrite_dataset_doc,
 )
-from slayer.storage.legacy_time_literals import legacy_literal_sites, repaired_filter
 from slayer.storage.legacy_alias_rewrite import (
     apply_dunder_rewrite_to_dataset_dict,
     extract_dunder_chains,
     mode_a_surface_texts,
 )
 from slayer.database.client import SqlClient
-from slayer.sql.dialects import dialect_for_ds_type
+from slayer.sql.definitions import check_forms, with_converted_sql
+from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.mode_a_variables import check_placeholders
-from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
+from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields, without_extension_fields
+from slayer.storage.qualified_references import qualified_stages, stage_readings
+from slayer.storage.stored_datasource import memory_fallback_population, raw_entities, raw_memory_datasource
+from slayer.storage.stored_literals import LiteralGates, typed_stage
+from slayer.storage.document_mapping import with_dataset, with_metrics_in_slayer, without_dataset
+from slayer.storage.model_metric_rules import DocumentScope, check_model_metric, metric_cycle
+from slayer.storage.semantic_model_edits import UNSET, MetricSpec, edited_document, metric_spec, with_datasets
+from slayer.core.document_text import edit_text, parse_document_text
+from slayer.core.portable_sql import portable_expression
+from slayer.storage.semantic_models import (
+    Decomposition, DocumentIndex, build_index, checked_document, decompose, expression_datasets, metric_graph,
+    unevaluable_targets,
+)
 from slayer.sql.sql_template import check_aggregation_definition
+from slayer.ontology.documents import (
+    checked_mapping_shape, edited_mapping, edited_ontology, read_ontology, ref_name, stored_name_reasons,
+)
+from slayer.ontology.scope import check_mapping
+from slayer.ontology.use import MappingDocument, StoredUse, UnresolvedMapping, model_findings
+from slayer.core.datasource_scope import DatasourceScope
+from slayer.storage.ontology_documents import (
+    MAPPING_NAME, ONTOLOGY_NAME, StoredMapping, broken_mappings, stored_data,
+)
+from slayer.storage.dependents import broken_model_metrics, report_broken
 from slayer.live_schema.type_refinement import (
     has_refineable_fields,
     has_sqlite_widenable_fields,
@@ -115,6 +172,16 @@ from slayer.live_schema.type_refinement import (
 
 #: Supplies the loading query engine's client for a datasource.
 ClientSource = Callable[[DatasourceConfig], SqlClient]
+
+
+def report_save_warnings(warnings_out: list[SlayerWarning] | None, found: Sequence[SlayerWarning]) -> None:
+    """``found`` into ``warnings_out``; without it, each ontology mismatch as a Python warning."""
+    if warnings_out is not None:
+        warnings_out.extend(found)
+        return
+    for warning in found:
+        if isinstance(warning, OntologyMismatchWarning):
+            warnings.warn(SlayerOntologyMismatchWarning(warning), stacklevel=outside_stacklevel())
 
 
 
@@ -129,12 +196,47 @@ _RELATIONSHIP_TARGET_REPAIR_BELOW_VERSION = 25
 #: The Memory version from which stored extension fields are inlined.
 _EXTENSION_FIELDS_INLINED_AT = 10
 # Raw document reads of the enclosing ``load_datasets`` pass, by ``(backend, data_source, name)``.
+#: Set while reading the backend's own (standalone) datasets, bypassing the document layer.
+_STANDALONE_ONLY: ContextVar[bool] = ContextVar("_STANDALONE_ONLY", default=False)
 _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]] | None] = ContextVar(
     "_RAW_PASS", default=None)
-# Inside the one-time granularity settle, whose own loads must not wait on it.
-_SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
+#: Dialects supplied for datasources the store holds no config for (``slayer storage upgrade --datasource-type``).
+DATASOURCE_TYPES: ContextVar[Mapping[str, str]] = ContextVar("DATASOURCE_TYPES", default=MappingProxyType({}))
+# Upgraded datasets of the enclosing top-level load, by ``(backend, data_source, name)``: the raw read, the dataset
+# and whether the upgrade changes it.
+_UPGRADE_PASS: ContextVar[dict[tuple[object, str, str], tuple[Any, Any, bool]] | None] = ContextVar(
+    "_UPGRADE_PASS", default=None)
+# The granularity rename table of the enclosing top-level load, by backend.
+_RENAME_PASS: ContextVar[dict[object, Mapping[str, Renames]] | None] = ContextVar("_RENAME_PASS", default=None)
 # The stored datasets whose extension fields are being inlined (their own loads must not recurse into them).
 _INLINING: ContextVar[frozenset[tuple[str, str]]] = ContextVar("_INLINING", default=frozenset())
+#: The versions whose saves wrote qualified references.
+_QUALIFIED_AT = {"SlayerModel": 28, "SlayerQuery": 17, "Memory": 13}
+
+
+def _stage_below(query: Any, *, document_version: int, entity: str, at: Mapping[str, int]) -> bool:
+    """Whether a raw stored query was written below the versions ``at`` (a version-less one, by its document)."""
+    if not isinstance(query, dict):
+        return False
+    version = query.get("version")
+    if version is not None:
+        return int(version) < at["SlayerQuery"]
+    return document_version < at[entity]
+
+
+def _unqualified(query: Any, *, document_version: int, entity: str) -> bool:
+    """Whether a raw stored query was written before qualified references."""
+    return _stage_below(query, document_version=document_version, entity=entity, at=_QUALIFIED_AT)
+
+
+def _stage_gates(query: Any, *, document_version: int, entity: str, legacy: bool) -> LiteralGates:
+    """The literal rewrites a raw stored query calls for; ``legacy`` when its document's own gate repairs them."""
+    return LiteralGates(legacy=legacy, whole_day=_stage_below(
+        query, document_version=document_version, entity=entity, at=UPGRADED_AT))
+class LiveRefinementRequiredError(ValueError):
+    """A stored dataset below v8 cannot upgrade without refining its types against its live datasource."""
+
+
 # The loading query engine's client source, set by its storage view around each call it delegates.
 CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
@@ -162,8 +264,8 @@ def _canonical_key(*, key: Any, fields: Any) -> Any:
         return key
     renames = [
         c["name"] for c in cols
-        if isinstance(c.get("sql"), str) and is_base_field_sql(c["sql"])
-        and physical_column_sql(sql=c["sql"], name=c["name"]) == key
+        if isinstance(text := stored_definition_text(c), str) and is_base_field_sql(text)
+        and physical_column_sql(sql=text, name=c["name"]) == key
     ]
     return renames[0] if len(renames) == 1 else key
 
@@ -189,7 +291,8 @@ def _undeclared_key(*, key: Any, fields: list) -> bool:
     return not any(
         isinstance(c, dict) and isinstance(c.get("name"), str) and (
             c["name"] == key
-            or (is_base_field_sql(c.get("sql")) and physical_column_sql(sql=c.get("sql"), name=c["name"]) == key)
+            or (isinstance(text := stored_definition_text(c), (str, type(None))) and is_base_field_sql(text)
+                and physical_column_sql(sql=text, name=c["name"]) == key)
         )
         for c in fields
     )
@@ -200,6 +303,34 @@ def _stage_names(data: dict) -> frozenset[str]:
     queries = data.get("source_queries")
     return frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str)) if isinstance(
         queries, list) else frozenset()
+
+
+@contextlib.contextmanager
+def one_upgrade_pass() -> Generator[None]:
+    """Within the block (one query), each stored document read unchanged is upgraded in memory once, against one
+    reading of the stored datasources' granularity renames."""
+    token = _UPGRADE_PASS.set({}) if _UPGRADE_PASS.get() is None else None
+    rename_token = _RENAME_PASS.set({}) if _RENAME_PASS.get() is None else None
+    try:
+        yield
+    finally:
+        if rename_token is not None:
+            _RENAME_PASS.reset(rename_token)
+        if token is not None:
+            _UPGRADE_PASS.reset(token)
+
+
+def _memory_in_datasource(data: dict, *, data_source: str, identities: Sequence[tuple[str, str]]) -> bool:
+    """Whether a raw stored memory's query reads ``data_source`` (the granularity rename's scope)."""
+    inline_data_source, source = memory_source_dataset(data)
+    if inline_data_source is not None:
+        return inline_data_source == data_source
+    if memory_fallback_population(data, identities=identities)[0]:
+        return raw_memory_datasource(data, identities=identities) == data_source
+    if (data_source, source) not in identities:
+        return False
+    return all(d == data_source for d, n in identities if n == source) or (
+        f"{data_source}.{source}" in raw_entities(data))
 
 
 def _incoming_keys(*, sibling: dict, target: str, target_fields: list) -> list[tuple[Any, str | None]]:
@@ -259,6 +390,18 @@ def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
     ]}
 
 
+def _document_name(text: str) -> str:
+    """The ``name`` an Ossie document's text declares; raises ``OssieDocumentInvalidError`` when it does not read."""
+    try:
+        data = parse_document_text(text)
+    except UnreadableDocumentError as exc:
+        raise OssieDocumentInvalidError(name=exc.name or "(unnamed)", reasons=exc.reasons) from exc
+    name = data.get("name") if isinstance(data, dict) else None
+    if not isinstance(name, str) or not name:
+        raise ValueError("The semantic model's content declares no name; pass one")
+    return name
+
+
 def _checked_relationship_names(dataset: SlayerDataset) -> list[str]:
     """Names of ``dataset``'s named edges; raises on duplicates."""
     names = [j.name for j in dataset.relationships if j.name]
@@ -269,24 +412,6 @@ def _checked_relationship_names(dataset: SlayerDataset) -> list[str]:
             f"edge name incident to a dataset must be unique."
         )
     return names
-
-
-def _checked_relationship_name_namespace(
-    *, dataset: SlayerDataset, names: list[str],
-    identities: Iterable[tuple[str, str]],
-) -> set[str]:
-    """Datasource dataset-name namespace; raises when an edge name collides."""
-    ds_dataset_names = {
-        n for ds, n in identities if ds == dataset.data_source
-    } | {dataset.name}
-    for n in names:
-        if n in ds_dataset_names:
-            raise ValueError(
-                f"Dataset '{dataset.name}': relationship name '{n}' collides with "
-                f"dataset '{n}' in datasource '{dataset.data_source}'. Edge "
-                f"names and dataset names share the path-segment namespace."
-            )
-    return ds_dataset_names
 
 
 def _check_edges_against_peers(
@@ -451,6 +576,55 @@ def _write_sample_fields(
 _CUSTOM_BUCKET_CALLS_BELOW = {"SlayerModel": 20, "Memory": 9}
 
 
+def _raw_values(value: Any) -> Any:
+    """``value`` with every nested model turned into its raw field values, runtime-only fields included."""
+    if isinstance(value, BaseModel):
+        return {name: _raw_values(value.__dict__.get(name)) for name in type(value).model_fields}
+    if isinstance(value, list):
+        return [_raw_values(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_raw_values(v) for v in value)
+    if isinstance(value, dict):
+        return {k: _raw_values(v) for k, v in value.items()}
+    return value
+
+
+def _pairs(held: Any, rebuilt: Any) -> list[tuple[Any, Any]]:
+    """The (held, rebuilt) values one level down: list items, dict entries, or model fields (a dict may rebuild as one)."""
+    if isinstance(rebuilt, BaseModel) and isinstance(held, (BaseModel, dict)):
+        values = held.__dict__ if isinstance(held, BaseModel) else held
+        return [(values.get(n), rebuilt.__dict__.get(n)) for n in type(rebuilt).model_fields if n in values]
+    if isinstance(held, (list, tuple)) and isinstance(rebuilt, (list, tuple)):
+        return list(zip(held, rebuilt))
+    if isinstance(held, dict) and isinstance(rebuilt, dict):
+        return [(held[k], rebuilt[k]) for k in held.keys() & rebuilt.keys()]
+    return []
+
+
+def _wrong_class(held: Any, rebuilt: Any) -> bool:
+    """Whether ``held`` holds a model, directly or below plain values, whose class its rebuild does not give."""
+    if isinstance(held, BaseModel):
+        return isinstance(rebuilt, BaseModel) and type(held) is not type(rebuilt)  # a model where none is declared passes
+    return any(_wrong_class(h, r) for h, r in _pairs(held, rebuilt))
+
+
+def _check_same_classes(held: Any, rebuilt: Any) -> None:
+    """Refuse a model in ``held`` whose class differs from the one its place declares (as ``rebuilt`` holds)."""
+    if isinstance(held, BaseModel) and isinstance(rebuilt, BaseModel):
+        cls = type(rebuilt)
+        values = {name: held.__dict__.get(name) for name in cls.model_fields}
+        if any(_wrong_class(h, r) for h, r in _pairs(held, rebuilt)):
+            cls.model_validate(values)  # construction's refusal of the held objects
+            raise TypeError(f"{cls.__name__} holds a model of another class than it declares")
+    for h, r in _pairs(held, rebuilt):
+        _check_same_classes(h, r)
+
+
+def check_whole(obj: SlayerDataset | DatasourceConfig) -> None:
+    """Refuse ``obj`` unless rebuilding it from its raw values passes every check construction applies."""
+    _check_same_classes(obj, type(obj).model_validate(_raw_values(obj)))
+
+
 def with_canonical_spellings(dataset: SlayerDataset) -> tuple[SlayerDataset, list[DeprecatedSpellingWarning]]:
     """``dataset`` with each deprecated spelling in its Mode-B texts replaced by its twin, and one warning per spelling."""
     found: dict[str, LegacySpan] = {}
@@ -459,6 +633,17 @@ def with_canonical_spellings(dataset: SlayerDataset) -> tuple[SlayerDataset, lis
     if not found:
         return dataset, []
     return SlayerDataset.model_validate(rewritten), emit_deprecations(found)
+
+
+def with_portable_sql(dataset: SlayerDataset) -> SlayerDataset:
+    """``dataset`` with each field and metric expression's portable text in the canonical writer's spelling."""
+    fields = [f.model_copy(update={"expression": portable_expression(f.expression)}) if f.expression is not None else f
+              for f in dataset.fields]
+    metrics = [m.model_copy(update={"expression": portable_expression(m.expression)}) for m in dataset.metrics]
+    if [f.expression for f in fields] == [f.expression for f in dataset.fields] and \
+            [m.expression for m in metrics] == [m.expression for m in dataset.metrics]:
+        return dataset
+    return dataset.model_copy(update={"fields": fields, "metrics": metrics})
 
 
 def warn_library_shadows(dataset: SlayerDataset) -> None:
@@ -531,6 +716,10 @@ def _find_case_colliding_id(
     return None
 
 
+DATASOURCE_NAME = "datasource name"
+SEMANTIC_MODEL_NAME = "semantic model name"
+
+
 def _validate_path_component(value: str, *, kind: str) -> None:
     """Reject a user-supplied path component that could traverse the storage tree
     or cross the canonical-id namespace: empty/whitespace, ``..``, path separators,
@@ -560,17 +749,34 @@ def _refuse_colon_metrics(dataset: SlayerDataset) -> None:
     """A metric expression in a removed colon spelling fails the save; other parse errors surface at binding."""
     for metric in dataset.metrics:
         try:
-            parse_expr(metric.expression)
+            parse_expr(metric.text)
         except ColonSpellingError:
             raise
         except Exception:  # noqa: BLE001, S112 — reported when a query binds it
             continue
 
 
-def _validate_default_time_dimension(dataset: SlayerDataset) -> None:
-    field = dataset.get_field(dataset.default_time_dimension) if dataset.default_time_dimension else None
-    if field is not None and field.datatype not in TEMPORAL_DATATYPES:
-        raise DefaultTimeDimensionTypeError(dataset=dataset.name, field=field.name, field_type=field.datatype)
+def check_enforced_keys(dataset: SlayerDataset) -> None:
+    """Every enforced key is a declared key of a table-backed dataset."""
+    declared = [sorted(k) for k in unique_key_sets(dataset)]
+    for key in dataset.enforced_keys:
+        if not dataset.sql_table:
+            raise EnforcedKeyError(dataset=dataset.name, key=key,
+                                   reason="is recorded on a dataset not backed by a table (sql or a backing query)")
+        if sorted(key) not in declared:
+            raise EnforcedKeyError(dataset=dataset.name, key=key,
+                                   reason="is not a declared key (its primary key or a unique field)")
+        computed = [name for name in key if not (field := dataset.get_field(name)) or not field.is_base]
+        if computed:
+            raise EnforcedKeyError(dataset=dataset.name, key=key,
+                                   reason=f"names fields that are not base columns: {computed}")
+
+
+def _repointed_key_field(*, old: DatasetField | None, new: DatasetField | None) -> bool:
+    """A stored base key field that is no longer a base column, or reads a different one."""
+    if old is None or new is None or not old.is_base:
+        return False
+    return not new.is_base or new.physical_name != old.physical_name
 
 
 #: The 1.x methods and hooks a custom backend may still override, by their 2.0 names.
@@ -589,6 +795,91 @@ HOOK_ARGUMENTS = {
 }
 
 
+def _documents_first(get: Callable[..., Any]) -> Callable[..., Any]:
+    """``get_dataset`` answering a document dataset first, then the backend's own."""
+
+    @functools.wraps(get)
+    async def get_dataset(self: StorageBackend, name: str, data_source: str | None = None) -> SlayerDataset | None:
+        if not _STANDALONE_ONLY.get() and self._supports_semantic_models():
+            found = await self._document_dataset(name, data_source=data_source)
+            if found is not None:
+                return found
+        return await get(self, name, data_source=data_source)
+
+    setattr(get_dataset, "__documents__", True)
+    return get_dataset
+
+
+def _with_document_identities(identities: Callable[..., Any]) -> Callable[..., Any]:
+    """``_list_all_dataset_identities`` listing every loadable document dataset too."""
+
+    @functools.wraps(identities)
+    async def listed(self: StorageBackend) -> list[tuple[str, str]]:
+        own = await identities(self)
+        if _STANDALONE_ONLY.get() or not self._supports_semantic_models():
+            return own
+        out, seen = list(own), set(own)
+        for ds in sorted({d for d, _ in await self._list_semantic_model_identities()}):
+            for dataset in (await self._document_index(ds)).datasets.values():
+                if (ds, dataset.name) not in seen:
+                    seen.add((ds, dataset.name))
+                    out.append((ds, dataset.name))
+        return out
+
+    setattr(listed, "__documents__", True)
+    return listed
+
+
+def _sampled_into_documents(update: Callable[..., Any]) -> Callable[..., Any]:
+    """``update_field_sampled`` patching the owning document of a document dataset."""
+
+    @functools.wraps(update)
+    async def update_field_sampled(self: StorageBackend, *, data_source: str, dataset_name: str, field_name: str,
+                                   sampled: str | None, sampled_values: list[str] | None,
+                                   distinct_count: int | None) -> None:
+        owner = None if _STANDALONE_ONLY.get() else await self._owner_of(dataset_name, data_source=data_source)
+        if owner is None:
+            await update(self, data_source=data_source, dataset_name=dataset_name, field_name=field_name,
+                         sampled=sampled, sampled_values=sampled_values, distinct_count=distinct_count)
+            return
+
+        def sample(old: SlayerDataset | None) -> SlayerDataset:
+            if old is None or old.get_field(field_name) is None:
+                raise ValueError(f"Field {field_name!r} of dataset {dataset_name!r} not found")
+            values = {"sampled": sampled, "sampled_values": sampled_values, "distinct_count": distinct_count}
+            return old.model_copy(update={"fields": [f.model_copy(update=values) if f.name == field_name else f
+                                                     for f in old.fields]})
+
+        await self._write_document_dataset(data_source=data_source, document=owner, name=dataset_name, mutate=sample)
+
+    setattr(update_field_sampled, "__documents__", True)
+    return update_field_sampled
+
+
+def _handed_out(dataset: SlayerDataset) -> SlayerDataset:
+    """A copy of a document dataset remembering the form it was read as, the base its save merges from."""
+    out = dataset.model_copy(deep=True)
+    out._read_as = dataset.model_copy(deep=True)
+    return out
+
+
+def _dataset_edit(doc: dict[str, Any], *, document: str, name: str, new: SlayerDataset | None,
+                  baseline: SlayerDataset | None, reader: str, core: bool, moved: set[str]) -> dict[str, Any]:
+    """``doc`` with dataset ``name`` written as ``new`` (``None``: removed) and the ``moved`` metrics in ``SLAYER``;
+    refused unless Ossie-valid."""
+    out = without_dataset(doc, name=name) if new is None else with_dataset(
+        doc, old=baseline, new=new, reader=reader, core=core)
+    out = with_metrics_in_slayer(out, names=moved)
+    reasons = ossie_validity_errors(out)
+    if reasons:
+        raise OssieDocumentInvalidError(name=document, reasons=reasons)
+    return out
+
+
+_DOCUMENT_WRAPPERS = {"get_dataset": _documents_first, "_list_all_dataset_identities": _with_document_identities,
+                      "update_field_sampled": _sampled_into_documents}
+
+
 class StorageBackend(ABC):
     """Abstract async storage backend keyed by ``(data_source, name)``. Concrete backends implement the composite-key CRUD; this class supplies shared validation and the priority-aware bare-name resolver."""
 
@@ -596,10 +887,18 @@ class StorageBackend(ABC):
     #: by case (they alias on case-insensitive filesystems). Wrappers copy it.
     _ids_collide_as_filenames = False
     _instance_identity: str | None = None
+    #: A wrapper whose dataset reads already see its inner store's documents.
+    _delegates_documents = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         bridge_renamed_hooks(cls, HOOK_RENAMES, arguments=HOOK_ARGUMENTS)
+        if cls.__dict__.get("_delegates_documents", False):
+            return
+        for attr, wrap in _DOCUMENT_WRAPPERS.items():
+            own = cls.__dict__.get(attr)
+            if own is not None and not getattr(own, "__documents__", False):
+                setattr(cls, attr, wrap(own))
 
     @method_twin("get_dataset")
     @deprecated("get_model is deprecated; use get_dataset", category=None)
@@ -654,13 +953,92 @@ class StorageBackend(ABC):
         self, dataset: SlayerDataset, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
         """Persist a dataset after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only), each
-        deprecated Mode-B spelling stored as its twin. Backends must NOT override this."""
+        deprecated Mode-B spelling stored as its twin and a deprecated field ``sql`` as its datasource's entry. Backends
+        must NOT override this."""
         if _validate:
-            dataset, _ = with_canonical_spellings(dataset)
+            check_whole(dataset)
+            dataset = with_portable_sql(with_canonical_spellings(dataset)[0])
+            datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
+            if datasource is not None and not dataset.source_queries:
+                dataset = with_converted_sql(dataset, ds_type=datasource.type)
+            dataset = await self._without_repointed_enforced_keys(dataset)
             await self.validate_for_save(dataset, failures=failures)
             warn_library_shadows(dataset)
-        await self._save_dataset_impl(dataset)
+        saved = dataset
+        broken = await self._guard_dependents(change=f"Saving dataset {dataset.name!r}", data_source=dataset.data_source,
+                                              changed=lambda scope: scope.with_dataset(saved.name, saved))
+        owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
+        moving = owner is None and dataset.semantic_model is not None
+        owner = owner or dataset.semantic_model
+        if owner is None:
+            await self._save_dataset_impl(dataset)
+        else:
+            await self._write_document_dataset(data_source=dataset.data_source, document=owner, name=dataset.name,
+                                               mutate=lambda _old: dataset, broken=broken)
+            if moving:
+                await self._delete_dataset_row(data_source=dataset.data_source, name=dataset.name)
         self._forget_raw(data_source=dataset.data_source, name=dataset.name)
+
+    async def _without_repointed_enforced_keys(self, dataset: SlayerDataset) -> SlayerDataset:
+        """``dataset`` without the enforced keys a changed source, or a re-pointed key field, leaves describing the old."""
+        if not dataset.enforced_keys:
+            return dataset
+        stored = None
+        with contextlib.suppress(Exception):
+            stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
+        if stored is None:
+            return dataset
+        if (stored.sql_table, stored.sql, stored.source_queries) != (
+                dataset.sql_table, dataset.sql, dataset.source_queries):
+            return dataset.model_copy(update={"enforced_keys": []})
+        kept = [key for key in dataset.enforced_keys if not any(
+            _repointed_key_field(old=stored.get_field(name), new=dataset.get_field(name)) for name in key)]
+        return dataset if kept == dataset.enforced_keys else dataset.model_copy(update={"enforced_keys": kept})
+
+    async def _owner_of(self, name: str, *, data_source: str) -> str | None:
+        """The one owner lookup: the document declaring dataset ``name``, ``None`` for a standalone or new one."""
+        if not self._supports_semantic_models() or not await self._document_data_sources():
+            return None
+        return (await self._document_index(data_source)).owners.get(name.casefold())
+
+    async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
+        """Write a document dataset's SLayer content as ``SLAYER`` entries, leaving its document's Ossie core as it is."""
+        check_whole(dataset)
+        dataset = await self._without_repointed_enforced_keys(dataset)
+        check_enforced_keys(dataset)
+        owner = await self._owner_of(dataset.name, data_source=dataset.data_source)
+        if owner is None:
+            raise ValueError(f"Dataset {dataset.name!r} is not declared by a semantic model")
+        broken = await self._guard_dependents(
+            change=f"Saving the SLayer extensions of dataset {dataset.name!r}", data_source=dataset.data_source,
+            changed=lambda scope: scope.with_dataset(dataset.name, dataset))
+        await self._write_document_dataset(data_source=dataset.data_source, document=owner, name=dataset.name,
+                                           mutate=lambda _old: dataset, core=False, broken=broken)
+
+    async def _write_document_dataset(self, *, data_source: str, document: str, name: str,
+                                      mutate: Callable[[SlayerDataset | None], SlayerDataset | None],
+                                      core: bool = True, broken: Sequence[BrokenDependent] = ()) -> None:
+        """Patch document ``document``: dataset ``name`` becomes ``mutate(current)`` (``None`` removes it), read and
+        written as one serialized step; each ``broken`` metric of it written in Ossie core moves to its ``SLAYER``
+        entry."""
+        moved = {b.name.casefold() for b in broken if b.kind == "metric" and b.semantic_model == document}
+        datasource = await self.get_datasource(data_source)
+        ds_type, granularities = (datasource.type, datasource.granularities) if datasource is not None else (None, [])
+        reader = dialect_for_ds_type(ds_type).sqlglot_name
+
+        def patch(text: str) -> str:
+            current = decompose(text=text, name=document, data_source=data_source, ds_type=ds_type,
+                                granularities=granularities)
+            old = next((d for d in current.datasets if d.name.casefold() == name.casefold()), None)
+            new = mutate(old)
+            base = (new._read_as if new is not None and new._read_as is not None else None) or old
+            baseline = with_canonical_spellings(base)[0] if base is not None else None
+            return edit_text(text, lambda doc: _dataset_edit(doc, document=document, name=name, new=new,
+                                                             baseline=baseline, reader=reader, core=core, moved=moved))
+
+        if self._supports_semantic_models() and await self.get_semantic_model_text(document, data_source=data_source) is None:
+            raise ValueError(f"Semantic model {document!r} not found in datasource {data_source!r}")
+        await self._patch_semantic_model_text(data_source=data_source, name=document, patch=patch)
 
     async def validate_for_save(self, dataset: SlayerDataset, *, failures: DocumentLoadFailures | None = None) -> None:
         """Reserved-name and case-collision rejection, derived-field and dataset-filter well-formedness (reference arity + cycles) and relationship validation against this store's peers; then a warning per dependent the save breaks, unless ``failures`` is unreported."""
@@ -668,6 +1046,11 @@ class StorageBackend(ABC):
         if is_spine_spelling(dataset.name) and (dataset.data_source, dataset.name) not in identities:
             raise ReservedDatasetNameError(name=dataset.name)
         _refuse_colon_metrics(dataset)
+        check_enforced_keys(dataset)
+        datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
+        stored = await self.get_dataset(dataset.name, data_source=dataset.data_source)
+        if datasource is not None and not dataset.source_queries:
+            check_forms(dataset, ds_type=datasource.type)
         if self._ids_collide_as_filenames:
             await self._check_dataset_identity_collision(dataset)
         await self._check_case_collisions(dataset)
@@ -676,17 +1059,22 @@ class StorageBackend(ABC):
         loaded, unloaded = await self.load_datasets(data_source=dataset.data_source, exclude=dataset.name)
         peers = {m.name: m for m in failures.skip((loaded, unloaded))}
         check_relationship_target_spellings(dataset, names=[n for ds, n in identities if ds == dataset.data_source], peers=peers)
+        if datasource is not None and not dataset.source_queries:
+            check_portable_fields(dataset, datasets=list(peers.values()), ds_type=datasource.type)
         await self._validate_mode_a_placeholders(dataset)
+        check_field_agg(dataset)
+        check_metric_fractions(dataset=dataset, peers=peers)
         validate_derived_fields(dataset=dataset, peers=peers, unloaded=frozenset(e.name for e in unloaded))
-        check_dataset_filters(dataset=dataset, reachable=peers)
-        self._validate_relationship_edges(dataset, peers=peers, identities=identities)
+        check_dataset_filters(dataset=dataset, reachable=peers,
+                              dialect=ossie_token(datasource.type) if datasource is not None else None)
+        check_evaluated_metrics(dataset=dataset, reachable=peers, stored=stored, model_metrics={
+            m.name for m in await self.list_model_scoped_metrics(dataset.data_source)})
+        self._validate_relationship_edges(dataset, peers=peers)
         await self._validate_aggregations(dataset)
         await self._validate_field_granularities(dataset)
-        _validate_default_time_dimension(dataset)
+        check_default_time_dimension(dataset)
         if failures.report:
-            warn_broken_dependents(
-                dataset=dataset, stored=await self.get_dataset(dataset.name, data_source=dataset.data_source), peers=peers,
-            )
+            warn_broken_dependents(dataset=dataset, stored=stored, peers=peers)
 
     async def _check_case_collisions(self, dataset: SlayerDataset) -> None:
         """Refuse a name that newly collides by case with another in its namespace (the datasource's dataset names
@@ -736,23 +1124,13 @@ class StorageBackend(ABC):
                 raise ReservedFunctionNameError(name=agg.name, where=f"Dataset '{dataset.name}', aggregation")
 
     @staticmethod
-    def _validate_relationship_edges(
-        dataset: SlayerDataset, *, peers: dict[str, SlayerDataset], identities: list[tuple[str, str]],
-    ) -> None:
-        """Save-time relationship validation against the loaded datasource ``peers``: reject duplicate incident edge names, edge/dataset name collisions (both directions), and exact-inverse re-declarations; warn on unnamed parallel edges."""
-        clash = next((n for n, p in sorted(peers.items()) if any(j.name == dataset.name for j in p.relationships)), None)
-        if clash is not None:
-            raise ValueError(
-                f"Dataset name '{dataset.name}' collides with the relationship name "
-                f"'{dataset.name}' declared on dataset '{clash}' in datasource "
-                f"'{dataset.data_source}'. Edge names and dataset names share "
-                f"the path-segment namespace."
-            )
+    def _validate_relationship_edges(dataset: SlayerDataset, *, peers: dict[str, SlayerDataset]) -> None:
+        """Save-time relationship validation against the loaded datasource ``peers``: reject duplicate incident edge
+        names and exact-inverse re-declarations; warn on unnamed parallel edges."""
         _check_list_hop_collisions(dataset=dataset, peers=peers)
         if not dataset.relationships:
             return
         names = _checked_relationship_names(dataset)
-        _checked_relationship_name_namespace(dataset=dataset, names=names, identities=identities)
         # Relationship targets always; every peer when a named edge must be checked against incident edges.
         if not names:
             targets = {j.to for j in dataset.relationships}
@@ -809,19 +1187,625 @@ class StorageBackend(ABC):
                 except StoredDocumentLoadError as exc:
                     return exc
 
+        indexes = {ds: await self._document_index(ds) for ds in await self._document_data_sources()
+                   if data_source is None or ds == data_source}
         token = _RAW_PASS.set({}) if _RAW_PASS.get() is None else None
         try:
-            loaded = await asyncio.gather(*(
-                _load(ds, name) for ds, name in await self._list_all_dataset_identities()
-                if (data_source is None or ds == data_source) and name != exclude
-            ))
+            with one_upgrade_pass():
+                loaded = await asyncio.gather(*(
+                    _load(ds, name) for ds, name in await self._standalone_identities()
+                    if (data_source is None or ds == data_source) and name != exclude
+                    and (ds not in indexes or name.casefold() not in indexes[ds].quarantined)
+                ))
         finally:
             if token is not None:
                 _RAW_PASS.reset(token)
+        for index in indexes.values():
+            loaded += [_handed_out(d) for d in index.datasets.values() if d.name != exclude]
+            loaded += index.failures
         return (
             [m for m in loaded if isinstance(m, SlayerDataset)],
             [e for e in loaded if isinstance(e, StoredDocumentLoadError)],
         )
+
+    # ---- semantic-model documents ------------------------------------------
+
+    def _supports_semantic_models(self) -> bool:
+        return type(self)._get_semantic_model_text_impl is not StorageBackend._get_semantic_model_text_impl
+
+    def _unsupported(self) -> SemanticModelsUnsupportedError:
+        return SemanticModelsUnsupportedError(backend=type(self).__name__)
+
+    async def _save_semantic_model_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        """Durably store a document's text verbatim (backends implement this to support documents)."""
+        raise self._unsupported()
+
+    async def _get_semantic_model_text_impl(self, *, data_source: str, name: str) -> str | None:
+        """A stored document's text, ``None`` when absent."""
+        raise self._unsupported()
+
+    async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
+        """Every stored ``(data_source, name)`` document; a backend without documents lists none."""
+        await asyncio.sleep(0)
+        return []
+
+    async def _delete_semantic_model_row(self, *, data_source: str, name: str) -> bool:
+        raise self._unsupported()
+
+    async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:
+        """Read, ``patch`` and write a document as one serialized step; the written text. Every document content or
+        membership change must change ``graph_fingerprint``."""
+        raise self._unsupported()
+
+    async def _standalone_identities(self) -> list[tuple[str, str]]:
+        token = _STANDALONE_ONLY.set(True)
+        try:
+            return await self._list_all_dataset_identities()
+        finally:
+            _STANDALONE_ONLY.reset(token)
+
+    async def _document_data_sources(self) -> list[str]:
+        if not self._supports_semantic_models():
+            return []
+        return sorted({ds for ds, _ in await self._list_semantic_model_identities()})
+
+    async def _document_index(self, data_source: str) -> DocumentIndex:
+        """``data_source``'s documents resolved against its namespace."""
+        names = [n for ds, n in await self._list_semantic_model_identities() if ds == data_source] \
+            if self._supports_semantic_models() else []
+        if not names:
+            return DocumentIndex(data_source=data_source)
+        documents, unreadable = [], []
+        for name in names:
+            try:
+                text = await self._get_semantic_model_text_impl(data_source=data_source, name=name)
+            except UnreadableDocumentError as exc:
+                unreadable.append(StoredDocumentLoadError(kind="semantic_model", name=name, data_source=data_source,
+                                                          cause=exc))
+                continue
+            if text is not None:
+                documents.append((name, text))
+        standalone = [n for ds, n in await self._standalone_identities() if ds == data_source]
+        datasource = await self.get_datasource(data_source)
+        index = build_index(data_source=data_source, documents=documents, standalone=standalone,
+                            ds_type=datasource.type if datasource is not None else None,
+                            granularities=datasource.granularities if datasource is not None else [])
+        index.failures.extend(unreadable)
+        return index
+
+    async def _readable_text(self, *, data_source: str, name: str) -> str | None:
+        """A stored document's text; ``None`` when absent or unreadable."""
+        try:
+            return await self._get_semantic_model_text_impl(data_source=data_source, name=name)
+        except UnreadableDocumentError:
+            return None
+
+    async def _document_dataset(self, name: str, *, data_source: str | None) -> SlayerDataset | None:
+        """The document dataset ``name`` (case-insensitive), ``None`` when no document declares it; raises
+        ``StoredDocumentLoadError`` when the name is quarantined."""
+        if data_source is None:
+            if not await self._document_data_sources():
+                return None
+            identity = await self.resolve_dataset_identity(name)
+            if identity is None:
+                return None
+            data_source, name = identity
+        index = await self._document_index(data_source)
+        cause = index.quarantined.get(name.casefold())
+        if cause is not None:
+            raise StoredDocumentLoadError(kind="dataset", name=name, data_source=data_source, cause=ValueError(
+                f"{name!r} is declared by {cause}; rename one of them"))
+        found = index.datasets.get(name.casefold())
+        return _handed_out(found) if found is not None else None
+
+    async def _resolve_document(self, name: str, data_source: str | None) -> tuple[str, str] | None:
+        _validate_path_component(name, kind=SEMANTIC_MODEL_NAME)
+        if data_source is not None:
+            _validate_path_component(data_source, kind=DATASOURCE_NAME)
+            return data_source, name
+        matches = [(ds, n) for ds, n in await self._list_semantic_model_identities() if n == name]
+        if len(matches) > 1:
+            raise AmbiguousDatasetError(name=name, candidates=[ds for ds, _ in matches])
+        return matches[0] if matches else None
+
+    async def list_semantic_models(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        """Every stored document as ``(data_source, name)``, of ``data_source`` when given."""
+        if not self._supports_semantic_models():
+            return []
+        return sorted(i for i in await self._list_semantic_model_identities() if data_source in (None, i[0]))
+
+    async def get_semantic_model_text(self, name: str, data_source: str | None = None) -> str | None:
+        """A stored document's text as written; ``None`` when absent."""
+        if not self._supports_semantic_models():
+            raise self._unsupported()
+        target = await self._resolve_document(name, data_source)
+        return await self._get_semantic_model_text_impl(data_source=target[0], name=target[1]) if target else None
+
+    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str,
+                                       warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Store ``text`` verbatim as document ``name`` of ``data_source`` after the Ossie validity and namespace checks;
+        replaces a stored document of that name. Its datasets' ontology mismatches go to ``warnings_out``."""
+        datasets = await self._store_semantic_model_text(data_source=data_source, name=name, text=text)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(data_source=data_source, datasets=datasets))
+
+    async def _store_semantic_model_text(self, *, data_source: str, name: str, text: str) -> list[str]:
+        """``save_semantic_model_text`` without its warnings; the stored document's dataset names."""
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=SEMANTIC_MODEL_NAME)
+        if not self._supports_semantic_models():
+            raise self._unsupported()
+        doc = checked_document(text=text, name=name)
+        await self._check_document_namespace(
+            name=name, data_source=data_source, datasets=[d.name for d in doc.datasets],
+            metrics=[m.name for m in doc.metrics or []],
+        )
+        await self._guard_document(change=f"Saving semantic model {name!r}", data_source=data_source, name=name,
+                                   text=text)
+        await self._save_semantic_model_text_impl(data_source=data_source, name=name, text=text)
+        return [d.name for d in doc.datasets]
+
+    async def _guard_document(self, *, change: str, data_source: str, name: str, text: str) -> None:
+        """Refuse storing ``text`` as document ``name`` when that breaks a stored dependent; a text that does not
+        decompose loads holding nothing."""
+        try:
+            decomposed = await self._decomposed_document(data_source=data_source, name=name, text=text)
+        except Exception:  # noqa: BLE001 — as build_index reads it
+            decomposed = None
+        await self._guard_dependents(change=change, data_source=data_source, changed=lambda scope: scope.with_document(
+            name, None) if decomposed is None else scope.with_document(name, decomposed.datasets, decomposed.metrics))
+
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str],
+                                   warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Store document ``name`` in place of the standalone datasets ``replacing`` (same names, so references keep
+        resolving); the standalone datasets are restored when the document is refused."""
+        replaced = [d for n in replacing if (d := await self.get_dataset(n, data_source=data_source)) is not None]
+        stored: list[str] = []
+
+        async def write() -> None:
+            stored.extend(await self._store_semantic_model_text(data_source=data_source, name=name, text=text))
+
+        await self._moving_standalone(data_source=data_source, datasets=replaced, write=write)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(data_source=data_source, datasets=stored))
+
+    async def _moving_standalone(self, *, data_source: str, datasets: list[SlayerDataset],
+                                 write: Callable[[], Awaitable[Any]]) -> None:
+        """Delete ``datasets``' standalone rows, then ``write`` the document taking them; any failure restores them."""
+        try:
+            for dataset in datasets:
+                await self._delete_dataset_row(data_source=data_source, name=dataset.name)
+            await write()
+        except BaseException:  # cancellation too: the moved rows must come back
+            for dataset in datasets:
+                await self._save_dataset_impl(dataset)
+            raise
+
+    async def standalone_datasets_of(self, *, text: str, data_source: str, names: list[str]) -> list[SlayerDataset]:
+        """Datasets ``names`` of document ``text`` (its ``SLAYER`` entries applied) as unsaved standalone datasets."""
+        name = str((parse_document_text(text) or {}).get("name"))
+        checked_document(text=text, name=name)
+        datasource = await self.get_datasource(data_source)
+        decomposed = decompose(text=text, name=name, data_source=data_source,
+                               ds_type=datasource.type if datasource is not None else None,
+                               granularities=datasource.granularities if datasource is not None else [])
+        wanted = {n.casefold() for n in names}
+        return [d.model_copy(deep=True, update={"semantic_model": None})
+                for d in decomposed.datasets if d.name.casefold() in wanted]
+
+    async def _check_document_namespace(self, *, name: str, data_source: str, datasets: list[str],
+                                        metrics: list[str], moving: AbstractSet[str] = frozenset()) -> None:
+        """Refuse a dataset or model-scoped metric name the datasource already uses elsewhere, in any case; ``moving``
+        names standalone datasets this write moves into the document."""
+        owner = f"semantic model {name!r}"
+        taken: dict[str, str] = {n.casefold(): f"standalone dataset {n!r}"
+                                 for ds, n in await self._standalone_identities()
+                                 if ds == data_source and n.casefold() not in moving}
+        others = [(n, t) for n, t in [
+            (n, await self._readable_text(data_source=data_source, name=n))
+            for ds, n in await self._list_semantic_model_identities() if ds == data_source and n != name] if t]
+        datasource = await self.get_datasource(data_source)
+        other_metrics: dict[str, str] = {}
+        for other, text in others:
+            with contextlib.suppress(Exception):
+                index = build_index(data_source=data_source, documents=[(other, text)], standalone=[],
+                                    ds_type=datasource.type if datasource else None,
+                                    granularities=datasource.granularities if datasource else [])
+                taken.update({k: f"dataset {d.name!r} of semantic model {other!r}" for k, d in index.datasets.items()})
+                other_metrics.update({m.name.casefold(): f"metric {m.name!r} of semantic model {other!r}"
+                                      for m in index.stored_metrics.get(other, [])})
+        for dataset in datasets:
+            if dataset.casefold() in taken:
+                raise NamespaceCollisionError(name=dataset, owner=owner, existing=taken[dataset.casefold()],
+                                              data_source=data_source)
+        own = {d.casefold(): f"dataset {d!r} of {owner}" for d in datasets}
+        for metric in metrics:
+            existing = other_metrics.get(metric.casefold()) or taken.get(metric.casefold()) or own.get(metric.casefold())
+            if existing is not None:
+                raise NamespaceCollisionError(name=metric, owner=owner, existing=existing, data_source=data_source)
+
+    async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
+                                    datasets: list[str] | None = None,
+                                    warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Create document ``name`` (default: the content's own ``name``) from Ossie ``content`` (text or mapping), or
+        from the standalone ``datasets``, which move into it under the same names."""
+        if (content is None) == (datasets is None):
+            raise ValueError("Give a semantic model either its Ossie content or the standalone datasets it takes")
+        if content is not None:
+            text = content if isinstance(content, str) else yaml.safe_dump(content, sort_keys=False, allow_unicode=True)
+            name = name or _document_name(text)
+            await self.save_semantic_model_text(data_source=data_source, name=name, text=text,
+                                                warnings_out=warnings_out)
+            return
+        if name is None:
+            raise ValueError("A semantic model made from standalone datasets needs a name")
+        moved = await self._standalone_members(datasets or [], data_source=data_source)
+        reader = await self._reader(data_source)
+        doc = with_datasets({"version": OSSIE_VERSION, "name": name, "datasets": []}, moved, reader=reader)
+        reasons = ossie_validity_errors(doc)
+        if reasons:
+            raise OssieDocumentInvalidError(name=name, reasons=reasons)
+        await self.adopt_semantic_model(data_source=data_source, name=name, replacing=[d.name for d in moved],
+                                        text=yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+                                        warnings_out=warnings_out)
+
+    async def _standalone_members(self, names: list[str], *, data_source: str) -> list[SlayerDataset]:
+        out = []
+        for name in names:
+            if await self._owner_of(name, data_source=data_source) is not None:
+                raise ValueError(f"Dataset {name!r} already belongs to a semantic model")
+            dataset = await self.get_dataset(name, data_source=data_source)
+            if dataset is None:
+                raise ValueError(f"Dataset {name!r} not found in datasource {data_source!r}")
+            out.append(dataset)
+        return out
+
+    async def _reader(self, data_source: str) -> str:
+        datasource = await self.get_datasource(data_source)
+        return dialect_for_ds_type(datasource.type if datasource is not None else None).sqlglot_name
+
+    async def edit_semantic_model(self, name: str, *, data_source: str, description: Any = UNSET,
+                                  ai_context: Any = UNSET, metrics: list[dict[str, Any]] | None = None,
+                                  remove_metrics: list[str] | None = None,
+                                  relationships: list[dict[str, Any]] | None = None,
+                                  remove_relationships: list[str] | None = None,
+                                  add_datasets: list[str] | None = None,
+                                  warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Edit document ``name`` in place: its description and AI context, upserted or removed model-scoped metrics and
+        relationships, and standalone datasets moved into it. Every model-scoped metric written is checked first."""
+        text = await self.get_semantic_model_text(name, data_source=data_source)
+        if text is None:
+            raise ValueError(f"Semantic model {name!r} not found in datasource {data_source!r}")
+        moved = await self._standalone_members(add_datasets or [], data_source=data_source)
+        datasource = await self.get_datasource(data_source)
+        ds_type = datasource.type if datasource is not None else None
+        reader = dialect_for_ds_type(ds_type).sqlglot_name
+        specs = [metric_spec(m) for m in metrics or []]
+        current = decompose(text=text, name=name, data_source=data_source, ds_type=ds_type,
+                            granularities=datasource.granularities if datasource is not None else [])
+        members = [*current.datasets, *moved]
+        other_metrics = [m for m in await self.list_model_scoped_metrics(data_source) if m.semantic_model != name]
+        others = [m.name for m in other_metrics]
+        kept = [m.name for m in current.metrics if m.name.casefold() not in {
+            n.casefold() for n in [*(remove_metrics or []), *(s["name"] for s in specs)]}]
+        kept_metrics = [m for m in current.metrics if m.name in kept]
+        scope = DocumentScope(
+            fields={d.name.casefold(): {f.name.casefold() for f in d.fields} for d in members},
+            dataset_metrics={d.name.casefold(): {m.name.casefold() for m in d.metrics} for d in members},
+            datasource_datasets={n.casefold() for ds, n in await self._list_all_dataset_identities() if ds == data_source},
+            model_metrics={n.casefold() for n in [*others, *kept, *(s["name"] for s in specs)]},
+            # Chain warnings may run through a metric this edit replaces; the graph re-derives the live ones.
+            unevaluable=unevaluable_targets(
+                [*other_metrics, *(m for m in kept_metrics if m.name.casefold() not in current.chained)],
+                datasets=members),
+            metric_graph=metric_graph([*other_metrics, *kept_metrics]),
+        )
+        written = [MetricSpec(s, slayer_only=check_model_metric(name=s["name"], text=MetricSpec(s, slayer_only=False).text,
+                                                                scope=scope)) for s in specs]
+        dependencies = {m.name.casefold(): expression_datasets(m.expression)[1] for m in current.metrics
+                        if m.name.casefold() in {k.casefold() for k in kept}}
+        dependencies.update({w.name.casefold(): expression_datasets(w.text)[1] for w in written})
+        metric_cycle({k: v & set(dependencies) for k, v in dependencies.items()})
+        await self._check_document_namespace(
+            name=name, data_source=data_source, datasets=[d.name for d in members],
+            metrics=[*kept, *(w.name for w in written)], moving={d.name.casefold() for d in moved})
+
+        def patch(stored: str) -> str:
+            def edit(doc: dict[str, Any]) -> dict[str, Any]:
+                out = edited_document(with_datasets(doc, moved, reader=reader), description=description,
+                                      ai_context=ai_context, metrics=written, remove_metrics=remove_metrics or [],
+                                      relationships=relationships or [],
+                                      remove_relationships=remove_relationships or [])
+                reasons = ossie_validity_errors(out)
+                if reasons:
+                    raise OssieDocumentInvalidError(name=name, reasons=reasons)
+                return out
+
+            return edit_text(stored, edit)
+
+        await self._guard_document(change=f"Editing semantic model {name!r}", data_source=data_source, name=name,
+                                   text=patch(text))
+        await self._moving_standalone(data_source=data_source, datasets=moved, write=lambda: self._patch_semantic_model_text(
+            data_source=data_source, name=name, patch=patch))
+        report_save_warnings(warnings_out, await self.ontology_mismatches(
+            data_source=data_source, datasets=[d.name for d in members]))
+
+    async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
+        """Delete a document, cascading every member's embeddings and memory entities; ``False`` when absent."""
+        if not self._supports_semantic_models():
+            raise self._unsupported()
+        target = await self._resolve_document(name, data_source)
+        if target is None:
+            return False
+        ds, name = target
+        await self._guard_dependents(change=f"Deleting semantic model {name!r}", data_source=ds,
+                                   changed=lambda scope: scope.with_document(name, None))
+        return await self._drop_document(data_source=ds, name=name)
+
+    async def _drop_document(self, *, data_source: str, name: str) -> bool:
+        """Delete document ``name``'s row, cascading every member's and model-scoped metric's embeddings and every
+        member's memory entities; ``False`` when absent."""
+        index = await self._document_index(data_source)
+        members = [d.name for k, d in index.datasets.items() if index.owners.get(k) == name]
+        metrics = [m.name for m in index.stored_metrics.get(name, [])]
+        if not await self._delete_semantic_model_row(data_source=data_source, name=name):
+            return False
+        for entity in [*members, *metrics]:
+            await self.delete_embeddings_for_canonical(canonical_id_prefix=f"{data_source}.{entity}")
+        for member in members:
+            await self.strip_dangling_entities_from_memories(canonical_id=f"{data_source}.{member}")
+        return True
+
+    async def semantic_model_owner(self, name: str, data_source: str) -> str | None:
+        """The document declaring dataset ``name``, ``None`` for a standalone or absent one."""
+        return (await self._document_index(data_source)).owners.get(name.casefold())
+
+    async def list_model_scoped_metrics(self, data_source: str) -> list[ModelScopedMetric]:
+        """``data_source``'s loadable model-scoped metrics, in document order."""
+        return [m.model_copy(deep=True) for m in (await self._document_index(data_source)).metrics.values()]
+
+    # ---- ontology and mapping documents ------------------------------------
+
+    def _supports_ontologies(self) -> bool:
+        return type(self)._get_ontology_text_impl is not StorageBackend._get_ontology_text_impl
+
+    def _ontologies_unsupported(self) -> OntologiesUnsupportedError:
+        return OntologiesUnsupportedError(backend=type(self).__name__)
+
+    def _require_ontologies(self) -> None:
+        if not self._supports_ontologies():
+            raise self._ontologies_unsupported()
+
+    async def _save_ontology_text_impl(self, *, name: str, text: str) -> None:
+        """Durably store an ontology's text verbatim (backends implement this to support ontologies)."""
+        raise self._ontologies_unsupported()
+
+    async def _get_ontology_text_impl(self, *, name: str) -> str | None:
+        raise self._ontologies_unsupported()
+
+    async def _list_ontology_names(self) -> list[str]:
+        """Every stored ontology name; a backend without ontologies lists none. Every ontology or mapping change must
+        change ``graph_fingerprint``."""
+        await asyncio.sleep(0)
+        return []
+
+    async def _delete_ontology_row(self, *, name: str) -> bool:
+        raise self._ontologies_unsupported()
+
+    async def _save_ontology_mapping_text_impl(self, *, data_source: str, name: str, text: str) -> None:
+        raise self._ontologies_unsupported()
+
+    async def _get_ontology_mapping_text_impl(self, *, data_source: str, name: str) -> str | None:
+        raise self._ontologies_unsupported()
+
+    async def _list_ontology_mapping_identities(self) -> list[tuple[str, str]]:
+        await asyncio.sleep(0)
+        return []
+
+    async def _delete_ontology_mapping_row(self, *, data_source: str, name: str) -> bool:
+        raise self._ontologies_unsupported()
+
+    async def list_ontologies(self) -> list[str]:
+        """Every stored ontology's name."""
+        return sorted(await self._list_ontology_names()) if self._supports_ontologies() else []
+
+    async def get_ontology_text(self, name: str) -> str | None:
+        """A stored ontology's text as written; ``None`` when absent."""
+        self._require_ontologies()
+        _validate_path_component(name, kind=ONTOLOGY_NAME)
+        return await self._get_ontology_text_impl(name=name)
+
+    async def save_ontology_text(self, *, name: str, text: str,
+                                 warnings_out: list[SlayerWarning] | None = None) -> None:
+        """Store ontology ``name`` verbatim after its checks; refused when it would break a stored mapping. The
+        ontology mismatches of the mappings using it go to ``warnings_out``."""
+        _validate_path_component(name, kind=ONTOLOGY_NAME)
+        self._require_ontologies()
+        data, reasons = read_ontology(text)
+        reasons = reasons or stored_name_reasons(data, name=name)
+        if isinstance(data, dict) and "ontology" in data:
+            await self._guard_dependents(change=f"Saving ontology {name!r}", own=reasons,
+                                       changed=lambda scope: scope.with_ontology(name, data))
+        if reasons:
+            raise OntologyDocumentInvalidError(name=name, reasons=reasons)
+        await self._save_ontology_text_impl(name=name, text=text)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(ontology=name))
+
+    async def delete_ontology(self, name: str) -> bool:
+        """Delete ontology ``name``; refused while a stored mapping resolves against it; ``False`` when absent."""
+        self._require_ontologies()
+        _validate_path_component(name, kind=ONTOLOGY_NAME)
+        if await self._get_ontology_text_impl(name=name) is None:
+            return False
+        await self._guard_dependents(change=f"Deleting ontology {name!r}",
+                                   changed=lambda scope: scope.with_ontology(name, None))
+        return await self._delete_ontology_row(name=name)
+
+    async def edit_ontology(self, name: str, *, warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> None:
+        """Apply ``edited_ontology``'s edits to ontology ``name`` and save it through every check."""
+        text = await self.get_ontology_text(name)
+        if text is None:
+            raise ValueError(f"Ontology {name!r} not found")
+        await self.save_ontology_text(name=name, text=edited_ontology(text, **edits), warnings_out=warnings_out)
+
+    async def list_ontology_mappings(self, data_source: str | None = None) -> list[tuple[str, str]]:
+        """Every stored mapping as ``(data_source, name)``, of ``data_source`` when given."""
+        if not self._supports_ontologies():
+            return []
+        return sorted(i for i in await self._list_ontology_mapping_identities() if data_source in (None, i[0]))
+
+    async def get_ontology_mapping_text(self, name: str, data_source: str) -> str | None:
+        """A stored mapping's text as written; ``None`` when absent."""
+        self._require_ontologies()
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=MAPPING_NAME)
+        return await self._get_ontology_mapping_text_impl(data_source=data_source, name=name)
+
+    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str,
+                                         warnings_out: list[SlayerWarning] | None = None) -> list[str]:
+        """Store mapping ``name`` of ``data_source`` verbatim once it resolves; the informational notes of the save.
+        Its ontology mismatches go to ``warnings_out``."""
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=MAPPING_NAME)
+        self._require_ontologies()
+        if await self.get_datasource(data_source) is None:
+            raise ValueError(f"Datasource {data_source!r} not found; a mapping belongs to a stored datasource")
+        data = checked_mapping_shape(text, name=name, data_source=data_source)
+        resolution = check_mapping(data, scope=await self._datasource_scope(data_source))
+        if resolution.problems:
+            raise OntologyMappingInvalidError(name=name, data_source=data_source,
+                                              reasons=[str(p) for p in resolution.problems])
+        await self._save_ontology_mapping_text_impl(data_source=data_source, name=name, text=text)
+        report_save_warnings(warnings_out, await self.ontology_mismatches(data_source=data_source, mapping=name))
+        note = resolution.note(name)
+        return [note] if note else []
+
+    async def edit_ontology_mapping(self, name: str, *, data_source: str,
+                                    warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> list[str]:
+        """Apply ``edited_mapping``'s edits to mapping ``name`` of ``data_source`` and save it through every check."""
+        text = await self.get_ontology_mapping_text(name, data_source)
+        if text is None:
+            raise ValueError(f"Mapping {name!r} not found in datasource {data_source!r}")
+        return await self.save_ontology_mapping_text(data_source=data_source, name=name,
+                                                     text=edited_mapping(text, **edits), warnings_out=warnings_out)
+
+    async def delete_ontology_mapping(self, name: str, data_source: str) -> bool:
+        """Delete a stored mapping; ``False`` when absent."""
+        self._require_ontologies()
+        _validate_path_component(data_source, kind=DATASOURCE_NAME)
+        _validate_path_component(name, kind=MAPPING_NAME)
+        return await self._delete_ontology_mapping_row(data_source=data_source, name=name)
+
+    async def ontology_mapping_problems(self, name: str, data_source: str) -> list[str]:
+        """Why stored mapping ``name`` of ``data_source`` does not resolve now; empty when it does."""
+        text = await self.get_ontology_mapping_text(name, data_source)
+        if text is None:
+            raise ValueError(f"Mapping {name!r} not found in datasource {data_source!r}")
+        return await self._stored_mapping_problems(text, data_source=data_source, name=name)
+
+    async def _stored_mapping_problems(self, text: str, *, data_source: str, name: str,
+                                       scope: DatasourceScope | None = None) -> list[str]:
+        try:
+            data = checked_mapping_shape(text, name=name, data_source=data_source)
+        except OntologyMappingInvalidError as exc:
+            return exc.reasons
+        resolution = check_mapping(data, scope=scope or await self._datasource_scope(data_source))
+        return [str(p) for p in resolution.problems]
+
+    async def load_ontology_mappings(self, *, data_source: str | None = None) -> Loaded[StoredMapping]:
+        """Every stored mapping that resolves (of ``data_source`` when given), and the ones that do not."""
+        loaded: list[StoredMapping] = []
+        errors: list[StoredDocumentLoadError] = []
+        scopes: dict[str, DatasourceScope] = {}
+        for ds, name in await self.list_ontology_mappings(data_source):
+            text = await self._get_ontology_mapping_text_impl(data_source=ds, name=name)
+            if text is None:
+                continue
+            if ds not in scopes:
+                scopes[ds] = await self._datasource_scope(ds)
+            problems = await self._stored_mapping_problems(text, data_source=ds, name=name, scope=scopes[ds])
+            if problems:
+                errors.append(StoredDocumentLoadError(kind="ontology_mapping", name=name, data_source=ds,
+                                                      cause=ValueError("; ".join(problems))))
+            else:
+                loaded.append(StoredMapping(name=name, data_source=ds, text=text))
+        return loaded, errors
+
+    async def ontology_use(self, data_source: str) -> StoredUse:
+        """``data_source``'s mappings, the ontologies and semantic models they read, as this storage's caller sees
+        them."""
+        loaded, errors = await self.load_ontology_mappings(data_source=data_source)
+        ontologies = {n: data for n in await self.list_ontologies()
+                      if isinstance(data := stored_data(await self.get_ontology_text(n)), dict)}
+        datasets, _ = await self.load_datasets(data_source=data_source)
+        documents = {n: [d for d in datasets if d.semantic_model == n]
+                     for _, n in await self.list_semantic_models(data_source)}
+        unresolved = []
+        for error in errors:
+            data = stored_data(await self.get_ontology_mapping_text(error.name, data_source))
+            unresolved.append(UnresolvedMapping(name=error.name, ontology=ref_name(data, "ontology_ref"),
+                                                problems=[error.cause_text]))
+        mappings = [MappingDocument(name=m.name, data=data) for m in loaded
+                    if isinstance(data := stored_data(m.text), dict)]
+        return StoredUse(data_source=data_source, ontologies=ontologies, documents=documents, datasets=datasets,
+                         mappings=mappings, unresolved=unresolved)
+
+    async def ontology_mismatches(self, *, data_source: str | None = None, mapping: str | None = None,
+                                  ontology: str | None = None,
+                                  datasets: Iterable[str] | None = None) -> list[OntologyMismatchWarning]:
+        """The identifier and multiplicity mismatches of the stored mappings (of ``data_source``, named ``mapping``,
+        of ``ontology``, on ``datasets``, when given), as save warnings."""
+        identities = await self.list_ontology_mappings(data_source)
+        wanted = {d.casefold() for d in datasets} if datasets is not None else None
+        out: list[OntologyMismatchWarning] = []
+        for ds in sorted({ds for ds, n in identities if mapping in (None, n)}):
+            for finding in model_findings(await self.ontology_use(ds)):
+                if (mapping is None or finding.mapping == mapping) and ontology in (None, finding.ontology) and (
+                        wanted is None or (finding.dataset_name or "").casefold() in wanted):
+                    out.append(finding.as_warning())
+        return out
+
+    async def _datasource_scope(self, data_source: str) -> DatasourceScope:
+        """What a mapping of ``data_source`` resolves against now."""
+        ontologies: dict[str, dict[str, Any]] = {}
+        for name in await self._list_ontology_names():
+            data = stored_data(await self._get_ontology_text_impl(name=name))
+            if isinstance(data, dict):
+                ontologies[name] = data
+        index = await self._document_index(data_source)
+        documents: dict[str, list[SlayerDataset]] = {
+            n: [] for ds, n in (await self._list_semantic_model_identities() if self._supports_semantic_models() else [])
+            if ds == data_source}
+        for key, dataset in index.datasets.items():
+            documents.setdefault(index.owners[key], []).append(dataset)
+        loaded, _ = await self.load_datasets(data_source=data_source)
+        return DatasourceScope(data_source=data_source, ontologies=ontologies, documents=documents, datasets=loaded,
+                               metrics={n: index.stored_metrics.get(n, []) for n in documents})
+
+    async def _guard_dependents(self, *, change: str, changed: Callable[[DatasourceScope], DatasourceScope],
+                                data_source: str | None = None, own: list[str] | None = None) -> list[BrokenDependent]:
+        """Refuse ``change`` (``changed`` maps a scope to its state after it) when it breaks a stored mapping, of
+        ``data_source`` when given, or a model-scoped metric of ``data_source``, listing the changed document's ``own``
+        problems too; a database-driven change warns instead, and gets what it breaks."""
+        identities = await self.list_ontology_mappings(data_source)
+        sources = {ds for ds, _ in identities}
+        metric_source = data_source if data_source is not None and any(
+            (await self._document_index(data_source)).stored_metrics.values()) else None
+        broken: list[BrokenDependent] = []
+        for ds in sorted(sources | ({metric_source} if metric_source else set())):
+            mappings = [(n, data) for d, n in identities if d == ds and isinstance(
+                data := stored_data(await self._get_ontology_mapping_text_impl(data_source=d, name=n)), dict)]
+            before = await self._datasource_scope(ds)
+            after = changed(before)
+            broken += broken_mappings(mappings, before=before, after=after)
+            if ds == metric_source:
+                broken += broken_model_metrics(before=before, after=after)
+        report_broken(change=change, broken=broken, own=own)
+        return broken
+
+    async def _decomposed_document(self, *, data_source: str, name: str, text: str) -> Decomposition:
+        datasource = await self.get_datasource(data_source)
+        return decompose(text=text, name=name, data_source=data_source,
+                         ds_type=datasource.type if datasource is not None else None,
+                         granularities=datasource.granularities if datasource is not None else [])
 
     async def get_dataset_or_builtin(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         """``get_dataset``, falling back to a built-in dataset of the datasource (the only one when unnamed)."""
@@ -885,73 +1869,74 @@ class StorageBackend(ABC):
         return partial(custom_buckets_as_date_trunc, units=frozenset(units))
 
     async def _memory_data_sources(self, data: dict) -> list[str]:
-        """The datasources a stored memory's query reads: its inline dataset's, else those holding its root dataset."""
+        """The datasources a stored memory's query reads: its inline dataset's, else (no stored population) its pinned
+        one, else those holding its root dataset."""
         inline_data_source, source = memory_source_dataset(data)
         if inline_data_source is not None:
             return [inline_data_source]
-        return sorted({d for d, n in await self._list_all_dataset_identities() if n == source})
+        identities = await self._list_all_dataset_identities()
+        if memory_fallback_population(data, identities=identities)[0]:
+            pinned = raw_memory_datasource(data, identities=identities)
+            return [pinned] if pinned is not None else []
+        return sorted({d for d, n in identities if n == source})
 
-    async def _settle_library_granularities(self) -> None:
-        """Once per instance, before any dataset or memory loads: rename the library-named granularities of every stored
-        datasource dict (an unloadable datasource is reported where it is used)."""
-        if getattr(self, "_granularities_settled", False) or _SETTLING.get():
-            return
-        lock = self._granularities_lock = getattr(self, "_granularities_lock", None) or asyncio.Lock()
-        async with lock:
-            if getattr(self, "_granularities_settled", False):
-                return
-            token = _SETTLING.set(True)
-            try:
-                for name, data in (await self._raw_datasource_dicts()).items():
-                    with contextlib.suppress(ValueError):
-                        _validate_path_component(name, kind="datasource name")
-                        await self._with_library_granularities_renamed(name=name, data=data)
-            finally:
-                _SETTLING.reset(token)
-            self._granularities_settled = True
+    async def _granularity_renames(self) -> Mapping[str, Renames]:
+        """Each stored datasource's library-name granularity renames (storage P3.2), a function of the stored
+        datasources alone, read once per top-level load; every load applies them in memory."""
+        memo = _RENAME_PASS.get()
+        if memo is not None and self in memo:
+            return memo[self]
+        table: dict[str, Renames] = {}
+        logged: set[tuple[str, str]] | None = getattr(self, "_logged_granularity_renames", None)
+        if logged is None:
+            logged = set()
+            setattr(self, "_logged_granularity_renames", logged)
+        for name, data in (await self._raw_datasource_dicts()).items():
+            renames = datasource_renames(data)
+            if renames:
+                table[name] = renames
+            for old, new in pending_renames(data).items():
+                if (name, old) not in logged:
+                    logged.add((name, old))
+                    logging.getLogger(__name__).warning(
+                        "datasource %r: custom granularity %r is now a reserved library name; read as %r with every "
+                        "reference to it (`slayer storage upgrade` stores the rename)", name, old, new,
+                    )
+        if memo is not None:
+            memo[self] = table
+        return table
+
+    def _forget_granularity_renames(self) -> None:
+        memo = _RENAME_PASS.get()
+        if memo is not None:
+            memo.pop(self, None)
 
     async def _with_library_granularities_renamed(self, *, name: str, data: Any) -> Any:
-        """A stored datasource dict with each granularity a library name reserves renamed (storage P3.2), its
-        dependants persisted before it so an interrupted rename converges."""
-        granularities = data.get("granularities") if isinstance(data, dict) else None
-        if not isinstance(granularities, list):
-            return data
-        names = [g["name"] for g in granularities if isinstance(g, dict) and isinstance(g.get("name"), str)]
-        renames = granularity_renames(names)
-        if not renames:
-            return data
-        await self._rename_granularities(data_source=name, raw=data, renames=renames)
-        return renamed_datasource(data, renames=renames)
+        """Stored datasource ``name``'s dict with each granularity a library name reserves renamed."""
+        del name  # the renames are a function of the document alone
+        await asyncio.sleep(0)
+        return renamed_datasource(data) if isinstance(data, dict) else data
 
-    async def _rename_granularities(self, *, data_source: str, raw: dict, renames: Renames) -> None:
+    async def _memory_with_granularities_renamed(self, data: Any) -> Any:
+        """A stored memory dict with the renamed granularities of the datasource its query reads respelled."""
+        table = await self._granularity_renames()
+        if not table or not isinstance(data, dict):
+            return data
         identities = await self._list_all_dataset_identities()
-        own = {n for d, n in identities if d == data_source}
-        elsewhere = {n for d, n in identities if d != data_source}
-        renamed = self._granularity_renamed_docs = getattr(self, "_granularity_renamed_docs", {})
-        for name in sorted(own):
-            data = await self._load_raw_dataset_dict(name=name, data_source=data_source)
-            if isinstance(data, dict) and (new := rename_in_dataset(data, renames=renames)) != data:
-                await self._write_raw_dataset_dict(name=name, data_source=data_source, data=new)
-                renamed[("dataset", f"{data_source}.{name}")] = (data, new)
-        for memory_id, data in (await self._raw_memory_dicts()).items():
-            inline_data_source, source = memory_source_dataset(data)
-            in_datasource = inline_data_source == data_source if inline_data_source is not None else (
-                source in own and (source not in elsewhere or f"{data_source}.{source}" in (data.get("entities") or []))
-            )
-            if in_datasource and (new := rename_in_memory(data, renames=renames)) != data:
-                await self._write_raw_memory_dict(memory_id=memory_id, data=new)
-                renamed[("memory", memory_id)] = (data, new)
-        await self._write_raw_datasource_dict(name=data_source, data=renamed_datasource(raw, renames=renames))
-        for old, new in renames.items():
-            logging.getLogger(__name__).warning(
-                "datasource %r: custom granularity %r is now a reserved library name; renamed to %r with every "
-                "reference to it", data_source, old, new,
-            )
+        for data_source, renames in table.items():
+            if _memory_in_datasource(data, data_source=data_source, identities=identities):
+                data = rename_in_memory(data, renames=renames)
+        return data
 
-    def _renamed_since_read(self, data: Any, *, kind: str, key: str) -> Any:
-        """``data`` as the settle rewrote it, when it is the stored document read before that rewrite."""
-        original, new = getattr(self, "_granularity_renamed_docs", {}).get((kind, key), (None, None))
-        return new if original is not None and data == original else data
+    def _warn_upgrade_needed(self, payload: StoredUpgradeNeededWarning) -> None:
+        """One upgrade-needed warning per document per storage instance."""
+        warned = getattr(self, "_upgrade_warned", None)
+        if warned is None:
+            warned = self._upgrade_warned = set()
+        key = (payload.document_kind, payload.data_source, payload.name)
+        if key not in warned:
+            warned.add(key)
+            warnings.warn(SlayerStoredUpgradeNeededWarning(payload), stacklevel=outside_stacklevel())
 
     async def _cached_raw_dataset_dict(self, *, name: str, data_source: str) -> dict | None:
         """``_load_raw_dataset_dict``, read once per ``load_datasets`` pass (callers must not mutate it)."""
@@ -984,9 +1969,15 @@ class StorageBackend(ABC):
         if target is None:
             return False
         resolved_data_source, resolved_name = target
-        deleted = await self._delete_dataset_row(
-            data_source=resolved_data_source, name=resolved_name,
-        )
+        broken = await self.guard_dataset_deletion(name=resolved_name, data_source=resolved_data_source)
+        owner = await self._owner_of(resolved_name, data_source=resolved_data_source)
+        if owner is not None:
+            deleted = await self._delete_document_dataset(data_source=resolved_data_source, document=owner,
+                                                          name=resolved_name, broken=broken)
+        else:
+            deleted = await self._delete_dataset_row(
+                data_source=resolved_data_source, name=resolved_name,
+            )
         if deleted:
             self._forget_raw(data_source=resolved_data_source, name=resolved_name)
             canonical = f"{resolved_data_source}.{resolved_name}"
@@ -996,7 +1987,37 @@ class StorageBackend(ABC):
             await self.strip_dangling_entities_from_memories(
                 canonical_id=canonical,
             )
+            await self._drop_inbound_relationships(data_source=resolved_data_source, name=resolved_name)
         return deleted
+
+    async def _drop_inbound_relationships(self, *, data_source: str, name: str) -> None:
+        """Remove every relationship of the datasource's other datasets that targets the deleted dataset ``name``."""
+        loaded, _ = await self.load_datasets(data_source=data_source)
+        for peer in loaded:
+            kept = [r for r in peer.relationships if r.to.casefold() != name.casefold()]
+            if len(kept) != len(peer.relationships):
+                await self.save_dataset(peer.model_copy(update={"relationships": kept}), _validate=False)
+
+    async def guard_dataset_deletion(self, *, name: str, data_source: str) -> list[BrokenDependent]:
+        """Refuse deleting dataset ``name`` of ``data_source`` when that breaks a stored dependent; under a
+        database-driven change, what it breaks. Deleting a document's last dataset deletes the document."""
+        index = await self._document_index(data_source)
+        owner = index.owners.get(name.casefold())
+        last = owner is not None and sum(o == owner for o in index.owners.values()) <= 1
+        return await self._guard_dependents(change=f"Deleting dataset {name!r}", data_source=data_source,
+                                            changed=lambda scope: scope.with_document(owner, None) if last and owner
+                                            else scope.with_dataset(name, None))
+
+    async def _delete_document_dataset(self, *, data_source: str, document: str, name: str,
+                                       broken: Sequence[BrokenDependent]) -> bool:
+        """Remove dataset ``name`` from ``document`` (the document itself with its last dataset)."""
+        index = await self._document_index(data_source)
+        members = [d for k, d in index.owners.items() if d == document]
+        if len(members) <= 1:
+            return await self._drop_document(data_source=data_source, name=document)
+        await self._write_document_dataset(data_source=data_source, document=document, name=name,
+                                           mutate=lambda _old: None, broken=broken)
+        return True
 
     @abstractmethod
     async def _delete_dataset_row(
@@ -1050,7 +2071,7 @@ class StorageBackend(ABC):
         ds = await self.get_datasource(data_source)
         client_source = CLIENT_SOURCE.get()
         if ds is not None and client_source is None and needs_double:
-            raise ValueError(
+            raise LiveRefinementRequiredError(
                 f"Cannot migrate dataset {name!r}: its DOUBLE fields are refined against datasource "
                 f"{data_source!r}, so the dataset must be loaded through a query engine "
                 f"(SlayerQueryEngine(storage=...).storage)."
@@ -1066,7 +2087,7 @@ class StorageBackend(ABC):
                 self._warn_skipped_int_probe(name=name, data_source=data_source)
             return
         if ds is None and needs_double:
-            raise ValueError(
+            raise LiveRefinementRequiredError(
                 f"Cannot migrate dataset {name!r}: datasource "
                 f"{data_source!r} is unavailable for type "
                 f"refinement. Restore the datasource entry or "
@@ -1095,7 +2116,39 @@ class StorageBackend(ABC):
         data: Any,
         data_source: str,
     ) -> SlayerDataset:
-        """Migrate a below-version on-disk dataset dict forward, refine it (below v8) against its live table through the loading engine, validate into a ``SlayerDataset``, and (when a migration ran) persist it back so later loads short-circuit."""
+        """A stored dataset dict upgraded in memory (``_loaded_dataset``) and validated; never written back."""
+        return (await self._loaded_dataset(name=name, data=data, data_source=data_source))[0]
+
+    async def _loaded_dataset(self, *, name: str, data: Any, data_source: str) -> tuple[SlayerDataset, bool]:
+        """``_migrate_and_refine_on_load``, and whether the upgrade changes the stored document. Within one top-level
+        load, a document read again unchanged (a peer of several loads) is upgraded once."""
+        with one_upgrade_pass():
+            dataset, changes = await self._passed_dataset(name=name, data=data, data_source=data_source)
+        if not caller_announces():
+            warn_library_shadows(dataset)
+            for payload in [*name_collision_warnings(dataset), *spine_variant_warnings(dataset)]:
+                warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
+        if changes:
+            self._warn_upgrade_needed(StoredUpgradeNeededWarning(
+                document_kind="dataset", data_source=data_source, name=name))
+        return dataset, changes
+
+    async def _passed_dataset(self, *, name: str, data: Any, data_source: str) -> tuple[SlayerDataset, bool]:
+        """``_upgraded_dataset`` through the enclosing load's memo."""
+        memo = _UPGRADE_PASS.get()
+        key = (self, data_source, name)
+        kept = memo.get(key) if memo is not None else None
+        if kept is not None and kept[0] == data:
+            return kept[1].model_copy(deep=True), kept[2]
+        read = copy.deepcopy(data)
+        dataset, changes = await self._upgraded_dataset(name=name, data=data, data_source=data_source)
+        if memo is not None:
+            memo[key] = (read, dataset.model_copy(deep=True), changes)
+        return dataset, changes
+
+    async def _upgraded_dataset(self, *, name: str, data: Any, data_source: str) -> tuple[SlayerDataset, bool]:
+        """A stored dataset dict migrated, renamed, repaired, converted and (below v8) refined against its live table
+        through the loading engine; and whether the upgrade changes the stored document. Writes nothing."""
         if not isinstance(data, dict):
             # e.g. a zero-byte/corrupt YAML file (safe_load -> None): give the
             # remediation, not a bare Pydantic model_type error.
@@ -1106,9 +2159,10 @@ class StorageBackend(ABC):
                 f"models/{data_source}/{name}.yaml) and re-run `slayer ingest` "
                 f"to recreate it."
             )
-        await self._settle_library_granularities()
-        data = self._renamed_since_read(data, kind="dataset", key=f"{data_source}.{name}")
-        data = _mig.stamp_stored(data)
+        renames = (await self._granularity_renames()).get(data_source)
+        renamed = rename_in_dataset(data, renames=renames) if renames else data
+        settled = renamed != data
+        data = _mig.stamp_stored(renamed)
         pre_version = int(data["version"])
         if pre_version < _CUSTOM_BUCKET_CALLS_BELOW["SlayerModel"]:
             data = rewrite_dataset_doc(
@@ -1116,24 +2170,21 @@ class StorageBackend(ABC):
                 keys=keys_for(entity="SlayerModel", version=pre_version),
             )
         typing = StoredDatasets()
-        if needs_typing("SlayerModel", data):
+        if needs_typing(data):
             typing = (await self._stored_datasets(data_source)).model_copy(update={"stages": _stage_names(data)})
         with typing_with(typing):
-            dataset, write_back = await self._migrated_dataset(name=name, data=data, data_source=data_source)
-        if not caller_announces():
-            warn_library_shadows(dataset)
-            for payload in [*name_collision_warnings(dataset), *spine_variant_warnings(dataset)]:
-                warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=2)
-        if write_back:
-            # Write-back must not re-validate: legacy datasets may hold cycles or
-            # fanning refs a user needs to load to repair.
-            await self.save_dataset(dataset, _validate=False)
-        return dataset
+            dataset, changes = await self._migrated_dataset(name=name, data=data, data_source=data_source)
+        return dataset, changes or settled
 
     async def _migrated_dataset(self, *, name: str, data: dict, data_source: str) -> tuple[SlayerDataset, bool]:
-        """A stamped stored dataset dict migrated, repaired and validated; and whether a migration ran."""
-        write_back = False
+        """A stamped stored dataset dict migrated, repaired and validated; and whether that changed it."""
+        changes = False
         pre_version = int(data["version"])
+        queries = data.get("source_queries")
+        pending = [_unqualified(q, document_version=pre_version, entity="SlayerModel")
+                   for q in queries] if isinstance(queries, list) else []
+        gates = [_stage_gates(q, document_version=pre_version, entity="SlayerModel", legacy=p)
+                 for q, p in zip(queries, pending)] if isinstance(queries, list) else []
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
             if pre_version < _RELATIONSHIP_TARGET_REPAIR_BELOW_VERSION:
@@ -1145,18 +2196,56 @@ class StorageBackend(ABC):
             )
             await self._canonicalize_relationship_key_spellings(data=data, data_source=data_source)
             await self._declare_relationship_keys(name=name, data=data, data_source=data_source)
-            await self._repair_source_query_filters(name=name, data=data, data_source=data_source)
-            data = await self._inlined_source_queries(name=name, data=data, data_source=data_source)
+            data = await self._converted_source_queries(name=name, data=data, data_source=data_source, gates=gates,
+                                                        pending=pending)
             # Collapse stored exact-inverse mirror pairs.
             data = await self._dedup_exact_inverse_relationships(
                 name=name, data=data, data_source=data_source,
             )
-            write_back = True
+            if pre_version < FIELD_EXPRESSION_VERSION:
+                data = respell_source_paths(data, peer_relationships=await self._peer_relationships(
+                    data=data, data_source=data_source))
+            if pre_version < INSTANT_FIELD_VERSION:
+                data = typed_instant_fields(data, ds_type=await self._datasource_type(data_source))
+            changes = True
             if pre_version < _LIVE_REFINEMENT_BELOW_VERSION:
                 await self._apply_refinement_or_raise(
                     name=name, data=data, data_source=data_source,
                 )
-        return SlayerDataset.model_validate(data), write_back
+        elif any(pending) or any(g.any for g in gates) or any(map(holds_removed_forms, queries if isinstance(queries, list) else [])):
+            # A current document can hold an older nested stage: its own version decides.
+            data = await self._converted_source_queries(name=name, data=data, data_source=data_source, gates=gates,
+                                                        pending=pending)
+            changes = True
+        with collecting_rewrites() as collected:
+            validated = SlayerDataset.model_validate(data)
+        dataset, converted = await self._with_dialect_sql(validated, data_source=data_source)
+        return dataset, changes or converted or collected.rewritten
+
+    async def _datasource_type(self, data_source: str) -> str | None:
+        """The datasource's type: stored, else the enclosing upgrade's, else unknown."""
+        datasource = await self.get_datasource(data_source)
+        return datasource.type if datasource is not None else DATASOURCE_TYPES.get().get(data_source)
+
+    async def _with_dialect_sql(self, dataset: SlayerDataset, *, data_source: str) -> tuple[SlayerDataset, bool]:
+        """``dataset`` with its field ``sql`` converted once its datasource's dialect is known; whether it was."""
+        if all(c.sql is None for c in dataset.fields):
+            return dataset, False
+        ds_type = await self._datasource_type(data_source)
+        if ds_type is None:
+            return dataset, False
+        return with_converted_sql(dataset, ds_type=ds_type), True
+
+    async def _peer_relationships(self, *, data: dict, data_source: str) -> dict[str, list]:
+        """Each relationship target's own stored relationships, by target name."""
+        out: dict[str, list] = {}
+        for relationship in data.get("relationships") or []:
+            target = relationship.get("to") if isinstance(relationship, dict) else None
+            if isinstance(target, str) and target not in out:
+                peer = await self._peer_dataset_dict(name=target, data_source=data_source)
+                rels = peer.get("relationships") if isinstance(peer, dict) else None
+                out[target] = rels if isinstance(rels, list) else []
+        return out
 
     async def _dataset_names(self, data_source: str) -> set[str]:
         return {n for ds, n in await self._list_all_dataset_identities() if ds == data_source}
@@ -1232,23 +2321,72 @@ class StorageBackend(ABC):
                 keys.extend(_incoming_keys(sibling=sibling, target=name, target_fields=fields))
         return keys
 
-    async def _inlined_source_queries(self, *, name: str, data: dict, data_source: str) -> dict:
-        """``data`` with its stages' extension fields inlined (``extension_fields``)."""
+    async def _converted_source_queries(
+        self, *, name: str, data: dict, data_source: str, gates: list[LiteralGates], pending: list[bool],
+    ) -> dict:
+        """``data`` with its stages converted (``_converted_queries``), the document itself out of its own reads."""
         queries = data.get("source_queries")
-        if not isinstance(queries, list) or not all(isinstance(q, dict) for q in queries):
+        if not isinstance(queries, list) or not all(isinstance(q, dict) for q in queries) or len(queries) != len(pending):
             return data
         token = _INLINING.set(_INLINING.get() | {(data_source, name)})
         try:
-            inlined = await self._inlined_queries(queries=queries, data_source=data_source, document=name)
+            converted = await self._converted_queries(queries=queries, gates=gates, pending=pending,
+                                                      data_source=data_source, document=name)
         finally:
             _INLINING.reset(token)
-        return data if inlined is None else {**data, "source_queries": inlined}
+        return {**data, "source_queries": converted}
 
-    async def _inlined_queries(self, *, queries: list[dict], data_source: str | None, document: str) -> list | None:
-        """Raw stored ``queries`` with their extension fields inlined; ``None`` when none holds a removed form."""
-        migrated = [_mig.migrate("SlayerQuery", _mig.stamp_stored(q)) for q in queries]
-        if not any(holds_removed_forms(q) for q in migrated):
-            return None
+    async def _converted_queries(
+        self, *, queries: list[dict], gates: list[LiteralGates], pending: list[bool], data_source: str | None,
+        document: str,
+    ) -> list:
+        """Raw stored ``queries`` (one query list) migrated, then over one read of the datasets they read: their gated
+        literals typed, their extension fields inlined, and each ``pending`` one's references qualified."""
+        with _mig.migrating_document(document, stored=True):
+            migrated = [_mig.migrate("SlayerQuery", _mig.stamp_stored(q)) for q in queries]
+        removed = any(holds_removed_forms(q) for q in migrated)
+        if not (removed or any(pending) or any(g.any for g in gates)):
+            return migrated
+        datasets_by_ds = await self._converting_datasets(data_source)
+        priority = await self.get_datasource_priority()
+        if any(g.any for g in gates):
+            migrated = await self._typed_queries(migrated, gates=gates, datasets_by_ds=datasets_by_ds,
+                                                 data_source=data_source, priority=priority, document=document)
+        if removed:
+            converted = inline_extension_fields(migrated, datasets_by_ds=datasets_by_ds, data_source=data_source,
+                                                priority=priority, document=document)
+            migrated = [without_none(q.model_dump(mode="json")) for q in converted]
+        if not any(pending):
+            return migrated
+        return self._qualified_queries(queries=migrated, pending=pending, datasets_by_ds=datasets_by_ds,
+                                       data_source=data_source, priority=priority, document=document)
+
+    async def _typed_queries(
+        self, queries: list[dict], *, gates: list[LiteralGates], datasets_by_ds: dict[str, dict[str, SlayerDataset]],
+        data_source: str | None, priority: list[str], document: str,
+    ) -> list[dict]:
+        """Migrated raw stored ``queries`` with their gated literals typed as the binder reads them."""
+        try:
+            with _mig.migrating_document(document, stored=True):
+                validated = [SlayerQuery.model_validate(without_extension_fields(q)) for q in queries]
+        except ValueError:
+            return queries  # the conversion after it refuses the document
+        readings = stage_readings(validated, datasets_by_ds=datasets_by_ds, data_source=data_source, priority=priority)
+        stages = _stage_names({"source_queries": queries})
+        out: list[dict] = []
+        for query, gate, reading in zip(queries, gates, readings):
+            if not gate.any:
+                out.append(query)
+                continue
+            types = None
+            if gate.whole_day and holds_extension_date_literal(query):
+                types = (await self._stored_datasets(reading.data_source)).model_copy(update={"stages": stages})
+            label = query.get("name") if isinstance(query.get("name"), str) and query.get("name") else document
+            out.append(typed_stage(query, gates=gate, reading=reading, extension_types=types, label=label))
+        return out
+
+    async def _converting_datasets(self, data_source: str | None) -> dict[str, dict[str, SlayerDataset]]:
+        """The loadable datasets a stored query's conversion reads, by datasource (the documents converting excluded)."""
         datasets_by_ds: dict[str, dict[str, SlayerDataset]] = {}
         for ds, dataset_name in await self._list_all_dataset_identities():
             if (data_source is not None and ds != data_source) or (ds, dataset_name) in _INLINING.get():
@@ -1259,89 +2397,36 @@ class StorageBackend(ABC):
                 continue
             if dataset is not None:
                 datasets_by_ds.setdefault(ds, {})[dataset.name] = dataset
-        converted = inline_extension_fields(
-            migrated, datasets_by_ds=datasets_by_ds, data_source=data_source,
-            priority=await self.get_datasource_priority(), document=document,
-        )
+        return datasets_by_ds
+
+    async def incident_edge_names(self, name: str, *, data_source: str) -> frozenset[str]:
+        """The names of the stored edges incident to dataset ``name`` of ``data_source``, declared on either side."""
+        return (await self._stored_datasets(data_source)).incident_names(name)
+
+    async def qualified_stored_queries(
+        self, queries: list[SlayerQuery], *, versions: list[int | None], data_source: str | None, document: str,
+    ) -> list[SlayerQuery]:
+        """``queries`` (stages read from a stored document, each written at ``versions``) with the pre-2.0 ones'
+        references qualified, keeping their meaning; an unversioned stage counts as current."""
+        pending = [v is not None and int(v) < _QUALIFIED_AT["SlayerQuery"] for v in versions]
+        if len(pending) != len(queries) or not any(pending):
+            return queries
+        qualified = self._qualified_queries(
+            queries=list(queries), pending=pending, datasets_by_ds=await self._converting_datasets(data_source),
+            data_source=data_source, priority=await self.get_datasource_priority(), document=document)
+        return [SlayerQuery.model_validate(q) for q in qualified]
+
+    def _qualified_queries(
+        self, *, queries: list[Any], pending: list[bool], datasets_by_ds: dict[str, dict[str, SlayerDataset]],
+        data_source: str | None, priority: list[str], document: str,
+    ) -> list[Any]:
+        """Raw stored ``queries`` with each ``pending`` one's references qualified, keeping their meaning."""
+        with _mig.migrating_document(document, stored=True):
+            validated = [q if isinstance(q, SlayerQuery) else SlayerQuery.model_validate(
+                _mig.stamp_stored(q) if isinstance(q, dict) else q) for q in queries]
+        converted = qualified_stages(validated, pending=pending, datasets_by_ds=datasets_by_ds,
+                                     data_source=data_source, priority=priority)
         return [without_none(q.model_dump(mode="json")) for q in converted]
-
-    async def _repair_source_query_filters(self, *, name: str, data: dict, data_source: str) -> None:
-        queries = data.get("source_queries")
-        if not isinstance(queries, list):
-            return
-        stage_names = frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str))
-        with _mig.migrating_document(name, stored=True):
-            for query in queries:
-                await self._repair_query_filters(query=query, data_source=data_source, stage_names=stage_names)
-
-    async def _repair_query_filters(
-        self, *, query: Any, data_source: str | None, stage_names: frozenset[str] = frozenset(),
-    ) -> None:
-        """Repair, in place, legacy time literals a raw stored query's ``filters`` compare with a DATE or TIMESTAMP field;
-        the stored query is migrated first, so its filters read under the current grammar."""
-        if not isinstance(query, dict):
-            return
-        whole_day_dates = below_date_only_upgrade("SlayerQuery", query)
-        migrated = _mig.migrate("SlayerQuery", _mig.stamp_stored(query))
-        query.clear()
-        query.update(migrated)
-        filters = query.get("filter")
-        if not isinstance(filters, list):
-            return
-        found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]
-        if not any(found):
-            return
-        resolved = await self._query_host(source=query.get("population"), data_source=data_source,
-                                          stage_names=stage_names)
-        if resolved is None:
-            return
-        host, datasets = resolved
-        extensions = query.get("extensions")
-        extensions = [e for e in extensions if isinstance(e, dict)] if isinstance(extensions, list) else []
-        for i, pairs in enumerate(found):
-            if pairs is None:
-                continue
-            temporal = [
-                literal for literal, field in pairs
-                if stored_datatype(datasets.field_type(host=host, parts=[p.name for p in field.parts], extensions=extensions))
-                in TEMPORAL_DATATYPES
-            ]
-            if temporal and whole_day_dates:
-                # A repaired legacy date is a date-only literal meant as its whole day, as stored.
-                filters[i] = upgraded_text(repaired_filter(filters[i], temporal), host=host, extensions=extensions,
-                                           datasets=datasets, label=query.get("name"))
-            elif temporal:
-                filters[i] = repaired_filter(filters[i], temporal)
-
-    async def _query_host(
-        self, *, source: Any, data_source: str | None, stage_names: frozenset[str],
-    ) -> tuple[dict, StoredDatasets] | None:
-        """The raw stored dataset (or the spine) a stored query reads, and the stored datasets typing it; ``None`` for a stage
-        or an unresolvable source."""
-        if isinstance(source, dict) and isinstance(source.get("fields"), list):
-            inline_ds = str(source.get("data_source") or data_source)
-            return source, (await self._stored_datasets(inline_ds)).model_copy(update={"stages": stage_names})
-        if not isinstance(source, str):
-            return None
-        if data_source is None:
-            try:
-                data_source = await self._source_data_source(source)
-            except (AmbiguousDatasetError, AmbiguousReferenceError):
-                return None
-        datasets = (await self._stored_datasets(data_source)).model_copy(update={"stages": stage_names})
-        host = datasets.host(source)
-        return (host, datasets) if host is not None else None
-
-    async def _source_data_source(self, source: str) -> str | None:
-        """The datasource of the stored dataset an unquoted ``source`` names (the spine counted as a dataset), else the
-        store's only datasource; raises when several stored datasets or datasources hold it."""
-        names = {n for _, n in await self._list_all_dataset_identities()}
-        name = match_name(name=source, declared=sorted(names | {TIME_SPINE_DATASET}), quoted=False)
-        if name not in names:
-            datasources = await self.list_datasources()
-            return datasources[0] if len(datasources) == 1 else None
-        identity = await self.resolve_dataset_identity(name)
-        return identity[0] if identity is not None else None
 
     async def _stored_datasets(self, data_source: str | None) -> StoredDatasets:
         """Every raw stored dataset dict of ``data_source``."""
@@ -1353,17 +2438,6 @@ class StorageBackend(ABC):
             if isinstance(raw, dict):
                 datasets[name] = dataset_in(raw, LEGACY_KEYS)
         return StoredDatasets(data_source=data_source, datasets=datasets)
-
-    async def _memory_typing(self, data: dict) -> StoredDatasets | None:
-        """The stored datasets of the datasource a stored memory's query reads; ``None`` (nothing typed) when that
-        datasource is ambiguous."""
-        data_source, source = memory_source_dataset(data)
-        if data_source is None and source is not None:
-            try:
-                data_source = await self._source_data_source(source)
-            except (AmbiguousDatasetError, AmbiguousReferenceError):
-                return None
-        return await self._stored_datasets(data_source)
 
     async def _dedup_exact_inverse_relationships(
         self, *, name: str, data: dict, data_source: str,
@@ -1473,10 +2547,74 @@ class StorageBackend(ABC):
     # ---- datasource CRUD ---------------------------------------------------
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
-        """Persist a datasource config (upsert by exact name) once its custom granularities pass the save-time rules. Backends must NOT override this."""
+        """Persist a datasource config (upsert by exact name), keeping the stored granularity rename records, once it re-validates and its custom granularities pass the save-time rules. Backends must NOT override this."""
+        check_whole(datasource)
+        datasource = await self._with_stored_rename_records(datasource)
         datasource.check_granularities()
         connection_policy.check_transaction_pooler(datasource)
         await self._save_datasource_impl(datasource)
+        self._forget_granularity_renames()
+
+    async def _with_stored_rename_records(self, datasource: DatasourceConfig) -> DatasourceConfig:
+        """``datasource`` with ``renamed_from`` on each new name of a stored rename (pending or recorded) it records
+        nowhere; refused when that granularity records another former name."""
+        renames = datasource_renames(await self._stored_raw(kind="datasource", data_source=None, name=datasource.name))
+        recorded = {granularity_key(g.renamed_from) for g in datasource.granularities if g.renamed_from is not None}
+        former_of = {
+            granularity_key(new): former for former, new in reversed(list(renames.items()))
+            if granularity_key(former) not in recorded
+        }
+        for g in datasource.granularities:
+            if g.renamed_from is not None and granularity_key(g.name) in former_of:
+                raise GranularityDefinitionError(name=g.name, rule=(
+                    f"renamed_from {g.renamed_from!r} would drop the stored record of {former_of[granularity_key(g.name)]!r}"))
+        granularities = [
+            g.model_copy(update={"renamed_from": former_of[granularity_key(g.name)]})
+            if granularity_key(g.name) in former_of else g
+            for g in datasource.granularities
+        ]
+        if granularities == datasource.granularities:
+            return datasource
+        return datasource.model_copy(update={"granularities": granularities})
+
+    async def _datasource_from_stored(self, *, name: str, data: Any) -> DatasourceConfig:
+        """A stored datasource dict upgraded in memory and validated (env vars unresolved); never written back."""
+        datasource, changes = await self._upgraded_datasource(name=name, data=data)
+        if changes:
+            self._warn_upgrade_needed(StoredUpgradeNeededWarning(document_kind="datasource", name=name))
+        return datasource
+
+    async def _upgraded_datasource(self, *, name: str, data: Any) -> tuple[DatasourceConfig, bool]:
+        """A stored datasource dict upgraded and validated; and whether the upgrade changes the stored document."""
+        renamed = await self._with_library_granularities_renamed(name=name, data=data)
+        stamped = _mig.stamp_stored(renamed)
+        changes = renamed != data or (
+            isinstance(stamped, dict) and int(stamped["version"]) < _mig.CURRENT_VERSIONS["DatasourceConfig"])
+        with collecting_rewrites() as collected:
+            datasource = DatasourceConfig.model_validate(renamed)
+        return datasource, changes or collected.rewritten
+
+    async def _stored_raw(self, *, kind: str, data_source: str | None, name: str) -> dict | None:
+        """One stored document's raw dict by ``kind`` (``dataset``, ``memory`` or ``datasource``)."""
+        if kind == "dataset" and data_source is not None:
+            return await self._load_raw_dataset_dict(name=name, data_source=data_source)
+        if kind == "memory":
+            return (await self._raw_memory_dicts()).get(name)
+        return (await self._raw_datasource_dicts()).get(name)
+
+    async def _write_raw_if_unchanged(
+        self, *, kind: str, data_source: str | None, name: str, expected: dict, data: dict,
+    ) -> bool:
+        """Write ``data`` as a stored document's raw dict when it still reads ``expected``; ``False`` on a conflict."""
+        if await self._stored_raw(kind=kind, data_source=data_source, name=name) != expected:
+            return False
+        if kind == "dataset" and data_source is not None:
+            await self._write_raw_dataset_dict(name=name, data_source=data_source, data=data)
+        elif kind == "memory":
+            await self._write_raw_memory_dict(memory_id=name, data=data)
+        else:  # the run's rename table stays: its datasource writes must not change what later decisions read
+            await self._write_raw_datasource_dict(name=name, data=data)
+        return True
 
     @abstractmethod
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
@@ -1501,8 +2639,11 @@ class StorageBackend(ABC):
     async def delete_datasource(self, name: str) -> bool:
         """Delete the datasource config and cascade-delete every embedding under its canonical prefix. Datasets in the datasource are NOT deleted — they become orphans; re-creating the datasource and re-ingesting repopulates embeddings."""
         # Sanitize the raw name before it composes a path / cascade prefix.
-        _validate_path_component(name, kind="datasource name")
+        _validate_path_component(name, kind=DATASOURCE_NAME)
         deleted = await self._delete_datasource_row(name)
+        self._forget_granularity_renames()
+        for ds, mapping in await self.list_ontology_mappings(name):
+            await self._delete_ontology_mapping_row(data_source=ds, name=mapping)
         if deleted:
             await self.delete_embeddings_for_canonical(
                 canonical_id_prefix=name,
@@ -1610,25 +2751,51 @@ class StorageBackend(ABC):
         """Every ``Memory`` whose entity set intersects ``entities`` (``None`` = all rows, ``[]`` = none), and the rows that failed to load."""
 
     async def _memory_from_stored(self, *, memory_id: str, decode: Callable[[], Any]) -> Memory:
-        """Decode, repair and validate one stored memory inside its load boundary."""
-        await self._settle_library_granularities()
-        with stored_document_boundary(kind="memory", name=memory_id):
-            data = _mig.stamp_stored(self._renamed_since_read(decode(), kind="memory", key=memory_id))
-            if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
-                data = rewrite_memory_doc(data, await self._custom_bucket_calls(
-                    data_sources=await self._memory_data_sources(data)),
-                    keys=keys_for(entity="Memory", version=int(data["version"])))
-            typing = await self._memory_typing(data) if needs_typing("Memory", data) else StoredDatasets()
-            with typing_with(typing):
-                # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
-                if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
-                    await self._repair_query_filters(query=data.get("query"), data_source=None)
-                # ...and so does the extension-field inlining, on every load of a pre-v10 document.
-                if isinstance(data, dict) and int(data["version"]) < _EXTENSION_FIELDS_INLINED_AT and isinstance(
-                        data.get("query"), dict):
-                    inlined = await self._inlined_queries(queries=[data["query"]], data_source=None, document=memory_id)
-                    data = data if inlined is None else {**data, "query": inlined[0]}
-                return Memory.model_validate(data)
+        """Decode, upgrade in memory and validate one stored memory inside its load boundary; never written back."""
+        with stored_document_boundary(kind="memory", name=memory_id), one_upgrade_pass():
+            memory, changes = await self._upgraded_memory(memory_id=memory_id, data=decode())
+        if changes:
+            self._warn_upgrade_needed(StoredUpgradeNeededWarning(document_kind="memory", name=memory_id))
+        return memory
+
+    async def _upgraded_memory(self, *, memory_id: str, data: Any) -> tuple[Memory, bool]:
+        """A stored memory dict upgraded and validated; and whether the upgrade changes the stored document."""
+        renamed = await self._memory_with_granularities_renamed(data)
+        changes = renamed != data
+        data = _mig.stamp_stored(renamed)
+        changes = changes or (isinstance(data, dict) and int(data["version"]) < _mig.CURRENT_VERSIONS["Memory"])
+        if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
+            data = rewrite_memory_doc(data, await self._custom_bucket_calls(
+                data_sources=await self._memory_data_sources(data)),
+                keys=keys_for(entity="Memory", version=int(data["version"])))
+        query = data.get("query") if isinstance(data, dict) else None
+        if isinstance(query, dict):
+            version = int(data["version"])
+            pending = _unqualified(query, document_version=version, entity="Memory")
+            gates = _stage_gates(query, document_version=version, entity="Memory",
+                                 legacy=version < _MEMORY_FILTER_REPAIR_BELOW_VERSION)
+            if pending or gates.any or version < _EXTENSION_FIELDS_INLINED_AT or holds_removed_forms(query):
+                converted = await self._converted_queries(
+                    queries=[query], gates=[gates], pending=[pending],
+                    data_source=await self._memory_upgrade_data_source(data) if pending else None,
+                    document=memory_id)
+                data = {**data, "query": converted[0]}
+                changes = True
+        with collecting_rewrites() as collected:
+            memory = Memory.model_validate(data)
+        return memory, changes or collected.rewritten
+
+    async def _memory_upgrade_data_source(self, data: dict) -> str | None:
+        """The datasource a stored memory's qualification reads: pinned when its population names no stored dataset
+        (refused when undetermined), else none."""
+        identities = await self._list_all_dataset_identities()
+        triggered, population = memory_fallback_population(data, identities=identities)
+        if not triggered:
+            return None
+        pinned = raw_memory_datasource(data, identities=identities)
+        if pinned is None:
+            raise UndeterminedDatasourceError(population=population)
+        return pinned
 
     @abstractmethod
     async def _delete_memory_row(self, memory_id: str) -> bool:
@@ -1691,12 +2858,13 @@ class StorageBackend(ABC):
 
     async def load_memories(self, *, entities: list[str] | None = None) -> Loaded[Memory]:
         """The memories ``list_memories`` returns, and the ones that failed to load."""
-        return await self._list_memories_rows(entities=entities)
+        with one_upgrade_pass():
+            return await self._list_memories_rows(entities=entities)
 
     async def list_memories(
         self, *, entities: list[str] | None = None, failures: DocumentLoadFailures | None = None,
     ) -> list[Memory]:
-        return (failures or DocumentLoadFailures()).skip(await self._list_memories_rows(entities=entities))
+        return (failures or DocumentLoadFailures()).skip(await self.load_memories(entities=entities))
 
     async def delete_memory(self, memory_id: str) -> None:
         if not await self._delete_memory_row(memory_id):

@@ -1,4 +1,4 @@
-"""DEV-1452 Stage A — AggRenderSpec + ``_build_agg_render_spec_from_planned``.
+"""AggRenderSpec + ``_build_agg_render_spec_from_planned``.
 
 Decouples ``slayer/sql/generator.py``'s dialect helpers from the legacy
 ``legacy enriched-measure``. The new ``AggRenderSpec`` is the frozen Pydantic record
@@ -12,19 +12,19 @@ failure point.
 
 ``_build_agg_render_spec_from_planned`` keeps the same five-kwarg signature
 as the legacy ``_synthesize_enriched_measure_from_planned``
-(``slot``, ``key``, ``source_model``, ``source_relation``, ``full_alias``)
+(``slot``, ``key``, ``source_dataset``, ``source_relation``, ``full_alias``)
 so existing call sites flip with a one-line return-type swap. The logic
 mirrors the legacy synthesizer (``slayer/sql/generator.py:7033``) verbatim:
 
 * ``StarKey`` rejects any non-count aggregation, and any args/kwargs on
   ``count(*)``.
-* ``ColumnKey`` / ``ColumnSqlKey`` resolves the source column on
-  ``source_model``; aggregations outside the built-in slice look up the
-  custom ``Aggregation`` definition on ``source_model.aggregations`` and
+* ``FieldKey`` / ``FieldSqlKey`` resolves the source field on
+  ``source_dataset``; aggregations outside the built-in slice look up the
+  custom ``Aggregation`` definition on ``source_dataset.aggregations`` and
   raise ``AggregationNotAllowedError`` on miss.
-* ``first`` / ``last`` derive ``time_column`` from the first ``ColumnKey``
+* ``first`` / ``last`` derive ``time_field`` from the first ``FieldKey``
   in ``key.args``.
-* Cross-model kwargs whose ``ColumnKey.path`` disagrees with
+* Cross-dataset kwargs whose ``FieldKey.path`` disagrees with
   ``source.path`` raise ``AggregationNotAllowedError``.
 """
 
@@ -43,7 +43,7 @@ from slayer.core.keys import (
     Phase,
     StarKey,
 )
-from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.core.syntax import parse_expr
@@ -54,7 +54,9 @@ from slayer.sql.generator import (  # type: ignore[attr-defined]
     SQLGenerator,
 )
 from slayer.sql.render.aggregates import resolve_agg_entry
-
+from slayer.sql.dialects import get_dialect
+from slayer.sql.naming import AliasAllocator
+from slayer.sql.scope import ScopeFrame
 
 # These imports drive the failing-test contract — neither name exists on
 # the current codebase. Stage A landing flips them green.
@@ -80,7 +82,7 @@ def _invoke(slot, key, *, source_dataset, source_relation, full_alias):
 
 
 def _orders_dataset() -> SlayerDataset:
-    """Local source model used by the bulk of the tests."""
+    """Local source dataset used by the bulk of the tests."""
     return SlayerDataset(
         name="orders",
         data_source="prod",
@@ -93,22 +95,22 @@ def _orders_dataset() -> SlayerDataset:
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="net_amount",
-                sql="amount - tax",
+                expression="amount - tax",
                 datatype=DataType.FLOAT,
             ),
             DatasetField(name="tax", datatype=DataType.FLOAT),
             DatasetField(name="quantity", datatype=DataType.INTEGER),
-            # Derived time columns covering the two ColumnSqlKey shapes
-            # the explicit-time-arg resolver must handle (DEV-1452 Codex
-            # fix): bare-identifier rename and a non-trivial expression.
+            # Derived time fields covering the two FieldSqlKey shapes
+            # the explicit-time-arg resolver must handle:
+            # bare-identifier rename and a non-trivial expression.
             DatasetField(
                 name="created_at_alias",
-                sql="created_at",
+                expression="created_at",
                 datatype=DataType.DATETIME,
             ),
             DatasetField(
                 name="created_at_day",
-                sql="DATE_TRUNC('day', created_at)",
+                expression="DATE_TRUNC('day', created_at)",
                 datatype=DataType.DATE,
             ),
         ],
@@ -121,7 +123,7 @@ def _orders_dataset() -> SlayerDataset:
                     AggregationParam(name="rows", sql="6"),
                 ],
             ),
-            # Model-level override of a BUILT-IN aggregation, supplying a
+            # Dataset-level override of a BUILT-IN aggregation, supplying a
             # default ``weight=quantity`` bound onto the key at bind.
             Aggregation(
                 name="weighted_avg",
@@ -145,7 +147,7 @@ def _slot(
     declared_name: str = "x",
     public_name: str = "x",
     phase=Phase.AGGREGATE,
-    slot_type=None,
+    slot_type=DataType.INTEGER,
 ) -> ValueSlot:
     return ValueSlot(
         id=slot_id,
@@ -168,8 +170,8 @@ class TestAggRenderSpecConstruction:
     def test_exact_field_set(self):
         # Decision #4: exactly these 12 fields, no more, no less. Extra
         # fields (agg_args / source_measure_name / distinct / window /
-        # user_declared / etc.) are deliberately NOT carried. A Column.filter
-        # rides its source ColumnSqlKey now, so there is no ``filter_sql`` field.
+        # user_declared / etc.) are deliberately NOT carried. A DatasetField.filter
+        # rides its source FieldSqlKey now, so there is no ``filter_sql`` field.
         assert set(AggRenderSpec.model_fields) == {
             "sql",
             "name",
@@ -258,7 +260,7 @@ class TestBuilderStarKey:
             full_alias="orders._count",
         )
         assert spec.sql is None
-        # ``name`` is empty for star — there's no source column.
+        # ``name`` is empty for star — there's no source field.
         assert spec.name == ""
         assert spec.dataset_name == "orders"
         assert spec.aggregation == "count"
@@ -312,7 +314,7 @@ class TestBuilderStarKey:
 
 
 # ---------------------------------------------------------------------------
-# _build_agg_render_spec_from_planned — ColumnKey / ColumnSqlKey
+# _build_agg_render_spec_from_planned — FieldKey / FieldSqlKey
 # ---------------------------------------------------------------------------
 
 
@@ -332,8 +334,8 @@ class TestBuilderColumnKey:
             source_relation="orders",
             full_alias="orders.amount_sum",
         )
-        # Bare column: ``Column.sql`` is None on the orders.amount fixture,
-        # so spec.sql falls back to the bare column name (mirrors legacy
+        # Bare field: ``DatasetField.sql`` is None on the orders.amount fixture,
+        # so spec.sql falls back to the bare field name (mirrors legacy
         # ``sql = column.sql or column.name``).
         assert spec.sql == "amount"
         assert spec.name == "amount"
@@ -347,7 +349,7 @@ class TestBuilderColumnKey:
         assert spec.expression is None
 
     def test_columnsqlkey_derived_uses_column_sql(self):
-        # The derived ``net_amount`` column has ``sql = "amount - tax"`` and
+        # The derived ``net_amount`` field has ``expression = "amount - tax"`` and
         # type DOUBLE; aggregating it must surface the expression as
         # ``spec.sql``.
         key = AggregateKey(
@@ -380,7 +382,7 @@ class TestBuilderColumnKey:
         # Match the legacy synthesizer's message tightly so a regression
         # that surfaces a different ValueError (e.g. a setup failure) still
         # fails loudly. Legacy emits exactly:
-        #     "Aggregate source column 'nonexistent' not found on model 'orders'"
+        #     "Aggregate source field 'nonexistent' not found on dataset 'orders'"
         source_model = _orders_dataset()
         with pytest.raises(
             ValueError,
@@ -402,8 +404,8 @@ class TestBuilderColumnKey:
 
 class TestBuilderCustomAggregation:
     def test_custom_aggregation_formula_threaded(self):
-        # ``rolling_avg`` is declared on the model's ``aggregations`` list.
-        # The builder must look it up and carry its formula.
+        # ``rolling_avg`` is declared on the dataset's ``aggregations`` list.
+        # The builder must look it up and carry its expression.
         key = AggregateKey(
             source=FieldKey(path=(), leaf="amount"),
             agg="rolling_avg",
@@ -443,9 +445,9 @@ class TestBuilderCustomAggregation:
             )
 
     def test_builtin_aggregation_model_override_threaded(self):
-        # A model-level override of a BUILT-IN aggregation (``weighted_avg`` with
+        # A dataset-level override of a BUILT-IN aggregation (``weighted_avg`` with
         # a default ``weight=quantity``) binds its default onto the key, and the
-        # builder carries the override's formula.
+        # builder carries the override's expression.
         orders = _orders_dataset()
         key = bind_expr(
             parse_expr("weighted_avg(amount)"), scope=DatasetScope(population=orders),
@@ -465,11 +467,11 @@ class TestBuilderCustomAggregation:
         assert spec.expression == WEIGHTED_AVG
 
     def test_builtin_aggregation_no_override_leaves_formula_none(self):
-        # The lookup is unconditional, but a built-in WITHOUT a model
-        # override must still produce ``formula is None`` so the
+        # The lookup is unconditional, but a built-in WITHOUT a dataset
+        # override must still produce ``expression is None`` so the
         # dispatcher picks the built-in renderer. Pin this so the
         # CodeRabbit fix doesn't accidentally start picking up
-        # unrelated model-level definitions.
+        # unrelated dataset-level definitions.
         key = AggregateKey(
             source=FieldKey(path=(), leaf="amount"),
             agg="sum",
@@ -546,14 +548,14 @@ class TestBuilderParametric:
 
 
 # ---------------------------------------------------------------------------
-# _build_agg_render_spec_from_planned — cross-model kwarg path checks
+# _build_agg_render_spec_from_planned — cross-dataset kwarg path checks
 # ---------------------------------------------------------------------------
 
 
 class TestBuilderCrossModelKwargPath:
     def test_local_source_pathed_kwarg_accepted(self):
-        # DEV-1709: a LOCAL aggregate with a structurally-crossing kwarg is
-        # now a supported crossing INPUT — the widened Law-3 trigger
+        # A LOCAL aggregate with a structurally-crossing kwarg is
+        # a supported crossing INPUT — the widened Law-3 trigger
         # isolates the aggregate host-rooted, and inside that CTE's
         # sub-render the kwarg resolves through the host scope. The spec
         # builder therefore no longer rejects it.
@@ -570,17 +572,28 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.FLOAT,
         )
-        spec = _invoke(
+        orders = _orders_dataset().model_copy(update={
+            "relationships": [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
+        })
+        customers = SlayerDataset(
+            name="customers", data_source="prod", sql_table="customers",
+            fields=[
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="quantity", datatype=DataType.INTEGER),
+            ],
+        )
+        spec = SQLGenerator(dialect="postgres")._build_agg_render_spec_from_planned(
             slot=slot,
             key=key,
-            source_dataset=_orders_dataset(),
+            source_dataset=orders,
             source_relation="orders",
             full_alias="orders.amount_weighted_avg",
+            bundle=ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[customers]),
         )
         assert spec is not None
 
     def test_local_source_pathed_columnsqlkey_kwarg_accepted(self):
-        # Same DEV-1709 relaxation for the ColumnSqlKey kwarg kind.
+        # Same relaxation for the FieldSqlKey kwarg kind.
         key = AggregateKey(
             source=FieldKey(path=(), leaf="amount"),
             agg="weighted_avg",
@@ -607,7 +620,7 @@ class TestBuilderCrossModelKwargPath:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="quantity", datatype=DataType.INTEGER),
-                DatasetField(name="net_quantity", sql="quantity - 1", datatype=DataType.INTEGER),
+                DatasetField(name="net_quantity", expression="quantity - 1", datatype=DataType.INTEGER),
             ],
         )
         spec = SQLGenerator(dialect="postgres")._build_agg_render_spec_from_planned(
@@ -622,9 +635,9 @@ class TestBuilderCrossModelKwargPath:
         assert spec is not None
 
     def test_cross_model_source_kwarg_path_mismatch_still_raises(self):
-        # The gate survives for CROSS-MODEL aggregates: after reroot
+        # The gate survives for CROSS-DATASET aggregates: after reroot
         # prefix-stripping, a kwarg on a DIFFERENT branch than the source
-        # would bind against the wrong model — still a hard error.
+        # would bind against the wrong dataset — still a hard error.
         key = AggregateKey(
             source=FieldKey(path=("customers",), leaf="amount"),
             agg="weighted_avg",
@@ -652,9 +665,9 @@ class TestBuilderCrossModelKwargPath:
 
     def test_matching_kwarg_path_accepted(self):
         # Mirror image: same path on source AND kwarg → accepted.
-        # Cross-model rerooting strips ``("customers",)`` from both source
+        # Cross-dataset rerooting strips ``("customers",)`` from both source
         # and kwargs before the builder sees them, so the test passes the
-        # local-shaped key (path=()) against the customers source model.
+        # local-shaped key (path=()) against the customers source dataset.
         customers = SlayerDataset(
             name="customers",
             data_source="prod",
@@ -695,14 +708,14 @@ class TestBuilderCrossModelKwargPath:
 class TestBuilderTypePropagation:
     def test_slot_type_distinct_from_column_type(self):
         # Codex finding #4: ``spec.type`` (outer agg result type) MUST
-        # come from ``slot.type``; ``spec.column_type`` (inner
+        # come from ``slot.type``; ``spec.field_type`` (inner
         # pre-aggregation expression CAST) MUST come from the resolved
-        # source column. ``count(*)`` on a DOUBLE-typed column is the
+        # source field. ``count(*)`` on a DOUBLE-typed field is the
         # canonical case where slot.type (INT — count returns integer)
-        # differs from column_type (which is moot for star — DOUBLE).
-        # Use an explicit ColumnKey case so both fields are populated and
+        # differs from field_type (which is moot for star — DOUBLE).
+        # Use an explicit FieldKey case so both fields are populated and
         # distinct: ``count`` of ``amount`` (DOUBLE) → slot.type INT,
-        # column_type DOUBLE.
+        # field_type DOUBLE.
         key = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="count")
         slot = _slot(
             key,
@@ -752,11 +765,11 @@ class TestBuilderTypePropagation:
             full_alias="orders.amount_sum",
         )
         assert spec.type is None
-        assert spec.field_type is DataType.FLOAT  # column_type still resolved
+        assert spec.field_type is DataType.FLOAT  # field_type still resolved
 
 
 # ---------------------------------------------------------------------------
-# DEV-1749 — ``_build_agg`` routes classification through the single
+# ``_build_agg`` routes classification through the single
 # ``AGG_REGISTRY`` table (was: ``_AGG_FUNCTION_MAP`` + ``agg_class_map`` + the
 # ``count_distinct`` / ``median`` name-equality intercepts). Pin the merged
 # dispatch: a SIMPLE class, both former shadow-intercept specials, and the
@@ -805,3 +818,23 @@ class TestBuildAggRegistryDispatch:
         spec = self._spec("definitely_not_an_aggregation")
         with pytest.raises(ValueError, match="no expression"):
             gen._build_agg(spec)
+
+
+class TestUnresolvedFieldFallbacks:
+    """The no-bundle fallbacks read an unresolved field's definition, never its name."""
+
+    def test_dimension_reads_the_definition(self) -> None:
+        expr = SQLGenerator(dialect="postgres")._dim_field_expr_from_planned(  # type: ignore[attr-defined]
+            source_dataset=_orders_dataset(), source_relation="orders", leaf="net_amount")
+        assert expr.sql(dialect="postgres") == "CAST(amount - tax AS DOUBLE PRECISION)"
+
+    def test_ranked_value_reads_the_definition(self) -> None:
+        orders = _orders_dataset()
+        alloc = AliasAllocator()
+        bundle = ResolvedSourceBundle(dialect="postgres", population=orders)
+        scope = ScopeFrame(scope_id=alloc.next_scope_id("orders"), root_dataset=orders, root_relation="orders",
+                           bundle=bundle, dialect=get_dialect("postgres"), allocator=alloc)
+        expr = SQLGenerator(dialect="postgres")._ranked_value_expr(  # type: ignore[attr-defined]
+            key=AggregateKey(source=FieldKey(path=(), leaf="net_amount"), agg="max"),
+            root_dataset=orders, root_relation="orders", bundle=bundle, scope=scope)
+        assert expr.sql(dialect="postgres") == "CAST(amount - tax AS DOUBLE PRECISION)"

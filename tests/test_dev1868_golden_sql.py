@@ -11,7 +11,7 @@ from slayer.core.query import SlayerQuery
 
 from tests._dev1836_fixtures import dev1836_datasets
 from tests._dev1846_fixtures import dev1846_datasets
-from tests._dev1868_fixtures import CM_PART_TIER, FIRST_REGION, LAST_REGION, LAST_TIER
+from tests._dev1868_fixtures import CM_PART_TIER, FIRST_REGION, LAST_TIER
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -23,7 +23,8 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"field": "ordered_at", "granularity": "month"}]
+def _month(pop: str) -> list:
+    return [{"field": f"{pop}.ordered_at", "granularity": "month"}]
 
 
 def _orders(**kw) -> SlayerQuery:
@@ -33,14 +34,14 @@ def _orders(**kw) -> SlayerQuery:
 
 def _sales(**kw) -> SlayerQuery:
     kw.setdefault("population", "sales")
-    kw.setdefault("time_dimensions", _MONTH)
+    kw.setdefault("time_dimensions", _month("sales"))
     return SlayerQuery(**kw)
 
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
-        # W1 — cross-model ranked × partition_by, every position.
+        # W1 — cross-dataset ranked × partition_by, every position.
         "w1/last_tier_measure": _orders(
             dimensions=["customers.tier"],
             metrics=[{"metric": LAST_TIER, "alias": "l"}],
@@ -52,32 +53,28 @@ def _cases() -> dict:
         "w1/filter": _orders(
             dimensions=["customers.tier"],
             filter=[f"{LAST_TIER} > 100"],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         ),
         "w1/order": _orders(
             dimensions=["customers.tier"],
             filter=["customers.tier is not null"],
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
             order=[{"field": LAST_TIER, "direction": "desc"}],
         ),
-        # W2 — cross-model partitioned inners under transforms.
-        "w2/cumsum_part_tier": _orders(
-            dimensions=["customers.tier"], time_dimensions=_MONTH,
-            metrics=[{"metric": f"cumsum({CM_PART_TIER})", "alias": "c"}],
-        ),
-        "w2/change_last_region": _orders(
-            dimensions=["customers.regions.name"], time_dimensions=_MONTH,
-            metrics=[{"metric": f"change({LAST_REGION})", "alias": "ch"}],
+        # W2 — cross-dataset partitioned inners under transforms.
+        "w2/rank_part_tier": _orders(
+            dimensions=["customers.tier"], time_dimensions=_month("orders"),
+            metrics=[{"metric": f"rank({CM_PART_TIER}, direction='desc')", "alias": "c"}],
         ),
         "w2/shared_inner": _orders(
-            dimensions=["customers.tier"], time_dimensions=_MONTH,
+            dimensions=["customers.tier"], time_dimensions=_month("orders"),
             filter=[f"{CM_PART_TIER} > 100"],
-            metrics=[{"metric": f"cumsum({CM_PART_TIER})", "alias": "c"}],
+            metrics=[{"metric": f"rank({CM_PART_TIER}, direction='desc')", "alias": "c"}],
         ),
         # W3 — composite routes (already combined; pinned against regression).
         "w3/scalar_call": _orders(
             dimensions=["customers.tier"],
-            metrics=[{"metric": "round(sum(customers.spend) / sum(amount), 2)",
+            metrics=[{"metric": "round(sum(customers.spend) / sum(orders.amount), 2)",
                        "alias": "r"}],
         ),
         "w3/multi_remote": _orders(
@@ -92,39 +89,39 @@ def _cases() -> dict:
         ),
         # Series-regime time_shift emission.
         "ts/series_nested_cumsum": _sales(metrics=[
-            {"metric": "time_shift(cumsum(sum(revenue)), -1)", "alias": "t"},
+            {"metric": "time_shift(cumsum(sum(sales.revenue)), -1)", "alias": "t"},
         ]),
         "ts/series_nested_by_store": _sales(
-            dimensions=["store"],
-            metrics=[{"metric": "time_shift(cumsum(sum(revenue)), -1)",
+            dimensions=["sales.store"],
+            metrics=[{"metric": "time_shift(cumsum(sum(sales.revenue)), -1)",
                        "alias": "t"}],
         ),
         "ts/series_cm_leaf": _sales(to_many_handling="broadcast", metrics=[
-            {"metric": "time_shift(sum(revenue) + sum(regions.factor), -1)",
+            {"metric": "time_shift(sum(sales.revenue) + sum(regions.factor), -1)",
              "alias": "t"},
         ]),
         "ts/series_in_pred": _sales(metrics=[
-            {"metric": "time_shift(sum(revenue) in (100, 999), -1)", "alias": "t"},
+            {"metric": "time_shift(sum(sales.revenue) in (100, 999), -1)", "alias": "t"},
         ]),
         "ts/series_filters_once": _sales(
-            filter=["status = 'a'"],
-            metrics=[{"metric": "time_shift(cumsum(sum(revenue)), -1)",
+            filter=["sales.status = 'a'"],
+            metrics=[{"metric": "time_shift(cumsum(sum(sales.revenue)), -1)",
                        "alias": "t"}],
         ),
         # Residue split — the two permanent typed errors, recorded as raises.
         "res/transform_no_aggregate": _orders(
             dimensions=["customers.tier",
-                        {"field": "CASE WHEN cumsum(amount) > 50 "
+                        {"field": "CASE WHEN cumsum(orders.amount) > 50 "
                                        "THEN 1 ELSE 0 END", "alias": "b"}],
-            time_dimensions=_MONTH,
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            time_dimensions=_month("orders"),
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         ),
         "res/transform_ungrained": _orders(
             dimensions=["customers.tier",
-                        {"field": "CASE WHEN cumsum(sum(amount)) > 50 "
+                        {"field": "CASE WHEN cumsum(sum(orders.amount)) > 50 "
                                        "THEN 1 ELSE 0 END", "alias": "b"}],
-            time_dimensions=_MONTH,
-            metrics=[{"metric": "sum(amount)", "alias": "s"}],
+            time_dimensions=_month("orders"),
+            metrics=[{"metric": "sum(orders.amount)", "alias": "s"}],
         ),
     }
 

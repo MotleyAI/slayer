@@ -25,7 +25,7 @@ from slayer.search import graph as search_graph
 from slayer.search.service import SearchService
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._model_access_fixtures import (
+from tests._dataset_access_fixtures import (
     ACCESS_PARAMS,
     DS,
     HIDDEN_TOKEN,
@@ -200,25 +200,25 @@ class TestSearch:
 
 class TestQueries:
     async def test_visible_model_queries_normally(self, pair: Pair) -> None:
-        kind, text = await engine_outcome(pair.fin, {"population": "fin", "metrics": [{"metric": "sum(amount)", "alias": "total"}]})
+        kind, text = await engine_outcome(pair.fin, {"population": "fin", "metrics": [{"metric": "sum(fin.amount)", "alias": "total"}]})
         assert kind == "ok"
         assert str(LEDGER_TOTAL) in text
 
     @pytest.mark.parametrize("query", [
-        {"population": "hr", "metrics": [{"metric": "count(*)"}]},
-        {"population": "hr_summary", "metrics": [{"metric": "sum(total)"}]},
-        {"population": "pay", "metrics": [{"metric": "sum(gross)"}]},
-        {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(amount)"}]},
-        {"population": "fin", "metrics": [{"metric": "sum(hr.salary)"}]},
-        {"population": "fin", "metrics": [{"metric": "sum(amount)"}], "filter": ["hr.dept = 'eng'"]},
+        {"population": "hr", "metrics": [{"metric": "count(hr.*)"}]},
+        {"population": "hr_summary", "metrics": [{"metric": "sum(hr_summary.total)"}]},
+        {"population": "pay", "metrics": [{"metric": "sum(pay.gross)"}]},
+        {"population": "fin", "dimensions": ["fin.hr.dept"], "metrics": [{"metric": "sum(fin.amount)"}]},
+        {"population": "fin", "metrics": [{"metric": "sum(fin.hr.salary)"}]},
+        {"population": "fin", "metrics": [{"metric": "sum(fin.amount)"}], "filter": ["fin.hr.dept = 'eng'"]},
         {"population": "fin",
          "extensions": [{"dataset": "fin", "relationships": [{"to": "hr", "from_columns": ["staff_id"], "to_columns": ["id"]}]}],
-         "dimensions": ["hr.dept"]},
-        {"population": "fin", "dimensions": ["dept"], "metrics": [{"metric": "sum(amount)"}]},
-        {"population": "fin", "dimensions": ["hrr.dept"], "metrics": [{"metric": "sum(amount)"}]},
-        {"population": "pub_link", "dimensions": ["salary"]},
-        {"dimensions": ["hr.dept"]},
-        {"dimensions": ["fin.id", "hr.dept"]},
+         "dimensions": ["fin.hr.dept"]},
+        {"population": "fin", "dimensions": ["fin.dept"], "metrics": [{"metric": "sum(fin.amount)"}]},
+        {"population": "fin", "dimensions": ["fin.hrr.dept"], "metrics": [{"metric": "sum(fin.amount)"}]},
+        {"population": "pub_link", "dimensions": ["pub_link.salary"]},
+        {"dimensions": ["fin.hr.dept"]},
+        {"dimensions": ["fin.id", "fin.hr.dept"]},
     ], ids=[
         "root", "query-backed-root", "reader-root", "hop", "hop-measure", "hop-filter", "join-target",
         "short-form", "typo", "pruned-neighbour", "rootless", "rootless-hop",

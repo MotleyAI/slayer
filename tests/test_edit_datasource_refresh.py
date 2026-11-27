@@ -1,4 +1,4 @@
-"""DEV-1549 round 4: ``edit_datasource`` must refresh the datasource
+"""``edit_datasource`` must refresh the datasource
 embedding so a description edit propagates to the dense-search channel
 without waiting for the next ``slayer ingest``.
 """
@@ -28,7 +28,7 @@ def yaml_storage() -> Generator[YAMLStorage, None, None]:
 
 
 async def _call(mcp_server, *, name: str, arguments: dict) -> str:
-    content_blocks, _ = await mcp_server.call_tool(name=name, arguments=arguments)
+    content_blocks = (await mcp_server.call_tool(name=name, arguments=arguments)).content
     return content_blocks[0].text
 
 
@@ -81,8 +81,8 @@ async def test_edit_datasource_calls_refresh_datasource_with_new_description(
     assert last["description"] == (
         "fresh new description with reconciliation_token_zeta"
     )
-    # The model list must reach the refresh path so the rendered text
-    # (which mentions visible models) is regenerated correctly.
+    # The dataset list must reach the refresh path so the rendered text
+    # (which mentions visible datasets) is regenerated correctly.
     assert last["model_count"] == 1
 
 

@@ -269,7 +269,7 @@ async def _every_operation(engine: SlayerQueryEngine) -> None:
     assert await engine.get_result_column_types("spend")
     await engine.detect_relationship_cardinality(data_source="test", dataset="customers")
     await engine.create_dataset_from_query(
-        {"population": "orders", "dimensions": ["status"], "metrics": ["sum(amount)"]}, name="by_status",
+        {"population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.amount)"]}, name="by_status",
     )
 
 

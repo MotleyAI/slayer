@@ -4,14 +4,14 @@ Pins ``render_value_key(key, ctx)`` in ``slayer/sql/render/value_expr.py`` — t
 one ``ValueKey``→AST renderer, parameterised by an explicit ``RenderContext``
 and failing closed when the context lacks a facility a key kind needs. It
 replaced five independent per-path renderers in ``generator.py`` (host
-WHERE/HAVING, cross-model CTE routed filters, POST/alias space, outer combined
+WHERE/HAVING, cross-dataset CTE routed filters, POST/alias space, outer combined
 WHERE, AGGREGATE-phase composites) plus three arithmetic composer shims, all of
 which had drifted; those were deleted. Materialisation stays on
 ``ScopeFrame`` (P-B) — the renderer anchors leaves through
 ``scope.resolve(ref, consumer=...)`` and never by hand.
 
 Also pinned here: B10 (``ScopeFrame._dataset_for`` raises instead of silently
-substituting the root model) and the aggregation registry (``AGG_REGISTRY``)
+substituting the root dataset) and the aggregation registry (``AGG_REGISTRY``)
 that `_build_agg` reads instead of several ad-hoc dispatch mechanisms.
 
 B5 is the sharpest drift instance: the same ``ScalarCallKey`` reached Postgres
@@ -45,6 +45,7 @@ from slayer.core.keys import (
     SCALAR_PASSTHROUGH,
     AggregateKey,
     ArithmeticKey,
+    CastKey,
     FieldKey,
     FieldSqlKey,
     InKey,
@@ -91,7 +92,7 @@ from slayer.storage.sqlite_conn import transaction
 
 
 # ===========================================================================
-# Models + scope construction (mirrors tests/test_scope.py's idiom).
+# Datasets + scope construction (mirrors tests/test_scope.py's idiom).
 # ===========================================================================
 
 
@@ -99,9 +100,9 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.STRING),
-            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", expression="name", datatype=DataType.STRING),
+            DatasetField(name="population", expression="population", datatype=DataType.FLOAT),
         ],
     )
 
@@ -110,9 +111,9 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
-            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", expression="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="balance", expression="balance", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
@@ -122,12 +123,12 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
-            DatasetField(name="label", sql="label", datatype=DataType.STRING),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
-            DatasetField(name="net", sql="amount - 1", datatype=DataType.FLOAT),
+            DatasetField(name="id", expression="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", expression="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", expression="amount", datatype=DataType.FLOAT),
+            DatasetField(name="label", expression="label", datatype=DataType.STRING),
+            DatasetField(name="created_at", expression="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="net", expression="amount - 1", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
@@ -178,15 +179,15 @@ def _sql(expr: exp.Expression, dialect: str = "postgres") -> str:
 
 
 # ===========================================================================
-# B10 — ScopeFrame._dataset_for raises on an unknown model.
+# B10 — ScopeFrame._dataset_for raises on an unknown dataset.
 # ===========================================================================
 
 
 class TestB10UnknownModelRaises:
-    """Today ``_model_for`` ends in ``or self.root_model``: a ``ColumnSqlKey``
-    naming a model absent from the bundle silently expands the ROOT model's
+    """Today ``_dataset_for`` ends in ``or self.root_dataset``: a ``FieldSqlKey``
+    naming a dataset absent from the bundle silently expands the ROOT dataset's
     derived SQL instead. That turns a wiring bug into a wrong answer — the
-    query runs and returns numbers computed from the wrong model."""
+    query runs and returns numbers computed from the wrong dataset."""
     def test_unknown_model_in_columnsqlkey_raises(self) -> None:
 
         scope = _scope()
@@ -195,7 +196,7 @@ class TestB10UnknownModelRaises:
             scope.resolve(key)
 
     def test_error_names_the_missing_model(self) -> None:
-        """The message must be actionable: which model was asked for, what the
+        """The message must be actionable: which dataset was asked for, what the
         scope root is, and what the bundle actually knows."""
         scope = _scope()
         key = FieldSqlKey(dataset="not_in_bundle", field_name="net")
@@ -206,15 +207,15 @@ class TestB10UnknownModelRaises:
         assert "orders" in message
 
     def test_known_models_still_resolve(self) -> None:
-        """Parity guard: the root model and every bundle member keep working —
+        """Parity guard: the root dataset and every bundle member keep working —
         B10 removes only the silent FALLBACK, not the lookup."""
         scope = _scope()
         expr = scope.resolve(FieldSqlKey(dataset="orders", field_name="net"))
         assert "amount" in _sql(expr)
 
     def test_root_model_lookup_does_not_consult_the_bundle(self) -> None:
-        """A scope whose root model is not listed in ``referenced_models`` must
-        still resolve its own root — the first branch of ``_model_for``."""
+        """A scope whose root dataset is not listed in ``referenced_datasets`` must
+        still resolve its own root — the first branch of ``_dataset_for``."""
         host = _orders()
         alloc = AliasAllocator()
         bundle = ResolvedSourceBundle(
@@ -268,11 +269,11 @@ class TestRenderContextApi:
     def test_consumer_routes_column_like_leaves_through_materialization(
         self, label, key,
     ) -> None:
-        """With a consumer named, EVERY column-like leaf must come back as a
+        """With a consumer named, EVERY field-like leaf must come back as a
         BARE materialisation alias and be projected in the PRODUCING scope —
         the single Law-2 mechanism, not a second one grown inside the renderer.
 
-        Parametrised over all three column-like kinds because a renderer that
+        Parametrised over all three field-like kinds because a renderer that
         special-cases one of them would otherwise slip through."""
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
@@ -315,7 +316,7 @@ class TestRenderContextApi:
         assert len(producer.materializations) == 1
 
     def test_join_paths_register_as_a_side_effect_of_rendering(self) -> None:
-        """P-A: join discovery is a side effect of rendering, never a separate
+        """P-A: relationship-path discovery is a side effect of rendering, never a separate
         pass. Rendering a joined leaf must register the crossed path on the
         scope without the caller asking."""
         scope = _scope()
@@ -323,7 +324,7 @@ class TestRenderContextApi:
         render_value_key(
             key=FieldKey(path=("customers", "regions"), leaf="name"), ctx=ctx,
         )
-        assert scope.join_paths.as_list() == [
+        assert scope.relationship_paths.as_list() == [
             ("customers",), ("customers", "regions"),
         ]
 
@@ -390,9 +391,9 @@ class TestRenderContextApi:
     def test_cross_model_star_without_a_builder_fails_closed(self) -> None:
         """``count(customers.*)`` counts rows of the JOINED relation.
 
-        ``StarKey.path`` carries that hop, and routing it needs the join graph.
+        ``StarKey.path`` carries that hop, and routing it needs the relationship graph.
         Emitting a bare ``*`` would count HOST rows instead — a wrong number,
-        the same failure class as a dropped column filter.
+        the same failure class as a dropped field filter.
         """
         key = AggregateKey(source=StarKey(path=("customers",)), agg="count")
         ctx = _composite_ctx()
@@ -468,12 +469,12 @@ class TestRendersEveryKeyKind:
 
     def test_time_trunc_key(self) -> None:
         """Exact per-dialect SQL — a substring check would accept a truncation
-        at the wrong granularity or over the wrong column."""
+        at the wrong granularity or over the wrong field."""
         key = TimeTruncKey(
             source=FieldKey(leaf="created_at"), granularity=TimeGranularity.MONTH,
         )
         out = render_value_key(key=key, ctx=_filter_ctx("postgres"))
-        assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', orders.created_at)"
+        assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', CAST(orders.created_at AS TIMESTAMP))"
 
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "tsql", "bigquery"])
     def test_time_trunc_goes_through_the_dialect_strategy(self, dialect) -> None:
@@ -939,7 +940,7 @@ class TestAggregationRegistry:
     """``_build_agg`` reaches its builders five different ways: a hardcoded
     name pair for first/last, ``_AGG_FUNCTION_MAP`` plus a SECOND inline
     ``agg_class_map``, a frozenset membership test for the stat aggregates,
-    name equality for the dialect-hook aggregates, and a formula-template
+    name equality for the dialect-hook aggregates, and an expression-template
     fallback. One registry table replaces all five."""
 
     # Frozen INDEPENDENTLY of both BUILTIN_AGGREGATIONS and the registry, one
@@ -995,7 +996,7 @@ class TestAggregationRegistry:
     def test_registry_and_builtins_agree_both_ways(self) -> None:
         """The import-time invariant, asserted in both directions.
 
-        A missing built-in would fall through to the custom-formula path. A
+        A missing built-in would fall through to the custom-expression path. A
         registry key that is NOT a built-in — a typo such as ``sumn`` — is the
         subtler half: ``is_builtin_agg`` would accept it and route it AWAY from
         that path, so the typo would render as if it were a real aggregation.
@@ -1035,7 +1036,7 @@ async def _e2e_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryE
             name="orders",
             sql_table="orders",
             data_source="prod",
-            # first/last needs a resolvable ranking time column.
+            # first/last needs a resolvable ranking time field.
             default_time_dimension="created_at",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
@@ -1045,7 +1046,7 @@ async def _e2e_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryE
                 DatasetField(name="qty", datatype=DataType.FLOAT),
                 DatasetField(name="created_at", datatype=DataType.DATETIME),
             ],
-            # Exercises the formula-template dispatch mechanism through the
+            # Exercises the expression-template dispatch mechanism through the
             # registry — a CUSTOM aggregation, not a builtin.
             aggregations=[
                 Aggregation(name="sum_sq", expression="SUM({value} * {value})"),
@@ -1068,9 +1069,9 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="count(*)")],
-                filter=["ifnull(disc, 0) > 1"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)")],
+                filter=["ifnull(orders.disc, 0) > 1"],
             )
         )
         assert len(resp.data) == 1
@@ -1083,11 +1084,11 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="ifnull(sum(amount), 0)", alias="m")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="ifnull(sum(orders.amount), 0)", alias="m")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.m"] for r in resp.data}
+        by_status = {r["orders.status"]: r["m"] for r in resp.data}
         assert by_status == {"new": 30.0, "old": 30.0}
 
     async def test_arithmetic_composite_of_two_aggregates(self, e2e) -> None:
@@ -1096,29 +1097,29 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric="sum(amount) - sum(qty)", alias="d"),
+                    QueryMetric(metric="sum(orders.amount) - sum(orders.qty)", alias="d"),
                 ],
             )
         )
-        by_status = {r["orders.status"]: r["orders.d"] for r in resp.data}
+        by_status = {r["orders.status"]: r["d"] for r in resp.data}
         assert by_status == {"new": 24.0, "old": 29.0}
 
     async def test_custom_formula_aggregation_still_dispatches(
         self, e2e,
     ) -> None:
-        """The registry must keep the formula-template mechanism reachable for
+        """The registry must keep the expression-template mechanism reachable for
         aggregations that are NOT builtins — a closed builtin table would drop
         them. new = 10² + 20² = 500; old = 30² = 900."""
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum_sq(amount)", alias="ss")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum_sq(orders.amount)", alias="ss")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.ss"] for r in resp.data}
+        by_status = {r["orders.status"]: r["ss"] for r in resp.data}
         assert by_status == {"new": 500.0, "old": 900.0}
 
     async def test_having_filter_over_an_aggregate_executes(self, e2e) -> None:
@@ -1126,28 +1127,28 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(qty)", alias="q")],
-                filter=["sum(qty) > 5"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.qty)", alias="q")],
+                filter=["sum(orders.qty) > 5"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
-        assert resp.data[0]["orders.q"] == 6.0
+        assert resp.data[0]["q"] == 6.0
 
     async def test_first_last_composite_call_site_executes(self, e2e) -> None:
         """R5's SECOND production call site (``_build_first_last_base_select``,
-        the generator) — reached only by a first/last measure, which builds
+        the generator) — reached only by a first/last metric, which builds
         its own ranked base SELECT rather than the ordinary composite one.
 
         Ordered by ``id``: new -> last amount 20, old -> 30."""
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="last(amount)", alias="la")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="last(orders.amount)", alias="la")],
             )
         )
-        by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
+        by_status = {r["orders.status"]: r["la"] for r in resp.data}
         assert by_status == {"new": 20.0, "old": 30.0}
 
     async def test_scalar_call_inside_a_first_last_composite(self, e2e) -> None:
@@ -1156,13 +1157,13 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric="ifnull(last(amount), 0)", alias="la"),
+                    QueryMetric(metric="ifnull(last(orders.amount), 0)", alias="la"),
                 ],
             )
         )
-        by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
+        by_status = {r["orders.status"]: r["la"] for r in resp.data}
         assert by_status == {"new": 20.0, "old": 30.0}
 
 
@@ -1225,10 +1226,10 @@ class TestOuterWrapperAndShiftedCteFamilies:
                     DatasetField(name="amount", datatype=DataType.FLOAT),
                     DatasetField(name="disc", datatype=DataType.FLOAT),
                     DatasetField(name="created_at", datatype=DataType.DATETIME),
-                    # Join-crossing Column.filter => filtered-local
+                    # Relationship-crossing DatasetField.filter => filtered-local
                     # isolation => the outer combined-SELECT wrapper (R4).
                     DatasetField(
-                        name="gold_amount", sql="amount",
+                        name="gold_amount", expression="amount",
                         datatype=DataType.FLOAT,
                         filter="regions.tier = 'gold'",
                     ),
@@ -1254,13 +1255,13 @@ class TestOuterWrapperAndShiftedCteFamilies:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
-                filter=["sum(gold_amount) > 100"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                filter=["sum(orders.gold_amount) > 100"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
-        assert resp.data[0]["orders.g"] == 300.0
+        assert resp.data[0]["g"] == 300.0
 
     async def test_outer_wrapper_filter_carrying_a_scalar_call(self, tmp_path) -> None:
         """B5 on R4's route specifically — the patched scalar branch. Wrapping
@@ -1270,13 +1271,13 @@ class TestOuterWrapperAndShiftedCteFamilies:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
-                filter=["ifnull(sum(gold_amount), 0) > 100"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                filter=["ifnull(sum(orders.gold_amount), 0) > 100"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
-        assert resp.data[0]["orders.g"] == 300.0
+        assert resp.data[0]["g"] == 300.0
 
     async def test_outer_wrapper_scalar_call_is_transpiled_on_postgres(
         self, tmp_path,
@@ -1296,9 +1297,9 @@ class TestOuterWrapperAndShiftedCteFamilies:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
-                filter=["ifnull(sum(gold_amount), 0) > 100"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
+                filter=["ifnull(sum(orders.gold_amount), 0) > 100"],
             ),
             dry_run=True,
         )
@@ -1319,26 +1320,26 @@ class TestOuterWrapperAndShiftedCteFamilies:
                 population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
                 metrics=[
-                    QueryMetric(metric="sum(amount)", alias="amt"),
+                    QueryMetric(metric="sum(orders.amount)", alias="amt"),
                     QueryMetric(
-                        metric="time_shift(sum(amount), -1, 'month')",
+                        metric="time_shift(sum(orders.amount), -1, 'month')",
                         alias="prev",
                     ),
                 ],
-                filter=["status = 'new'"],
+                filter=["orders.status = 'new'"],
             )
         )
         rows = sorted(resp.data, key=lambda r: str(r["orders.created_at"]))
         assert len(rows) == 2, rows
-        assert rows[0]["orders.amt"] == 100.0
-        assert rows[1]["orders.amt"] == 200.0
+        assert rows[0]["amt"] == 100.0
+        assert rows[1]["amt"] == 200.0
         # February's shifted value is January's filtered total.
-        assert rows[1]["orders.prev"] == 100.0
+        assert rows[1]["prev"] == 100.0
 
 
 # ===========================================================================
@@ -1362,6 +1363,8 @@ def _mutation_cases():
     """
     col = FieldKey(leaf="amount")
     other = FieldKey(leaf="label")
+    ts = FieldKey(leaf="created_at")
+    other_ts = CastKey(source=other, type_text="TIMESTAMP", data_type=DataType.DATETIME)
     return [
         ("ColumnKey.leaf", col, other),
         ("ColumnKey.path", col, FieldKey(path=("customers",), leaf="amount")),
@@ -1372,13 +1375,13 @@ def _mutation_cases():
         ),
         (
             "TimeTruncKey.granularity",
-            TimeTruncKey(source=col, granularity=TimeGranularity.MONTH),
-            TimeTruncKey(source=col, granularity=TimeGranularity.YEAR),
+            TimeTruncKey(source=ts, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(source=ts, granularity=TimeGranularity.YEAR),
         ),
         (
             "TimeTruncKey.source",
-            TimeTruncKey(source=col, granularity=TimeGranularity.MONTH),
-            TimeTruncKey(source=other, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(source=ts, granularity=TimeGranularity.MONTH),
+            TimeTruncKey(source=other_ts, granularity=TimeGranularity.MONTH),
         ),
         ("StarKey.path", StarKey(), StarKey(path=("customers",))),
         (
@@ -1498,6 +1501,8 @@ class TestNoKeyFieldIsSilentlyIgnored:
                 except RenderContextMissingFacilityError:
                     continue
                 except NotImplementedError:
+                    continue
+                except UnknownReferenceError:
                     continue
             return None  # refused everywhere — fail-closed, acceptable
 
@@ -1624,7 +1629,7 @@ class TestContainsAggregate:
         """The case a phase test gets wrong.
 
         Every TransformKey is POST phase, so ``phase >= AGGREGATE`` reports
-        True even when the transform wraps a plain column — routing a
+        True even when the transform wraps a plain field — routing a
         non-aggregate predicate into HAVING.
         """
         key = TransformKey(op="cumsum", input=FieldKey(leaf="amount"))
@@ -1793,11 +1798,11 @@ class TestNewlyAdmittedScalars:
     @pytest.mark.parametrize(
         "predicate,expected_fragment",
         [
-            ("ceiling(amount) > 25", "CEIL("),
-            ("sign(amount) > 0", "SIGN("),
-            ("ltrim(status) = 'new'", "LTRIM("),
-            ("rtrim(status) = 'new'", "RTRIM("),
-            ("substring(status, 1, 3) = 'new'", "SUBSTRING("),
+            ("ceiling(orders.amount) > 25", "CEIL("),
+            ("sign(orders.amount) > 0", "SIGN("),
+            ("ltrim(orders.status) = 'new'", "LTRIM("),
+            ("rtrim(orders.status) = 'new'", "RTRIM("),
+            ("substring(orders.status, 1, 3) = 'new'", "SUBSTRING("),
         ],
     )
     async def test_binds_renders_and_executes(
@@ -1807,7 +1812,7 @@ class TestNewlyAdmittedScalars:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)", alias="n")],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
                 filter=[predicate],
             ),
         )
@@ -1871,7 +1876,7 @@ class TestParserAndBinderScalarSetsAgree:
         CASE rewrite targets, and the dialect-rendered date functions."""
         assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {
             "like", "ilike", "iif", "date_part", "date_diff", "date_add", "interval",
-            "current_date", "now",
+            "current_date", "now", "current_time",
         }
 
 
@@ -1883,20 +1888,20 @@ class TestArityIsRejectedAtBindTime:
     def _query(predicate: str) -> SlayerQuery:
         return SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
             filter=[predicate],
         )
 
     async def test_round_with_three_args_is_rejected(self, e2e) -> None:
-        query = self._query("round(amount, 2, 99) > 1")
+        query = self._query("round(orders.amount, 2, 99) > 1")
         with pytest.raises(ValueError, match="round"):
             await e2e.execute(query, dry_run=True)
 
     async def test_length_with_two_args_is_rejected(self, e2e) -> None:
         """Previously emitted ``LENGTH(a, b)`` — invalid SQL the backend
         rejected with its own, less useful error."""
-        query = self._query("length(status, status) > 1")
+        query = self._query("length(orders.status, orders.status) > 1")
         with pytest.raises(ValueError, match="length"):
             await e2e.execute(query, dry_run=True)
 
@@ -1904,9 +1909,9 @@ class TestArityIsRejectedAtBindTime:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="count(*)", alias="n")],
-                filter=["round(amount, 2) > 1"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["round(orders.amount, 2) > 1"],
             ),
             dry_run=True,
         )
@@ -2001,21 +2006,21 @@ class TestIifDirectRender:
     def _query(predicate: str) -> SlayerQuery:
         return SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
             filter=[predicate],
         )
 
     async def test_bind_time_rejects_null_in_list(self, e2e) -> None:
         """The user-facing half: caught at bind, with a message pointing at
         ``is null`` rather than at three-valued logic in the abstract."""
-        query = self._query("status in ('new', None)")
+        query = self._query("orders.status in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
             await e2e.execute(query, dry_run=True)
 
     async def test_bind_time_rejects_null_in_negated_list(self, e2e) -> None:
         """The dangerous one: this previously returned zero rows in silence."""
-        query = self._query("status not in ('new', None)")
+        query = self._query("orders.status not in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
             await e2e.execute(query, dry_run=True)
 
@@ -2023,9 +2028,9 @@ class TestIifDirectRender:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="count(*)", alias="n")],
-                filter=["status in ('new', 'missing')"],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["orders.status in ('new', 'missing')"],
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
@@ -2139,7 +2144,7 @@ class TestComparisonsAreNonAssociative:
         assert out == "NOT (orders.amount = 5) IS NULL", out
 
     def test_plain_is_null_over_a_column_gains_no_parens(self) -> None:
-        """Don't over-wrap: a column is self-delimiting."""
+        """Don't over-wrap: a field is self-delimiting."""
         key = self._cmp("is", FieldKey(leaf="amount"), LiteralKey(value=None))
         assert _sql(render_value_key(key=key, ctx=_filter_ctx())) == "orders.amount IS NULL"
 

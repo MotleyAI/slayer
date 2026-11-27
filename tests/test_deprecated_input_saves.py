@@ -1,4 +1,4 @@
-"""Saves report a converted ``strict`` on their response and persist only ``to_many_handling``; REST model saves
+"""Saves report a converted ``strict`` on their response and persist only ``to_many_handling``; REST dataset saves
 also return narrowed-access warnings.
 
 Spec: compatibility/removal-tripwire › Deprecated input forms convert with a structured warning;
@@ -24,14 +24,14 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
 from slayer.storage.sqlite_conn import transaction
 from tests._deprecated_input_helpers import deprecated_in, deprecations, recorded, strict
-from tests._model_access_fixtures import ACCESS_PARAMS, DS, AccessStore, access_store, mcp_text, must_get
+from tests._dataset_access_fixtures import ACCESS_PARAMS, DS, AccessStore, access_store, mcp_text, must_get
 
 STRICT_WORD = re.compile(r"(?<![\w])strict(?![\w])")
-PUB_COUNT = {"population": "pub", "metrics": [{"metric": "count(*)", "alias": "v"}]}
+PUB_COUNT = {"population": "pub", "metrics": [{"metric": "count(pub.*)", "alias": "v"}]}
 ROOTLESS = {"dimensions": ["pub.label"], "metrics": [{"metric": "count(pub.id)", "alias": "n"}]}
-STAGE = {"name": "s", "population": "pub", "dimensions": ["label"], "metrics": [{"metric": "count(*)", "alias": "n"}]}
-ON_STAGE = {"population": "s", "metrics": [{"metric": "sum(n)", "alias": "total"}]}
-HR_READER = {"population": "hr", "metrics": [{"metric": "sum(salary)", "alias": "v"}]}
+STAGE = {"name": "s", "population": "pub", "dimensions": ["pub.label"], "metrics": [{"metric": "count(pub.*)", "alias": "n"}]}
+ON_STAGE = {"population": "s", "metrics": [{"metric": "sum(s.n)", "alias": "total"}]}
+HR_READER = {"population": "hr", "metrics": [{"metric": "sum(hr.salary)", "alias": "v"}]}
 
 #: (source_queries, deprecated_input warnings the save reports)
 SAVED_QUERIES = {
@@ -50,7 +50,7 @@ async def store(request) -> AsyncGenerator[AccessStore]:
 
 
 def stored_documents(store: AccessStore) -> str:
-    """Every stored model and memory document, as raw text."""
+    """Every stored dataset and memory document, as raw text."""
     if store.backend == "yaml":
         texts = []
         for root, _, files in os.walk(os.path.join(store.base, "store")):
@@ -228,7 +228,7 @@ class TestMemorySave:
 
 
 async def test_reload_keeps_no_strict(store: AccessStore) -> None:
-    """A saved model reloaded from storage carries only the replacement form."""
+    """A saved dataset reloaded from storage carries only the replacement form."""
     client = TestClient(create_app(storage=store.storage))
     with recorded():
         assert client.post("/datasets", json={"name": "saved", "source_queries": [strict(PUB_COUNT)]}).status_code == 200

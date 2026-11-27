@@ -1,8 +1,8 @@
-"""DEV-1842 task 1.3 — recursion, depth, and cycles for dotted saved measures.
+"""Recursion, depth, and cycles for dotted saved metrics.
 
-Recursion runs both directions (a target measure referencing other saved
-measures; a host measure containing a dotted ref); depth is bounded (default 32,
-env-configurable); a cross-model measure cycle raises naming the (model, measure)
+Recursion runs both directions (a target metric referencing other saved
+metrics; a host metric containing a dotted ref); depth is bounded (default 32,
+env-configurable); a cross-dataset metric cycle raises naming the (dataset, metric)
 chain, detected on descent — distinct from the single-hop round-trip of task 1.6.
 """
 
@@ -57,11 +57,11 @@ class TestNestedSavedMeasure:
 
 class TestHostMeasureContainingDottedRef:
     async def test_bare_host_measure_resolves_its_dotted_ref(self):
-        """A bare host measure whose formula contains a dotted cross-model
+        """A bare host metric whose expression contains a dotted cross-dataset
         reference (``host_runs_dotted`` = ``cumsum(customers.aov)``) resolves
         recursively — identical SQL to writing the dotted form inline."""
         bare = q(dimensions=["customers.tier"],
-                 metrics=[{"metric": "host_runs_dotted", "alias": "x"}],
+                 metrics=[{"metric": "orders.host_runs_dotted", "alias": "x"}],
                  time_dimensions=month_td())
         inline = q(dimensions=["customers.tier"],
                    metrics=[{"metric": "cumsum(customers.aov)", "alias": "x"}],
@@ -72,7 +72,7 @@ class TestHostMeasureContainingDottedRef:
 class TestCrossModelCycle:
     async def test_cycle_errors_naming_the_measure_chain(self):
         """``customers.cyc_c`` → ``orders.cyc_o`` → ``customers.cyc_c`` is a
-        cross-model measure cycle. The error names the full (model, measure)
+        cross-dataset metric cycle. The error names the full (dataset, metric)
         chain, not a wrong or double-counted value."""
         query = q(metrics=[{"metric": "customers.cyc_c", "alias": "x"}])
         with pytest.raises(ValueError) as ei:
@@ -84,7 +84,7 @@ class TestCrossModelCycle:
 
 
 class TestDepthLimit:
-    """A dotted reference into a same-model chain (``sub.d1`` → ``d2`` → ``d3``)
+    """A dotted reference into a same-dataset chain (``sub.d1`` → ``d2`` → ``d3``)
     respects the configurable depth cap; exceeding it raises naming the chain."""
 
     def _datasets(self):

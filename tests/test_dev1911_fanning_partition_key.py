@@ -1,23 +1,11 @@
-"""A path-less derived partition key fanning from its host fails closed
-in every mode.
-
-A ``partition_by=`` naming a host-local derived column whose definition crosses the
-1:N ``regions → region_events`` hop (e.g. ``bad_pop = pop + region_events.value``)
-is not single-valued at the host grain, so no ``to_many_handling`` mode can count it
-inline — it is a mode-invariant input-safety error, distinct from a dimension merely
-unattributable from a further (cross-model) root, which still resolves by mode. The
-guard runs at bind (mode-unaware, one chokepoint), so it fires uniformly across every
-position the key can appear in. On the shared fixture graph, dual-engine.
-
-Covers ``queries/attribution-modes``.
-"""
+"""Unanalysable, unreachable and ambiguous partition keys fail closed; a host-safe key stays mode-aware."""
 
 from __future__ import annotations
 
 import pytest
 
 from slayer.core.enums import RelationshipCardinality
-from slayer.core.errors import AmbiguousRelationshipPathError, UnrelatedDatasetError
+from slayer.core.errors import AmbiguousRelationshipPathError, PartitionKeyError, UnrelatedDatasetError
 from slayer.core.models import (
     DatasetField,
     DataType,
@@ -26,7 +14,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import QueryMetric, SlayerQuery
 from tests._dev1900_fixtures import (
-    BAD_POP,
+    cust_q,
     dev1900_datasets,
     make_exec_engine,
     orders_q,
@@ -38,19 +26,25 @@ MODES = ["broadcast", "error", "associate"]
 
 
 def _orders_fan_datasets():
-    """dev1900 graph + an orders-local derived column whose definition crosses the
-    fanning ``regions → region_events`` hop — a path-less key on an orders host that
+    """dev1900 graph + an orders-local derived field whose definition crosses the
+    fanning ``regions → region_events`` hop — a path-less key anchored at orders that
     also carries a time axis (``ordered_at``) for the windowed position."""
     models = dev1900_datasets()
     orders = next(m for m in models if m.name == "orders")
     orders.fields.append(DatasetField(
         name="bad_amt", datatype=DataType.FLOAT,
-        sql="amount + customers.regions.region_events.value"))
+        expression="customers.regions.region_events.value"))
     return models
 
 
+@pytest.fixture(params=["sqlite", "duckdb"])
+async def fan_engine(request):
+    async for e in make_exec_engine(request, datasets=_orders_fan_datasets()):
+        yield e
+
+
 def _island_datasets():
-    """dev1900 graph + an isolated model with no join to anything — a partition key
+    """dev1900 graph + an isolated dataset with no relationship to anything — a partition key
     naming it has no route, so it fails closed upstream at dimension resolution,
     never reaching the fanning guard (nor falsely naming its hop)."""
     models = dev1900_datasets()
@@ -76,12 +70,6 @@ def _ambiguous_datasets():
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request):
     async for e in make_exec_engine(request):
-        yield e
-
-
-@pytest.fixture(params=["sqlite", "duckdb"])
-async def fan_engine(request):
-    async for e in make_exec_engine(request, datasets=_orders_fan_datasets()):
         yield e
 
 
@@ -112,105 +100,13 @@ def _regions_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-async def _assert_fails_naming_hop(eng, query: SlayerQuery) -> str:
-    """Fails closed at the bind-time partition-key safety guard, naming the fanning hop.
-    The contract-phrase assertion pins the guard (not an incidental error-mode broadcast
-    refusal, whose message names the hop too but is a different template)."""
-    with pytest.raises(ValueError) as ei:
-        await eng.execute(query)
-    msg = str(ei.value)
-    assert HOP in msg, msg
-    assert "every partition key must be attributable" in msg, msg
-    return msg
-
-
 def _status_xmodel_q(mode: str) -> SlayerQuery:
-    """Host-safe key: ``status`` is a plain orders column (safe from the orders host),
-    unattributable only from the cross-model ``customers`` root — the mode-aware case."""
+    """Anchor-safe key: ``status`` is a plain orders field (safe from its anchor orders),
+    unattributable from the aggregate's home ``customers`` — the mode-aware case."""
     return orders_q(
-        dimensions=["status"],
-        metrics=[QueryMetric(metric="sum(customers.spend, partition_by=status)", alias="w")],
+        dimensions=["orders.status"],
+        metrics=[QueryMetric(metric="sum(customers.spend, partition_by=orders.status)", alias="w")],
         to_many_handling=mode)
-
-
-class TestPathlessDerivedFanningEveryMode:
-    """Scenario: Path-less derived fanning partition key fails closed in every mode."""
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_repro_raises_naming_the_hop(self, engine, mode):
-        await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop)", alias="w")],
-            to_many_handling=mode))
-
-
-class TestChainedDerived:
-    """Scenario: Chained derived fanning partition key fails closed."""
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_chained_raises_naming_the_hop(self, engine, mode):
-        await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["bad_pop2"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop2)", alias="w")],
-            to_many_handling=mode))
-
-
-class TestEveryPosition:
-    """Scenario: Fanning partition key fails closed in every position."""
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_transform_partition_set(self, engine, mode):
-        await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="rank(sum(pop), partition_by=bad_pop, direction='desc')", alias="w")],
-            to_many_handling=mode))
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_reaggregation_inner(self, engine, mode):
-        await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["name"],
-            metrics=[QueryMetric(metric="avg(sum(pop, partition_by=bad_pop))", alias="w")],
-            to_many_handling=mode))
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_computed_dimension(self, engine, mode):
-        await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["CASE WHEN sum(pop, partition_by=bad_pop) > 150 THEN 1 ELSE 0 END"],
-            metrics=[QueryMetric(metric="sum(pop)", alias="p")],
-            to_many_handling=mode))
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_filter_position(self, engine, mode):
-        await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop)", alias="p")],
-            filter=["sum(pop, partition_by=bad_pop) > 150"],
-            to_many_handling=mode))
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_order_position(self, engine, mode):
-        await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop)", alias="p")],
-            order=[{"field": "sum(pop, partition_by=bad_pop)", "direction": "asc"}],
-            to_many_handling=mode))
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_windowed_position(self, fan_engine, mode):
-        await _assert_fails_naming_hop(fan_engine, orders_q(
-            dimensions=["bad_amt"],
-            time_dimensions=["date_trunc('month', ordered_at)"],
-            metrics=[QueryMetric(
-                metric="sum(amount, window='90d', partition_by=bad_amt)", alias="w")],
-            to_many_handling=mode))
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_cross_model_aggregate_with_fanning_host_key(self, engine, mode):
-        await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["bad_pop"],
-            metrics=[QueryMetric(
-                metric="sum(region_events.value, partition_by=bad_pop)", alias="w")],
-            to_many_handling=mode))
 
 
 class TestUnanalysableKey:
@@ -219,23 +115,23 @@ class TestUnanalysableKey:
     @pytest.mark.parametrize("mode", MODES)
     async def test_unparseable_fails_closed_no_false_hop(self, unparse_engine, mode):
         query = _regions_q(
-            dimensions=["name"],
+            dimensions=["regions.name"],
             metrics=[QueryMetric(
-                metric="sum(pop, partition_by=unparseable)", alias="w")],
+                metric="sum(regions.pop, partition_by=regions.unparseable)", alias="w")],
             to_many_handling=mode)
-        with pytest.raises(ValueError) as ei:
+        with pytest.raises(PartitionKeyError) as ei:
             await unparse_engine.execute(query)
         msg = str(ei.value)
-        assert "every partition key must be attributable" in msg, msg  # the safety guard
+        assert "unparseable" in msg, msg
         assert HOP not in msg, msg  # never invent a hop it could not prove
 
 
-class TestHostSafeKeyStaysModeAware:
+class TestAnchorSafeKeyStaysModeAware:
     """Scenario: Host-safe partition key keeps its mode-aware resolution."""
 
     async def test_associate_succeeds(self, engine):
         resp = await engine.execute(_status_xmodel_q("associate"))
-        assert _rows(resp, "orders.status", "orders.w") == pytest.approx(
+        assert _rows(resp, "orders.status", "w") == pytest.approx(
             {"new": 290.0, "ok": 420.0})
 
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
@@ -243,36 +139,16 @@ class TestHostSafeKeyStaysModeAware:
         query = _status_xmodel_q(mode)
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
-        # the mode-aware cross-model check (root=customers), NOT the fanning-from-host guard
+        # the mode-aware attribution check from the home customers, NOT the fanning-from-anchor guard
         assert "attributable from customers" in str(ei.value), str(ei.value)
 
     async def test_safe_local_derived_partition_key_executes(self, engine):
         """A local derived key (``derived_pop = pop * 2``) crosses no hop — it still runs."""
         resp = await engine.execute(_regions_q(
-            dimensions=["derived_pop"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=derived_pop)", alias="w")]))
-        assert _rows(resp, "regions.derived_pop", "regions.w") == pytest.approx(
+            dimensions=["regions.derived_pop"],
+            metrics=[QueryMetric(metric="sum(regions.pop, partition_by=regions.derived_pop)", alias="w")]))
+        assert _rows(resp, "regions.derived_pop", "w") == pytest.approx(
             {200.0: 100.0, 400.0: 200.0})
-
-
-class TestDiagnosticNamesHop:
-    """The diagnostic names the fanning hop for the path-BEARING spelling too, and
-    states the remedy."""
-
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_path_bearing_spelling_names_the_hop(self, engine, mode):
-        await _assert_fails_naming_hop(engine, orders_q(
-            dimensions=[BAD_POP],
-            metrics=[QueryMetric(
-                metric="sum(amount, partition_by=customers.regions.bad_pop)", alias="w")],
-            to_many_handling=mode))
-
-    async def test_error_names_the_remedy(self, engine):
-        msg = await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop)", alias="w")]))
-        assert "cardinality" in msg, msg
-        assert "unique key" in msg, msg
 
 
 class TestUnreachableAndAmbiguousFailClosed:
@@ -282,36 +158,86 @@ class TestUnreachableAndAmbiguousFailClosed:
 
     async def test_unreachable_path_fails_closed_no_false_hop(self, island_engine):
         query = _regions_q(
-            dimensions=["name"],
+            dimensions=["regions.name"],
             metrics=[QueryMetric(
-                metric="sum(pop, partition_by=island.value)", alias="w")])
+                metric="sum(regions.pop, partition_by=island.value)", alias="w")])
         with pytest.raises(UnrelatedDatasetError) as ei:
             await island_engine.execute(query)
         assert HOP not in str(ei.value), str(ei.value)
 
     async def test_ambiguous_path_fails_closed_deterministically(self, ambig_engine):
         query = _regions_q(
-            dimensions=["name"],
+            dimensions=["regions.name"],
             metrics=[QueryMetric(
-                metric="sum(pop, partition_by=region_events.value)", alias="w")])
+                metric="sum(regions.pop, partition_by=regions.region_events.value)", alias="w")])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await ambig_engine.execute(query)
         assert len(ei.value.candidates) == 2  # named, not silently picked
 
 
-class TestAxiom8Clause:
-    """Normative (Axiom 8): a partition key whose closure fans from its host is a
-    mode-invariant input-safety error, distinct from a dimension unattributable only
-    from a further root (which resolves by mode)."""
+def _mode(mode: str | None) -> dict:
+    return {"to_many_handling": mode} if mode else {}
 
-    @pytest.mark.parametrize("mode", MODES)
-    async def test_fanning_from_host_fails_in_every_mode(self, engine, mode):
-        await _assert_fails_naming_hop(engine, _regions_q(
-            dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop)", alias="w")],
-            to_many_handling=mode))
+
+def _windowed_bad_amt_q(metric: str, mode: str | None) -> SlayerQuery:
+    return orders_q(
+        dimensions=["orders.bad_amt"], time_dimensions=["date_trunc('month', orders.ordered_at)"],
+        metrics=[QueryMetric(metric=metric, alias="w")], **_mode(mode))
+
+
+def _bad_pop_q(metric: str, mode: str | None) -> SlayerQuery:
+    return _regions_q(dimensions=["regions.bad_pop"], metrics=[QueryMetric(metric=metric, alias="w")], **_mode(mode))
+
+
+#: (query builder, partitioned measure, its dimension spelling) — each key's closure fans from its anchor.
+_ANCHOR_FAN = {
+    "windowed": (_windowed_bad_amt_q, "sum(orders.amount, window='90d', partition_by=orders.bad_amt)",
+                 "sum(orders.amount, window='90d')"),
+    "cross_model": (_bad_pop_q, "sum(region_events.value, partition_by=regions.bad_pop)", "sum(region_events.value)"),
+    "local": (_bad_pop_q, "sum(regions.pop, partition_by=regions.bad_pop)", "sum(regions.pop)"),
+}
+
+
+def _row_set(resp) -> list:
+    return sorted(tuple(sorted((k, str(v)) for k, v in r.items())) for r in resp.data)
+
+
+class TestAnchorFanningKeyResolvesPerMode:
+    """Axiom 8: a key whose closure fans from its anchor is a dimension like any other — it associates like its
+    dimension spelling and is refused outside association."""
+
+    @pytest.mark.parametrize("mode", [None, "associate"])
+    @pytest.mark.parametrize("shape", list(_ANCHOR_FAN))
+    async def test_associates_like_the_dimension_spelling(self, fan_engine, shape, mode):
+        build, metric, plain = _ANCHOR_FAN[shape]
+        got = await fan_engine.execute(build(metric, mode))
+        assert got.data
+        assert _row_set(got) == _row_set(await fan_engine.execute(build(plain, None)))
+
+    @pytest.mark.parametrize("mode", ["broadcast", "error"])
+    @pytest.mark.parametrize("shape", list(_ANCHOR_FAN))
+    async def test_refused_outside_association(self, fan_engine, shape, mode):
+        build, metric, _plain = _ANCHOR_FAN[shape]
+        query = build(metric, mode)
+        with pytest.raises(PartitionKeyError, match=HOP):
+            await fan_engine.execute(query)
+
+
+class TestAxiom8Clause:
+    """Normative (Axiom 8): a key unattributable from the aggregation's home resolves by mode; one local to its
+    anchor is safe across a population fan."""
 
     async def test_unattributable_from_further_root_still_associates(self, engine):
         resp = await engine.execute(_status_xmodel_q("associate"))
-        assert _rows(resp, "orders.status", "orders.w") == pytest.approx(
+        assert _rows(resp, "orders.status", "w") == pytest.approx(
             {"new": 290.0, "ok": 420.0})
+
+    @pytest.mark.parametrize("mode", [*MODES, None])
+    async def test_a_key_local_to_its_anchor_is_safe_across_a_population_fan(self, engine, mode):
+        resp = await engine.execute(cust_q(
+            dimensions=["orders.status"],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=[orders.status])", alias="w")],
+            **({"to_many_handling": mode} if mode else {})))
+        plain = await engine.execute(cust_q(dimensions=["orders.status"],
+                                            metrics=[QueryMetric(metric="sum(orders.amount)", alias="w")]))
+        assert _rows(resp, "orders.status", "w") == pytest.approx(_rows(plain, "orders.status", "w"))

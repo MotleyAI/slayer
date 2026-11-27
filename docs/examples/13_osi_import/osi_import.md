@@ -1,6 +1,6 @@
 # From OSI to SLayer
 
-SLayer ingests an [OSI](https://open-semantic-interchange.org/) (Open Semantic Interchange) config — its `datasets`, `relationships`, and `metrics` — and turns it into queryable SLayer datasets, filling in column types from live introspection of your database. Here is the whole path, from install to querying it through an agent.
+SLayer stores an [OSI](https://open-semantic-interchange.org/) (Open Semantic Interchange) semantic-model document natively, as written — its `datasets`, `relationships`, and `metrics` are queryable as they are, with nothing converted. Here is the whole path, from install to querying it through an agent.
 
 ## 1. Install SLayer
 
@@ -22,7 +22,7 @@ export SLAYER_STORAGE=~/slayer-data
 
 ## 3. Register the datasource
 
-The importer reads column types live (a declared OSI `datatype` is only the fallback), so the datasource has to exist first:
+The document carries no connection: it belongs to the datasource it is imported into, so register that first (the import itself never connects to the database):
 
 ```bash
 slayer datasources create duckdb:///path/to/shop.duckdb --name shop_osi
@@ -34,7 +34,7 @@ slayer datasources create duckdb:///path/to/shop.duckdb --name shop_osi
 slayer import-osi shop.osi.yaml --datasource shop_osi
 ```
 
-Each OSI dataset becomes a SLayer dataset, each relationship a relationship, each metric a metric. See [Importing OSI configs](../../osi/osi_import.md) for exactly what converts and what fails cleanly.
+The document is stored as a [semantic model](../../concepts/semantic-models.md) of `shop_osi`, its text unchanged. See [Importing Ossie documents](../../osi/osi_import.md) for what is checked and reported.
 
 ## 5. Connect it to Claude Code
 
@@ -50,23 +50,23 @@ Now ask your agent to explore — it calls `datasets_summary`, `inspect`, `searc
 
 Two self-contained, **fully offline** notebooks build a tiny retail DuckDB and run the whole flow end to end:
 
-- [`osi_import_nb.ipynb`](osi_import_nb.ipynb) — the **library** path: import with `OsiToSlayerConverter`, query with the `SlayerClient`.
+- [`osi_import_nb.ipynb`](osi_import_nb.ipynb) — the **library** path: import with `import_osi`, query with the `SlayerClient`.
 - [`osi_import_agent_nb.ipynb`](osi_import_agent_nb.ipynb) — the **agent** path: the CLI commands above, then the MCP tools an agent calls.
 
 Both import [`shop.osi.yaml`](shop.osi.yaml) and check every answer against gold SQL.
 
 ## What the import produces
 
-Each OSI **dataset** becomes a SLayer dataset exposing its declared fields, with real column *types* from live introspection of the datasource. Each **relationship** becomes a relationship with a LEFT join, and each **metric** folds into a `DatasetMetric` expression — a dataset-scoped metric on its own dataset, a model-scoped one on the dataset the converter picks as its anchor. OSI `ai_context` and `nonportable_extensions` are carried onto the SLayer entities as descriptions and `meta`, so an agent reading the dataset sees them.
+Each OSI **dataset** is a SLayer dataset exposing exactly its declared fields. Each **relationship** is a many-to-one LEFT relationship on its `from` dataset. Each dataset **metric** is a metric of its dataset, and each top-level metric a **model-scoped** metric, queried by its bare name. OSI `ai_context` and `nonportable_extensions` are read into the entities' `meta`, so an agent reading the dataset sees them.
 
 ## The five queries
 
 | Question | SLayer query | OSI feature shown |
 |----------|--------------|-------------------|
-| Total order value | `total_amount` | simple metric (`SUM(amount)` → `sum(amount)`) |
-| Total by region | `total_amount` by `customers.regions.name` | multi-hop relationship path inferred from relationships |
-| Average order value | `aov` | derived metric (`SUM(amount) / COUNT(*)`) |
-| Amount per distinct customer | `cust_reach` | cross-dataset metric through a relationship |
-| Amount plus region population | `rev_plus_pop` | multi-hop metric with sub-query isolation |
+| Total order value | `orders.total_amount` | dataset metric (`SUM(amount)`) |
+| Total by region | `orders.total_amount` by `customers.regions.name` | multi-hop relationship path |
+| Average order value | `orders.aov` | derived metric (`SUM(amount) / COUNT(*)`) |
+| Amount per distinct customer | `cust_reach` | model-scoped metric across a relationship |
+| Amount plus region population | `rev_plus_pop` | multi-hop model-scoped metric with sub-query isolation |
 
-The region grouping and the last two metrics reach across the relationships the converter carried over from OSI — no manual SQL join is written. Every answer matches the gold SQL exactly.
+The region grouping and the last two metrics reach across the document's relationships — no manual SQL join is written. Every answer matches the gold SQL exactly.

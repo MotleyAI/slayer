@@ -1,4 +1,4 @@
-"""DEV-1908 — reverse-hop cancellation for definition defaults.
+"""Reverse-hop cancellation for definition defaults.
 
 A definition default whose qualifier names a dataset already on the query's path
 to the owner cancels the path back to that dataset (`a.b.a ≡ a`), reading its row
@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.errors import UnresolvableDimensionRelationshipError
-from slayer.core.keys import AggregateKey
+from slayer.core.keys import AggregateKey, anchor_token
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
@@ -45,13 +45,16 @@ from tests._dev1908_fixtures import (
 
 
 def _cells(resp) -> dict:
-    """`{dimension-value tuple: measure value}` over a response's rows."""
-    return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"): r["orders.w"]
+    """`{dimension-value tuple: metric value}` over a response's rows."""
+    return {tuple(v for k, v in sorted(r.items()) if k != "w"): r["w"]
             for r in resp.data}
+
+#: An aggregation read from its frame ``customers`` spells its home from there.
+C = anchor_token("customers")
 
 
 def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
-    """`home_path` of a measure's outer aggregate over the DEV-1908 graph."""
+    """`home_path` of a metric's outer aggregate over the ``_dev1908_fixtures`` graph."""
     elab = elaborate_query(
         query=orders_q(dimensions=dimensions or [],
                        metrics=[QueryMetric(metric=expression, alias="m")]),
@@ -82,31 +85,31 @@ class TestHomePaths:
 
     def test_single_cancel_homes_at_customers_regions(self):
         assert _home_path(
-            "wsum_region_pop(customers.regions.countries.gdp)") == ("customers", "regions")
+            "wsum_region_pop(customers.regions.countries.gdp)") == (C, "regions")
 
     def test_double_cancel_homes_at_customers(self):
         assert _home_path(
-            "wsum_cust_spend2(customers.regions.countries.gdp)") == ("customers",)
+            "wsum_cust_spend2(customers.regions.countries.gdp)") == (C,)
 
     def test_cancel_then_forward_deep_homes_at_customers(self):
         assert _home_path(
-            "wsum_plan_fee(customers.regions.countries.gdp)") == ("customers",)
+            "wsum_plan_fee(customers.regions.countries.gdp)") == (C,)
 
     def test_two_frame_homes_at_customers(self):
         assert _home_path(
-            "wsum_two(customers.regions.countries.gdp)") == ("customers",)
+            "wsum_two(customers.regions.countries.gdp)") == (C,)
 
     def test_events_cancel_homes_at_region_events(self):
         assert _home_path("wsum_rp(customers.regions.region_events.value)") \
-            == ("customers", "regions", "region_events")
+            == (C, "regions", "region_events")
 
     # --- pins that already hold (root-fallback / root-name resolution) ---
     def test_cancel_then_forward_shallow_homes_at_customers_pin(self):
-        assert _home_path("wsum_cust_plan_fee(customers.regions.pop)") == ("customers",)
+        assert _home_path("wsum_cust_plan_fee(customers.regions.pop)") == (C,)
 
     def test_owner_at_root_self_name_homes_at_root_pin(self):
-        assert _home_path("wself(amount)") == ()
-        assert _home_path("wself_expr(amount)") == ()
+        assert _home_path("wself(orders.amount)") == ()
+        assert _home_path("wself_expr(orders.amount)") == ()
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -118,7 +121,7 @@ async def engine(request):
 async def _value(engine, expression: str) -> float:
     resp = await engine.execute(
         orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
-    return float(resp.data[0]["orders.w"])
+    return float(resp.data[0]["w"])
 
 
 class TestExecutedValues:
@@ -179,9 +182,9 @@ class TestExecutedValues:
 
     async def test_owner_at_root_self_name_pin(self, engine):
         for agg in ("wself", "wself_expr"):
-            explicit = await _value(engine, f"{agg}(amount, weight=cost)")
+            explicit = await _value(engine, f"{agg}(orders.amount, weight=orders.cost)")
             assert explicit == pytest.approx(SELF)
-            default = await _value(engine, f"{agg}(amount)")
+            default = await _value(engine, f"{agg}(orders.amount)")
             assert default == pytest.approx(explicit)
 
 
@@ -189,7 +192,7 @@ class TestExecutedValues:
 async def test_ship_region_extension_edge_name_spelling_survives(dialect):
     # An inline ModelExtension names the regions hop `ship_region`; the default
     # cancels to that spelling (ship_region.pop), matching the explicit twin. Each
-    # query runs on its own engine (an extension mutates the shared stored model).
+    # query runs on its own engine (an extension mutates the shared stored dataset).
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
@@ -202,12 +205,12 @@ async def test_ship_region_extension_edge_name_spelling_survives(dialect):
             resp = await e.execute(query)
             dry = await e.execute(query, dry_run=True)
             assert dry.sql is not None
-            return float(resp.data[0]["orders.w"]), dry.sql
+            return float(resp.data[0]["w"]), dry.sql
 
     ev, explicit_sql = await run(
-        "wsum_region_pop(ship_region.countries.gdp, weight=ship_region.pop)")
+        "wsum_region_pop(orders.ship_region.countries.gdp, weight=orders.ship_region.pop)")
     assert ev == pytest.approx(SINGLE_CANCEL)
-    dv, default_sql = await run("wsum_region_pop(ship_region.countries.gdp)")
+    dv, default_sql = await run("wsum_region_pop(orders.ship_region.countries.gdp)")
     assert dv == pytest.approx(ev)
     # Spelling survives: the default reads pop through the ship_region-joined
     # regions, never a second `regions` join (which the current fan renders).
@@ -223,10 +226,10 @@ class TestKernelExpressionDefaults:
         # engine's current state, so a later execute would otherwise mask it).
         base = "wsum_region_pop_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
-            dimensions=["status"], to_many_handling="associate",
+            dimensions=["orders.status"], to_many_handling="associate",
             metrics=[QueryMetric(metric=base, alias="w")])))
         explicit = _cells(await engine.execute(orders_q(
-            dimensions=["status"], to_many_handling="associate",
+            dimensions=["orders.status"], to_many_handling="associate",
             metrics=[QueryMetric(metric=f"{base[:-1]}, weight=customers.regions.pop)",
                                    alias="w")])))
         assert default == explicit
@@ -247,7 +250,7 @@ class TestKernelExpressionDefaults:
         assert months == WINDOW_EXPR
 
     async def test_second_order_root_frame_expression_default_pin(self, engine):
-        inner = "sum(amount, partition_by=customers.regions.id)"
+        inner = "sum(orders.amount, partition_by=customers.regions.id)"
         default = await _value(engine, f"wavg_pop_expr({inner})")
         explicit = await _value(
             engine, f"wavg_pop_expr({inner}, weight=customers.regions.pop)")
@@ -258,11 +261,11 @@ class TestKernelExpressionDefaults:
 class TestStageQueryUnaffected:
     async def test_two_stage_query_has_no_model_host(self, engine):
         """A later stage aggregating a stage's output resolves no definition
-        default (a stage has no model host) — executes exactly as before."""
-        stage1 = orders_q(name="stage1", dimensions=["status"],
-                          metrics=[QueryMetric(metric="sum(amount)", alias="amount_sum")])
-        root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="status")],
-                           metrics=[QueryMetric(metric="max(amount_sum)", alias="mx")])
+        default (a stage has no dataset host) — executes exactly as before."""
+        stage1 = orders_q(name="stage1", dimensions=["orders.status"],
+                          metrics=[QueryMetric(metric="sum(orders.amount)", alias="amount_sum")])
+        root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="stage1.status")],
+                           metrics=[QueryMetric(metric="max(stage1.amount_sum)", alias="mx")])
         resp = await engine.execute([stage1, root])
         vals = sorted(float(next(v for k, v in r.items() if "mx" in k))
                       for r in resp.data)
@@ -273,7 +276,7 @@ class TestCancelThenFanningHop:
     """α: the default homes at the fanned dataset exactly as its explicit twin."""
 
     def test_homes_like_the_explicit_twin(self):
-        home = ("customers", "regions", "region_events")
+        home = (C, "regions", "region_events")
         assert _home_path("wsum_fan(customers.regions.countries.gdp)") == home
         assert _home_path("wsum_fan(customers.regions.countries.gdp, "
                           "weight=customers.regions.region_events.value)") == home
@@ -289,6 +292,15 @@ class TestCancelThenFanningHop:
         assert plain == pytest.approx(explicit)
 
 
+class TestReverseHopNotOnThePath:
+    async def test_reverse_hop_default_homes_on_customers(self):
+        # Rooted at regions, `customers` is not on the path: nothing cancels, the
+        # default homes on customers, and it plans exactly as its explicit twin.
+        default = await _gen("wsum_cust_spend(regions.pop)", source_dataset="regions")
+        explicit = await _gen("wsum_cust_spend(regions.pop, weight=customers.spend)", source_dataset="regions")
+        assert default == explicit
+
+
 class TestFailClosed:
     async def test_cancel_then_miss_fails_closed(self):
         # D3: `regions` cancels, then `plans` misses (not a hop from regions) —
@@ -298,21 +310,11 @@ class TestFailClosed:
 
     async def test_second_order_nowhere_default_raises_unresolvable(self):
         with pytest.raises(UnresolvableDimensionRelationshipError, match="(?i)nowhere"):
-            await _gen("wnowhere(sum(amount, partition_by=status))")
+            await _gen("wnowhere(sum(orders.amount, partition_by=orders.status))")
 
     async def test_query_typed_revisit_raises_circular_join(self):
-        # DEV-1952 owns the model-SQL derived-column revisit; only the query-typed
+        # test_dev1952_derived_revisit owns the dataset-SQL derived-field revisit; only the query-typed
         # revisit is pinned here.
         with pytest.raises(ValueError, match="(?i)circular"):
             await _gen("sum(customers.regions.customers.spend)")
 
-    @pytest.mark.parametrize("formula", [
-        "wsum_cust_spend(pop)",
-        "wsum_cust_spend(pop, weight=customers.spend)"])
-    async def test_reverse_hop_not_on_the_path_stays_refused(self, formula):
-        # Rooted at regions, `customers` is not on the path: nothing cancels, and
-        # BOTH the default and its explicit twin fail with the same input-safety
-        # error naming customers.
-        with pytest.raises(ValueError, match="(?i)unproven relationship hop") as ei:
-            await _gen(formula, source_dataset="regions")
-        assert "customers" in str(ei.value)

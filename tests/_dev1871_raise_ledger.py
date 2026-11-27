@@ -63,10 +63,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_CI, function="compile_query", exc="ValueError",
          message="compile_query needs an environment produced by elaborate_query (its compile inputs are unset).",
          category="internal", family="internal", user=False, owner="compiler"),
-    _row(module=_EE, function="check_dimension_temporal_axis", exc="TimeAxisError",
-         message="A time-ordered transform evaluates at a grain that does not contain its time axis '…'; a producer bucketed by time joined back on the coarser grain would duplicate result rows."
-         + AT + "transform …"
-         + SUGGEST + "Include the time key in the aggregate's partition_by= so the transform accumulates within its own grain.",
+    _row(module=_EE, function="check_temporal_axis", exc="TimeAxisError",
+         message="The operand of …() is at a grain that does not contain the time axis '…', so it does not vary along it."
+         + AT + "… …"
+         + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_WD, function="parse_window_duration", exc="WindowDurationError",
          message="Window duration must be a compact duration string like '90d', got …."
@@ -132,10 +132,22 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="A time dimension is row-level; its expression reads an aggregate or transform."
          + AT + "time dimension …" + SUGGEST + "Bucket a field or a row-level expression of fields.",
          category="checker", family="time-axis", user=True, owner="checker"),
-    _row(module=_EE, function="check_time_dimension_home", exc="UnsafeRelationshipInputError",
-         message="The time dimension reads …, which crosses an unproven or fanning relationship hop to … from …: no "
-         "dataset determines every field the expression reads." + AT + "time dimension …" + SUGGEST + "…",
-         category="checker", family="time-axis", user=True, owner="checker"),
+    _row(module=_EE, function="check_row_expression_home", exc="UnsafeRelationshipInputError",
+         message="The expression reads …, from …: no dataset determines every field it reads." + AT + "…"
+         + SUGGEST + "Aggregate one operand to a grain the other's dataset determines, or group by each field as "
+         "its own dimension.",
+         category="checker", family="cross-model", user=True, owner="checker"),
+    _row(module=_EE, function="check_raw_row_determined", exc="DistinctDimensionValuesError",
+         message="distinct_dimension_values=False lists one row per row of …, but the … reads … across the fanning or "
+         "unproven relationship hop to …, which would repeat rows of …." + AT + "… …"
+         + SUGGEST + "Name the finer dataset as `population`, declare the hop's cardinality or a covering unique key, "
+         "or set distinct_dimension_values=True (the default).",
+         category="checker", family="positions", user=True, owner="checker"),
+    _row(module=_EE, function="check_entry_dependencies_analyzable", exc="UnanalyzableDependencyError",
+         message="The … reads derived field …, whose definition no supported dialect can analyse for relationship "
+         "dependencies; an unanalyzable dependency is unsafe." + AT + "… …"
+         + SUGGEST + "Fix the field's SQL, or remove it from the ….",
+         category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
          + SUGGEST + "Pass a field declared DATE / TIMESTAMP (set DatasetField.datatype), min/max/first/last of one, "
@@ -170,7 +182,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="'…' is not a number, so it cannot meet the number `…`."
          + SUGGEST + "Compare with a number (e.g. 100), or compare text with text.",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
-    _row(module=_EE, function="_numeric_scalar_args", exc="ScalarOperandTypeError",
+    _row(module=_EE, function="_raise_numeric_text", exc="ScalarOperandTypeError",
          message="…() reads numbers, but `…` is TEXT."
          + SUGGEST + "Convert numbers stored as text: …(TRY_CAST(… AS DOUBLE)).",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
@@ -193,8 +205,8 @@ ROWS: Tuple[LedgerRow, ...] = (
          "or compare it with a plain value.",
          category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="check_time_transforms_resolved", exc="TimeAxisError",
-         message="The transform requires an unambiguous time dimension."
-         + AT + "transform …" + SUGGEST + "…",
+         message="The … requires an unambiguous time dimension."
+         + AT + "… …" + SUGGEST + "…",
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="check_partition_key_resolves", exc="PartitionKeyError",
          message="The partition_by field '…' is ambiguous — it is a time dimension at multiple granularities."
@@ -219,10 +231,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_SP, function="_assert_attach_covers_producer_grain", exc="ValueError",
          message="Regroup attach join keys do not match the producer's grouping grain; the join must cover the complete grain or it changes cardinality.",
          category="internal", family="internal", user=False, owner="compiler"),
-    _row(module=_EE, function="check_partition_key_attributable", exc="PartitionKeyError",
-         message="The partition_by field '…' …; every partition key must be attributable from the aggregate's root."
+    _row(module=_EE, function="check_partition_key_analysable", exc="PartitionKeyError",
+         message="The partition_by field '…' has a definition whose relationship paths cannot be analysed, so its attributability from the aggregate's home is unknown."
          + AT + "…"
-         + SUGGEST + "…",
+         + SUGGEST + "Partition by a field whose definition references other fields by name.",
          category="checker", family="local-partitioned", user=True, owner="checker"),
     _row(module=_EE, function="check_cross_dataset_inputs_safe", exc="UnsafeRelationshipInputError",
          message="The cross-dataset aggregate reads an input across an unproven relationship hop to … from …."
@@ -234,17 +246,24 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "metric …"
          + SUGGEST + "…",
          category="checker", family="cross-model", user=True, owner="checker"),
-    # An input whose derived-column definition cannot be analysed is unsafe, not empty.
+    # An input whose derived-field definition cannot be analysed is unsafe, not empty.
     _row(module=_EE, function="check_input_dependencies_analyzable", exc="UnanalyzableDependencyError",
          message="The aggregate names derived field …, whose definition no supported dialect can analyse for relationship dependencies; an unanalyzable dependency is unsafe."
          + AT + "metric …"
          + SUGGEST + "Fix the field's SQL, or remove it from the aggregate.",
          category="checker", family="cross-model", user=True, owner="checker"),
-    # Its unnameable arm: the closure is unanalysable but no single column can be named.
+    # Its unnameable arm: the closure is unanalysable but no single field can be named.
     _row(module=_EE, function="check_input_dependencies_analyzable", exc="UnanalyzableDependencyError",
          message="The aggregate has an input dependency whose definition no supported dialect can analyse for relationship dependencies; an unanalyzable dependency is unsafe."
          + AT + "metric …"
          + SUGGEST + "Fix the input's SQL, or remove it from the aggregate.",
+         category="checker", family="cross-model", user=True, owner="checker"),
+    _row(module=_EE, function="check_inputs_trusted", exc="UnsafeRelationshipInputError",
+         message="The aggregate reads an input across the untrusted relationship … → …: with repeated … rows it would "
+         "read one of several matching values."
+         + AT + "metric …"
+         + SUGGEST + "Mark the relationship … → … trusted, or record its key as an enforced key of …; or omit "
+         "to_many_handling to read one matching value per … row.",
          category="checker", family="cross-model", user=True, owner="checker"),
     _row(module=_EE, function="check_local_producer_inputs_safe", exc="UnsafeRelationshipInputError",
          message="The aggregate ranks/reads by …, which crosses an unproven relationship hop to … from …."
@@ -275,10 +294,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_cross_dataset_source_resolves", exc="UnsafeRelationshipInputError",
          message="Cross-dataset aggregate source path … does not resolve to a dataset from ….",
          category="checker", family="cross-model", user=True, owner="checker"),
-    _row(module=_EE, function="check_cross_dataset_partition_keys_attributable", exc="PartitionKeyError",
-         message="The cross-dataset aggregate declares partition_by=…, which …; every explicit partition key must be attributable from …."
+    _row(module=_EE, function="check_partition_keys_attributable", exc="PartitionKeyError",
+         message="The aggregate declares partition_by=…, which …; outside association every explicit partition key must be attributable from …."
          + AT + "metric …"
-         + SUGGEST + "…",
+         + SUGGEST + "Omit to_many_handling (or set 'associate') to compute at that grain over the distinct … rows, or declare relationship cardinality or a covering unique key on the target.",
          category="checker", family="cross-model", user=True, owner="checker"),
     _row(module=_EE, function="check_windowed_time_axis_attributable", exc="TimeAxisError",
          message="The windowed aggregate has no active time dimension."
@@ -288,13 +307,9 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_windowed_time_axis_attributable", exc="TimeAxisError",
          message="The windowed aggregate needs the query's active time dimension ('…') attributable from …, but it crosses a fanning relationship."
          + AT + "metric …"
-         + SUGGEST + "…",
+         + SUGGEST + "Omit to_many_handling (or set 'associate') to count each home row once per bucket, "
+         "or declare relationship cardinality or a covering unique key on the target.",
          category="checker", family="cross-model", user=True, owner="checker"),
-    _row(module=_EE, function="check_association_windowed_ranked", exc="AssociationError",
-         message="The aggregate needs distinct-entity association over an unattributable dimension, which is unsupported in combination with window=/first/last."
-         + AT + "metric …"
-         + SUGGEST + "Drop the window/first-last or attribute the dimension.",
-         category="checker", family="association", user=True, owner="checker"),
     _row(module=_EE, function="check_parameter_determined", exc="ParameterGrainError",
          message="Parameter … is not determined by the operand grain (…); the aggregation reads one value per cell of that grain."
          + AT + "metric …"
@@ -306,12 +321,17 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "filter …"
          + SUGGEST + "Fix the field's SQL, or remove the filter.",
          category="checker", family="filters", user=True, owner="checker"),
-    # Its unnameable arm: the closure is unanalysable but no single column can be named.
+    # Its unnameable arm: the closure is unanalysable but no single field can be named.
     _row(module=_EE, function="check_filter_dependencies_analyzable", exc="UnanalyzableDependencyError",
          message="The filter has a dependency whose definition no supported dialect can analyse for relationship dependencies; an unanalyzable dependency is unsafe."
          + AT + "filter …"
          + SUGGEST + "Fix the referenced field's SQL, or remove the filter.",
          category="checker", family="filters", user=True, owner="checker"),
+    _row(module=_EE, function="check_ranking_key_determined", exc="UnsafeRelationshipInputError",
+         message="The ranking key … is not determined by …; each ranked row needs one key value."
+         + AT + "aggregation …"
+         + SUGGEST + "Rank by a field of the ranked dataset, or by an aggregate grained within it.",
+         category="checker", family="ranking-key", user=True, owner="checker"),
     _row(module=_EE, function="check_reaggregation_no_window", exc="ReaggregationError",
          message="The re-aggregation cannot carry window= on its outer aggregation."
          + AT + "metric …"
@@ -320,7 +340,7 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_EE, function="check_reaggregation_dims_attributable", exc="ReaggregationError",
          message="The re-aggregation cannot attribute dimension(s) … to the operand dataset under to_many_handling='error'."
          + AT + "metric …"
-         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or choose 'broadcast'/'associate'.",
+         + SUGGEST + "Add them to the inner partition_by= so the operand is grained by them, or omit to_many_handling to associate them.",
          category="checker", family="reaggregation", user=True, owner="checker"),
     _row(module=_EE, function="check_reaggregation_outer_keys_determined", exc="PartitionKeyError",
          message="The re-aggregation's explicit outer partition_by key(s) … are not determined by its operand grain (…)."
@@ -330,6 +350,10 @@ ROWS: Tuple[LedgerRow, ...] = (
     _row(module=_SP, function="_assert_total_routing", exc="ValueError",
          message="Aggregate … in a … received no routing disposition (inline, producer substitution, or explicit rejection) — the planner cannot compile this shape.",
          category="internal", family="internal", user=False, owner="compiler"),
+    _row(module=_SP, function="_grain_anchor", exc="PopulationInferenceError", message="",
+         category="compiler", family="population", user=True, owner="compiler", sites=2),
+    _row(module=_SP, function="_operand_supply", exc="PopulationInferenceError", message="",
+         category="compiler", family="population", user=True, owner="compiler"),
     _row(module=_EE, function="check_reserved_regroup_prefix", exc="NameCollisionError",
          message="Field(s) … use the reserved '__regroup__' prefix, which collides with the regroup primitive's placeholders."
          + SUGGEST + "Rename them.",
@@ -348,17 +372,12 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + 'Define a derived field that extracts a comparable value instead, e.g. sql="payload->>\'status\'" with type TEXT.',
          category="checker", family="regroup-roots", user=True, owner="checker"),
     _row(module=_EE, function="check_computed_dim_name_collision", exc="NameCollisionError",
-         message="The computed dimension name collides with an existing field or metric on dataset …."
-         + AT + "dimension …"
-         + SUGGEST + "Choose a different name.",
-         category="checker", family="names", user=True, owner="checker"),
-    _row(module=_EE, function="check_computed_dim_name_collision", exc="NameCollisionError",
          message="The computed dimension name collides with a query metric of the same name."
          + AT + "dimension …"
          + SUGGEST + "Choose a different name.",
          category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_computed_dimension", exc="ComputedDimensionError",
-         message="The transform '…' inside the computed dimension must take an aggregate input — a transform acts on aggregates, e.g. …(sum(amount, partition_by=city))."
+         message="The transform '…' inside the computed dimension must take an aggregate input — a transform acts on aggregates, e.g. …(sum(orders.amount, partition_by=orders.city))."
          + AT + "dimension …",
          category="checker", family="regroup-roots", user=True, owner="checker"),
     _row(module=_EE, function="check_computed_dimension", exc="ComputedDimensionError",
@@ -371,12 +390,12 @@ ROWS: Tuple[LedgerRow, ...] = (
          + SUGGEST + "Remove the flag (the default aggregates) or drop the aggregate from the dimension.",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_computed_dimension", exc="ComputedDimensionError",
-         message="The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
+         message="The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping."
          + AT + "dimension …",
          category="checker", family="regroup-roots", user=True, owner="checker"),
     _row(module=_EE, function="check_stage_flatten_collision", exc="NameCollisionError",
-         message="Stage field name collision on …: two projected fields flatten to the same downstream name."
-         + SUGGEST + "Give one an explicit metric `name` to disambiguate.",
+         message="Stage field name collision on …: two projected fields… flatten to the same downstream name."
+         + SUGGEST + "Give one an explicit alias to disambiguate.",
          category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_metric_dedupe_collision", exc="NameCollisionError",
          message="Metrics … and … both derive the result key … but compute different values."
@@ -388,16 +407,11 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="checker", family="names", user=True, owner="checker"),
 
     _row(module=_EE, function="validate_dataset_filter", exc="DatasetFilterError",
-         message="The dataset filter references metric …. Dataset filters can only reference table columns (WHERE)."
+         message="The dataset filter references metric …. Dataset filters can only reference row-level fields (WHERE)."
          + AT + "dataset filter …"
          + SUGGEST + "Use query-level filters for metric conditions.",
          category="checker", family="model-filters", user=True, owner="checker"),
-    _row(module=_EE, function="validate_dataset_filter", exc="DatasetFilterError",
-         message="The dataset filter references field … whose SQL contains a window function."
-         + AT + "dataset filter …"
-         + SUGGEST + "Factor it into a multi-stage source_queries dataset or use a rank-family transform at query time.",
-         category="checker", family="model-filters", user=True, owner="checker"),
-    # Two sites: leaf-collision disambiguation and same-column multi-granularity.
+    # Two sites: leaf-collision disambiguation and same-field multi-granularity.
     _row(module=_BI, function="_resolve_main_time_dimension", exc="AmbiguousReferenceError", message="",
          category="bind", family="time-axis", user=True, owner="bind", sites=2),
     _row(module=_BI, function="_resolve_main_time_dimension", exc="UnknownReferenceError", message="",
@@ -406,6 +420,8 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="Order key date_trunc('…', …) has no matching projected time dimension. Project date_trunc('…', …) in dimensions to order by its bucket.",
          category="bind", family="time-axis", user=True, owner="bind"),
     _row(module=_BI, function="_bind_inner_restriction", exc="AmbiguousRelationshipPathError", message="",
+         category="bind", family="joins", user=True, owner="bind"),
+    _row(module=_BI, function="_bind_inner_restriction", exc="UnresolvableDimensionRelationshipError", message="",
          category="bind", family="joins", user=True, owner="bind"),
     _row(module=_BI, function="_bind_inner_restriction", exc="QueryExtensionError",
          message="The … restricts the population, but no relationship path reaches … from it.",
@@ -422,14 +438,12 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_metrics_at_query_grain", exc="PositionTypingError",
          message="'…' needs an aggregation inside an expression. This metric references row-level …, not available at the query grain (not among the query dimensions).\n  at metric …"
-         + SUGGEST + "Wrap it in an aggregation (e.g., 'sum(…)', 'avg(…)'), or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
+         + SUGGEST + "Wrap it in an aggregation (e.g., 'sum(…)', 'avg(…)'), or add it to the query dimensions. For COUNT(*), use 'count(<dataset>.*)'.",
          category="checker", family="positions", user=True, owner="checker"),
     _row(module=_EE, function="check_metrics_at_query_grain", exc="PositionTypingError",
          message="This metric references row-level …, not available at the query grain (not among the query dimensions).\n  at metric …"
          + SUGGEST + "Add the row-level reference to the query dimensions, or aggregate it.",
          category="checker", family="positions", user=True, owner="checker"),
-    _row(module=_EE, function="check_metric_name_collision", exc="MetricNameCollidesWithFieldError", message="",
-         category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_canonical_alias_shadows_field", exc="CanonicalAliasShadowsFieldError", message="",
          category="checker", family="names", user=True, owner="checker"),
     _row(module=_EE, function="check_duplicate_metric_name", exc="DuplicateMetricNameError", message="",
@@ -538,4 +552,24 @@ ROWS: Tuple[LedgerRow, ...] = (
          message='Order key … is a list, which has no sort order.'
          + SUGGEST + 'Order by a scalar field, or by length(...) of the list.',
          category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function="check_row_window", exc="WindowFunctionError",
+         message="The window `…` names no dataset, so no rows to run over: it reads no field, or only the time "
+         "spine's." + SUGGEST + "Read a field of the dataset whose rows it numbers or aggregates, e.g. ORDER BY "
+         "orders.id.",
+         category="checker", family="windows", user=True, owner="checker"),
+    _row(module=_EE, function="_check_window_operands", exc="WindowFunctionError",
+         message="The window `…` reads `…` per cell, but it is neither aggregate-valued nor a member of the "
+         "window's operand grain." + SUGGEST + "Add `…` as a dimension, or aggregate it.",
+         category="checker", family="windows", user=True, owner="checker"),
+    _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
+         message="…() does not take `…`: it is a time of day (Time), which only hour, minute and second read."
+         + SUGGEST + "Read a part with date_part('hour' | 'minute' | 'second', x), or pass a DATE / TIMESTAMP value.",
+         category="checker", family="time-of-day", user=True, owner="checker"),
+    _row(module=_EE, function="_refuse_time_of_day", exc="ScalarOperandTypeError",
+         message="`…` …: `…` is a time of day (Time)." + SUGGEST + "A time of day compares with another time of day "
+         "(or a 'HH:MM:SS' string) and takes no arithmetic; read its parts with hour(), minute() and second().",
+         category="checker", family="time-of-day", user=True, owner="checker"),
+    _row(module=_EE, function="_time_literal", exc="TimeLiteralError",
+         message="'…' is not a time of day." + AT + "comparison with `…`" + SUGGEST + "Write ….",
+         category="checker", family="time-of-day", user=True, owner="checker"),
 )

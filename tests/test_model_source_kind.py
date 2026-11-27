@@ -1,4 +1,4 @@
-"""Persist what kind of database object backs a model."""
+"""Persist what kind of database object backs a dataset."""
 from __future__ import annotations
 
 import tempfile
@@ -124,7 +124,7 @@ class TestPersistence:
             sql_table="v_orders",
             data_source="ds",
             source_kind="view",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         loaded = await storage.get_dataset("v_orders", data_source="ds")
@@ -138,7 +138,7 @@ class TestPersistence:
             sql_table="mv_orders",
             data_source="ds",
             source_kind="materialized_view",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         loaded = await storage.get_dataset("mv_orders", data_source="ds")
@@ -146,7 +146,7 @@ class TestPersistence:
         assert loaded.source_kind == "materialized_view"
 
     def test_defaults_to_none(self) -> None:
-        """Hand-authored and sql-mode models have no live object, so None is correct."""
+        """Hand-authored and sql-mode datasets have no live object, so None is correct."""
         assert (
             SlayerDataset(name="m", sql_table="t", data_source="ds").source_kind
             is None
@@ -191,7 +191,7 @@ class TestMigration:
         assert migrated["version"] == CURRENT_VERSIONS["SlayerModel"]
 
     def test_v7_payload_loads_with_unknown_source_kind(self) -> None:
-        """A pre-existing model cannot know what backed it — None is correct."""
+        """A pre-existing dataset cannot know what backed it — None is correct."""
         model = SlayerDataset.model_validate(
             {
                 "version": 7,
@@ -275,7 +275,7 @@ class TestSourceKindRefresh:
         assert second.source_kind == "view"
 
     async def test_refresh_reports_the_change(self, workspace: Path) -> None:
-        """A kind change with no column change must still surface as a ModelAddition."""
+        """A kind change with no field change must still surface as a DatasetAddition."""
         db_path, ds = _ds(
             workspace,
             """
@@ -296,20 +296,20 @@ class TestSourceKindRefresh:
         assert addition.kind_change == "view → table"
 
     async def test_none_never_erases_a_known_value(self, workspace: Path) -> None:
-        """A fresh model with kind None must not wipe a persisted value."""
+        """A fresh dataset with kind None must not wipe a persisted value."""
         persisted = SlayerDataset(
             name="foo",
             sql_table="foo",
             data_source="ds",
             source_kind="view",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         fresh = SlayerDataset(
             name="foo",
             sql_table="foo",
             data_source="ds",
             source_kind=None,
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         outcome = _additive_merge_existing(persisted=persisted, fresh=fresh)
         assert outcome.kind_changed is False
@@ -322,7 +322,7 @@ class TestSourceKindRefresh:
             sql_table="foo",
             data_source="ds",
             source_kind="table",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
+            fields=[DatasetField(name="id", expression="id", datatype=DataType.INTEGER)],
         )
         outcome = _additive_merge_existing(
             persisted=model, fresh=model.model_copy(deep=True)

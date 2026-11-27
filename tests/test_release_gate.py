@@ -26,8 +26,8 @@ DEV_SLAYER = Path(sys.executable).parent / "slayer"
 WORKFLOWS = ("publish.yml", "publish-test.yml")
 HEADLINE = {
     "population": "orders",
-    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
-    "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
+    "metrics": ["sum(orders.order_total)", "change_pct(sum(orders.order_total))"],
+    "dimensions": ["stores.name", "date_trunc('month', orders.ordered_at)"],
 }
 
 _FAKE_SLAYER = '''#!{interpreter}
@@ -35,7 +35,7 @@ import json, os, sys, time
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 B = json.loads({behaviour!r})
 ROWS = [{{"orders.stores.name": "Brooklyn", "orders.order_total_sum": 1.0}}]
@@ -52,11 +52,16 @@ def record_query(leg, query):
 def mcp_server():
     if B["mcp"] == "hang":
         time.sleep(3600)
-    server = FastMCP("fake-slayer")
+    time.sleep(B["mcp_start_delay"])
+    server = MCPServer("fake-slayer")
+    first_call = [True]
 
     @server.tool()
     def query(query: Any, variables: Any = None, refine: Any = None, show_sql: bool = False,
               dry_run: bool = False, explain: bool = False, format: str = "markdown") -> Any:
+        if first_call:
+            first_call.clear()
+            time.sleep(B["mcp_first_call_delay"])
         record_query("mcp", query)
         if B["mcp"] == "is_error":
             raise ValueError("fake failure")
@@ -79,7 +84,7 @@ def mcp_server():
                 descriptions_max_chars: Any = None) -> str:
         if B["mcp"] == "inspect_hang":
             time.sleep(3600)
-        return json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["mcp_joins"]}})
+        return json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["mcp_relationships"]}})
 
     server.run()
 
@@ -103,7 +108,7 @@ def main():
         print({{"rows": json.dumps(ROWS), "empty": "[]", "non_json": "| a |\\n|---|\\n| 1 |",
                "object": json.dumps({{"rows": 1}})}}[B["cli_query"]])
     elif command == "inspect":
-        print(json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["cli_joins"]}}))
+        print(json.dumps({{"name": "orders", "entity_type": "dataset", "relationships_to": B["cli_relationships"]}}))
     elif command == "mcp":
         mcp_server()
     return 0
@@ -119,9 +124,11 @@ class Behaviour(BaseModel):
     version: str = "9.9.9"
     ingest: str = "ok"
     cli_query: str = "rows"
-    cli_joins: list[str] = ["customers", "stores"]
+    cli_relationships: list[str] = ["customers", "stores"]
     mcp: str = "ok"
-    mcp_joins: list[str] = ["customers", "stores"]
+    mcp_relationships: list[str] = ["customers", "stores"]
+    mcp_start_delay: float = 0.0
+    mcp_first_call_delay: float = 0.0
 
 
 class Invocation(BaseModel):
@@ -150,6 +157,14 @@ def _fake_slayer(directory: Path, behaviour: Behaviour, *, interpreter: str = sy
     path.write_text(_FAKE_SLAYER.format(interpreter=interpreter, behaviour=payload), encoding="utf-8")
     path.chmod(0o755)
     return path
+
+
+def _pythonpath_interpreter(directory: Path, entry: Path) -> str:
+    """A ``sys.executable`` wrapper that puts ``entry`` on ``PYTHONPATH``."""
+    wrapper = directory / "python-wrapper"
+    wrapper.write_text(f'#!/bin/sh\nPYTHONPATH="{entry}" exec "{sys.executable}" "$@"\n')
+    wrapper.chmod(0o755)
+    return str(wrapper)
 
 
 def _invocations(directory: Path) -> list[Invocation]:
@@ -204,7 +219,9 @@ def checkout(tmp_path: Path) -> Path:
 
 @pytest.mark.timeout(600)  # real demo ingest + CLI + MCP legs: ~90-120 s on CI runners
 def test_real_gate_passes_against_the_dev_install(tmp_path: Path, checkout: Path) -> None:
-    result = _gate(slayer=DEV_SLAYER, wheel=_wheel(tmp_path, version("motley-slayer")), checkout=checkout, timeout=540)
+    # A loaded test runner can take over 10s to start a cold server; the wheel gate keeps the 10s default.
+    result = _gate(slayer=DEV_SLAYER, wheel=_wheel(tmp_path, version("motley-slayer")), checkout=checkout,
+                   extra=("--mcp-handshake-limit", "60"), timeout=540)
     assert result.returncode == 0, result.stdout + result.stderr
     assert _failed_checks(result) == []
 
@@ -285,14 +302,14 @@ def test_child_processes_get_a_clean_environment(tmp_path: Path, checkout: Path)
         pytest.param(Behaviour(cli_query="empty"), "cli query", id="cli-empty-rows"),
         pytest.param(Behaviour(cli_query="non_json"), "cli query", id="cli-non-json"),
         pytest.param(Behaviour(cli_query="object"), "cli query", id="cli-not-a-row-list"),
-        pytest.param(Behaviour(cli_joins=["customers"]), "cli joins", id="cli-joins-missing-stores"),
+        pytest.param(Behaviour(cli_relationships=["customers"]), "cli joins", id="cli-joins-missing-stores"),
         pytest.param(Behaviour(mcp="is_error"), "mcp query", id="mcp-is-error"),
         pytest.param(Behaviour(mcp="non_json"), "mcp query", id="mcp-non-json"),
         pytest.param(Behaviour(mcp="empty"), "mcp query", id="mcp-empty-list"),
         pytest.param(Behaviour(mcp="envelope_empty"), "mcp query", id="mcp-empty-envelope"),
         pytest.param(Behaviour(mcp="two_items"), "mcp query", id="mcp-two-content-items"),
         pytest.param(Behaviour(mcp="no_items"), "mcp query", id="mcp-no-content-items"),
-        pytest.param(Behaviour(mcp_joins=["customers"]), "mcp joins", id="mcp-joins-missing-stores"),
+        pytest.param(Behaviour(mcp_relationships=["customers"]), "mcp joins", id="mcp-joins-missing-stores"),
         pytest.param(Behaviour(version="0.0.1"), "provenance", id="version-mismatch"),
         pytest.param(Behaviour(version="9.9.9 (editable)"), "provenance", id="version-line-not-exact"),
     ],
@@ -309,6 +326,39 @@ def test_mcp_start_timeout_stops_the_gate(tmp_path: Path, checkout: Path) -> Non
                    extra=("--mcp-start-timeout", "3"), timeout=120)
     assert result.returncode != 0
     assert "mcp start" in _failed_checks(result), result.stdout + result.stderr
+
+
+def test_slow_mcp_handshake_stops_the_gate(tmp_path: Path, checkout: Path) -> None:
+    slayer = _fake_slayer(tmp_path, Behaviour(mcp_start_delay=release_gate.MCP_HANDSHAKE_LIMIT + 1))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout, timeout=120)
+    assert result.returncode != 0
+    assert "mcp handshake" in _failed_checks(result), result.stdout + result.stderr
+
+
+def test_hung_mcp_handshake_stops_at_the_limit(tmp_path: Path, checkout: Path) -> None:
+    slayer = _fake_slayer(tmp_path, Behaviour(mcp_start_delay=release_gate.MCP_HANDSHAKE_LIMIT * 10))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout,
+                   timeout=release_gate.MCP_HANDSHAKE_LIMIT * 4)
+    assert "mcp handshake" in _failed_checks(result), result.stdout + result.stderr
+
+
+def test_fast_handshake_with_a_slow_first_call_passes(tmp_path: Path, checkout: Path) -> None:
+    slayer = _fake_slayer(tmp_path, Behaviour(mcp_first_call_delay=release_gate.MCP_HANDSHAKE_LIMIT + 1))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _failed_checks(result) == []
+
+
+def test_mcp_handshake_limit_is_ten_seconds() -> None:
+    assert release_gate.MCP_HANDSHAKE_LIMIT == 10.0
+    assert release_gate._parse_args(["--slayer", "s", "--wheel", "w"]).mcp_handshake_limit == 10.0
+
+
+def test_the_handshake_limit_option_is_honoured(tmp_path: Path, checkout: Path) -> None:
+    slayer = _fake_slayer(tmp_path, Behaviour(mcp_start_delay=3))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout,
+                   extra=("--mcp-handshake-limit", "1"), timeout=120)
+    assert "mcp handshake" in _failed_checks(result), result.stdout + result.stderr
 
 
 def test_mcp_server_that_cannot_spawn_is_a_named_failure(tmp_path: Path, checkout: Path) -> None:
@@ -331,18 +381,16 @@ def test_mcp_call_timeout_stops_the_gate(tmp_path: Path, checkout: Path, hang: s
 
 
 def test_package_inside_the_checkout_fails_provenance(tmp_path: Path) -> None:
-    # The dev install is editable, so with the default checkout its package resolves inside it.
-    result = _gate(slayer=_fake_slayer(tmp_path, Behaviour()), wheel=_wheel(tmp_path, "9.9.9"), checkout=None)
+    # The package resolves inside the default checkout, however the test environment installed it.
+    slayer = _fake_slayer(tmp_path, Behaviour(), interpreter=_pythonpath_interpreter(tmp_path, REPO_ROOT))
+    result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=None)
     assert result.returncode != 0
     assert "provenance" in _failed_checks(result), result.stdout + result.stderr
 
 
 def test_import_path_inside_the_checkout_fails_provenance(tmp_path: Path, checkout: Path) -> None:
     (checkout / "lib").mkdir()
-    wrapper = tmp_path / "python-wrapper"
-    wrapper.write_text(f'#!/bin/sh\nPYTHONPATH="{checkout / "lib"}" exec "{sys.executable}" "$@"\n')
-    wrapper.chmod(0o755)
-    slayer = _fake_slayer(tmp_path, Behaviour(), interpreter=str(wrapper))
+    slayer = _fake_slayer(tmp_path, Behaviour(), interpreter=_pythonpath_interpreter(tmp_path, checkout / "lib"))
     result = _gate(slayer=slayer, wheel=_wheel(tmp_path, "9.9.9"), checkout=checkout)
     assert result.returncode != 0
     assert "provenance" in _failed_checks(result), result.stdout + result.stderr

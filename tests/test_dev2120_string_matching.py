@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -37,7 +38,7 @@ async def sqlite_engine():
 def _mode_a_dataset() -> SlayerDataset:
     base = lib_dataset()
     return base.model_copy(update={"fields": [
-        *base.fields, DatasetField(name="is_ada", sql="word LIKE 'ada%'", datatype=DataType.BOOLEAN),
+        *base.fields, DatasetField(name="is_ada", expression=ExpressionObject(dialects=[DialectEntry(dialect="SQLITE", expression="word LIKE 'ada%'")]), datatype=DataType.BOOLEAN),
     ]})
 
 
@@ -55,77 +56,77 @@ def _people_dataset() -> SlayerDataset:
 
 class TestCaseSensitivity:
     async def test_sqlite_like_is_case_sensitive(self, sqlite_engine: SlayerQueryEngine) -> None:
-        assert lib_ids(await sqlite_engine.execute(lib_query(filter=["word LIKE 'ada%'"]))) == {3}
+        assert lib_ids(await sqlite_engine.execute(lib_query(filter=["lib.word LIKE 'ada%'"]))) == {3}
 
     async def test_sqlite_like_ignores_a_nocase_column(self) -> None:
         async with seeded_exec_engine(dialect="sqlite", seed=_nocase_seed, datasets=[_people_dataset()]) as (engine, _):
             resp = await engine.execute(SlayerQuery.model_validate({
-                "population": "people", "dimensions": ["id"], "filter": ["name LIKE 'ada%'"]}))
+                "population": "people", "dimensions": ["people.id"], "filter": ["people.name LIKE 'ada%'"]}))
             assert {int(r["people.id"]) for r in resp.data} == {1}
 
     async def test_ilike_is_case_insensitive(self, engine: SlayerQueryEngine) -> None:
-        assert lib_ids(await engine.execute(lib_query(filter=["word ILIKE 'ADA%'"]))) == {3, 4}
+        assert lib_ids(await engine.execute(lib_query(filter=["lib.word ILIKE 'ADA%'"]))) == {3, 4}
 
     async def test_mode_a_like_on_sqlite_unchanged(self) -> None:
         async with lib_engine("sqlite", datasets=[_mode_a_dataset()]) as engine:
-            values = lib_values(await engine.execute(lib_query({"field": "is_ada", "alias": "v"},
-                                                               filter=["id IN (3, 4)"])))
+            values = lib_values(await engine.execute(lib_query({"field": "lib.is_ada", "alias": "v"},
+                                                               filter=["lib.id IN (3, 4)"])))
             assert {k: bool(v) for k, v in values.items()} == {3: True, 4: True}
 
 
 class TestPatternLanguage:
     @pytest.mark.parametrize(("filt", "expected"), [
-        (r"code LIKE 'a\_%'", {3}),
-        ("code LIKE '[ab]%'", {6}),
-        (r"word LIKE 'c:\x%'", {10}),
-        ("code LIKE prefix || '%'", {1, 3, 4, 6, 7, 8, 10}),
-        ("code LIKE 'a*?%'", {8}),
-        ("notes LIKE 'paid%late'", {1, 4}),
+        ("lib.code LIKE 'a\\_%'", {3}),
+        ("lib.code LIKE '[ab]%'", {6}),
+        ("lib.word LIKE 'c:\\x%'", {10}),
+        ("lib.code LIKE lib.prefix || '%'", {1, 3, 4, 6, 7, 8, 10}),
+        ("lib.code LIKE 'a*?%'", {8}),
+        ("lib.notes LIKE 'paid%late'", {1, 4}),
     ])
     async def test_spec_patterns(self, engine: SlayerQueryEngine, filt: str, expected: set[int]) -> None:
         assert lib_ids(await engine.execute(lib_query(filter=[filt]))) == expected
 
     async def test_variable_pattern(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(lib_query(filter=["code LIKE '{p}'"], variables={"p": "a\\_%"}))
+        resp = await engine.execute(lib_query(filter=["lib.code LIKE '{p}'"], variables={"p": "a\\_%"}))
         assert lib_ids(resp) == {3}
 
 
 class TestEmission:
     @pytest.mark.parametrize("dialect", ["postgres", "mysql", "duckdb", "snowflake", "trino", "tsql"])
     async def test_escape_clause(self, dialect: str) -> None:
-        sql = await emit_lib(lib_query(filter=["code LIKE 'a%'"]), dialect=dialect)
+        sql = await emit_lib(lib_query(filter=["lib.code LIKE 'a%'"]), dialect=dialect)
         assert "ESCAPE" in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", ["clickhouse", "bigquery"])
     async def test_native_backslash_escaping(self, dialect: str) -> None:
-        sql = await emit_lib(lib_query(filter=["code LIKE 'a%'"]), dialect=dialect)
+        sql = await emit_lib(lib_query(filter=["lib.code LIKE 'a%'"]), dialect=dialect)
         assert "ESCAPE" not in sql.upper(), sql
 
     async def test_sqlite_like_is_glob(self) -> None:
-        sql = await emit_lib(lib_query(filter=["code LIKE 'a%'"]), dialect="sqlite")
+        sql = await emit_lib(lib_query(filter=["lib.code LIKE 'a%'"]), dialect="sqlite")
         assert "GLOB" in sql.upper(), sql
         assert "SLAYER_LIKE_GLOB(" in sql.upper(), sql
 
     async def test_sqlite_ilike_is_native_like(self) -> None:
-        sql = await emit_lib(lib_query(filter=["code ILIKE 'a%'"]), dialect="sqlite")
+        sql = await emit_lib(lib_query(filter=["lib.code ILIKE 'a%'"]), dialect="sqlite")
         assert " LIKE " in sql.upper(), sql
         assert "GLOB" not in sql.upper(), sql
 
     async def test_sqlite_mode_a_like_not_rewritten(self) -> None:
-        sql = await emit_lib(lib_query({"field": "is_ada", "alias": "v"}), dialect="sqlite",
+        sql = await emit_lib(lib_query({"field": "lib.is_ada", "alias": "v"}), dialect="sqlite",
                              datasets=[_mode_a_dataset()])
         assert "GLOB" not in sql.upper(), sql
 
     async def test_sql_server_brackets_a_literal_bracket(self) -> None:
-        sql = await emit_lib(lib_query(filter=["code LIKE '[ab]%'"]), dialect="tsql")
+        sql = await emit_lib(lib_query(filter=["lib.code LIKE '[ab]%'"]), dialect="tsql")
         assert "[[]" in sql, sql
 
     async def test_sql_server_brackets_a_column_pattern(self) -> None:
-        sql = await emit_lib(lib_query(filter=["code LIKE prefix || '%'"]), dialect="tsql")
+        sql = await emit_lib(lib_query(filter=["lib.code LIKE lib.prefix || '%'"]), dialect="tsql")
         assert "REPLACE(" in sql.upper(), sql
         assert "[[]" in sql, sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_every_pattern_form_emits(self, dialect: str) -> None:
-        await emit_lib(lib_query(filter=[r"code LIKE 'a\_%'", "code NOT LIKE '[ab]%'", r"word ILIKE 'c:\x%'",
-                                          "code LIKE prefix || '%'"]), dialect=dialect)
+        await emit_lib(lib_query(filter=["lib.code LIKE 'a\\_%'", "lib.code NOT LIKE '[ab]%'", "lib.word ILIKE 'c:\\x%'",
+                                          "lib.code LIKE lib.prefix || '%'"]), dialect=dialect)

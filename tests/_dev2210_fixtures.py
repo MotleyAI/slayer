@@ -1,4 +1,4 @@
-"""Shared fixtures for model filters as filtered datasets: the ``orders`` / ``returns`` / ``shipments`` tables and their models.
+"""Shared fixtures for dataset filters as filtered datasets: the ``orders`` / ``returns`` / ``shipments`` tables and their datasets.
 
 orders    (id, status, amount, ordered_at): 1 done 100 2024-01-10 | 2 done 200 2024-02-10 | 3 done 300 2024-03-10
                                             | 4 open 400 2024-02-20
@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType, JoinType
+from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.plan import plan_query
@@ -58,18 +59,18 @@ def _id(**kw: Any) -> DatasetField:
     return DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True, **kw)
 
 
-def _order_columns() -> list[DatasetField]:
+def _order_fields() -> list[DatasetField]:
     return [
         _id(), DatasetField(name="status", datatype=DataType.STRING), DatasetField(name="amount", datatype=DataType.INTEGER),
         DatasetField(name="ordered_at", datatype=DataType.DATE),
     ]
 
 
-def _returns(name: str, *, joins: list[DatasetRelationship], extra: Sequence[DatasetField] = (), **kw: Any) -> SlayerDataset:
+def _returns(name: str, *, relationships: list[DatasetRelationship], extra: Sequence[DatasetField] = (), **kw: Any) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="test", sql_table="returns",
         fields=[_id(), DatasetField(name="order_id", datatype=DataType.INTEGER), DatasetField(name="reason", datatype=DataType.STRING), *extra],
-        relationships=joins, **kw,
+        relationships=relationships, **kw,
     )
 
 
@@ -78,11 +79,11 @@ def _to(target: str, *, pairs: tuple[str, str] = ("order_id", "id"), **kw: Any) 
 
 
 def _orders(name: str, **kw: Any) -> SlayerDataset:
-    return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=_order_columns(), **kw)
+    return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=_order_fields(), **kw)
 
 
 def table_datasets() -> list[SlayerDataset]:
-    """Every table- and SQL-backed model of the fixture."""
+    """Every table- and SQL-backed dataset of the fixture."""
     to_shipments = [_to("shipments", pairs=("id", "order_ref"))]
     return [
         _orders("orders"),
@@ -97,29 +98,29 @@ def table_datasets() -> list[SlayerDataset]:
         SlayerDataset(name="carriers", data_source="test", sql_table="carriers", fields=[
             _id(), DatasetField(name="name", datatype=DataType.STRING),
         ]),
-        _returns("returns", joins=[_to("done_orders"), _to("ups_orders")],
-                 extra=[DatasetField(name="done_status", datatype=DataType.STRING, sql="done_orders.status")]),
-        _returns("late_returns", joins=[_to("orders")], filters=["reason = 'late'"]),
-        _returns("returns_of_done", joins=[_to("done_orders")], filters=["done_orders.id is not null"]),
-        _returns("returns_inner", joins=[_to("done_orders", join_type=JoinType.INNER)]),
+        _returns("returns", relationships=[_to("done_orders"), _to("ups_orders")],
+                 extra=[DatasetField(name="done_status", datatype=DataType.STRING, expression=ExpressionObject(dialects=[DialectEntry(dialect=d, expression="done_orders.status") for d in ("CLICKHOUSE", "DUCKDB", "POSTGRES", "SQLITE")]))]),
+        _returns("late_returns", relationships=[_to("orders")], filters=["reason = 'late'"]),
+        _returns("returns_of_done", relationships=[_to("done_orders")], filters=["done_orders.id is not null"]),
+        _returns("returns_inner", relationships=[_to("done_orders", join_type=JoinType.INNER)]),
         SlayerDataset(name="done_orders_sql", data_source="test", sql="SELECT id, status FROM orders",
                     fields=[_id(), DatasetField(name="status", datatype=DataType.STRING)], filters=["status = 'done'"]),
-        _returns("returns_sql", joins=[_to("done_orders_sql")]),
-        _returns("returns_qb", joins=[_to("done_orders_qb")]),
+        _returns("returns_sql", relationships=[_to("done_orders_sql")]),
+        _returns("returns_qb", relationships=[_to("done_orders_qb")]),
     ]
 
 
 def query_backed_dataset() -> SlayerDataset:
-    """``done_orders_qb``: a query-backed model over ``orders``, filtered to done orders."""
+    """``done_orders_qb``: a query-backed dataset over ``orders``, filtered to done orders."""
     return SlayerDataset(
         name="done_orders_qb", data_source="test", filters=["status = 'done'"],
-        source_queries=[SlayerQuery.model_validate({"population": "orders", "dimensions": ["id", "status"]})],
+        source_queries=[SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.id", "orders.status"]})],
     )
 
 
 @contextlib.asynccontextmanager
 async def filtered_engine(backend: str, request: pytest.FixtureRequest) -> AsyncGenerator[SlayerQueryEngine]:
-    """An engine over the fixture tables on ``backend`` holding every fixture model."""
+    """An engine over the fixture tables on ``backend`` holding every fixture dataset."""
     if backend == "postgres":
         info = request.getfixturevalue("postgresql_proc")
         base_dir = str(request.getfixturevalue("tmp_path") / "store")
@@ -167,6 +168,7 @@ def ids(resp: SlayerResponse, source: str) -> set[int]:
 
 
 def by_id(resp: SlayerResponse, source: str, column: str) -> dict[int, Any]:
-    got = {int(row[f"{source}.id"]): row[f"{source}.{column}"] for row in resp.data}
+    key = column if "." in column else f"{source}.{column}"
+    got = {int(row[f"{source}.id"]): row[key] for row in resp.data}
     assert len(got) == len(resp.data), f"duplicate {source}.id rows: {resp.data}"
     return got

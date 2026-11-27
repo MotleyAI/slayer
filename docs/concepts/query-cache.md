@@ -31,7 +31,7 @@ engine = SlayerQueryEngine(
 # Any input shape works — SlayerQuery / dict, a multi-stage list, or a
 # run-by-name string. Each funnels into one final SQL that is cached.
 resp = await engine.execute({"population": "orders",
-                             "metrics": ["sum(amount)"]},
+                             "metrics": ["sum(orders.amount)"]},
                             cache=True)
 ```
 
@@ -39,7 +39,7 @@ resp = await engine.execute({"population": "orders",
 Reassigning `engine.cache_config = CacheConfig(...)` **clears the cache**.
 
 `cache=True` is ignored (no caching, no error) when `dry_run` or `explain` is
-set, or when any stage of the query calls `now()` / `current_date()` (a refresh drops such an entry).
+set, or when any stage of the query calls `now()` / `current_date()` / `current_time()` (a refresh drops such an entry).
 
 ### `CacheConfig`
 
