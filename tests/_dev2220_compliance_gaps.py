@@ -14,8 +14,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
-    AggregationNotAllowedError, DimensionTypeError, DuplicateMetricNameError, OssieQueryError, RelationshipKeyError,
-    TimeLiteralError, UnknownReferenceError,
+    DuplicateMetricNameError, OssieQueryError, RelationshipKeyError, TimeLiteralError, UnknownReferenceError,
 )
 from slayer.facade.catalog import build_local_view
 from slayer.inspect.service import InspectService
@@ -163,19 +162,6 @@ async def decimal_exact(base: Path) -> None:
     assert response.data == [{"big.total": Decimal("12345678901234567.90")}]
 
 
-async def time_dimension(base: Path) -> None:
-    async with sql_engine(base, sql=TYPES_SQL, documents=[TYPES_DOC]) as engine:
-        response = await engine.execute({"population": "t", "dimensions": ["t.tod"],
-                                         "metrics": [{"metric": "count(t.*)", "alias": "n"}]})
-    assert sorted((str(r["t.tod"]), r["n"]) for r in response.data) == [("09:30:00", 2), ("17:00:00", 1)]
-
-
-async def time_aggregate(base: Path) -> None:
-    async with sql_engine(base, sql=TYPES_SQL, documents=[TYPES_DOC]) as engine:
-        response = await engine.execute({"population": "t", "metrics": [{"metric": "min(t.tod)", "alias": "v"}]})
-    assert str(response.data[0]["v"]) == "09:30:00"
-
-
 async def datetimetz_truncation(base: Path) -> None:
     async with sql_engine(base, sql=TYPES_SQL, documents=[TYPES_DOC]) as engine:
         response = await engine.execute({"population": "t", "time_dimensions": [{"field": "t.ts", "granularity": "day"}],
@@ -207,8 +193,6 @@ FORMAT_GAPS: tuple[Gap, ...] = (
     _format("format-delimited-dataset-name", delimited_dataset_name, UnknownReferenceError),
     _format("format-quoted-column-expression", quoted_column_expression, RelationshipKeyError),
     _format("format-decimal-exact", decimal_exact, AssertionError),
-    _format("format-time-dimension", time_dimension, DimensionTypeError),
-    _format("format-time-aggregate", time_aggregate, AggregationNotAllowedError),
     _format("format-datetimetz-truncation", datetimetz_truncation, AssertionError),
     _format("format-datetimetz-offset-literal", datetimetz_offset_literal, TimeLiteralError),
 )

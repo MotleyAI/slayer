@@ -36,6 +36,7 @@ from slayer.core.models import (
 from slayer.core.relationship_edges import edge_reference
 from slayer.core.names import name_taken
 from slayer.core.query import extract_variable_refs
+from slayer.core.time_spine import default_time_field
 from slayer.core.vocabulary import name_twins
 from slayer.live_schema import schema_drift
 from slayer.live_schema import broken_dependents as dependents  # module import: in an import cycle
@@ -1337,14 +1338,29 @@ def _retyped_instant(*, persisted: DatasetField, fresh: DatasetField) -> Dataset
     return persisted.model_copy(update={"datatype": DataType.DATETIME_TZ, "time_zone": None})
 
 
+def _retyped_time_of_day(*, persisted: DatasetField, fresh: DatasetField) -> DatasetField | None:
+    """A stored field of another type whose live column is a time of day, re-typed ``Time`` (live_schema P1's
+    exception); a setting only its old type takes is dropped. ``None`` when nothing changes."""
+    if fresh.datatype is not DataType.TIME or persisted.datatype in (DataType.TIME, DataType.ARRAY):
+        return None
+    return persisted.model_copy(update={
+        "datatype": DataType.TIME, "granularity": None, "time_zone": None,
+        "allowed_aggregations": [
+            a for a in persisted.allowed_aggregations or () if a in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.TIME]
+        ] or None,
+    })
+
+
 def _merge_one_field(
     *,
     persisted_col: DatasetField,
     fresh_col: DatasetField | None,
     dataset_name: str,
     sqlite_widen_enabled: bool,
+    time_axis: bool = False,
 ) -> tuple[DatasetField, bool, bool, bool]:
-    """Merge one persisted field against its fresh one → ``(merged, did_widen, unique_filled, described)``."""
+    """Merge one persisted field against its fresh one → ``(merged, did_widen, unique_filled, described)``;
+    ``time_axis``: the field is its dataset's default time dimension, never re-typed to a time of day."""
     merged_col, did_widen = _merge_persisted_field_with_probe(
         persisted_col=persisted_col,
         fresh_col=fresh_col,
@@ -1356,8 +1372,9 @@ def _merge_one_field(
     if fresh_col is not None:
         retyped = None
         if _reads(persisted_col, fresh_col):
-            retyped = _retyped_list(persisted=merged_col, fresh=fresh_col) or _retyped_instant(
-                persisted=merged_col, fresh=fresh_col)
+            retyped = (_retyped_list(persisted=merged_col, fresh=fresh_col)
+                       or _retyped_instant(persisted=merged_col, fresh=fresh_col)
+                       or (None if time_axis else _retyped_time_of_day(persisted=merged_col, fresh=fresh_col)))
         if retyped is not None:
             merged_col, did_widen = retyped, True
         if fresh_col.unique and not merged_col.unique and _reads(persisted_col, fresh_col):
@@ -1407,6 +1424,7 @@ def _merge_persisted_fields(
 ) -> _FieldsMerge:
     """Each persisted field merged with the live column of its spelling."""
     fresh_by_spelling = {_spelling(c): c for c in fresh.fields}
+    axis = default_time_field(persisted)
     out = _FieldsMerge(fields=[])
     for persisted_col in persisted.fields:
         fresh_col = fresh_by_spelling.get(live_name[persisted_col.name])
@@ -1415,6 +1433,7 @@ def _merge_persisted_fields(
             fresh_col=fresh_col,
             dataset_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
+            time_axis=axis is not None and axis.name == persisted_col.name,
         )
         key_filled = fill_key and fresh_col is not None and fresh_col.primary_key and _reads(persisted_col, fresh_col)
         if key_filled:

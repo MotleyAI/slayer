@@ -1213,7 +1213,7 @@ def test_pg_attribute_oids_match_datatype() -> None:
 def test_pg_type_covers_six_oids() -> None:
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
     oids = {r["oid"] for r in relations["pg_type"].rows}
-    assert oids == {16, 20, 25, 701, 1082, 1114}
+    assert oids == {16, 20, 25, 701, 1082, 1083, 1114}
     by_oid = {r["oid"]: r for r in relations["pg_type"].rows}
     assert by_oid[25]["typname"] == "text"
     assert by_oid[20]["typname"] == "int8"

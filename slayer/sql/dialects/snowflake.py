@@ -28,6 +28,7 @@ from slayer.sql.dialects.base import (
     case, either,
     element_lambda, lit, operand_copy, setting, text_try_cast,
     iso_text,
+    trimmed_fraction,
     zone_name,
 )
 from slayer.sql.dialects._ordered_set_split import marked_ranked, ranked_unless_numeric, split_percentile_selects
@@ -244,6 +245,13 @@ class SnowflakeDialect(SqlDialect):
     database_name: ClassVar[str] = "Snowflake"
     native_lists: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
+    # A bare ``TIME`` is ``TIME(9)`` here.
+    time_of_day_precision: ClassVar[Optional[int]] = 6
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """A fixed format: a plain cast follows the session's ``TIME_OUTPUT_FORMAT``."""
+        return trimmed_fraction(anon("TO_CHAR", value, lit("HH24:MI:SS.FF6")))
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "SPLIT_PART", "PI", "CBRT",
     })

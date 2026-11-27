@@ -8,7 +8,12 @@ from pydantic import BaseModel, Field
 
 from slayer.core.errors import AmbiguousRelationshipPathError, CircularRelationshipPathError
 from slayer.core.relationship_walker import aggregation_owner, follow, resolved_terminal, with_list_children
-from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, StarKey, ValueKey, walk_value_keys
+from datetime import time
+
+from slayer.core.enums import DataType
+from slayer.core.keys import (
+    AggregateKey, CastKey, FieldKey, FieldSqlKey, LiteralKey, ScalarCallKey, StarKey, ValueKey, walk_value_keys,
+)
 from slayer.core.models import SlayerDataset, aggregation_definition
 from slayer.engine.field_dependency import definition_reads
 from slayer.ir.planned import PlannedQuery, plan_value_keys_by_root
@@ -49,6 +54,40 @@ def statement_reads(
         reads.relationships |= local.relationships
         reads.aggregations |= local.aggregations
     return reads
+
+
+def _time_of_day_key(key: ValueKey) -> str | None:
+    if isinstance(key, LiteralKey) and isinstance(key.value, time):
+        return f"TIME '{key.value.isoformat()}'"
+    if isinstance(key, ScalarCallKey) and key.name == "current_time":
+        return "current_time()"
+    if isinstance(key, CastKey) and DataType.TIME in (key.data_type, key.temporal_source):
+        return f"CAST(… AS {key.type_text})"
+    return None
+
+
+def time_of_day_construct(*, plans: list[PlannedQuery], bundle: ResolvedSourceBundle) -> str | None:
+    """The first construct of ``plans`` that computes or reads a time of day, named for an error; ``None``: none does."""
+    keys = (key for plan in plans for _, root_key in plan_value_keys_by_root(plan) for key in walk_value_keys(root_key))
+    construct = next((found for found in map(_time_of_day_key, keys) if found is not None), None)
+    return construct if construct is not None else _time_field_read(plans=plans, bundle=bundle)
+
+
+def _time_field_read(*, plans: list[PlannedQuery], bundle: ResolvedSourceBundle) -> str | None:
+    """Each plan's reads, against that plan's own universe."""
+    for plan in plans:
+        datasets = _universe(plan.stage_bundle or bundle)
+        for dataset_name, field_name in sorted(statement_reads(plans=[plan], bundle=bundle).fields):
+            host = datasets.get(dataset_name)
+            field = host.get_field(field_name, quoted=True) if host is not None else None
+            if field is not None and field.datatype is DataType.TIME:
+                return f"The Time field {dataset_name}.{field_name}"
+    return None
+
+
+def _universe(bundle: ResolvedSourceBundle) -> dict[str, SlayerDataset]:
+    root = bundle.population
+    return dict(bundle.datasets_by_name) if root is None else {**bundle.datasets_by_name, root.name: root}
 
 
 def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerDataset, datasets: dict[str, SlayerDataset]) -> None:

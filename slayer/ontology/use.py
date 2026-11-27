@@ -408,7 +408,8 @@ def _enumerated(tree: Any, *, variable: str) -> list[Any] | None:
         if tree.op == "==" and (value := _literal(tree.right)) is not None:
             return [value]
         if tree.op == "in" and isinstance(tree.right, TupleLit):
-            return [e.value for e in tree.right.elements]
+            values = [e.value for e in tree.right.elements if isinstance(e, LiteralNode)]
+            return values if len(values) == len(tree.right.elements) else None
     if isinstance(tree, BoolOp) and tree.op == "or":
         parts = [_enumerated(o, variable=variable) for o in tree.operands]
         return None if any(p is None for p in parts) else [v for p in parts if p for v in p]

@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import (
     DataType,
+    DatePart,
     NUMERIC_DATATYPES,
     OBSERVED_VALUE_AGGREGATIONS,
     RANK_FAMILY_TRANSFORMS,
@@ -113,6 +114,7 @@ from slayer.core.keys import (
     field_leaf,
     field_path,
     value_arg_positions,
+    unit_word,
     value_type,
     source_anchor_path,
     transform_operand_grain,
@@ -129,8 +131,8 @@ from slayer.core.scope import peek_dataset_field
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.core.time_zones import check_bucketed_zones
 from slayer.core.time_points import (
-    TIME_POINT_FORMS, Instant, Period, TimePoint, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
-    resolve_time_point, units_after,
+    TIME_OF_DAY_FORMS, TIME_POINT_FORMS, Instant, Period, TimePoint, ceil_to, floor_to, is_date_only,
+    is_relative_token, is_time_point, parse_time_of_day, resolve_time_point, units_after,
 )
 from slayer.ir.planned import MaskTyping
 from slayer.ir.elaborated import (
@@ -1116,7 +1118,7 @@ def check_raw_row_determined(
 
 
 _NON_NUMERIC_TYPES = frozenset(t for t in DataType if t.kind in (
-    TypeKind.TEXT, TypeKind.BOOLEAN, TypeKind.DATE, TypeKind.TIMESTAMP, TypeKind.UNKNOWN))
+    TypeKind.TEXT, TypeKind.BOOLEAN, TypeKind.DATE, TypeKind.TIMESTAMP, TypeKind.TIME, TypeKind.UNKNOWN))
 
 
 def _operand_display(k: object) -> str:
@@ -1183,9 +1185,23 @@ def _count_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     return None
 
 
+#: The parts a time of day has.
+_TIME_OF_DAY_PARTS = frozenset({DatePart.HOUR.value, DatePart.MINUTE.value, DatePart.SECOND.value})
+
+
+def _is_time_of_day(key: object, *, field_type: FieldTypeFn) -> bool:
+    return value_type(key, field_type=field_type) is DataType.TIME
+
+
 def _require_temporal(fn: str, operand: object, *, field_type: FieldTypeFn) -> None:
     if temporal_type(operand, field_type=field_type) is not None:
         return
+    if _is_time_of_day(operand, field_type=field_type):
+        raise DateOperandTypeError(
+            summary=f"{fn}() does not take `{_operand_display(operand)}`: it is a time of day (Time), which only "
+            f"hour, minute and second read.",
+            suggestion="Read a part with date_part('hour' | 'minute' | 'second', x), or pass a DATE / TIMESTAMP value.",
+        )
     conflict = (
         conditional_branch_conflict(operand, field_type=field_type) if isinstance(operand, ScalarCallKey) else None
     )
@@ -1206,6 +1222,9 @@ def _require_temporal(fn: str, operand: object, *, field_type: FieldTypeFn) -> N
 
 
 def _check_date_call(key: ScalarCallKey, *, field_type: FieldTypeFn) -> None:
+    if (key.name == "date_part" and unit_word(key.args[0]) in _TIME_OF_DAY_PARTS
+            and _is_time_of_day(key.args[1], field_type=field_type)):
+        return
     for pos in DATE_OPERAND_ARGS[key.name]:
         _require_temporal(key.name, key.args[pos], field_type=field_type)
     if key.name != "date_add":
@@ -1260,6 +1279,7 @@ def resolve_time_points(
     rebuilt = cast(ValueKey, key.map_children(
         lambda c: resolve_time_points(c, field_type=field_type, now=now, units=units),
     ))
+    rebuilt = _type_time_of_day_strings(rebuilt, field_type=field_type)
     if isinstance(rebuilt, TimePointCmpKey):
         return _lower_time_point(rebuilt, field_type=field_type, now=now, units=units)
     if isinstance(rebuilt, ArithmeticKey):
@@ -1268,6 +1288,123 @@ def resolve_time_points(
 
 
 _ANNOUNCED_OPS = frozenset({"<=", ">", "=", "!="})
+#: Comparisons whose string operand, facing a time of day, is its ``TIME`` literal.
+_COMPARISON_OPS = frozenset({*_PLAIN_COMPARISON_OPS, "=", "<>", *NULL_SAFE_COMPARISON_OPS})
+_COMPUTING_OPS = frozenset({"+", "-", "*", "/", "%"})
+
+
+def _is_text_literal(key: object) -> TypeGuard[LiteralKey]:
+    return isinstance(key, LiteralKey) and isinstance(key.value, str)
+
+
+def _time_literal(text: object, *, beside: object) -> LiteralKey:
+    moment = parse_time_of_day(text) if isinstance(text, str) else None
+    if moment is None:
+        raise TimeLiteralError(
+            summary=f"'{text}' is not a time of day.",
+            location=f"comparison with `{_operand_display(beside)}`",
+            suggestion=f"Write {TIME_OF_DAY_FORMS}.",
+        )
+    return LiteralKey(value=moment)
+
+
+def _timed_point_cmp(key: TimePointCmpKey) -> ValueKey:
+    literal = _time_literal(key.point, beside=key.operand)
+    if key.op in _MEMBERSHIP_SQL:
+        return InKey(field=key.operand, values=(literal,), negated=key.op == _NOT_IN)
+    op = _arith_op(key.op)
+    if key.literal_on_left:
+        return ArithmeticKey(op=_MIRRORED[op], operands=(literal, key.operand))
+    return ArithmeticKey(op=op, operands=(key.operand, literal))
+
+
+def _timed_comparison(key: ArithmeticKey, *, timed: Callable[[object], bool]) -> ValueKey:
+    if key.op.lower() not in _COMPARISON_OPS or len(key.operands) != 2:
+        return key
+    left, right = key.operands
+    if _is_text_literal(right) and timed(left):
+        return key.model_copy(update={"operands": (left, _time_literal(right.value, beside=left))})
+    if _is_text_literal(left) and timed(right):
+        return key.model_copy(update={"operands": (_time_literal(left.value, beside=right), right)})
+    return key
+
+
+def _timed_in(key: InKey, *, timed: Callable[[object], bool]) -> ValueKey:
+    if not timed(key.field) or not any(_is_text_literal(v) for v in key.values):
+        return key
+    values = tuple(_time_literal(v.value, beside=key.field) if _is_text_literal(v) else v for v in key.values)
+    return key.model_copy(update={"values": values})
+
+
+def _timed_nullif(key: ScalarCallKey, *, timed: Callable[[object], bool]) -> ValueKey:
+    if key.name != "nullif" or len(key.args) != 2 or not _is_text_literal(key.args[1]) or not timed(key.args[0]):
+        return key
+    return key.model_copy(update={"args": (key.args[0], _time_literal(key.args[1].value, beside=key.args[0]))})
+
+
+def _type_time_of_day_strings(key: ValueKey, *, field_type: FieldTypeFn) -> ValueKey:
+    """``key`` with a string in a comparison slot facing a time of day read as its ``TIME`` literal."""
+    def timed(k: object) -> bool:
+        return _is_time_of_day(k, field_type=field_type)
+
+    if isinstance(key, TimePointCmpKey):
+        return _timed_point_cmp(key) if timed(key.operand) else key
+    if isinstance(key, ArithmeticKey):
+        return _timed_comparison(key, timed=timed)
+    if isinstance(key, InKey):
+        return _timed_in(key, timed=timed)
+    if isinstance(key, ScalarCallKey):
+        return _timed_nullif(key, timed=timed)
+    return key
+
+
+def _refuse_time_of_day(key: object, operand: object, *, why: str) -> NoReturn:
+    raise ScalarOperandTypeError(
+        summary=f"`{_operand_display(key)}` {why}: `{_operand_display(operand)}` is a time of day (Time).",
+        suggestion="A time of day compares with another time of day (or a 'HH:MM:SS' string) and takes no "
+        "arithmetic; read its parts with hour(), minute() and second().",
+    )
+
+
+def _other_typed(operands: Sequence[object], *, field_type: FieldTypeFn) -> Optional[DataType]:
+    """The first known type among ``operands`` that is no time of day."""
+    for operand in operands:
+        t = None if _is_null_literal(operand) else value_type(operand, field_type=field_type)
+        if t is not None and t is not DataType.TIME and not t.is_opaque:
+            return t
+    return None
+
+
+def _checked_operands(key: object) -> Sequence[object]:
+    if isinstance(key, ArithmeticKey):
+        return key.operands
+    if isinstance(key, InKey):
+        return (key.field, *key.values)
+    if isinstance(key, ScalarCallKey) and key.name == "nullif":
+        return key.args
+    return ()
+
+
+def _check_time_of_day_key(key: object, *, field_type: FieldTypeFn) -> None:
+    operands = _checked_operands(key)
+    timed = next((o for o in operands if _is_time_of_day(o, field_type=field_type)), None)
+    if timed is None:
+        return
+    if isinstance(key, ArithmeticKey):
+        if key.op in _COMPUTING_OPS:
+            _refuse_time_of_day(key, timed, why="computes with a time of day")
+        if key.op.lower() not in _COMPARISON_OPS:
+            return
+    other = _other_typed(operands, field_type=field_type)
+    if other is not None:
+        _refuse_time_of_day(key, timed, why=f"compares a time of day with a {other.value} value")
+
+
+def check_time_of_day_operands(*, roots: Sequence[ValueKey], field_type: FieldTypeFn) -> None:
+    """A time of day takes no arithmetic and compares only with another time of day."""
+    for root in roots:
+        for key in walk_value_keys(root):
+            _check_time_of_day_key(key, field_type=field_type)
 
 
 def _field_parts(key: object) -> Optional[Tuple[str, ...]]:
