@@ -37,6 +37,7 @@ from tests._stored_upgrade_fixtures import (
     seed_shop,
     stored_bytes,
 )
+from tests._stored_format_fixtures import save_in_own_model
 
 STORAGES = ("yaml", "sqlite")
 #: Last ``SlayerModel`` version before the stored-target repair.
@@ -128,8 +129,8 @@ class TestSaveRefusals:
 
     @pytest.mark.parametrize("already_stored", [False, True], ids=["new-join", "unchanged-stored-join"])
     async def test_an_ambiguous_target_is_refused(self, storage: StorageBackend, already_stored: bool) -> None:
-        await storage.save_dataset(customers("Customers"), _validate=False)
-        await storage.save_dataset(customers("CUSTOMERS"), _validate=False)
+        await save_in_own_model(storage, customers("Customers"), model="title")
+        await save_in_own_model(storage, customers("CUSTOMERS"), model="upper")
         if already_stored:
             await storage.save_dataset(orders(), _validate=False)
         model = orders()

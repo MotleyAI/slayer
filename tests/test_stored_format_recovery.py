@@ -231,11 +231,14 @@ def _only_documents(base: Path) -> None:
     if not root.exists():
         return
     for path in root.iterdir():
+        if path.name == ".write.lock":  # the folder's write lock, never removed
+            continue
         if path.name.startswith("."):
             assert _TEMP_FILE.match(path.name), f"leftover {path.name}"
             continue
         doc = parse(path.read_text(encoding="utf-8"))
-        assert isinstance(doc, dict) and ("dataset" in doc or "dataset_refs" in doc or "datasets" in doc), path.name
+        assert isinstance(doc, dict), path.name
+        assert "dataset" in doc or "dataset_refs" in doc or "datasets" in doc, path.name
 
 
 async def _count_ops(base: Path, op: Operation) -> list[str]:

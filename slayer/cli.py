@@ -12,6 +12,7 @@ import tempfile
 import threading
 from collections.abc import Callable, Coroutine, Sequence
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from types import FrameType
 from typing import Any, ClassVar, Literal, NoReturn, TypedDict, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
@@ -25,7 +26,7 @@ from slayer.async_utils import run_sync
 from slayer.core.enums import Conformance
 from slayer.core.deprecation import deprecations_on_one_line, unshown
 from slayer.core.document_text import parse_document_text
-from slayer.core.errors import OssieQueryError, SlayerError, UnreadableDocumentError
+from slayer.core.errors import OssieQueryError, SlayerError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
@@ -2723,6 +2724,8 @@ async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
         print(result.render_report())
     stored = len(result.ontologies) + len(result.stored) + len(result.mappings)
     print(f"\nDone: {stored} stored, {len(result.refused)} refused")
+    for refusal in result.refused:
+        print(f"Refused {Path(refusal.file).name}: {'; '.join(refusal.reasons)}", file=sys.stderr)
     if result.refused:
         sys.exit(1)
 
@@ -2819,13 +2822,7 @@ def _semantic_models_list(storage: StorageBackend, args) -> None:
     if not found:
         print("No semantic models found.")
     for ds, name in found:
-        text = run_sync(storage.get_semantic_model_text(name, data_source=ds))
-        try:
-            data = parse_document_text(text or "") or {}
-        except UnreadableDocumentError:
-            data = {}
-        data = data if isinstance(data, dict) else {}
-        datasets = [str(d.get("name")) for d in data.get("datasets") or [] if isinstance(d, dict)]
+        datasets = run_sync(storage.semantic_model_members(name, data_source=ds))
         print(f"{ds}.{name}: {', '.join(datasets) or '(no datasets)'}")
 
 

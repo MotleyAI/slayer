@@ -133,6 +133,18 @@ class EngineStorage(StorageBackend):
     async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
         await self._sourced(self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing))
 
+    async def store_split_model(self, *, data_source: str, document: dict[str, Any], merge: bool = False) -> None:
+        await self._sourced(self._inner.store_split_model(data_source=data_source, document=document, merge=merge))
+
+    async def semantic_model_document(self, name: str, data_source: str) -> tuple[str, dict[str, Any]] | None:
+        return await self._inner.semantic_model_document(name, data_source=data_source)
+
+    async def semantic_model_members(self, name: str, data_source: str) -> list[str]:
+        return await self._inner.semantic_model_members(name, data_source=data_source)
+
+    async def ignored_entities(self, data_source: str) -> list[str]:
+        return await self._inner.ignored_entities(data_source)
+
     async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
                                     datasets: list[str] | None = None) -> None:
         await self._sourced(self._inner.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets))

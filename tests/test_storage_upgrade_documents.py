@@ -81,7 +81,10 @@ def test_the_result_matches_what_the_store_upgrade_stores(tmp_path: Path) -> Non
         assert_current(ossie_document(backend="yaml", base=base, name=document["name"], data_source=DATA_SOURCE))
         loaded = asyncio.run(reopened.get_dataset(document["name"], data_source=DATA_SOURCE))
         assert loaded is not None
-        assert SlayerDataset.model_validate(document).model_dump(mode="json") == loaded.model_dump(mode="json")
+        expected, got = SlayerDataset.model_validate(document).model_dump(mode="json"), loaded.model_dump(mode="json")
+        # The stored form keeps no position between core and SLayer-only metrics.
+        assert sorted(expected.pop("metrics"), key=repr) == sorted(got.pop("metrics"), key=repr)
+        assert expected == got
 
 
 def test_a_datasource_config_supplies_the_dialect() -> None:

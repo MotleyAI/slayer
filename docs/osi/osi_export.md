@@ -1,6 +1,6 @@
 # Exporting to OSI (Ossie)
 
-SLayer writes one datasource as one current-spec [Ossie](https://github.com/apache/ossie) document (`version: 0.3.0.dev0`, validating against the upstream schema): every stored [semantic model](../concepts/semantic-models.md) and every standalone dataset of the datasource. It's the reverse of [importing Ossie documents](osi_import.md). Everything Ossie can express is exported, and everything else is reported, never silently dropped.
+SLayer writes one datasource as one current-spec [Ossie](https://github.com/apache/ossie) document (`version: 0.3.0.dev0`, validating against the upstream schema): every stored [semantic model](../concepts/semantic-models.md) of the datasource, its datasource model included (and, on a custom backend without semantic models, every standalone dataset). It's the reverse of [importing Ossie documents](osi_import.md). Everything Ossie can express is exported, and everything else is reported, never silently dropped.
 
 ## Quick Start
 
@@ -33,13 +33,15 @@ Each writes the stored [ontology or mapping](../concepts/ontologies.md) as its s
 
 ## One Document per Datasource
 
-**A single semantic model exports verbatim.** When the datasource holds exactly one semantic model and no standalone dataset, and no `--datasets` subset is given, the output is that document's stored text unchanged, comments included (converted to JSON only for a `.json` file). With `--no-extensions` it is the same text with only its `SLAYER` entries removed; other vendors' entries and every other line are kept.
+**One rule for every dataset.** Each dataset exports its stored Ossie keys exactly as stored. Wherever its `SLAYER` entry changes what its core means (a row filter, a query-backed or `sql`-structured source, a SLayer-only field or metric the export renders into Ossie, or one restoring another definition than core's rendering), that content exports by the rules of [Datasets Without a Stored Form](#datasets-without-a-stored-form) instead.
 
-**Otherwise the export is merged.** The document holds every dataset, relationship and model-scoped metric of the datasource: semantic-model entities as stored, standalone datasets exported by the rules below. Its `name` and `description` come from the datasource. A document-level `SLAYER` entry records each semantic model's `name`, `description`, `ai_context`, extensions and member names, so importing the export into an empty datasource restores each semantic model and each standalone dataset. Datasets are ordered by name, and the rest deterministically, so exporting unchanged content twice gives identical documents.
+**A single flat model exports verbatim.** When the datasource holds exactly one semantic model, stored as one flat document none of whose datasets carries such `SLAYER` content, and no `--datasets` subset is given, the output is that document's stored text unchanged, comments included (converted to JSON only for a `.json` file). With `--no-extensions` it is the same text with only its `SLAYER` entries removed; other vendors' entries and every other line are kept.
+
+**Otherwise the export is merged.** The document holds every dataset, relationship and model-scoped metric of the datasource, by the one rule; a relationship between two models' datasets is a core relationship. Its `name` and `description` come from the datasource. A document-level `SLAYER` entry records each semantic model's `name`, `description`, `ai_context`, extensions and member names, so importing the export into an empty datasource restores each semantic model, the datasource model included; a dataset no recorded model holds goes to the datasource model. Datasets are ordered by name, and the rest deterministically, so exporting unchanged content twice gives identical documents.
 
 `slayer ossie-roundtrip <in> <out>` imports one document into scratch storage and exports it again, without touching your storage; a valid document comes back unchanged.
 
-## Standalone Datasets
+## Datasets Without a Stored Form
 
 | SLayer | Ossie |
 |---|---|

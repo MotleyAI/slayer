@@ -56,7 +56,8 @@ async def test_every_stored_model_resolves_and_passes_the_core_schema(tmp_path: 
     await mixed_store(kind, tmp_path)
     models = model_documents(kind, tmp_path)
     assert set(models) == {DS, SPLIT, FLAT}
-    assert refs(models[DS]) and refs(models[SPLIT])
+    assert refs(models[DS])
+    assert refs(models[SPLIT])
     assert "dataset_refs" not in models[FLAT]
     documents = resolved(kind, tmp_path)
     assert sorted(d["name"] for d in documents[DS]["datasets"]) == ["managers", "stores"]

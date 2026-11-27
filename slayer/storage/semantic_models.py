@@ -15,7 +15,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from slayer.core.document_text import parse_document_text
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import (
     FieldExpressionError, OssieDocumentInvalidError, OssieErrorCode, StoredDocumentLoadError, UnreadableDocumentError,
 )
@@ -25,7 +25,7 @@ from slayer.core.field_expression import (
 from slayer.core.granularity import CustomGranularity, granularity_key
 from slayer.core.syntax import parse_expr
 from slayer.core import slayer_extension as ext
-from slayer.core.models import DatasetField, DatasetMetric, ExtensionNote, SlayerDataset
+from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, ExtensionNote, SlayerDataset, name_problem
 from slayer.core.ossie_validity import (
     SOURCE_MEASURE_REASON, columns, is_agg_call, parse_ossie_sql, reads_source_measure,
 )
@@ -37,7 +37,7 @@ from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.ossie_dialects import (
     ANSI_SQL, OSSIE_SQL, PORTABLE_READER, Candidate, read, reader_for, render, source_digest,
 )
-from slayer.storage.document_mapping import core_source
+from slayer.storage.document_mapping import core_source, portable_form, runnable_field
 from slayer.storage.document_extensions import (
     Restored, apply_dataset_entry, apply_field_entry, digest as entry_digest, metric_entry, read_entry,
     relocate_metrics, restore_metrics, restored_relationship,
@@ -51,6 +51,24 @@ _OSSIE_TYPES = {t.value: t for t in DataType if t is not DataType.ARRAY}
 WINDOW_WARNING = "uses a window function (OVER), which SLayer cannot evaluate yet"
 
 
+class Ignored(BaseModel):
+    """A stored entity SLayer cannot reference yet, loaded inert."""
+
+    kind: str
+    name: str
+    reason: str
+    #: The dataset holding it (a field, metric or relationship); ``None`` for a dataset.
+    dataset: str | None = None
+
+    def note(self) -> ExtensionNote:
+        return ExtensionNote(kind=self.kind, entity=self.name, message=self.message())
+
+    def message(self) -> str:
+        where = f" of dataset {self.dataset!r}" if self.dataset is not None else ""
+        return (f"{self.kind} {self.name!r}{where} is not loaded: {self.reason}; SLayer cannot reference this name "
+                f"yet, so it is kept as written")
+
+
 class Decomposition(BaseModel):
     """One document's native datasets and model-scoped metrics."""
 
@@ -61,6 +79,10 @@ class Decomposition(BaseModel):
     notes: list[ExtensionNote] = []
     #: Case-folded metrics warned only for reading an unevaluable entity through another.
     chained: set[str] = set()
+    #: Entities whose names SLayer cannot reference yet, loaded inert.
+    ignored: list[Ignored] = []
+    #: Datasets that fail to load, each with its error; the rest of the document loads.
+    failed: list[tuple[str, Any]] = []
 
 
 def checked_document(*, text: str, name: str) -> SemanticModelDocument:
@@ -109,34 +131,8 @@ def _unparseable_field(expression: Expression | None, *, target: str, owner: str
     return None if form.native else _unparseable(form.text)
 
 
-def _portable(expression: OssieExpression) -> str | None:
-    if expression.sql:
-        return expression.sql
-    return next((d.expression for d in expression.dialects or [] if token(d.dialect) == OSSIE_SQL), None)
-
-
-def _runnable(expression: OssieExpression, *, target: str) -> tuple[Expression, str | None]:
-    """``expression`` as SLayer runs it on ``target`` (an Ossie dialect token), and why it cannot run, if so."""
-    entries = [DialectEntry(dialect=d.dialect, expression=d.expression) for d in expression.dialects or []]
-    if expression.sql is not None and not entries:
-        return expression.sql, None
-    obj = ExpressionObject(sql=expression.sql, dialects=entries or None)
-    if _portable(expression) is not None or any(token(e.dialect) == target for e in entries):
-        return obj, None
-    readable = [e for e in entries if reader_for(e.dialect) is not None]
-    ordered = [e for e in readable if token(e.dialect) == ANSI_SQL] + [e for e in readable
-                                                                     if token(e.dialect) != ANSI_SQL]
-    target_reader = reader_for(target)
-    for entry in ordered:
-        candidate = Candidate(dialect=entry.dialect, text=entry.expression)
-        try:
-            text = render(candidate, read(candidate), target=target_reader) if target_reader else entry.expression
-        except SqlglotError:
-            continue
-        translated = DialectEntry(dialect=target, expression=text)
-        return obj.model_copy(update={"dialects": [*entries, translated]}), None
-    found = ", ".join(dict.fromkeys(e.dialect for e in entries)) or "none"
-    return obj, f"has no readable SQL expression (dialects: {found})"
+_portable = portable_form
+_runnable = runnable_field
 
 
 def _runnable_metric(expression: OssieExpression, *, target: str) -> tuple[Expression, str | None]:
@@ -164,9 +160,18 @@ def _runnable_metric(expression: OssieExpression, *, target: str) -> tuple[Expre
     return obj, f"has no readable SQL expression (dialects: {found})"
 
 
-def _source(dataset: OssieDataset) -> dict[str, Any]:
-    sql_table, sql = core_source(dataset.source)
+def _source(dataset: OssieDataset, *, reader: str) -> dict[str, Any]:
+    sql_table, sql = core_source(dataset.source, reader=reader)
     return {"sql": sql} if sql is not None else {"sql_table": sql_table}
+
+
+def _built(build: Any, *, kind: str, name: str, dataset: str | None, ignored: list[Ignored]) -> Any:
+    """``build()``; ``None`` (``name`` recorded in ``ignored``) when its name is one SLayer cannot reference."""
+    problem = name_problem(kind, name)
+    if problem is not None:
+        ignored.append(Ignored(kind=kind, name=name, reason=problem, dataset=dataset))
+        return None
+    return build()
 
 
 def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: list[ExtensionNote],
@@ -187,7 +192,8 @@ def _field(field: Any, *, keys: tuple[set[str], set[str]], target: str, notes: l
     built = apply_field_entry(built, entry, notes=notes, label=label, target=target)
     warning = None  # a restored expression replaces the document form, so only its own readability counts
     if built.expression == expression:
-        warning = WINDOW_WARNING if _windowed(field.expression) else problem
+        native = any(token(d.dialect) == target for d in field.expression.dialects or [])
+        warning = WINDOW_WARNING if _windowed(field.expression) and not native else problem
     warning = warning or _unparseable_field(built.expression, target=target, owner=f"Field {field.name!r}")
     return built.model_copy(update={"meta": with_ossie_meta(built.meta, field), "load_warning": warning})
 
@@ -199,6 +205,8 @@ def with_ossie_meta(meta: dict[str, Any] | None, entity: Any) -> dict[str, Any] 
         ai = entity.ai_context
         out["osi_ai_context"] = ai.model_dump(exclude_none=True) if isinstance(ai, BaseModel) else ai
     foreign = [e.model_dump(exclude_none=True) for e in entity.nonportable_extensions or [] if not ext.is_slayer(e)]
+    kept = out.pop("osi_nonportable_extensions", None)  # stashed ones core rejected, from the SLAYER entry
+    foreign += [e for e in kept or [] if e not in foreign]
     if foreign:
         out["osi_nonportable_extensions"] = foreign
     return out or None
@@ -224,15 +232,22 @@ def _reads(expression: OssieExpression, names: set[str]) -> bool:
 
 
 def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: str, document: str,
-             members: set[str], restored: list[Restored]) -> SlayerDataset:
+             members: set[str], restored: list[Restored], ignored: list[Ignored]) -> SlayerDataset:
     primary = set(dataset.primary_key or [])
     unique = {k[0] for k in dataset.unique_keys or [] if len(k) == 1}
     notes: list[ExtensionNote] = []
-    fields = [_field(f, keys=(primary, unique), target=target, notes=notes, dataset=dataset.name)
-              for f in dataset.fields or []]
+    own: list[Ignored] = []
+    built_fields = [_built(lambda f=f: _field(f, keys=(primary, unique), target=target, notes=notes,
+                                               dataset=dataset.name),
+                           kind="field", name=f.name, dataset=dataset.name, ignored=own)
+                    for f in dataset.fields or []]
+    fields = [f for f in built_fields if f is not None]
     windowed = {f.name.casefold() for f in fields if f.load_warning == WINDOW_WARNING}
     metrics = []
     for raw in dataset.metrics or []:
+        if name_problem("metric", raw.name) is not None:
+            _built(lambda: None, kind="metric", name=raw.name, dataset=dataset.name, ignored=own)
+            continue
         label = f"metric {raw.name!r} of {dataset.name!r}"
         entry = read_entry(raw.nonportable_extensions, kind="metric", entity=raw.name,
                            ossie=entry_digest(raw.expression), label=label, notes=notes)
@@ -244,15 +259,50 @@ def _dataset(dataset: OssieDataset, *, data_source: str, target: str, reader: st
         metrics.append(metric.model_copy(update={"meta": with_ossie_meta(metric.meta, raw)}))
     built = SlayerDataset(
         name=dataset.name, data_source=data_source, description=dataset.description, fields=fields,
-        semantic_model=document, metrics=metrics, **_source(dataset),
+        semantic_model=document, metrics=metrics, **_source(dataset, reader=reader),
     )
     entry = read_entry(dataset.nonportable_extensions, kind="dataset", entity=dataset.name,
                        ossie=source_digest(dataset.source, reader=reader), label=f"dataset {dataset.name!r}",
                        notes=notes)
     built = apply_dataset_entry(built, entry, notes=notes, target=target)
     built.meta = with_ossie_meta(built.meta, dataset)
-    built.extension_notes = notes
+    built.extension_notes = [*notes, *(i.note() for i in own)]
+    ignored.extend(own)
     return built
+
+
+def _declared_relationships(datasets: dict[str, SlayerDataset], doc: SemanticModelDocument, *,
+                            ignored: list[Ignored]) -> None:
+    """Attach each core relationship of ``doc`` to the dataset its ``SLAYER`` entry (else its ``from``) names."""
+    for rel in doc.relationships or []:
+        holder = datasets.get(rel.from_dataset)
+        if holder is None or rel.to not in datasets:
+            continue  # it touches a dataset loaded inert
+        if name_problem("relationship", rel.name) is not None:
+            _built(lambda: None, kind="relationship", name=rel.name, dataset=rel.from_dataset, ignored=ignored)
+            holder.extension_notes.append(ignored[-1].note())
+            continue
+        owner, declared = restored_relationship(rel, datasets=datasets, notes=holder.extension_notes)
+        restored = declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)})
+        if _implied_from(restored, owner=owner) != rel.from_dataset:  # core's direction beats the declared one
+            restored = restored.from_document(rel.from_dataset)
+        datasets[owner].relationships.append(restored)
+
+
+def _implied_from(relationship: DatasetRelationship, *, owner: str) -> str | None:
+    """The many side a relationship's own cardinality names, if it names one."""
+    if relationship.cardinality in (RelationshipCardinality.MANY_TO_ONE, RelationshipCardinality.ONE_TO_ONE):
+        return owner
+    return relationship.to if relationship.cardinality is RelationshipCardinality.ONE_TO_MANY else None
+
+
+def _crossing_relationships(datasets: dict[str, SlayerDataset], entry: Any) -> None:
+    """Attach the model's ``SLAYER`` relationships into another model's datasets to their declaring datasets."""
+    by_fold = {n.casefold(): d for n, d in datasets.items()}
+    for declaration in entry.payload.relationships if entry is not None else []:
+        holder = by_fold.get(declaration.dataset.casefold())
+        if holder is not None:
+            holder.relationships.append(declaration.relationship.model_copy())
 
 
 @functools.lru_cache(maxsize=256)
@@ -264,14 +314,27 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None,
     target = ossie_token(ds_type)
     reader = dialect_for_ds_type(ds_type).sqlglot_name
     restored: list[Restored] = []
+    ignored: list[Ignored] = []
     members = {d.name.casefold() for d in doc.datasets}
-    datasets = {d.name: _dataset(d, data_source=data_source, target=target, reader=reader, document=doc.name,
-                                 members=members, restored=restored) for d in doc.datasets}
+    datasets: dict[str, SlayerDataset] = {}
+    failed: list[tuple[str, Any]] = []
+    for d in doc.datasets:
+        try:
+            found = _built(lambda d=d: _dataset(d, data_source=data_source, target=target, reader=reader,
+                                                document=doc.name, members=members, restored=restored,
+                                                ignored=ignored),
+                           kind="dataset", name=d.name, dataset=None, ignored=ignored)
+        except Exception as exc:  # noqa: BLE001 — one unloadable dataset never hides its model's others
+            failed.append((d.name, exc))
+            continue
+        if found is not None:
+            datasets[d.name] = found
     relocate_metrics(datasets, restored=restored)
-    for rel in doc.relationships or []:
-        owner, declared = restored_relationship(rel, datasets=datasets, notes=datasets[rel.from_dataset].extension_notes)
-        datasets[owner].relationships.append(
-            declared.model_copy(update={"meta": with_ossie_meta(declared.meta, rel)}).from_document(rel.from_dataset))
+    _declared_relationships(datasets, doc, ignored=ignored)
+    notes: list[ExtensionNote] = []
+    entry = read_entry(doc.nonportable_extensions, kind="semantic_model", entity=doc.name, ossie=doc.name,
+                       label=f"semantic model {doc.name!r}", notes=notes)
+    _crossing_relationships(datasets, entry)
     restore_metrics(datasets, restored=restored, dialect=reader, granularities=defined)
     metrics = []
     for m in doc.metrics or []:
@@ -283,9 +346,6 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None,
             load_warning=WINDOW_WARNING if _windowed(m.expression) else problem or _unparseable(
                 portable_text(expression)),
         ))
-    notes: list[ExtensionNote] = []
-    entry = read_entry(doc.nonportable_extensions, kind="semantic_model", entity=doc.name, ossie=doc.name,
-                       label=f"semantic model {doc.name!r}", notes=notes)
     documented = len(metrics)
     if entry is not None:
         metrics += [ModelScopedMetric(name=m.name, semantic_model=doc.name, data_source=data_source,
@@ -298,7 +358,7 @@ def _decomposed(text: str, name: str, data_source: str, ds_type: str | None,
             metric.load_warning = load_problem(metric.analysis)
     chained = warn_unevaluable_dependents(metrics, datasets=list(datasets.values()))
     return Decomposition(name=doc.name, data_source=data_source, datasets=list(datasets.values()), metrics=metrics,
-                         notes=notes, chained=chained)
+                         notes=notes, chained=chained, ignored=ignored, failed=failed)
 
 
 def decompose(*, text: str, name: str, data_source: str, ds_type: str | None,
@@ -488,14 +548,22 @@ class DocumentIndex(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     data_source: str
-    #: Loadable document datasets by case-folded name.
+    #: Loadable document datasets by exact name.
     datasets: dict[str, SlayerDataset] = {}
-    #: Owning document of every document dataset (quarantined ones included) by case-folded name.
+    #: Owning document of every document dataset (quarantined ones included) by exact name.
     owners: dict[str, str] = {}
+    #: Owning model of every dataset by its exact name.
+    members: dict[str, str] = {}
     metrics: dict[str, ModelScopedMetric] = {}
-    #: Case-folded names unloadable everywhere, standalone copies included.
+    #: Exact names unloadable everywhere, standalone copies included.
     quarantined: dict[str, str] = {}
+    #: Exact names of document datasets that fail to load, with their errors.
+    broken: dict[str, StoredDocumentLoadError] = {}
     failures: list[StoredDocumentLoadError] = []
+    #: Entities loaded inert, and dataset documents no model lists (``kind`` ``dataset_document``).
+    ignored: list[Ignored] = []
+    #: Exact names of the 2.0 standalone datasets the datasource model presents.
+    legacy: set[str] = set()
 
     def failure(self, *, kind: str, name: str, cause: str) -> None:
         self.failures.append(StoredDocumentLoadError(kind=kind, name=name, data_source=self.data_source,
@@ -504,7 +572,8 @@ class DocumentIndex(BaseModel):
 
 def build_index(*, data_source: str, documents: list[tuple[str, str]], standalone: list[str],
                 ds_type: str | None, granularities: Sequence[CustomGranularity]) -> DocumentIndex:
-    """Decompose ``documents`` (``(name, text)``) of ``data_source`` and quarantine every name two owners claim."""
+    """Decompose ``documents`` (``(name, text)``) of ``data_source`` and quarantine every name two owners claim
+    exactly (names differing only in case are distinct datasets)."""
     index = DocumentIndex(data_source=data_source)
     decomposed: list[Decomposition] = []
     for name, text in documents:
@@ -516,20 +585,25 @@ def build_index(*, data_source: str, documents: list[tuple[str, str]], standalon
                                                           cause=exc))
     claims: dict[str, list[tuple[str, str]]] = {}
     for name in standalone:
-        claims.setdefault(name.casefold(), []).append(("standalone dataset", name))
+        claims.setdefault(name, []).append(("standalone dataset", name))
     for doc in decomposed:
-        for ds in doc.datasets:
-            claims.setdefault(ds.name.casefold(), []).append((f"semantic model {doc.name!r}", ds.name))
-            index.owners[ds.name.casefold()] = doc.name
-    for folded, owners in claims.items():
+        for ds in [*(d.name for d in doc.datasets), *(n for n, _ in doc.failed)]:
+            claims.setdefault(ds, []).append((f"semantic model {doc.name!r}", ds))
+            index.owners[ds] = doc.name
+            index.members[ds] = doc.name
+        for ds, exc in doc.failed:
+            index.broken[ds] = StoredDocumentLoadError(kind="dataset", name=ds, data_source=data_source, cause=exc)
+            index.failures.append(index.broken[ds])
+    for claimed, owners in claims.items():
         if len(owners) > 1:
-            index.quarantined[folded] = " and ".join(f"{o} ({n!r})" for o, n in owners)
+            index.quarantined[claimed] = " and ".join(f"{o} ({n!r})" for o, n in owners)
             for owner, spelled in owners:
                 index.failure(kind="dataset", name=spelled,
-                              cause=f"{spelled!r} is declared by {index.quarantined[folded]}; rename one of them")
-    known = {n.casefold() for n in standalone} | set(claims)
+                              cause=f"{spelled!r} is declared by {index.quarantined[claimed]}; rename one of them")
+    known = {n.casefold() for n in claims}
     for doc in decomposed:
         _admit(index, doc, known=known)
+        index.ignored.extend(doc.ignored)
     return index
 
 
@@ -542,20 +616,20 @@ def _admit(index: DocumentIndex, doc: Decomposition, *, known: set[str]) -> None
 
 
 def _admit_dataset(index: DocumentIndex, ds: SlayerDataset, *, gone: set[str]) -> None:
-    if ds.name.casefold() in gone:
+    if ds.name in gone:
         for rel in ds.relationships:
             index.failure(kind="relationship", name=rel.name or rel.to,
-                          cause=f"its dataset {ds.name!r} is unloadable: {index.quarantined[ds.name.casefold()]}")
+                          cause=f"its dataset {ds.name!r} is unloadable: {index.quarantined[ds.name]}")
         return
     kept = []
     for rel in ds.relationships:
-        if rel.to.casefold() in gone:
+        if rel.to in gone:
             index.failure(kind="relationship", name=rel.name or rel.to,
-                          cause=f"its dataset {rel.to!r} is unloadable: {index.quarantined[rel.to.casefold()]}")
+                          cause=f"its dataset {rel.to!r} is unloadable: {index.quarantined[rel.to]}")
         else:
             kept.append(rel)
     ds.relationships = kept
-    index.datasets[ds.name.casefold()] = ds
+    index.datasets[ds.name] = ds
 
 
 def _admit_metrics(index: DocumentIndex, doc: Decomposition, *, gone: set[str], known: set[str]) -> None:
@@ -566,7 +640,7 @@ def _admit_metrics(index: DocumentIndex, doc: Decomposition, *, gone: set[str], 
         changed = False
         for folded, metric in list(pending.items()):
             tables, bare = expression_datasets(metric.expression)
-            cause = next((t for t in sorted(tables) if t in gone), None) or next(
+            cause = next((t for t in sorted(tables) if t in {g.casefold() for g in gone}), None) or next(
                 (b for b in sorted(bare) if b in dropped), None)
             if cause is not None:
                 index.failure(kind="metric", name=metric.name, cause=f"it reads {cause!r}, which is unloadable")

@@ -217,8 +217,8 @@ class TestModelMeasurePosition:
         [path] = [p for p in (tmp_path / "semantic_models" / "test").glob("*.yaml")
                   if (yaml.safe_load(p.read_text()).get("dataset") or {}).get("name") == "orders"]
         text = path.read_text()
-        assert "max(revenue)" in text
-        path.write_text(text.replace("max(revenue)", "sum(orders.revenue)"))
+        assert "MAX(revenue)" in text  # core holds the rendered form
+        path.write_text(text.replace("MAX(revenue)", "SUM(revenue)"))
         engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path)))
         resp = await engine.execute(_q(metrics=["orders.rev"], dimensions=["orders.status"]), dry_run=True)
         assert resp.sql is not None

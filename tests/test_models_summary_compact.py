@@ -204,7 +204,7 @@ async def test_compact_json_shape(yaml_storage: YAMLStorage) -> None:
     assert data["dataset_count"] == 3
     orders = next(m for m in data["datasets"] if m["name"] == "orders")
     assert set(orders.keys()) == {
-        "name", "description", "field_count", "metric_names", "relationships_to",
+        "name", "description", "field_count", "metric_names", "relationships_to", "semantic_model",
     }
     assert orders["description"] == "Orders fact."
     assert orders["field_count"] == 3

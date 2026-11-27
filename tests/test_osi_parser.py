@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from slayer.osi.models import OSIAIContextObject, OSIDocument
+from slayer.osi.models import OSIDocument
+from slayer.core.ossie_content import OSIAIContextObject
 from slayer.osi.parser import KNOWN_OSI_VERSIONS, parse_osi_path
 from tests._osi_helpers import FIXTURES, ds, f, flat, legacy, write_yaml
 

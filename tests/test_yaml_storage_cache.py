@@ -13,6 +13,7 @@ from slayer.core import models as _core_models
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.storage import migrations as _mig
+from slayer.storage import semantic_models as _semantic_models
 from slayer.storage import yaml_storage as _yaml_storage
 from slayer.storage.atomic_write import _atomic_write_text
 from slayer.storage.base import resolve_storage
@@ -30,7 +31,7 @@ def _dataset(*, name: str = "m", ds: str = "ds", sql_table: str = "public.t") ->
         name=name,
         sql_table=sql_table,
         data_source=ds,
-        fields=[DatasetField(name="id", expression="id", datatype=DataType.STRING, primary_key=True)],
+        fields=[DatasetField(name="id", expression="lower(id)", datatype=DataType.STRING, primary_key=True)],
     )
 
 
@@ -54,27 +55,27 @@ def _bump_mtime(path: str) -> None:
 # ---- datasets: cache hits skip work ---------------------------------------
 
 
-async def test_hit_skips_parse(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_hit_skips_parse(storage: YAMLStorage) -> None:
     await storage.save_dataset(_dataset())
-    loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
+    _semantic_models._decomposed.cache_clear()
     assert await storage.get_dataset("m", data_source="ds") is not None
+    misses = _semantic_models._decomposed.cache_info().misses
+    assert misses == 1
     assert await storage.get_dataset("m", data_source="ds") is not None
-    assert loads["n"] == 1  # second get was a cache hit
+    assert _semantic_models._decomposed.cache_info().misses == misses  # second get was a cache hit
 
 
 async def test_hit_skips_validate_and_migrate(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A parse runs SlayerModel.model_validate, whose before-validator invokes the
-    # migrations pass (_migrate_schema). A cache hit skips both.
+    # A miss decomposes the stored document (validating and migrating it); a cache hit does neither.
     await storage.save_dataset(_dataset())
-    validates = _install_counter(monkeypatch, SlayerDataset, "model_validate")
-    migrates = _install_counter(monkeypatch, _core_models, "_migrate_schema")
+    _semantic_models._decomposed.cache_clear()
     await storage.get_dataset("m", data_source="ds")  # miss
-    v0, m0 = validates["n"], migrates["n"]
-    assert v0 >= 1
-    assert m0 >= 1
+    misses = _semantic_models._decomposed.cache_info().misses
+    assert misses >= 1
+    migrates = _install_counter(monkeypatch, _core_models, "_migrate_schema")
     await storage.get_dataset("m", data_source="ds")  # hit
-    assert validates["n"] == v0
-    assert migrates["n"] == m0
+    assert _semantic_models._decomposed.cache_info().misses == misses
+    assert migrates["n"] == 0
 
 
 # ---- datasets: invalidation ------------------------------------------------
@@ -281,8 +282,9 @@ async def test_failed_save_evicts_before_write(storage: YAMLStorage, home: str,
     assert await _table(storage) == "public.a"
     with monkeypatch.context() as patch:
         _failing_under(patch, _folder(storage), ops=("replace", "rename"))
+        dataset = _dataset(sql_table="public.c")
         with pytest.raises(RuntimeError):
-            await storage.save_dataset(_dataset(sql_table="public.c"))
+            await storage.save_dataset(dataset)
     _rewrite_same_size(path)
     _bump_mtime(str(path))
     assert await _table(storage) == "public.b"
@@ -327,8 +329,9 @@ async def test_failed_save_after_warm_cache_serves_preserved_file(
     assert await _table(storage) == "public.a"
     with monkeypatch.context() as patch:
         _failing_under(patch, _folder(storage), ops=("replace", "rename"))
+        dataset = _dataset(sql_table="public.b")
         with pytest.raises(RuntimeError):
-            await storage.save_dataset(_dataset(sql_table="public.b"))
+            await storage.save_dataset(dataset)
     assert path.read_bytes() == before
     assert await _table(storage) == "public.a"
 
@@ -510,7 +513,7 @@ async def test_mutating_returned_model_does_not_poison_cache(storage: YAMLStorag
     second = await storage.get_dataset("m", data_source="ds")
     assert second.sql_table == "public.t"
     assert len(second.fields) == 1
-    assert second.fields[0].expression == "id"
+    assert second.fields[0].expression == "lower(id)"
 
 
 # ---- datasets: migration behavior & cache coherence -----------------------
@@ -669,5 +672,5 @@ async def test_factory_storage_hands_out_independent_copies() -> None:
         assert first is not second
         first.fields[0].expression = "MUTATED"
         third = await wrapped.get_dataset("m", data_source="ds")
-        assert third.fields[0].expression == "id"
+        assert third.fields[0].expression == "lower(id)"
 

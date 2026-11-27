@@ -396,10 +396,6 @@ carve_outs:
   - {name: live_columns, file: slayer/live_schema/type_refinement.py, reason: "physical database or result-set column"}
   - {name: columns, file: slayer/mcp/server.py, reason: "physical database or result-set column"}
   - {name: _shared_semantic_model, file: slayer/osi/exporter.py, reason: "OSI's own word (foreign format)"}
-  - {name: column, file: slayer/osi/exporter.py, reason: "SQL column in a SQL AST, statement or wire surface"}
-  - {name: from_columns, file: slayer/osi/exporter.py, reason: "Ossie's own wire name"}
-  - {name: model_metrics, file: slayer/osi/exporter.py, reason: "OSI's own word (foreign format)"}
-  - {name: to_columns, file: slayer/osi/exporter.py, reason: "Ossie's own wire name"}
   - {name: from_columns, file: slayer/osi/models.py, reason: "Ossie's own wire name"}
   - {name: to_columns, file: slayer/osi/models.py, reason: "Ossie's own wire name"}
   - {name: ColumnTypeIndex, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
@@ -581,25 +577,10 @@ carve_outs:
   - {name: columns, file: slayer/storage/semantic_models.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: embedding_model_name, file: slayer/storage/sidecar_embedding_store.py, reason: "embedding model"}
   - {name: list_for_model, file: slayer/storage/sidecar_embedding_store.py, reason: "embedding model"}
-  - {name: _delete_semantic_model_row, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _delete_semantic_model_sync, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _get_semantic_model_sync, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _get_semantic_model_text_impl, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _list_semantic_model_identities, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _list_semantic_models_sync, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _patch_semantic_model_sync, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _patch_semantic_model_text, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _save_semantic_model_sync, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _save_semantic_model_text_impl, file: slayer/storage/sqlite_storage.py, reason: "Ossie's semantic model (the document)"}
   - {name: columns, file: slayer/storage/v2_migration.py, reason: "stored-document upgrade path"}
   - {name: raw_measures, file: slayer/storage/v2_migration.py, reason: "stored-document upgrade path"}
   - {name: models_dir, file: slayer/storage/v4_migration.py, reason: "storage layout (the models/ directory)"}
   - {name: models_dir, file: slayer/storage/yaml_storage.py, reason: "storage layout (the models/ directory)"}
-  - {name: _delete_semantic_model_row, file: slayer/storage/yaml_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _get_semantic_model_text_impl, file: slayer/storage/yaml_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _list_semantic_model_identities, file: slayer/storage/yaml_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _patch_semantic_model_text, file: slayer/storage/yaml_storage.py, reason: "Ossie's semantic model (the document)"}
-  - {name: _save_semantic_model_text_impl, file: slayer/storage/yaml_storage.py, reason: "Ossie's semantic model (the document)"}
   - {name: semantic_models_dir, file: slayer/storage/yaml_storage.py, reason: "Ossie's semantic model (the document)"}
   - {name: SemanticModelRequest, file: slayer/api/server.py, reason: "Ossie's semantic model (the document)"}
   - {name: create_semantic_model, file: slayer/api/server.py, reason: "Ossie's semantic model (the document)"}
@@ -631,6 +612,8 @@ carve_outs:
   - {name: ModelMetricNameError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: ModelMetricReferenceError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: UnqualifiedModelMetricReferenceError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
+  - {name: ModelResolutionError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: _AggregatedMeasureRef, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
   - {name: _parse_formula, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
   - {name: formula, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
@@ -686,6 +669,9 @@ carve_outs:
   - {name: adopt_semantic_model, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}
   - {name: create_semantic_model, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}
   - {name: edit_semantic_model, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model_document, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model_members, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}
+  - {name: store_split_model, file: slayer/storage/access_filtered.py, reason: "Ossie's semantic model (the document)"}
   - {name: adopt_semantic_model, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: create_semantic_model, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: edit_semantic_model, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
@@ -693,16 +679,47 @@ carve_outs:
   - {name: create_semantic_model, file: slayer/storage/engine_view.py, reason: "Ossie's semantic model (the document)"}
   - {name: edit_semantic_model, file: slayer/storage/engine_view.py, reason: "Ossie's semantic model (the document)"}
   - {name: SEMANTIC_MODEL_NAME, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _check_model_name, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _refuse_datasource_model_name, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model_document, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model_members, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
+  - {name: store_split_model, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: from_columns, file: slayer/storage/document_mapping.py, reason: "Ossie's own wire name"}
   - {name: to_columns, file: slayer/storage/document_mapping.py, reason: "Ossie's own wire name"}
+  - {name: _cross_model, file: slayer/storage/document_mapping.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model_document, file: slayer/storage/engine_view.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model_members, file: slayer/storage/engine_view.py, reason: "Ossie's semantic model (the document)"}
+  - {name: store_split_model, file: slayer/storage/engine_view.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _delete_semantic_model_row, file: slayer/storage/folder_documents.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _get_semantic_model_text_impl, file: slayer/storage/folder_documents.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _list_semantic_model_identities, file: slayer/storage/folder_documents.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _patch_semantic_model_text, file: slayer/storage/folder_documents.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _save_semantic_model_text_impl, file: slayer/storage/folder_documents.py, reason: "Ossie's semantic model (the document)"}
+  - {name: replaced_model, file: slayer/storage/folder_documents.py, reason: "Ossie's semantic model (the document)"}
   - {name: _check_column, file: slayer/storage/model_metric_rules.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/storage/model_metric_rules.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: check_model_metric, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: visible_model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: warn_broken_model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
+  - {name: column, file: slayer/storage/ossie_render.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: from_columns, file: slayer/storage/ossie_render.py, reason: "Ossie's own wire name"}
+  - {name: model_metrics, file: slayer/storage/ossie_render.py, reason: "OSI's own word (foreign format)"}
+  - {name: to_columns, file: slayer/storage/ossie_render.py, reason: "Ossie's own wire name"}
+  - {name: model_scoped, file: slayer/storage/ossie_render.py, reason: "OSI's own word (foreign format)"}
   - {name: column, file: slayer/storage/semantic_models.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: analyse_model_scoped, file: slayer/storage/semantic_models.py, reason: "Ossie's semantic model (the document)"}
+  - {name: MODEL_SUFFIX, file: slayer/storage/stored_layout.py, reason: "Ossie's semantic model (the document)"}
+  - {name: ModelEdit, file: slayer/storage/stored_layout.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _model_document, file: slayer/storage/stored_layout.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _models, file: slayer/storage/stored_layout.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _plan_model, file: slayer/storage/stored_layout.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model, file: slayer/storage/stored_layout.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model_writes, file: slayer/storage/stored_layout.py, reason: "Ossie's semantic model (the document)"}
+  - {name: models, file: slayer/storage/stored_layout.py, reason: "Ossie's semantic model (the document)"}
   - {name: embedding_model_name, file: slayer/storage/upgrade.py, reason: "embedding model"}
   - {name: SEMANTIC_MODEL, file: slayer/storage/upgrade.py, reason: "Ossie's semantic model (the document)"}
   - {name: _semantic_model_outcome, file: slayer/storage/upgrade.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model, file: slayer/storage/upgrade.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model_text, file: slayer/storage/upgrade.py, reason: "Ossie's semantic model (the document)"}

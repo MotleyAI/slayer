@@ -1,0 +1,30 @@
+version: 0.3.0.dev0
+dataset:
+  name: open_tickets
+  source: open_tickets
+  fields:
+  - name: status
+    expression:
+      sql: status
+    datatype: String
+  nonportable_extensions:
+  - vendor_name: SLAYER
+    data:
+      version: 4
+      entity: open_tickets
+      fingerprint: 00bc6a2bb145ef559a9b1f49325ea92214f7a6e4437f4a86221ef6a1fe9072d7
+      kind: dataset
+      source:
+        source_queries:
+        - version: 19
+          population: tickets
+          dimensions:
+          - tickets.status
+        query_variables: {}
+      hidden: false
+      access_tags: []
+      aggregations: []
+      fields: []
+      metrics: []
+      relationships: []
+      enforced_keys: []

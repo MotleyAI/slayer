@@ -365,6 +365,21 @@ class UnloadableDocumentWarning(SlayerWarning):
         return _single_line(f"skipped stored {kind} {document!r}, which cannot be loaded: {self.cause}")
 
 
+class IgnoredStoredEntityWarning(SlayerWarning):
+    """A stored entity loads inert: ``entity_kind`` ``name`` of ``data_source`` is kept as written but not read."""
+
+    kind: Literal["ignored_stored_entity"] = "ignored_stored_entity"
+    entity_kind: Literal["dataset_document", "dataset", "field", "metric", "relationship"]
+    data_source: str
+    name: str
+    reason: str
+
+    def human_message(self) -> str:
+        what = "dataset document" if self.entity_kind == "dataset_document" else self.entity_kind
+        return _single_line(f"stored {what} {self.name!r} of datasource {self.data_source!r} is ignored: "
+                            f"{self.reason}")
+
+
 class StoredUpgradeNeededWarning(SlayerWarning):
     """A stored document loaded in a form ``slayer storage upgrade`` would change; ``data_source`` is ``None`` for a
     memory or a datasource."""
@@ -683,6 +698,7 @@ AnySlayerWarning = Annotated[
         DateOnlyMidnightWarning,
         ChangedReferenceWarning,
         StoredUpgradeNeededWarning,
+        IgnoredStoredEntityWarning,
         TimeZoneUndeclaredWarning,
     ],
     Field(discriminator="kind"),
@@ -737,6 +753,17 @@ class SlayerStoredUpgradeNeededWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``StoredUpgradeNeededWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: StoredUpgradeNeededWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerIgnoredStoredEntityWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``IgnoredStoredEntityWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: IgnoredStoredEntityWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
 from ruamel.yaml.util import load_yaml_guess_indent
 from yaml.constructor import ConstructorError
 
@@ -202,6 +203,25 @@ def _named(items: list[Any], key: str) -> bool:
     return len(names) == len(items) and all(isinstance(n, str) for n in names) and len(set(names)) == len(names)
 
 
+def _reads_as_other(text: str) -> bool:
+    """Whether a YAML 1.1 reader takes plain ``text`` for something other than that string (``no``, ``1.0``, ``~``)."""
+    try:
+        return yaml.safe_load(text) != text
+    except yaml.YAMLError:
+        return True
+
+
+def _written(value: Any) -> Any:
+    """``value`` for the round-trip tree: every string a YAML 1.1 reader would type otherwise single-quoted."""
+    if isinstance(value, str) and not isinstance(value, ScalarString):
+        return SingleQuotedScalarString(value) if _reads_as_other(value) else value
+    if isinstance(value, dict):
+        return {k: _written(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_written(v) for v in value]
+    return value
+
+
 def _apply_named_list(node: list[Any], desired: list[Any], key: str) -> None:
     wanted = {d[key]: d for d in desired}
     for i in reversed(range(len(node))):
@@ -212,7 +232,7 @@ def _apply_named_list(node: list[Any], desired: list[Any], key: str) -> None:
         if item[key] in held:
             _apply(held[item[key]], item)
         else:
-            node.append(item)
+            node.append(_written(item))
 
 
 def _apply_list(node: list[Any], desired: list[Any]) -> None:
@@ -225,7 +245,7 @@ def _apply_list(node: list[Any], desired: list[Any]) -> None:
         for i in reversed([i for i in range(len(node)) if i not in kept]):
             del node[i]
         return
-    node[:] = desired
+    node[:] = _written(desired)
 
 
 def _subsequence(node: list[Any], desired: list[Any]) -> set[int] | None:
@@ -255,7 +275,7 @@ def _apply(node: MutableMapping[str, Any], desired: dict[str, Any]) -> None:
         elif isinstance(current, list) and isinstance(value, list) and (isinstance(current, CommentedSeq) or value):
             _apply_list(current, value)
         else:
-            node[key] = value
+            node[key] = _written(value)
 
 
 def _yaml(text: str) -> YAML:

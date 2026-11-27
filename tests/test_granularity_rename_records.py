@@ -345,12 +345,16 @@ def test_a_conflicted_dependent_does_not_hold_the_datasource(
     base = str(tmp_path / "store")
     _legacy_store(backend=backend, base=base)
     backend_class = SQLiteStorage if backend == "sqlite" else YAMLStorage
-    write = backend_class._write_raw_if_unchanged
+    write = backend_class._write_folder
 
-    async def conflict_on_bucketed(self: Any, **kwargs: Any) -> bool:
-        return False if kwargs["name"] == "bucketed" else await write(self, **kwargs)
+    async def conflict_on_bucketed(self: Any, data_source: str, plan: Any, **kwargs: Any) -> None:
+        def edited_meanwhile(folder: Any) -> Any:  # ``bucketed`` changes between the upgrade's read and its write
+            if "bucketed" in folder.legacy:
+                folder.legacy["bucketed"] = {**folder.legacy["bucketed"], "description": "edited meanwhile"}
+            return plan(folder)
+        await write(self, data_source, edited_meanwhile, **kwargs)
 
-    monkeypatch.setattr(backend_class, "_write_raw_if_unchanged", conflict_on_bucketed)
+    monkeypatch.setattr(backend_class, "_write_folder", conflict_on_bucketed)
     result = upgrade(store_path(reopen(backend=backend, base=base)))
     assert result.code == 1, result
     assert f"datasource {DS}: upgraded" in result.out.splitlines(), result.out

@@ -80,12 +80,12 @@ def test_the_v1_fixture_is_a_pre_rename_export() -> None:
     assert PRE_2_0_PAYLOAD_KEYS & payload_keys(bodies)
 
 
-async def test_an_export_writes_payload_version_3_in_the_new_keys(tmp_path: Path) -> None:
+async def test_an_export_writes_payload_version_4_in_the_new_keys(tmp_path: Path) -> None:
     env = await make_env(tmp_path)
     await save(env, customers(), rich_orders(), monthly_revenue())
     bodies = slayer_payloads((await export(env)).document)
     assert {b["kind"] for b in bodies} == {"dataset", "field", "metric", "relationship"}
-    assert {b["version"] for b in bodies} == {3}
+    assert {b["version"] for b in bodies} == {4}
     assert not PRE_2_0_PAYLOAD_KEYS & payload_keys(bodies), sorted(PRE_2_0_PAYLOAD_KEYS & payload_keys(bodies))
     fields = [b["field"] for b in bodies if b["kind"] == "field"]
     fields += [f for b in bodies if b["kind"] == "dataset" for f in b.get("fields") or []]
@@ -124,10 +124,20 @@ async def test_a_v1_export_reexports_its_payloads_unchanged(tmp_path: Path) -> N
     with recorded() as caught:
         from_v1, _ = await reimport(env, v1_document(), name="from_v1")
     assert [w for w in caught if issubclass(w.category, FutureWarning)] == []
-    # A one-document datasource re-exports verbatim: its payloads stay at version 1.
+    # A dataset exported as stored keeps its payloads at version 1; one whose SLAYER content changes its core
+    # (a query-backed source, a restored definition) is rendered anew.
     re_export = await export(from_v1)
-    assert {b["version"] for b in slayer_payloads(re_export.document)} == {1}
+    [customers] = [d for d in re_export.document["datasets"] if d["name"] == "customers"]
+    assert {b["version"] for b in slayer_payloads({"datasets": [customers]})} == {1}
     from_re_export, _ = await reimport(env, re_export, name="from_re_export")
     imported_v1 = await stored_datasets(from_v1)
     assert sorted(imported_v1) == ["customers", "monthly_revenue", "orders"]
     assert imported_v1 == await stored_datasets(from_re_export)
+
+
+async def test_a_v1_query_backed_stage_is_qualified_on_load(tmp_path: Path) -> None:
+    env = await make_env(tmp_path / "src")
+    from_v1, _ = await reimport(env, v1_document(), name="from_v1")
+    result = await export(from_v1)
+    assert "monthly_revenue" in [d["name"] for d in result.document["datasets"]]
+    assert not [w for w in result.warnings if w.dataset_name == "monthly_revenue"]

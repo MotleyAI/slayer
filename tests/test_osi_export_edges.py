@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from slayer.osi.exporter import OsiExportError
-from slayer.osi.models import OSIAIContextObject, explicit_description, render_description
+from slayer.core.ossie_content import explicit_description
+from slayer.core.ossie_content import render_description
+from slayer.core.ossie_content import OSIAIContextObject
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dataset_access_fixtures import mcp_text
 from tests._osi_export_fixtures import BASIC_METRICS, customers, orders

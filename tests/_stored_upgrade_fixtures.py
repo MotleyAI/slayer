@@ -29,7 +29,7 @@ from tests._engine_helpers import owned_query_engine
 DS = "shop"
 BACKENDS = ["yaml", "sqlite"]
 OSSIE_VERSION = "0.3.0.dev0"
-SLAYER_PAYLOAD_VERSION = 3
+SLAYER_PAYLOAD_VERSION = 4
 
 CUSTOMERS_ROWS = [
     (1, "Ann", "North", "2023-06-01 00:00:00"),
@@ -337,7 +337,7 @@ def slayer_payloads(node: Any) -> list[dict[str, Any]]:
 
 
 def assert_current(doc: dict[str, Any]) -> None:
-    """A stored Ossie document at the current format: Ossie's version and every ``SLAYER`` payload at version 3."""
+    """A stored Ossie document at the current format: Ossie's version and every ``SLAYER`` payload at version 4."""
     assert doc["version"] == OSSIE_VERSION, doc["version"]
     assert [p.get("version") for p in slayer_payloads(doc)] == [SLAYER_PAYLOAD_VERSION] * len(slayer_payloads(doc))
 
@@ -361,7 +361,7 @@ def _relationships_in(texts: dict[str, str], *, name: str) -> list[dict[str, Any
     for doc in docs:
         if "dataset" not in doc:
             out += [r for r in doc.get("relationships") or [] if r.get("from") == name]
-            out += [r for r in slayer_payload(doc).get("relationships") or [] if r.get("from") == name]
+            out += [d["relationship"] for d in slayer_payload(doc).get("relationships") or [] if d.get("dataset") == name]
     return out + list(slayer_payload(own[0]).get("relationships") or [])
 
 
@@ -385,7 +385,8 @@ def field_of(dataset: SlayerDataset, name: str) -> DatasetField:
 
 
 def storage_texts(storage: StorageBackend, *, data_source: str = DS) -> dict[str, str]:
-    """``{file name: text}`` of ``data_source``'s stored Ossie documents in ``storage``."""
+    """``{file name: text}`` of ``data_source``'s stored Ossie documents in ``storage`` (an engine's view unwrapped)."""
+    storage = getattr(storage, "inner", storage)
     yaml_base = storage.base_dir if isinstance(storage, YAMLStorage) else None
     db_path = storage.db_path if isinstance(storage, SQLiteStorage) else ""
     return _texts_at(yaml_base=yaml_base, db_path=db_path, data_source=data_source) if yaml_base or db_path else {}

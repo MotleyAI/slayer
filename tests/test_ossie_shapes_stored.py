@@ -119,6 +119,9 @@ class TestShapes:
             loaded = await storage.get_dataset("orders", data_source=DS)
             assert loaded is not None
         assert deprecations(caught) == []
+        stored_customers = await storage.get_dataset("customers", data_source=DS)
+        assert stored_customers is not None
+        await storage.save_dataset(stored_customers)  # the relationship's target is stored first
         await storage.save_dataset(loaded)
         written = ossie_dataset(backend=backend, base=str(tmp_path), name="orders")
         [rel] = stored_relationships(backend=backend, base=str(tmp_path), name="orders")

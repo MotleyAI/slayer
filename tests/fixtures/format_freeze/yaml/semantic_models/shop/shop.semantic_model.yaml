@@ -1,0 +1,9 @@
+version: 0.3.0.dev0
+name: shop
+dataset_refs:
+- name: tickets
+  iri: tickets.dataset.yaml
+- name: open_tickets
+  iri: open_tickets.dataset.yaml
+- name: tickets/2024 Q1
+  iri: tickets%252F2024%2520Q1.dataset.yaml

@@ -87,12 +87,14 @@ Every dataset, field, metric, relationship and model SHALL be stored with its Os
 - `datatype` as written; a list type as `Opaque` with the list type in the `SLAYER` entry;
 - a field's `label` in core; a metric's label in its `SLAYER` entry.
 
-SLayer's versioning of what it stores SHALL be the `version` of each `SLAYER` payload; a document whose entities carry no `SLAYER` entry SHALL read as current. Each `SLAYER` entry SHALL be `{vendor_name: SLAYER, data}` with `data` holding `version` (3), `kind`, `entity`, `fingerprint` (fingerprint version 1, over the payload and the entity's core content) and, by kind:
+SLayer's versioning of what it stores SHALL be the `version` of each `SLAYER` payload; a document whose entities carry no `SLAYER` entry SHALL read as current. Each `SLAYER` entry SHALL be `{vendor_name: SLAYER, data}` with `data` holding `version` (4), `kind`, `entity`, `fingerprint` (fingerprint version 1, over the payload and the entity's core content) and, by kind:
 - `field`: `field` with `expression`, `sql`, `filter`, `datatype`, `hidden`, `format`, `granularity`, `allowed_aggregations`, `meta`, `element_type`, `db_type`, `sampled`, `sampled_values`, `distinct_count`;
-- `dataset`: `source` (`sql_table`, `sql`, `filters`, `source_queries`, `query_variables`), `hidden`, `access_tags`, `default_time_dimension`, `meta`, `aggregations`, `fields`, `metrics`, `relationships` (SLayer-only members) and `enforced_keys`;
+- `dataset`: `source` (`sql_table`, `source_kind`, `sql`, `filters`, `source_queries`, `query_variables`), `hidden`, `access_tags`, `default_time_dimension`, `meta`, `aggregations`, `fields`, `metrics`, `relationships` (SLayer-only members) and `enforced_keys`;
 - `metric`: `dataset` and `metric`;
 - `relationship`: `declarations`, each a `dataset` and a `relationship`;
 - `semantic_model`: `metrics` (model-scoped metrics core cannot hold), `relationships` (relationships whose `from` dataset it holds and whose `to` dataset another model holds) and `documents` (boundaries of a merged export).
+
+A version-3 payload SHALL read as version 4 without `source_kind`.
 
 This shape SHALL NOT change without a new payload version that every later release reads.
 

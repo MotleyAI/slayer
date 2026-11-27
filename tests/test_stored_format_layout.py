@@ -378,6 +378,22 @@ async def test_a_cross_model_relationship_is_held_by_the_model_of_its_from_datas
 
 
 @pytest.mark.parametrize("kind", STORAGES)
+async def test_a_relationship_saved_before_its_target_lands_in_core_with_it(tmp_path: Path, kind: str) -> None:
+    storage = await store_with_datasource(kind, tmp_path)
+    await storage.save_dataset(table_dataset("orders", fields=["id", "customer_id"], relationships=[
+        link("customers", from_columns=["customer_id"], to_columns=["id"])]), _validate=False)
+    await storage.save_dataset(table_dataset("customers", fields=["id"]), _validate=False)
+    held = model_documents(kind, tmp_path)[DS]
+    assert [(r["from"], r["to"]) for r in held["relationships"]] == [("orders", "customers")]
+    assert not (slayer_entry(held) or {}).get("relationships")
+    assert [r.to for r in (await must_get(reopen_store(kind, tmp_path), "orders")).relationships] == ["customers"]
+
+
+def reopen_store(kind: str, base: Path) -> StorageBackend:
+    return make_storage(kind, base)
+
+
+@pytest.mark.parametrize("kind", STORAGES)
 async def test_a_reverse_cross_model_relationship_stays_with_the_datasource_model(tmp_path: Path, kind: str) -> None:
     async with document_engine(kind=kind, documents=(), base=tmp_path) as engine:
         storage = engine.storage
@@ -541,7 +557,7 @@ async def test_a_name_that_is_not_a_file_name(tmp_path: Path, kind: str) -> None
 
 @pytest.mark.parametrize("kind", STORAGES)
 @pytest.mark.parametrize("name", [
-    pytest.param("a/b", id="slash"), pytest.param("a\\b", id="backslash"), pytest.param("..", id="dotdot"),
+    pytest.param("a/b", id="slash"), pytest.param("a\\b", id="backslash"),
     pytest.param("café_ü", id="unicode"), pytest.param("x" * 120, id="120-bytes"), pytest.param("ok-name_1", id="plain"),
 ])
 async def test_a_readable_stem_is_the_name_or_its_percent_encoding(tmp_path: Path, kind: str, name: str) -> None:
@@ -551,6 +567,35 @@ async def test_a_readable_stem_is_the_name_or_its_percent_encoding(tmp_path: Pat
     assert file == f"{readable_stem(name)}.dataset.yaml"
     assert refs(model_documents(kind, tmp_path)[DS]) == [iri_of(file)]
     assert (await must_get(storage, name)).name == name
+
+
+def _merged_export(*, rest: str) -> dict[str, Any]:
+    """A merged export of ``DS`` recording the document ``support``; dataset ``rest`` belongs to no recorded document."""
+    return {"version": "0.3.0.dev0", "name": DS,
+            "datasets": [dataset(rest, source="orders", fields=[field("order_id")]),
+                         dataset("tickets", source="tickets", fields=[field("ticket_id")])],
+            "nonportable_extensions": [{"vendor_name": "SLAYER", "data": {
+                "version": 3, "kind": "semantic_model", "entity": DS,
+                "documents": [{"name": "support", "datasets": ["tickets"]}]}}]}
+
+
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_a_dataset_named_dotdot_is_stored_under_its_encoding(tmp_path: Path, kind: str,
+                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(SlayerQueryEngine, "client_for", _no_database)
+    await store_with_datasource(kind, tmp_path)
+    path = tmp_path / "in" / "export.yaml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump(_merged_export(rest=".."), sort_keys=False), encoding="utf-8")
+    where = ["--storage", str(tmp_path / "store") if kind == "yaml" else str(tmp_path / "store.db")]
+    result = run_cli_in_process(["import-osi", str(path), "--datasource", DS, *where])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert dataset_file(kind, tmp_path, "..") == "%2E%2E.dataset.yaml"
+    assert refs(model_documents(kind, tmp_path)[DS]) == [iri_of("%2E%2E.dataset.yaml")]
+    assert stored_dataset(kind, tmp_path, "..")["name"] == ".."
+    if kind == "yaml":
+        root = folder(tmp_path).resolve()
+        assert all(p.resolve().is_relative_to(root) for p in (tmp_path / "store").rglob("*.dataset.yaml"))
 
 
 @pytest.mark.parametrize("kind", STORAGES)
@@ -572,33 +617,46 @@ async def test_a_long_or_reserved_stem_is_cut_and_hashed(tmp_path: Path, kind: s
     assert (await must_get(storage, name)).name == name
 
 
+async def _with_split_sales(storage: StorageBackend) -> None:
+    """``orders`` in the datasource model, then the split model ``sales`` made from a seed dataset."""
+    await storage.save_dataset(table_dataset("orders", fields=["id", "lower"]), _validate=False)
+    await storage.save_dataset(table_dataset("seed"), _validate=False)
+    await storage.create_semantic_model(name="sales", data_source=DS, datasets=["seed"])
+
+
+def _upper_orders() -> SlayerDataset:
+    return table_dataset("Orders", sql_table="orders", fields=["id", "upper"], semantic_model="sales")
+
+
 @pytest.mark.parametrize("kind", STORAGES)
 async def test_names_differing_only_in_case(tmp_path: Path, kind: str) -> None:
     """Spec scenario: Names differing only in case."""
     storage = await store_with_datasource(kind, tmp_path)
-    await storage.save_dataset(table_dataset("orders", fields=["id", "lower"]), _validate=False)
-    await storage.save_dataset(table_dataset("Orders", sql_table="orders", fields=["id", "upper"]), _validate=False)
+    await _with_split_sales(storage)
+    await storage.save_dataset(_upper_orders(), _validate=False)
     lower, upper = dataset_file(kind, tmp_path, "orders"), dataset_file(kind, tmp_path, "Orders")
     assert lower == "orders.dataset.yaml"
     assert upper == f"Orders{hash_suffix('Orders')}.dataset.yaml"
     assert lower.casefold() != upper.casefold()
-    assert sorted(refs(model_documents(kind, tmp_path)[DS])) == sorted([iri_of(lower), iri_of(upper)])
-    reopened = make_storage(kind, tmp_path)
-    assert [f.name for f in (await must_get(reopened, "orders")).fields] == ["id", "lower"]
-    assert [f.name for f in (await must_get(reopened, "Orders")).fields] == ["id", "upper"]
+    models = model_documents(kind, tmp_path)
+    assert refs(models[DS]) == [iri_of(lower)]
+    assert iri_of(upper) in refs(models["sales"])
+    assert [f["name"] for f in stored_dataset(kind, tmp_path, "orders")["fields"]] == ["id", "lower"]
+    assert [f["name"] for f in stored_dataset(kind, tmp_path, "Orders")["fields"]] == ["id", "upper"]
 
 
 @pytest.mark.parametrize("kind", STORAGES)
 async def test_a_file_name_is_kept_while_the_name_stays(tmp_path: Path, kind: str) -> None:
     storage = await store_with_datasource(kind, tmp_path)
-    await storage.save_dataset(table_dataset("orders"), _validate=False)
-    await storage.save_dataset(table_dataset("Orders", sql_table="orders"), _validate=False)
+    await _with_split_sales(storage)
+    await storage.save_dataset(_upper_orders(), _validate=False)
     hashed = dataset_file(kind, tmp_path, "Orders")
     assert await storage.delete_dataset("orders", data_source=DS) is True
     upper = await must_get(storage, "Orders")
     await storage.save_dataset(upper.model_copy(update={"description": "Edited."}), _validate=False)
     assert dataset_file(kind, tmp_path, "Orders") == hashed
-    assert refs(model_documents(kind, tmp_path)[DS]) == [iri_of(hashed)]
+    seed = iri_of(dataset_file(kind, tmp_path, "seed"))
+    assert [r for r in refs(model_documents(kind, tmp_path)["sales"]) if r != seed] == [iri_of(hashed)]
 
 
 async def test_a_2_0_model_document_keeps_its_file_name(tmp_path: Path) -> None:

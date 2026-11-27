@@ -16,9 +16,11 @@ from typing import Any
 import jsonschema
 import yaml
 
+from slayer.core import slayer_extension as ext
 from slayer.core.models import DatasetField, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.core.warnings import SlayerWarning
 from slayer.storage.base import StorageBackend
+from slayer.sql.ossie_dialects import source_digest
 from slayer.storage.sqlite_conn import open_connection
 from tests._dev2243_fixtures import DS, STORAGES, make_storage
 from tests._osi_helpers import SCHEMA_PATH
@@ -117,6 +119,31 @@ def stored_dataset(kind: str, base: Path, name: str, *, data_source: str = DS) -
             if entry["name"] == name:
                 return entry
     raise AssertionError(f"dataset {name!r} is not stored in {data_source!r}")
+
+
+def hand_edit_stage(base_dir: str, name: str, update: dict[str, Any], *, reader: str) -> None:
+    """Merge ``update`` into the first stored stage of YAML dataset ``name``, as a hand edit that also re-stamps the
+    ``SLAYER`` entry's fingerprint would."""
+    for path in Path(base_dir).glob("semantic_models/*/*.dataset.yaml"):
+        doc = yaml.safe_load(path.read_text())
+        if doc["dataset"]["name"] != name:
+            continue
+        entry = next(e for e in doc["dataset"]["nonportable_extensions"] if e["vendor_name"] == "SLAYER")
+        entry["data"]["source"]["source_queries"][0].update(update)
+        entry["data"]["fingerprint"] = ext.fingerprint(
+            ext.decode(entry["data"]), ossie=source_digest(doc["dataset"]["source"], reader=reader))
+        path.write_text(yaml.safe_dump(doc))
+        return
+    raise AssertionError(f"dataset {name!r} has no dataset document under {base_dir!r}")
+
+
+async def save_in_own_model(storage: StorageBackend, dataset: SlayerDataset, *, model: str) -> None:
+    """Save ``dataset`` unvalidated into semantic model ``model`` of its own, created from a seed dataset: the only
+    place a case twin of a datasource-model dataset can be stored."""
+    seed = SlayerDataset(name=f"{model}_seed", data_source=dataset.data_source, sql_table=f"{model}_seed")
+    await storage.save_dataset(seed, _validate=False)
+    await storage.create_semantic_model(name=model, data_source=dataset.data_source, datasets=[seed.name])
+    await storage.save_dataset(dataset.model_copy(update={"semantic_model": model}), _validate=False)
 
 
 def refs(doc: dict[str, Any]) -> list[str]:

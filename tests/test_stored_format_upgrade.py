@@ -115,6 +115,11 @@ def rows(storage: StorageBackend, query: dict[str, Any]) -> list[str]:
     return sorted(map(repr, asyncio.run(su.run(storage, query)).data))
 
 
+def values(storage: StorageBackend, query: dict[str, Any]) -> list[list[Any]]:
+    """The query's rows as their values, whatever their keys are named."""
+    return sorted(list(r.values()) for r in asyncio.run(su.run(storage, query)).data)
+
+
 def sqlite_dump(path: Path) -> dict[str, list[tuple[Any, ...]]]:
     """Every row of every table of a SQLite file."""
     with open_connection(path) as con:
@@ -256,8 +261,8 @@ async def test_a_store_holding_both_forms_reads_correctly(tmp_path: Path, kind: 
     assert {d.name for d in loaded} == {"orders", "customers", "returns"}
     assert upgrade_warning_names(record) == ["returns"]
     assert await fresh.semantic_model_owner("returns", data_source=DS) == DS
-    assert await asyncio.to_thread(rows, fresh, {"population": "returns", "metrics": ["count(*)"]}) == \
-        await asyncio.to_thread(rows, fresh, ORDER_COUNT)
+    assert await asyncio.to_thread(values, fresh, {"population": "returns", "metrics": ["count(*)"]}) == \
+        await asyncio.to_thread(values, fresh, ORDER_COUNT)
 
 
 DOCUMENT_SHOP = """\

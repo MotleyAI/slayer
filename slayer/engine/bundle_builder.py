@@ -97,9 +97,8 @@ async def build_resolved_source_bundle(
     # dataset's own data_source, falling back to the hint only when it carries none.
     walk_ds = source_dataset.data_source or data_source or None
     await _check_spine_spellings(storage=storage, spellings=respelled_spine, data_source=walk_ds)
-    spine_clash = walk_ds is not None and (
-        await storage.get_dataset(TIME_SPINE_DATASET, data_source=walk_ds)
-    ) is not None
+    stored_spine = await storage.get_dataset(TIME_SPINE_DATASET, data_source=walk_ds) if walk_ds is not None else None
+    spine_clash = stored_spine is not None and stored_spine.name == TIME_SPINE_DATASET
     peer_names, peer_edge_names = await _datasource_names(storage=storage, data_source=walk_ds, failures=failures)
     query, named_queries = respelled_stages(query, named_queries, datasets=[*peer_names, TIME_SPINE_DATASET])
     referenced_datasets, query_backed = await _referenced_datasets(
@@ -493,8 +492,18 @@ class _DatasetReadCache:
         return getattr(self._inner, name)
 
     async def load_datasets(self, **kwargs: Any) -> Any:
-        """The inner backend's ``load_datasets``, reading through this cache."""
-        return await StorageBackend.load_datasets(cast(StorageBackend, self), **kwargs)
+        """The inner backend's ``load_datasets`` (its document datasets included), each dataset read through this
+        cache."""
+        loaded, failures = await self._inner.load_datasets(**kwargs)
+        out: List[SlayerDataset] = []
+        for dataset in loaded:
+            key = (dataset.name, dataset.data_source)
+            if key not in self._datasets:
+                self._datasets[key] = await self._resolve(dataset) if self._resolve is not None else dataset
+            cached = self._datasets[key]
+            if cached is not None:
+                out.append(cached)
+        return out, failures
 
     async def get_dataset(
         self, name: str, data_source: Optional[str] = None

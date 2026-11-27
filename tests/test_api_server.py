@@ -41,7 +41,7 @@ def _reset_yaml_storage(storage: YAMLStorage) -> None:
     # subdirectories instead of unlinking only top-level entries. Also
     # clears the ``priority.yaml`` written by ``set_datasource_priority``
     # so it doesn't leak between session-scoped tests (PR #92 thread #13).
-    for sub in ("models", "datasources"):
+    for sub in ("models", "datasources", "semantic_models"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
             for entry in os.listdir(d):

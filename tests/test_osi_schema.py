@@ -10,7 +10,6 @@ import yaml
 from pydantic import BaseModel
 
 from slayer.osi.models import (
-    OSIAIContextObject,
     OSIDataset,
     OSIDimension,
     OSIDocument,
@@ -18,6 +17,7 @@ from slayer.osi.models import (
     OSIMetric,
     OSIRelationship,
 )
+from slayer.core.ossie_content import OSIAIContextObject
 from slayer.core.ossie_expression import OSINonportableExtension
 from slayer.core.ossie_expression import OSIExpression
 from slayer.core.ossie_expression import OSIDialectExpression

@@ -195,7 +195,8 @@ async def test_an_edit_of_a_dataset_carrying_an_inert_field_keeps_refusing_new_o
         await _refused(add, name="tax.usd")
         stored = await storage.get_semantic_model_text("sales", data_source=DS)
         assert stored is not None
-        assert _declares(stored, "amount.usd") and not _declares(stored, "tax.usd")
+        assert _declares(stored, "amount.usd")
+        assert not _declares(stored, "tax.usd")
 
 
 # --------------------------------------------------------------------------- #
@@ -211,7 +212,8 @@ async def test_a_300_character_field_name_is_stored_as_written(kind: str) -> Non
         assert LONG in {f.name for f in orders.fields}
         await storage.save_dataset(orders.model_copy(update={"description": "Edited."}))
         stored = await storage.get_semantic_model_text("sales", data_source=DS)
-    assert stored is not None and _declares(stored, LONG)
+    assert stored is not None
+    assert _declares(stored, LONG)
 
 
 @pytest.mark.parametrize("kind", STORAGES)

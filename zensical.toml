@@ -25,6 +25,7 @@ nav = [
     { "Python SDK" = "getting-started/python.md" },
   ]},
   { "Upgrading to 2.0" = "upgrading/2.0.md" },
+  { "Upgrading to the Ossie Stored Format" = "upgrading/stored-format.md" },
   { "Concepts" = [
     { "Terminology" = "concepts/terminology.md" },
     { "Datasets" = "concepts/datasets.md" },

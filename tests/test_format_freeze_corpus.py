@@ -168,7 +168,8 @@ async def test_the_corpus_is_current(tmp_path: Path, kind: str) -> None:
     storage, base = corpus_store(kind, tmp_path)
     before = await all_texts(storage, kind=kind, base=base)
     files = snapshot(tmp_path)
-    assert before and all(before.values())
+    assert before
+    assert all(before.values())
     with recorded() as record:
         assert await load_everything(storage) == []
     assert upgrade_warning_names(record) == []

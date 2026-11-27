@@ -133,7 +133,7 @@ class TestStoredModels:
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
         assert stage["population"] == "orders"
         assert [e["dataset"] for e in stage["extensions"]] == ["orders"]
-        assert await storage.get_dataset("rev2_q", data_source=DS) == model
+        assert await storage.get_dataset("rev2_q", data_source=DS) == model.model_copy(update={"semantic_model": DS})
 
     def test_a_current_version_model_holding_a_stored_stage(self) -> None:
         doc = query_backed_v10(name="rev2_q", stages=[_stage()], version=CURRENT_VERSIONS["SlayerModel"])

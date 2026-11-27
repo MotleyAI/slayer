@@ -1,0 +1,136 @@
+version: 0.3.0.dev0
+name: sales
+ai_context: Sales model.
+nonportable_extensions:
+- vendor_name: DBT
+  data:
+    project: jaffle
+datasets:
+- name: orders
+  source: main.orders
+  primary_key:
+  - order_id
+  - line
+  unique_keys:
+  - - order_id
+    - line
+  - - code
+    - region
+  description: Order lines.
+  ai_context:
+    instructions: One row per order line.
+    synonyms:
+    - sales orders
+  nonportable_extensions:
+  - vendor_name: SNOWFLAKE
+    data:
+      cluster_by:
+      - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+    datatype: String
+    label: Order
+    ai_context: The order id.
+    nonportable_extensions:
+    - vendor_name: SNOWFLAKE
+      data:
+        masking_policy: pii
+  - name: line
+    expression:
+      sql: line
+    datatype: Integer
+  - name: code
+    expression:
+      sql: code
+    datatype: String
+  - name: region
+    expression:
+      sql: region
+    datatype: String
+    ai_context:
+      synonyms:
+      - area
+  - name: period
+    expression:
+      sql: period
+    datatype: Integer
+    dimension:
+      is_time: true
+  - name: ordered_on
+    expression:
+      sql: ordered_on
+    datatype: Date
+    dimension:
+      is_time: false
+  - name: shipped_on
+    expression:
+      sql: shipped_on
+    datatype: Date
+  - name: amount
+    datatype: Decimal
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: amount
+      - dialect: BIGQUERY
+        expression: SAFE_CAST(amount AS NUMERIC)
+  - name: at_time
+    expression:
+      sql: at_time
+    datatype: Time
+  - name: at_tz
+    expression:
+      sql: at_tz
+    datatype: DateTimeTz
+  - name: fx
+    datatype: Float
+    expression:
+      dialects:
+      - dialect: SNOWFLAKE
+        expression: TRY_TO_DOUBLE(fx)
+  metrics:
+  - name: total
+    expression:
+      sql: SUM(amount)
+    ai_context: Gross revenue.
+    nonportable_extensions:
+    - vendor_name: DBT
+      data:
+        meta:
+          owner: finance
+- name: customers
+  source: SELECT code, segment FROM customers
+  primary_key:
+  - code
+  fields:
+  - name: code
+    expression:
+      sql: code
+    datatype: String
+  - name: segment
+    expression:
+      sql: segment
+    datatype: String
+relationships:
+- name: orders_to_customers
+  from: orders
+  to: customers
+  from_columns:
+  - code
+  to_columns:
+  - code
+  ai_context: Each line's buyer.
+  nonportable_extensions:
+  - vendor_name: DBT
+    data:
+      tests:
+      - relationships
+metrics:
+- name: revenue_per_customer
+  expression:
+    sql: SUM(orders.amount) / COUNT(DISTINCT customers.code)
+  ai_context:
+    synonyms:
+    - ARPU

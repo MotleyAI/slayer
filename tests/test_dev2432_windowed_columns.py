@@ -501,7 +501,7 @@ class TestPortableWindowedField:
     async def test_a_stored_portable_window_fails_the_query(self, engine):
         await engine.storage.save_dataset(self._portable(sql=RN), _validate=False)
         query = SlayerQuery.model_validate(_raw("orders_portable", "id", "rn"))
-        with pytest.raises(IllegalWindowInFilterError, match="rn"):
+        with pytest.raises(UnevaluableEntityError, match="rn"):
             await engine.execute(query)
 
     @pytest.mark.parametrize("door", ["engine", "storage"])

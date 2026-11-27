@@ -24,6 +24,7 @@ from slayer.storage.base import (
 )
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._stored_format_fixtures import save_in_own_model
 
 
 @pytest.fixture
@@ -157,7 +158,7 @@ class TestModelCollision:
     async def test_validate_false_bypasses(self, storage: YAMLStorage) -> None:
         # The migration write-back path must stay able to persist legacy data.
         await storage.save_dataset(_dataset("orders"))
-        await storage.save_dataset(_dataset("Orders"), _validate=False)
+        await save_in_own_model(storage, _dataset("Orders"), model="upper")
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +203,7 @@ class TestSqliteAllowsCaseVariants:
 
     async def test_models(self, sqlite_storage: SQLiteStorage) -> None:
         await sqlite_storage.save_dataset(_dataset("orders", table="lower"))
-        await sqlite_storage.save_dataset(_dataset("Orders", table="upper"), _validate=False)
+        await save_in_own_model(sqlite_storage, _dataset("Orders", table="upper"), model="upper")
         low = await sqlite_storage.get_dataset("orders", data_source="db")
         up = await sqlite_storage.get_dataset("Orders", data_source="db")
         assert low.sql_table == "lower"
@@ -222,7 +223,7 @@ class TestSqliteAllowsCaseVariants:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = resolve_storage(os.path.join(tmpdir, "test.db"))
             await storage.save_dataset(_dataset("orders"))
-            await storage.save_dataset(_dataset("Orders"), _validate=False)
+            await save_in_own_model(storage, _dataset("Orders"), model="upper")
 
 
 # ---------------------------------------------------------------------------

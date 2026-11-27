@@ -24,7 +24,7 @@ from slayer.osi.exporter import export_osi
 from slayer.osi.importer import import_osi
 from tests._engine_helpers import owned_query_engine
 from tests._stored_format_fixtures import (
-    DS, STORAGES, dataset_documents, make_storage, model_documents, recorded, reopen, slayer_entry, snapshot,
+    DS, STORAGES, dataset_documents, link, make_storage, model_documents, recorded, reopen, slayer_entry, snapshot,
     stored_dataset, table_dataset, texts, upgrade_warning_names,
 )
 
@@ -376,7 +376,8 @@ async def test_a_loads_derived_dialect_entry_is_not_stored(tmp_path: Path, home:
     assert stored.get("description") == "FX rate."
     payload = slayer_entry(stored) or {}
     content = payload.get("field") or {}
-    assert content.get("expression") is None and content.get("sql") is None, payload
+    assert content.get("expression") is None, payload
+    assert content.get("sql") is None, payload
 
 
 # --------------------------------------------------------------------------- #
@@ -385,14 +386,15 @@ async def test_a_loads_derived_dialect_entry_is_not_stored(tmp_path: Path, home:
 _COMMON = {"version", "kind", "entity", "fingerprint"}
 _DATASET_KEYS = _COMMON | {"source", "hidden", "access_tags", "default_time_dimension", "meta", "aggregations",
                            "fields", "metrics", "relationships", "enforced_keys"}
-_SOURCE_KEYS = {"sql_table", "sql", "filters", "source_queries", "query_variables"}
+_SOURCE_KEYS = {"sql_table", "source_kind", "sql", "filters", "source_queries", "query_variables"}
 
 
 def _check_dataset_payload(payload: dict[str, Any] | None, *, entity: str) -> dict[str, Any]:
     assert payload is not None
     assert set(payload) <= _DATASET_KEYS, set(payload) - _DATASET_KEYS
-    assert (payload["version"], payload["kind"], payload["entity"]) == (3, "dataset", entity)
-    assert isinstance(payload["fingerprint"], str) and payload["fingerprint"]
+    assert (payload["version"], payload["kind"], payload["entity"]) == (4, "dataset", entity)
+    assert isinstance(payload["fingerprint"], str)
+    assert payload["fingerprint"]
     assert set(payload.get("source") or {}) <= _SOURCE_KEYS
     return payload
 
@@ -435,7 +437,7 @@ async def test_a_field_slayer_entry_has_the_frozen_shape(tmp_path: Path, kind: s
     payload = slayer_entry(amount)
     assert payload is not None
     assert set(payload) <= _COMMON | {"field"}
-    assert (payload["version"], payload["kind"], payload["entity"]) == (3, "field", "amount")
+    assert (payload["version"], payload["kind"], payload["entity"]) == (4, "field", "amount")
     assert payload["field"]["hidden"] is True
 
 
@@ -466,3 +468,25 @@ async def test_a_datasource_model_without_slayer_entries_reads_as_current(tmp_pa
     assert upgrade_warning_names(record) == []
     assert texts(kind, tmp_path) == before
     assert snapshot(tmp_path) == files
+
+
+# --------------------------------------------------------------------------- #
+# Core holds what the export renders
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("kind", STORAGES)
+async def test_a_field_edited_into_slayer_only_content_leaves_core(tmp_path: Path, kind: str) -> None:
+    storage = make_storage(kind, tmp_path)
+    await storage.save_datasource(DatasourceConfig(name=DS, type="duckdb", database=str(tmp_path / "absent.duckdb")))
+    await storage.save_dataset(table_dataset("customers", fields=["code", "segment"], primary_key=["code"]))
+    orders = table_dataset("orders", fields=["id", "code", "seg"], primary_key=["id"]).model_copy(update={
+        "relationships": [link("customers", from_columns=["code"], to_columns=["code"])]})
+    await storage.save_dataset(orders)
+    assert "seg" in [f["name"] for f in stored_dataset(kind, tmp_path, "orders")["fields"]]
+    loaded = await storage.get_dataset("orders", data_source=DS)
+    assert loaded is not None
+    joined = [f.model_copy(update={"expression": "customers.segment"}) if f.name == "seg" else f for f in loaded.fields]
+    await storage.save_dataset(loaded.model_copy(update={"fields": joined}))
+    assert "seg" not in [f["name"] for f in stored_dataset(kind, tmp_path, "orders")["fields"]]
+    reloaded = await reopen(kind, tmp_path).get_dataset("orders", data_source=DS)
+    assert reloaded is not None
+    assert (reloaded.get_field("seg") or loaded.fields[0]).expression == "customers.segment"

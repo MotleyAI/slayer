@@ -6,11 +6,9 @@ Spec: compatibility/removal-tripwire › Deprecated input forms convert with a s
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 from fastapi.testclient import TestClient
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -37,6 +35,7 @@ from tests._deprecated_input_helpers import (
     strict,
 )
 from tests._mcp_results import text_blocks
+from tests._stored_format_fixtures import hand_edit_stage
 
 STAGE_A = {"name": "a", "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 STAGE_B = {"name": "b", "population": "a", "metrics": [{"metric": "sum(a.n)", "alias": "total"}]}
@@ -167,10 +166,7 @@ def _store_strict_stage(engine: SlayerQueryEngine) -> None:
     assert isinstance(engine.storage, EngineStorage)
     storage = engine.storage.inner
     assert isinstance(storage, YAMLStorage)
-    path = next(Path(storage.base_dir).glob(f"models/*/{SAVED}.yaml"))
-    doc = yaml.safe_load(path.read_text())
-    doc["source_queries"][0]["strict"] = True
-    path.write_text(yaml.safe_dump(doc))
+    hand_edit_stage(storage.base_dir, SAVED, {"strict": True}, reader="sqlite")
 
 
 class TestStoredStages:

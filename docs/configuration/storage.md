@@ -46,15 +46,15 @@ Directory structure:
 
 ```
 slayer_data/
-  models/
+  semantic_models/         # every dataset, as Ossie documents
     my_postgres/
-      orders.yaml
-      customers.yaml
+      my_postgres.semantic_model.yaml   # the datasource model: lists the datasets no other model holds
+      orders.dataset.yaml               # one dataset document per dataset it lists
+      customers.dataset.yaml
+      sales.semantic_model.yaml         # a named model, flat or split
     other_db/
-      orders.yaml          # same name, different datasource — coexists
-  semantic_models/         # Ossie documents, stored as written (optional)
-    my_postgres/
-      sales.yaml           # declares more datasets of my_postgres
+      other_db.semantic_model.yaml
+      orders.dataset.yaml               # same name, different datasource — coexists
   datasources/
     my_postgres.yaml
     other_db.yaml
@@ -65,9 +65,21 @@ slayer_data/
   embeddings.db            # SQLite sidecar for embedding rows
 ```
 
-**Layout note:** Datasets live under `models/<data_source>/<name>.yaml` so two datasources sharing a table name don't collide. Opening a `YAMLStorage` on a legacy flat directory migrates `models/<name>.yaml` files into the nested layout automatically. If a flat file has an empty `data_source` and exactly one datasource is registered, the migrator auto-fills it; otherwise it hard-fails so the user can edit `data_source` by hand before reopening.
+**Layout:** each datasource's datasets, relationships and models are Ossie documents in
+`semantic_models/<data_source>/`, laid out as Ossie multi-file models and recognised by their content: a model
+document is flat (`datasets`) or split (`dataset_refs` listing dataset documents of the same folder), and a dataset
+document holds `version` and one `dataset`. See [Semantic Models](../concepts/semantic-models.md#the-stored-format).
+A store written by 2.0 also holds `models/<data_source>/<name>.yaml` standalone datasets; they read as datasets of
+their datasource model until [`slayer storage upgrade`](#upgrading-stored-documents) moves them into the layout.
 
-**Semantic models:** A document at `semantic_models/<data_source>/<name>.yaml` belongs to that datasource and must be named `<name>`. Its datasets are listed with the datasource's standalone datasets, and dataset tools edit them inside the file, changing only the edited lines. A `<name>.yaml.lock` file beside it serialises concurrent writes. A hand edit is picked up on the next query.
+**File names:** a new document is `<stem>.semantic_model.yaml` or `<stem>.dataset.yaml`, where `<stem>` is the name
+when it holds only ASCII letters, digits, `_` and `-`, and otherwise its percent-encoding. A stem over 120 bytes, a
+Windows device name, or one equal (ignoring case) to an existing file gets a hash suffix. A dataset document's file
+name is recorded, percent-encoded once more, as its `iri`, so names differing only in case never share a file.
+
+**Serialised writes:** every write to a datasource's documents holds one lock (`.locks/<data_source>.lock`). A write
+that changes several files records a journal (`.journal.json` in the folder) first; a load reads a pending journal
+as if it had completed, and the next write completes it. A hand edit is picked up on the next query.
 
 **Durable writes:** Saves are failure-atomic — each file is written to a temporary file and `fsync`-replaced into place, so a serialization error, full disk, or crash mid-write leaves the previous file fully intact rather than a truncated one.
 
@@ -87,7 +99,9 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 storage = SQLiteStorage(db_path="./slayer.db")
 ```
 
-Tables: `models`, `datasources`, `semantic_models` (each document's text, verbatim), `settings` (for the datasource priority list), `memories` + `memory_entities` (indexed by canonical entity), and `embeddings` (cached embedding rows keyed by `(canonical_id, embedding_model_name)`). Memory ids are assigned by SQLite's `INTEGER PRIMARY KEY` rowid mechanism inside the save transaction — no separate counter table is needed.
+Tables: `documents` (each Ossie document's text as written, keyed by datasource and the file name the YAML store
+would use; every write runs in one `BEGIN IMMEDIATE` transaction), `datasources`, `models` and `semantic_models`
+(a 2.0 store's standalone datasets and documents, read until `slayer storage upgrade` moves them), `settings` (for the datasource priority list), `memories` + `memory_entities` (indexed by canonical entity), and `embeddings` (cached embedding rows keyed by `(canonical_id, embedding_model_name)`). Memory ids are assigned by SQLite's `INTEGER PRIMARY KEY` rowid mechanism inside the save transaction — no separate counter table is needed.
 
 ## Upgrading Stored Documents
 
@@ -96,7 +110,8 @@ the older release can still read it. Each such document loads with one `stored_u
 [`slayer storage upgrade`](../reference/cli.md#slayer-storage) to store every document in the current format, or save
 the document. Opening a store still performs its one-time layout moves (the YAML flat-layout move, the memory-file
 split, SQLite table rebuilds), which change no document's content, except that the flat-layout move fills an empty
-`data_source` (see the layout note above).
+`data_source`. On a store written by 2.0, the upgrade also moves each datasource's standalone datasets into its
+datasource model; see [Upgrading to the Ossie stored format](../upgrading/stored-format.md).
 
 ## Storage Resolution
 
@@ -173,7 +188,8 @@ If your backend stores ids as filenames (or another case-insensitive keyspace), 
 
 Stored-document upgrades that read raw documents, such as renaming a granularity a newer release reserves, run only on backends that expose their raw documents; a backend that builds its own datasource configs is never asked to list or load its datasources for them. `slayer storage upgrade` writes through the raw-document hooks (`_write_raw_dataset_dict`, `_write_raw_memory_dict`, `_write_raw_datasource_dict`); override `_write_raw_if_unchanged` to compare and write in one transaction.
 
-Semantic models are optional. To store them, implement `_save_semantic_model_text_impl`, `_get_semantic_model_text_impl`, `_list_semantic_model_identities`, `_delete_semantic_model_row`, and `_patch_semantic_model_text` (read, patch and write one document as one serialised step). A backend without them keeps working for datasets, datasources and memories: it lists no semantic models, and every other semantic-model operation fails with `SemanticModelsUnsupportedError` naming the backend. A backend with them must change `graph_fingerprint()` whenever a document's content or membership changes.
+A custom backend keeps the 2.0 dataset form: its datasets stay standalone, outside any model. Semantic models are
+optional. To store them, implement `_save_semantic_model_text_impl`, `_get_semantic_model_text_impl`, `_list_semantic_model_identities`, `_delete_semantic_model_row`, and `_patch_semantic_model_text` (read, patch and write one document as one serialised step). A backend without them keeps working for datasets, datasources and memories: it lists no semantic models, and every other semantic-model operation fails with `SemanticModelsUnsupportedError` naming the backend. A backend with them must change `graph_fingerprint()` whenever a document's content or membership changes.
 
 Caches derived from stored content (the search graph, the SQL facade catalog) are keyed by `cache_identity()` (default: one per instance) and reused only while `graph_fingerprint()` returns the same string, so override it to report content changes — the default `None` means a cache is never reused.
 

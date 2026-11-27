@@ -25,7 +25,7 @@ import asyncio
 import contextlib
 import os
 from typing import Any
-from collections.abc import Callable, Generator, Hashable
+from collections.abc import Callable, Generator, Hashable, Sequence
 
 import yaml
 from pydantic import ValidationError
@@ -35,18 +35,19 @@ try:  # POSIX-only; Windows users get the no-op fallback.
 except ImportError:  # pragma: no cover — Windows
     _fcntl = None  # type: ignore[assignment]
 
-from slayer.core.errors import StoredDocumentLoadError, UnreadableDocumentError
+from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.atomic_write import _atomic_write_text, _atomic_write_yaml
 from slayer.storage.base import (
     DATASOURCE_NAME,
-    SEMANTIC_MODEL_NAME,
     StorageBackend,
     _validate_path_component,
     _write_sample_fields,
     without_none,
 )
+from slayer.storage.folder_documents import FolderDocuments
+from slayer.storage.stored_layout import JOURNAL, Folder, FolderWrite, applied, journal_text, pending_journal
 from slayer.storage.content_fingerprint import StatKey, stat_key, tree_fingerprint
 from slayer.storage.document_loading import Loaded, stored_document_boundary
 from slayer.storage.sidecar_embedding_store import (
@@ -129,6 +130,15 @@ def _cache_admit(path: str, key_before: StatKey) -> StatKey | None:
     except OSError:
         return None
     return key_after if key_after == key_before else None
+
+
+def _entry_problem(*, path: str, real_root: str) -> str | None:
+    """Why a folder entry is not a document file: a link leading out of the folder, or not a regular file."""
+    if os.path.islink(path) and os.path.dirname(os.path.realpath(path)) != real_root:
+        return "is a link leading out of the folder"
+    if not os.path.isfile(path):
+        return "is not a regular file"
+    return None
 
 
 def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
@@ -260,7 +270,7 @@ def migrate_memories_layout(base_dir: str) -> None:
         pass
 
 
-class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
+class YAMLStorage(SidecarEmbeddingsMixin, FolderDocuments, StorageBackend):
     _ids_collide_as_filenames = True
 
     def __init__(self, base_dir: str):
@@ -290,7 +300,6 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         self._datasource_cache: dict[
             str, tuple[StatKey, DatasourceConfig]
         ] = {}
-        os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.datasources_dir, exist_ok=True)
         os.makedirs(self._memories_dir, exist_ok=True)
         # Idempotent — moves any pre-v4 flat files into <data_source>/ subdirs.
@@ -420,10 +429,19 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             ds_dir = os.path.join(self.models_dir, ds)
             if not os.path.isdir(ds_dir):
                 continue
+            retired = self._retired(ds) if self._valid_data_source(ds) else set()
             for filename in sorted(os.listdir(ds_dir)):
-                if filename.endswith((".yaml", ".yml")):
+                if filename.endswith((".yaml", ".yml")) and filename.rsplit(".", 1)[0] not in retired:
                     result.append((ds, filename.rsplit(".", 1)[0]))
         return result
+
+    @staticmethod
+    def _valid_data_source(name: str) -> bool:
+        try:
+            _validate_path_component(name, kind=DATASOURCE_NAME)
+        except ValueError:
+            return False
+        return True
 
     async def get_dataset(
         self,
@@ -434,8 +452,11 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         if target is None:
             return None
         data_source, name = target
-        path = self._dataset_path(data_source, name)  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerDataset Pydantic validators sanitize the save path
-        if not self._dataset_entry_exists(data_source=data_source, name=name):
+        try:
+            path = self._dataset_path(data_source, name)  # NOSONAR(S6549) — both components validated here
+        except ValueError:  # a name only the stored format holds
+            return None
+        if not self._dataset_entry_exists(data_source=data_source, name=name) or name in self._retired(data_source):
             self._dataset_cache.pop(path, None)  # Evict on external delete
             return None
         try:
@@ -518,74 +539,131 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         _atomic_write_yaml(path=path, data=data)
         self._forget_raw(data_source=data_source, name=dataset_name)
 
-    # ---- semantic-model documents ------------------------------------------
+    # ---- the stored format: one folder of Ossie documents per datasource ---
 
-    def _document_path(self, data_source: str, name: str) -> str:
+    def _folder_root(self, data_source: str) -> str:
         _validate_path_component(data_source, kind=DATASOURCE_NAME)
-        _validate_path_component(name, kind=SEMANTIC_MODEL_NAME)
-        return os.path.join(self.semantic_models_dir, data_source, f"{name}.yaml")
+        return os.path.join(self.semantic_models_dir, data_source)
 
-    def _document_exists(self, data_source: str, name: str) -> bool:
-        return _exact_entry_exists(dir_path=self.semantic_models_dir, entry_name=data_source) and _exact_entry_exists(
-            dir_path=os.path.join(self.semantic_models_dir, data_source), entry_name=f"{name}.yaml")
+    async def _folder_data_sources(self) -> list[str]:
+        if not os.path.isdir(self.semantic_models_dir):
+            return []
+        return sorted(d for d in os.listdir(self.semantic_models_dir)
+                      if not d.startswith(".") and os.path.isdir(os.path.join(self.semantic_models_dir, d)))
+
+    def _pending(self, data_source: str) -> FolderWrite | None:
+        """The datasource folder's pending journal, if any."""
+        path = os.path.join(self._folder_root(data_source), JOURNAL)
+        try:
+            with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — local read
+                return pending_journal(f.read())
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+
+    def _retired(self, data_source: str) -> set[str]:
+        pending = self._pending(data_source) if os.path.isdir(os.path.join(self.semantic_models_dir, data_source)) \
+            else None
+        return set(pending.retired) if pending is not None else set()
+
+    def _read_folder_sync(self, data_source: str) -> Folder:
+        root = self._folder_root(data_source)
+        texts: dict[str, str] = {}
+        problems: dict[str, str] = {}
+        if os.path.isdir(root):
+            real_root = os.path.realpath(root)
+            for entry in sorted(os.listdir(root)):  # NOSONAR(S6549) — root from a validated datasource name
+                if entry.startswith(".") or entry.endswith(".lock"):
+                    continue
+                problem = _entry_problem(path=os.path.join(root, entry), real_root=real_root)
+                if problem is None:
+                    try:
+                        with open(os.path.join(root, entry), encoding="utf-8", newline="") as f:  # NOSONAR(S7493)
+                            texts[entry] = f.read()
+                        continue
+                    except UnicodeDecodeError as exc:
+                        problem = f"is not UTF-8 text: {exc}"
+                    except OSError as exc:
+                        problem = f"cannot be read: {exc}"
+                problems[entry] = problem
+        folder = Folder(data_source=data_source, texts=texts, problems=problems)
+        pending = self._pending(data_source) if os.path.isdir(root) else None
+        return applied(folder, pending).model_copy(update={"pending": True}) if pending is not None else folder
+
+    async def _read_folder(self, data_source: str) -> Folder:
+        return self._read_folder_sync(data_source)
 
     @contextlib.contextmanager
-    def _document_lock(self, path: str) -> Generator[None, None, None]:
-        """An exclusive ``flock`` on the document's sibling ``.lock`` file across one read-patch-write."""
+    def _folder_lock(self, data_source: str) -> Generator[None, None, None]:
+        """An exclusive ``flock`` on the datasource folder's lock file, serialising every write to its documents; the
+        file is never removed, so a waiter and a new locker always share one inode."""
         if _fcntl is None:
             yield
             return
-        with open(f"{path}.lock", "ab") as fh:
+        root = self._folder_root(data_source)
+        os.makedirs(root, exist_ok=True)
+        with open(os.path.join(root, ".write.lock"), "ab") as fh:
             _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
             try:
                 yield
             finally:
                 _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
 
-    async def _save_semantic_model_text_impl(self, *, data_source: str, name: str, text: str) -> None:
-        path = self._document_path(data_source, name)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with self._document_lock(path):
-            _atomic_write_text(path=path, text=text)
+    async def _complete_pending(self, data_source: str) -> None:
+        if os.path.isdir(self._folder_root(data_source)) and self._pending(data_source) is not None:
+            await self._write_folder(data_source, lambda _folder: FolderWrite())
 
-    async def _get_semantic_model_text_impl(self, *, data_source: str, name: str) -> str | None:
-        path = self._document_path(data_source, name)
-        if not self._document_exists(data_source, name):
+    def _legacy_raw(self, *, data_source: str, name: str) -> dict | None:
+        if not self._dataset_entry_exists(data_source=data_source, name=name):
             return None
         try:
-            with open(path, encoding="utf-8", newline="") as f:  # NOSONAR(S7493) — local read
-                return f.read()
-        except FileNotFoundError:
+            with open(self._dataset_path(data_source, name), encoding="utf-8") as f:  # NOSONAR(S7493) — local read
+                raw = yaml.safe_load(f)
+        except (OSError, yaml.YAMLError):
             return None
-        except UnicodeDecodeError as exc:
-            raise UnreadableDocumentError(reasons=[f"it is not UTF-8 text: {exc}"], name=name) from exc
+        return raw if isinstance(raw, dict) else None
 
-    async def _list_semantic_model_identities(self) -> list[tuple[str, str]]:
-        if not os.path.isdir(self.semantic_models_dir):
-            return []
-        out: list[tuple[str, str]] = []
-        for ds in sorted(os.listdir(self.semantic_models_dir)):
-            ds_dir = os.path.join(self.semantic_models_dir, ds)
-            if os.path.isdir(ds_dir):
-                out += [(ds, f[:-5]) for f in sorted(os.listdir(ds_dir)) if f.endswith(".yaml")]
-        return out
+    async def _write_folder(self, data_source: str, plan: Callable[[Folder], FolderWrite], *,
+                            legacy: Sequence[str] = ()) -> None:
+        root = self._folder_root(data_source)
+        with self._folder_lock(data_source):
+            pending = self._pending(data_source) if os.path.isdir(root) else None
+            if pending is not None:
+                self._perform(data_source, pending)
+                os.unlink(os.path.join(root, JOURNAL))
+            folder = self._read_folder_sync(data_source)
+            raws = {name: self._legacy_raw(data_source=data_source, name=name) for name in legacy}
+            write = plan(folder.model_copy(update={"legacy": raws}))
+            if write.empty():
+                return
+            os.makedirs(root, exist_ok=True)
+            journal = os.path.join(root, JOURNAL) if write.steps() > 1 else None
+            if journal is not None:
+                _atomic_write_text(path=journal, text=journal_text(write), temp_dir=self._staging())
+            self._perform(data_source, write)
+            if journal is not None:
+                os.unlink(journal)
 
-    async def _delete_semantic_model_row(self, *, data_source: str, name: str) -> bool:
-        if not self._document_exists(data_source, name):
-            return False
-        path = self._document_path(data_source, name)
-        # The lock file stays: unlinking it would let a waiter on the old inode and a new locker run concurrently.
-        with self._document_lock(path):
-            os.remove(path)
-        return True
+    def _staging(self) -> str:
+        """Where document writes stage their temp files: outside every datasource folder, so a write stopped before its
+        replace leaves the folder as it was."""
+        path = os.path.join(self.base_dir, ".staging")
+        os.makedirs(path, exist_ok=True)
+        return path
 
-    async def _patch_semantic_model_text(self, *, data_source: str, name: str, patch: Callable[[str], str]) -> str:
-        path = self._document_path(data_source, name)
-        with self._document_lock(path):
-            with open(path, encoding="utf-8", newline="") as f:  # NOSONAR(S7493) — local read
-                text = patch(f.read())
-            _atomic_write_text(path=path, text=text)
-        return text
+    def _perform(self, data_source: str, write: FolderWrite) -> None:
+        """Apply ``write``'s file changes in their order; repeatable (a journal's completion re-runs them)."""
+        root = self._folder_root(data_source)
+        for file, text in write.ordered_writes():
+            _atomic_write_text(path=os.path.join(root, file), text=text, temp_dir=self._staging())
+        for file in write.deletes:
+            path = os.path.join(root, file)
+            if _exact_entry_exists(dir_path=root, entry_name=file) and (os.path.islink(path) or os.path.isfile(path)):
+                os.unlink(path)
+        for name in write.retired:
+            path = self._dataset_path(data_source, name)
+            self._dataset_cache.pop(path, None)
+            if self._dataset_entry_exists(data_source=data_source, name=name):
+                os.unlink(path)
 
     # ---- ontology and mapping documents ------------------------------------
 

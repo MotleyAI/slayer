@@ -166,7 +166,7 @@ async def test_two_documents_and_a_datasource_model_dataset_merge(tmp_path: Path
     storage = make_storage("yaml", tmp_path / "dst")
     await storage.save_datasource(config)
     await import_text(storage, result.text, base=tmp_path / "dst")
-    assert sorted(await storage.list_semantic_models(DS)) == [(DS, DS), (DS, "sales"), (DS, "support")]
+    assert sorted(await storage.list_semantic_models(DS)) == sorted([(DS, DS), (DS, "sales"), (DS, "support")])
     assert await storage.semantic_model_owner("orders", DS) == "sales"
     assert await storage.semantic_model_owner("returns", DS) == "support"
     assert await storage.semantic_model_owner("stores", DS) == DS

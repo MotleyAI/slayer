@@ -337,7 +337,7 @@ class TestMetricExpression:
 
 # ── checks that need the dialect ──────────────────────────────────────────
 
-async def test_saved_without_its_datasource_refused_when_queried() -> None:
+async def test_saved_without_its_datasource_translated_when_queried() -> None:
     doc = orders_doc(fld("n", {"dialects": [entry("DUCKDB", "amount + 1")]}))
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "shop.sqlite")
@@ -345,9 +345,8 @@ async def test_saved_without_its_datasource_refused_when_queried() -> None:
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         await storage.save_dataset(dataset(doc))
         async with owned_query_engine(storage=storage, datasources=[datasource(dialect="sqlite", db_path=db_path)]) as engine:
-            with pytest.raises(SlayerError) as caught:
-                await by_id(engine, field="n")
-    assert_refused(caught.value, "n", "DUCKDB")
+            got = await by_id(engine, field="n")
+    assert got == [11, 21, 6]  # each seeded amount plus one
 
 
 # ── the deprecated field sql ──────────────────────────────────────────────

@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.field_expression import DialectEntry, ExpressionObject
 from slayer.core.portable_sql import portable_entity_expression, portable_expression, portable_sql
-from slayer.osi import exporter
+from slayer.storage import ossie_render
 
 
 @pytest.mark.parametrize(("written", "stored"), [
@@ -57,4 +57,4 @@ def test_an_unchanged_expression_object_is_returned_as_is() -> None:
     (None, None),
 ])
 def test_export_emits_portable_sql_only_when_it_is_valid(text: str | None, exported: str | None) -> None:
-    assert exporter._valid_portable(text) == exported
+    assert ossie_render._valid_portable(text) == exported

@@ -24,6 +24,7 @@ from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.sqlite_conn import transaction
 from tests._cli_inprocess import run_cli_in_process
 from tests._engine_helpers import owned_query_engine
+from tests._stored_format_fixtures import folder, model_file
 from tests._dev2243_fixtures import (
     DS, SALES, STORAGES, dataset, document_engine, document_text, error, field, importer_module,
     make_storage, place_document, store_document, upstream_validate,
@@ -529,19 +530,15 @@ async def test_a_filtered_search_survives_an_unreadable_document(tmp_path: Path)
     assert f"{DS}.returns" in {hit.id for hit in response.results}
 
 
-async def test_export_leaves_out_a_document_edited_unreadable_after_it_loaded(tmp_path: Path,
-                                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_export_leaves_out_a_document_edited_unreadable_after_it_loaded(tmp_path: Path) -> None:
     storage = make_storage("yaml", tmp_path)
     await storage.save_datasource(DatasourceConfig(name=DS, type="duckdb", database=str(tmp_path / "absent.duckdb")))
     await store_document(storage, SALES)
     await store_document(storage, SUPPORT)
-    read = storage.get_semantic_model_text
-
-    async def edited(name: str, data_source: str | None = None) -> str | None:
-        return DUP_SOURCE if name == "sales" else await read(name, data_source=data_source)
 
     async with owned_query_engine(storage=storage) as engine:
-        monkeypatch.setattr(storage, "get_semantic_model_text", edited)
+        assert await engine.storage.get_semantic_model_text("sales", data_source=DS) is not None
+        (folder(tmp_path) / model_file("yaml", tmp_path, "sales")).write_text(DUP_SOURCE)
         exported = (await export_osi(engine=engine, datasource=DS, extensions=True)).document
     assert {d["name"] for d in exported["datasets"]} == {"returns"}
 

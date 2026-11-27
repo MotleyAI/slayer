@@ -12,16 +12,17 @@
 
 ## 2. Implementation (pr-implement)
 
-- [ ] 2.1 Layout module in `slayer/storage/`: document kinds by content, split-model resolution with PR 827's errors, file-name derivation and `iri` encoding, journal read/complete; verify 1.2's layout, file-name and resolution tests pass
-- [ ] 2.2 YAML backend: datasource folder lock, journaled multi-file writes, every dataset write through the owning model's documents, the datasource model lifecycle; verify 1.2 passes on YAML
-- [ ] 2.3 SQLite backend: `documents` table, every write in one `BEGIN IMMEDIATE` transaction, legacy tables read; verify 1.2 passes on SQLite
-- [ ] 2.4 `document_mapping`: Ossie spelling of `source`, the translated-entry leak, `is_time` never written when unset; `semantic_models` decomposition over split models; verify 1.3 passes
-- [ ] 2.5 Names: lift the validators for stored names, inert loading with the warning, refusal on authoring; document names any string; verify 1.4 passes
-- [ ] 2.6 `source` reader by Ossie's identifier rule (`core_source` / `parse_source`); ingestion and importers write quoted `source`; verify 1.5 passes
-- [ ] 2.7 Surfaces (MCP, REST, CLI, client, `datasets_summary`, `inspect`) treat the datasource model as a document; moves move references; verify 1.2's surface tests pass
-- [ ] 2.8 Migration: load of 2.0 standalone datasets as datasource-model members, `slayer storage upgrade` per datasource with compare-and-swap and journal, `meta.osi_*` lifted, same-named document adopted, legacy save path; verify 1.6 passes
-- [ ] 2.9 Exporter: one rule (stored Ossie keys plus the `osi-export` rendering where `SLAYER` changes core's meaning), verbatim fast path only for one flat model without such content; verify 1.7 passes
-- [ ] 2.10 Generate and commit the format-freeze corpus from the final implementation; verify 1.8 and 1.9 pass
-- [ ] 2.11 Docs: `docs/configuration/storage.md`, `docs/concepts/semantic-models.md`, `docs/osi/osi_export.md`, a new `docs/upgrading/` page (layout, datasource model listed, `source` case reading change, export change) linked in `zensical.toml`; verify the pages render in nav
-- [ ] 2.12 Comment on DEV-2452 recording each storage ruling (decisions 1–11, 16–20 of design.md); verify the comment exists
-- [ ] 2.13 Local test scope, `ruff`, `basedpyright` (no new errors), `la-arch-check`, `likec4 validate`; verify all green
+- [x] 2.1 Layout module in `slayer/storage/`: document kinds by content, split-model resolution with PR 827's errors, file-name derivation and `iri` encoding, journal read/complete; verify 1.2's layout, file-name and resolution tests pass
+- [x] 2.2 YAML backend: datasource folder lock, journaled multi-file writes, every dataset write through the owning model's documents, the datasource model lifecycle; verify 1.2 passes on YAML
+- [x] 2.3 SQLite backend: `documents` table, every write in one `BEGIN IMMEDIATE` transaction, legacy tables read; verify 1.2 passes on SQLite
+- [x] 2.4 `document_mapping`: Ossie spelling of `source`, the translated-entry leak, `is_time` never written when unset; `semantic_models` decomposition over split models; verify 1.3 passes
+- [x] 2.5 Names: lift the validators for stored names, inert loading with the warning, refusal on authoring; document names any string; verify 1.4 passes
+- [x] 2.6 `source` reader by Ossie's identifier rule (`core_source` / `parse_source`); ingestion and importers write quoted `source`; verify 1.5 passes
+- [x] 2.7 Surfaces (MCP, REST, CLI, client, `datasets_summary`, `inspect`) treat the datasource model as a document; moves move references; verify 1.2's surface tests pass
+- [x] 2.8 Migration: load of 2.0 standalone datasets as datasource-model members, `slayer storage upgrade` per datasource with compare-and-swap and journal, `meta.osi_*` lifted, same-named document adopted, legacy save path; verify 1.6 passes
+- [x] 2.9 Exporter: one rule (stored Ossie keys plus the `osi-export` rendering where `SLAYER` changes core's meaning), verbatim fast path only for one flat model without such content; verify 1.7 passes
+- [x] 2.10 Generate and commit the format-freeze corpus from the final implementation; verify 1.8 and 1.9 pass
+- [x] 2.11 Docs: `docs/configuration/storage.md`, `docs/concepts/semantic-models.md`, `docs/osi/osi_export.md`, a new `docs/upgrading/` page (layout, datasource model listed, `source` case reading change, export change) linked in `zensical.toml`; verify the pages render in nav
+- [x] 2.12 Comment on DEV-2452 recording each storage ruling (decisions 1–11, 16–20 of design.md); verify the comment exists
+- [x] 2.13 `SLAYER` payload v4: the dataset payload's `source` keeps `source_kind`, a v3 payload reads as v4 without it; verify `test_model_source_kind` and the unchanged re-ingest pass
+- [x] 2.14 Local test scope, `ruff`, `basedpyright` (no new errors), `la-arch-check`, `likec4 validate`; verify all green

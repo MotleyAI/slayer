@@ -160,7 +160,7 @@ class TestReingest:
         """Twice re-ingested: kept fields survive, scalar-only fields drop, the second run changes nothing."""
         seen = DatasetField(name="seen", datatype=DataType.DATETIME, granularity="month",
                       format=NumberFormat(type=NumberFormatType.INTEGER), description="Sightings",
-                      label="Seen", meta={"owner": "ops"}, hidden=True, expression="seen", unique=True,
+                      label="Seen", meta={"owner": "ops"}, hidden=True, unique=True,
                       allowed_aggregations=["min", "max", "count"])
         events = SlayerDataset(name="events", sql_table="events", data_source="ds",
                              fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), seen])
@@ -179,7 +179,7 @@ class TestReingest:
         assert first_seen.allowed_aggregations == ["count"]
         assert (first_seen.description, first_seen.label, first_seen.meta, first_seen.hidden) == (
             "Sightings", "Seen", {"owner": "ops"}, True)
-        assert (first_seen.expression, first_seen.primary_key, first_seen.unique) == ("seen", False, True)
+        assert (first_seen.expression, first_seen.primary_key, first_seen.unique) == (None, False, True)
         assert key.primary_key is True
         second_seen = second.get_field("seen")
         assert second_seen is not None

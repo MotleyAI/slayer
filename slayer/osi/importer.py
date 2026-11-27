@@ -17,9 +17,9 @@ from sqlglot import exp
 
 from slayer.core import slayer_extension as ext
 from slayer.core.document_text import edit_text, parse_document_text
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import UnreadableDocumentError
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.ossie_validity import columns, parse_ossie_sql
 from slayer.core.portable_sql import portable_entity_expression
 from slayer.core.semantic_model import OSSIE_VERSION, ossie_validity_errors
@@ -186,13 +186,6 @@ def _boundaries(data: dict[str, Any]) -> list[ext.DocumentBoundary]:
     return list(payload.documents) if payload is not None else []
 
 
-def without_vendor_entry(data: dict[str, Any]) -> dict[str, Any]:
-    """``data`` without its document-level ``SLAYER`` entry."""
-    out = {k: v for k, v in data.items() if k != "nonportable_extensions"}
-    kept = [e for e in data.get("nonportable_extensions") or [] if not (isinstance(e, dict) and ext.is_slayer(e))]
-    return {**out, "nonportable_extensions": kept} if kept else out
-
-
 def _sub_document(data: dict[str, Any], boundary: ext.DocumentBoundary) -> dict[str, Any]:
     """The document ``boundary`` records, its members taken from the merged ``data`` as written."""
 
@@ -209,6 +202,43 @@ def _sub_document(data: dict[str, Any], boundary: ext.DocumentBoundary) -> dict[
         if value:
             doc[key] = value
     return doc
+
+
+def _declared(rel: dict[str, Any]) -> tuple[str, DatasetRelationship]:
+    """The ``(dataset, relationship)`` a merged export's relationship restores: its ``SLAYER`` entry's sole declaration
+    when it matches, else a many-to-one LEFT relationship on ``from``."""
+    entries = [e for e in rel.get("nonportable_extensions") or [] if isinstance(e, dict) and ext.is_slayer(e)]
+    if len(entries) == 1 and isinstance(entries[0].get("data"), dict):
+        with contextlib.suppress(ValueError):
+            payload = ext.decode(entries[0]["data"])
+            digest = ext.relationship_digest(from_dataset=rel["from"], to=rel["to"],
+                                             from_columns=list(rel["from_columns"]), to_columns=list(rel["to_columns"]))
+            if isinstance(payload, ext.RelationshipPayload) and ext.matches(payload, ossie=digest):
+                declaration = ext.sole_declaration(payload, matched=True)
+                if declaration is not None:
+                    return declaration.dataset, declaration.relationship
+    return str(rel["from"]), DatasetRelationship(
+        name=rel.get("name"), to=rel["to"], from_columns=list(rel["from_columns"]),
+        to_columns=list(rel["to_columns"]), cardinality=RelationshipCardinality.MANY_TO_ONE, join_type=JoinType.LEFT)
+
+
+def _place(rel: dict[str, Any], *, docs: dict[str, dict[str, Any]], holders: dict[str, str]) -> None:
+    """Put ``rel`` in core of the model holding both its datasets, else in the ``SLAYER`` entry of the model holding
+    the dataset it restores on."""
+    home = holders.get(str(rel.get("from")).casefold())
+    if home is not None and home == holders.get(str(rel.get("to")).casefold()):
+        docs[home].setdefault("relationships", []).append(rel)
+        return
+    owner, relationship = _declared(rel)
+    holder = holders.get(owner.casefold())
+    if holder is None:
+        return
+    doc = docs[holder]
+    payload = _document_payload(doc) or ext.DocumentPayload(entity=str(doc["name"]))
+    payload.relationships = [*payload.relationships, ext.RelationshipDeclaration(dataset=owner,
+                                                                                relationship=relationship)]
+    kept = [e for e in doc.get("nonportable_extensions") or [] if not (isinstance(e, dict) and ext.is_slayer(e))]
+    doc["nonportable_extensions"] = [*kept, ext.encode(payload, ossie=doc["name"])]
 
 
 def _carried_fields(*, current: SlayerDataset, old: SlayerDataset) -> list[DatasetField]:
@@ -382,26 +412,44 @@ class _Importer:
             await self._store(name, text, data)
 
     async def _split(self, data: dict[str, Any], boundaries: list[ext.DocumentBoundary]) -> None:
-        """A merged export: each stored document it records split back out, the other datasets standalone."""
+        """A merged export: each stored model it records split back out, the other datasets into the datasource model,
+        each relationship on the model holding its ``from`` dataset."""
         reasons = ossie_validity_errors(data)
         if reasons:
             raise _Refused(*reasons)
-        claimed: set[str] = set()
-        for boundary in boundaries:
-            doc = _sub_document(data, boundary)
-            claimed |= {d["name"].casefold() for d in doc["datasets"]}
-            self.entry("split", f"semantic model {boundary.name!r} split out of the merged document",
-                       document=boundary.name)
-            await self._store(boundary.name, dump_yaml(doc), doc)
-        rest = [d["name"] for d in data["datasets"] if d["name"].casefold() not in claimed]
-        if not rest:
-            return
-        merged = dump_yaml(without_vendor_entry(data))
-        for dataset in await self.storage.standalone_datasets_of(text=merged, data_source=self.data_source,
-                                                                 names=rest):
-            await self.storage.save_dataset(dataset)
-            self.entry("standalone", f"dataset {dataset.name!r} stored as a standalone dataset",
-                       entity=dataset.name)
+        home = next((b for b in boundaries if b.name == self.data_source), None)
+        docs = {b.name: _sub_document(data, b) for b in boundaries if b is not home}
+        holders = {d["name"].casefold(): name for name, doc in docs.items() for d in doc["datasets"]}
+        rest = [d for d in data["datasets"] if d["name"].casefold() not in holders]
+        if rest:
+            datasource: dict[str, Any] = _sub_document(data, home) if home is not None else {"version": OSSIE_VERSION}
+            datasource["name"] = self.data_source
+            datasource["datasets"] = rest
+            datasource.pop("relationships", None)
+            claimed = {m.casefold() for b in boundaries if b is not home for m in b.metrics}
+            metrics = [m for m in data.get("metrics") or [] if str(m.get("name")).casefold() not in claimed]
+            if metrics:
+                datasource["metrics"] = metrics
+            docs[self.data_source] = datasource
+            holders.update({d["name"].casefold(): self.data_source for d in rest})
+        recorded = {r.casefold() for b in boundaries if b is not home for r in b.relationships}
+        for rel in data.get("relationships") or []:
+            if str(rel.get("name")).casefold() not in recorded:
+                _place(rel, docs=docs, holders=holders)
+        for name, doc in docs.items():
+            if name == self.data_source:
+                continue
+            self.entry("split", f"semantic model {name!r} split out of the merged document", document=name)
+            await self._store(name, dump_yaml(doc), doc)
+        if rest:
+            try:
+                await self.storage.store_split_model(data_source=self.data_source, document=docs[self.data_source],
+                                                     merge=home is None)
+            except Exception as exc:  # noqa: BLE001 — a store refusal (a name collision) refuses the export
+                raise _Refused(str(exc).splitlines()[0]) from exc
+            for dataset in rest:
+                self.entry("datasource_model", f"dataset {dataset['name']!r} stored in the datasource model "
+                           f"{self.data_source!r}", entity=dataset["name"])
 
     async def _wrapper(self, data: dict[str, Any]) -> None:
         version = data.get("version")
@@ -505,7 +553,8 @@ class _Importer:
         """The standalone datasets a 1.x import stored from document ``name`` that this document declares."""
         out = []
         for member in data.get("datasets") or []:
-            if await self.storage.semantic_model_owner(member["name"], data_source=self.data_source) is not None:
+            if await self.storage.semantic_model_owner(member["name"], data_source=self.data_source) not in (
+                    None, self.data_source):
                 continue
             dataset = await self.storage.get_dataset(member["name"], data_source=self.data_source)
             origin = ((dataset.meta or {}).get("osi_semantic_model") or {}) if dataset is not None else {}

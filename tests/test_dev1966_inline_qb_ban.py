@@ -5,14 +5,11 @@ Spec: queries/population › A population is named, and typed at construction.
 
 from __future__ import annotations
 
-import json
 import re
 import tempfile
-from pathlib import Path
 from typing import Any, AsyncIterator, Dict
 
 import pytest
-import yaml
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
@@ -31,6 +28,7 @@ from tests._dev1966_fixtures import (
     rev_by_status_dataset,
     rows_by,
 )
+from tests._stored_format_fixtures import hand_edit_stage
 
 INLINE_QB: Dict[str, Any] = {
     "name": "iqb",
@@ -99,14 +97,7 @@ class TestStoredModelsReject:
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
             await storage.save_dataset(rev_by_status_dataset(), _validate=False)
-            [path] = [p for p in Path(tmp, "semantic_models", "test").glob("*.yaml")
-                      if (yaml.safe_load(p.read_text()).get("dataset") or {}).get("name") == "rev_by_status"]
-            raw = yaml.safe_load(path.read_text())
-            [entry] = [e for e in raw["dataset"]["nonportable_extensions"] if e["vendor_name"] == "SLAYER"]
-            payload = json.loads(entry["data"]) if isinstance(entry["data"], str) else entry["data"]
-            payload["source"]["source_queries"][0]["population"] = INLINE_QB
-            entry["data"] = json.dumps(payload) if isinstance(entry["data"], str) else payload
-            path.write_text(yaml.safe_dump(raw))
+            hand_edit_stage(tmp, "rev_by_status", {"population": INLINE_QB}, reader="postgres")
             reloaded = YAMLStorage(base_dir=tmp)
             with pytest.raises(StoredDocumentLoadError, match="(?i)inline") as exc:
                 await reloaded.get_dataset("rev_by_status", data_source="test")

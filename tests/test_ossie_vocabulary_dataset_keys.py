@@ -103,7 +103,7 @@ class TestSavedDocument:
         orders = SlayerDataset.model_validate(full_orders())
         await storage.save_dataset(orders)
         assert_stored_ossie(backend=backend, base=tmp_path)
-        assert await storage.get_dataset("orders", data_source=DS) == orders
+        assert await storage.get_dataset("orders", data_source=DS) == orders.model_copy(update={"semantic_model": DS})
 
     async def test_a_saved_dataset_runs(self, backend: str, tmp_path: Path) -> None:
         storage = await shop_store(backend=backend, base=str(tmp_path))

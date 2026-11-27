@@ -11,6 +11,7 @@ relationship-path syntax of field refs: ``B.col`` for a single-hop relationship,
 ``B__C.col`` for the canonical ``__``-delimited multi-hop alias.
 """
 
+from typing import Any
 import re
 
 import pytest
@@ -20,7 +21,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import DatasetFieldCycleError
 from slayer.core.field_expression import DialectEntry, ExpressionObject
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.models import DatasetField, DatasetRelationship, DatasourceConfig, SlayerDataset
 from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -31,8 +32,8 @@ from tests._trusted import trusting
 class _TrustingStorage(YAMLStorage):
     """Stores every relationship trusted: these tests pin the inline-join lowering."""
 
-    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
-        await super()._save_dataset_impl(trusting(dataset))
+    async def save_dataset(self, dataset: SlayerDataset, **kwargs: Any) -> None:
+        await super().save_dataset(trusting(dataset), **kwargs)
 
 
 def _model_a(*fields: DatasetField) -> SlayerDataset:

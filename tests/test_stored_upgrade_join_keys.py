@@ -236,9 +236,9 @@ class TestRawPassMemo:
             await storage._cached_raw_dataset_dict(name="customers", data_source=DS)
             await storage.update_field_sampled(data_source=DS, dataset_name="customers", field_name="region",
                                                 sampled="s", sampled_values=["North"], distinct_count=1)
-            doc = await storage._cached_raw_dataset_dict(name="customers", data_source=DS)
-        assert doc is not None
-        assert _hidden(doc, "region")["distinct_count"] == 1
+        # The sample's write moves the 2.0 row into the datasource model.
+        [region] = [f for f in (await raw_ossie(storage, "customers"))["dataset"]["fields"] if f["name"] == "region"]
+        assert slayer_payload(region)["field"]["distinct_count"] == 1
 
 
 class TestLeftForValidation:
