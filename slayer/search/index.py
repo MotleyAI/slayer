@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.models import SlayerDataset
 from slayer.memories.models import Memory
+from slayer.ontology.use import Annotations
 from slayer.search.render import (
     collect_dataset_entity_pairs,
     render_datasource_pair,
@@ -134,6 +135,7 @@ def _collect_render_pairs(
     visible_datasets: list[SlayerDataset],
     datasources: list[str],
     datasource_descriptions: dict[str, str | None] | None = None,
+    concepts: dict[str, Annotations] | None = None,
 ) -> list[tuple[str, str, str, str | None]]:
     """Return ``[(canonical_id, kind, rendered_text, description), ...]``
     for every doc that goes into the index. Routes through the unified
@@ -158,7 +160,7 @@ def _collect_render_pairs(
         )
         out.append((pair.canonical_id, pair.kind, pair.text, pair.description))
     for dataset in visible_datasets:
-        for re in collect_dataset_entity_pairs(dataset=dataset):
+        for re in collect_dataset_entity_pairs(dataset=dataset, concepts=(concepts or {}).get(dataset.data_source)):
             out.append((re.canonical_id, re.kind, re.text, re.description))
     for memory in memories:
         # Memories surface ``Memory.description`` directly so the search
@@ -179,6 +181,7 @@ def build_in_memory_corpus(
     datasources: list[str],
     datasource_descriptions: dict[str, str | None] | None = None,
     extra_pairs: list[tuple[str, str, str, str | None]] | None = None,
+    concepts: dict[str, Annotations] | None = None,
 ) -> Corpus:
     """Build the index AND the parallel canonical lookup maps in one walk.
 
@@ -209,6 +212,7 @@ def build_in_memory_corpus(
         visible_datasets=visible_datasets,
         datasources=datasources,
         datasource_descriptions=datasource_descriptions,
+        concepts=concepts,
     ) + list(extra_pairs or [])
     canonical_to_text: dict[str, str] = {}
     canonical_to_kind: dict[str, str] = {}

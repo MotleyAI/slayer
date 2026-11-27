@@ -45,7 +45,6 @@ from slayer.core.models import (
     SlayerDataset,
     _validate_dataset_name,
     check_metric_name,
-    check_metric_text,
 )
 from slayer.core.names import NAME_PATTERN, match_name, quoted_name
 from slayer.core.refs import auto_name_from_expression
@@ -88,7 +87,6 @@ from slayer.core.syntax import (
     variable_names,
     walk_parsed,
 )
-from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import (
     CURRENT_VERSIONS,
     hoist_root_extension,
@@ -340,12 +338,6 @@ def _rewrite_functional_granularity(data: dict) -> dict:
         coerced.extend(rewritten)
         data = {**data, "time_dimensions": coerced}
     return data
-
-
-def _validate_query_filter_string(expression: str) -> None:
-    """Reject raw ``OVER (...)`` window syntax in a ``SlayerQuery.filter`` entry."""
-    if has_window_function(expression):
-        raise ValueError(f"Filter '{expression}' {WINDOW_IN_FILTER_ERROR}")
 
 
 _BLOCK_OPEN = "{?"
@@ -1166,11 +1158,6 @@ class QueryMetric(MetricBase, QueryInput):
     def _check_alias(cls, v: str | None) -> str | None:
         return v if v is None else check_metric_name(v, what="Query metric alias")
 
-    @field_validator("metric")
-    @classmethod
-    def _check_metric(cls, v: str) -> str:
-        return check_metric_text(v, what="Query metric")
-
     @model_serializer(mode="wrap")
     def _bare_text(self, handler: SerializerFunctionWrapHandler) -> Any:
         dumped = _without_none(handler(self))
@@ -1600,7 +1587,8 @@ class SlayerQuery(QueryInput):
             "across datasets: rooted at customers, sum(orders.amount) / count(customers.*) divides "
             "the orders' total by the number of customers.\n"
             "- Aggregations: count(orders.*), sum(orders.amount), count_distinct(orders.customer_id), "
-            "avg(orders.amount - orders.cost), percentile(orders.amount, p=0.9).\n"
+            "avg(orders.amount - orders.cost), percentile(orders.amount, p=0.9), sum_distinct(orders.amount), "
+            "percentile_disc(orders.status, p=0.5) (an observed value, any ordered type).\n"
             "- agg(x) FILTER (WHERE c) aggregates only the rows where c holds: "
             "count(orders.*) FILTER (WHERE orders.status = 'paid').\n"
             "- partition_by= computes an aggregate at a coarser grain, repeated on every row; "
@@ -1862,11 +1850,8 @@ class SlayerQuery(QueryInput):
 
     @model_validator(mode="after")
     def _validate_dsl_user_input(self) -> "SlayerQuery":
-        """Enforce DSL-mode rules on user-input strings at construction — raw ``OVER (...)``
-        in a filter is caught here; bare-name/raw-SQL-function rejection happen at binding.
-        ``__`` is not rejected: virtual-dataset fields flatten relationship paths (``kpis__total_amount_sum``)."""
-        for f in self.filter_conditions:
-            _validate_query_filter_string(f)
+        """Enforce DSL-mode rules on user-input strings at construction; bare-name/raw-SQL-function rejection happen
+        at binding. ``__`` is not rejected: virtual-dataset fields flatten relationship paths (``kpis__total_amount_sum``)."""
         if self.main_time_dimension is not None:
             _parsed_or_none(self.main_time_dimension)
         self._validate_distinct_dimension_values()
@@ -2078,8 +2063,6 @@ class QueryRefinement(QueryInput):
 
     @model_validator(mode="after")
     def _validate_inputs(self) -> "QueryRefinement":
-        for f in filter_conditions(self.filter):
-            _validate_query_filter_string(f)
         for name in _NON_NULLABLE_SETTINGS:
             if name in self.model_fields_set and getattr(self, name) is None:
                 raise ValueError(f"refine.{name} cannot be null; omit it to keep the saved value")

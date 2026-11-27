@@ -26,7 +26,18 @@ Written = tuple[str, int | None]
 _INITIAL_GATE: Mapping[str, int] = MappingProxyType({"SlayerModel": 30, "SlayerQuery": 19, "Memory": 14})
 #: Reserved name → the dataset, query and memory versions current when the library reserved it. A later
 #: reservation adds its own entry, strictly above every earlier gate.
-RENAME_GATES: dict[str, Mapping[str, int]] = dict.fromkeys(reserved_granularity_names(), _INITIAL_GATE)
+_OSSIE_FUNCTIONS_GATE: Mapping[str, int] = MappingProxyType({"SlayerModel": 32, "SlayerQuery": 20, "Memory": 15})
+#: Ossie Layer 1 functions and spellings, reserved at ``_OSSIE_FUNCTIONS_GATE``.
+OSSIE_FUNCTION_NAMES = frozenset({
+    "if", "nvl", "nvl2", "startswith", "endswith", "charindex", "truncate", "to_date", "to_timestamp", "zeroifnull",
+    "nullifzero", "radians", "degrees", "regexp_count", "current_time",
+})
+#: Ossie Layer 1 aggregates, reserved at the same (unreleased) gate.
+OSSIE_AGGREGATE_NAMES = frozenset({"sum_distinct", "avg_distinct", "percentile_disc", "percentile_approx"})
+RENAME_GATES: dict[str, Mapping[str, int]] = {
+    **dict.fromkeys(set(reserved_granularity_names()) - OSSIE_FUNCTION_NAMES - OSSIE_AGGREGATE_NAMES, _INITIAL_GATE),
+    **dict.fromkeys(OSSIE_FUNCTION_NAMES | OSSIE_AGGREGATE_NAMES, _OSSIE_FUNCTIONS_GATE),
+}
 
 _TOKEN = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|[A-Za-z_]\w*|\S")
 

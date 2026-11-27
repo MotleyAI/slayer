@@ -37,8 +37,8 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    default_nested_grains,
     lower_sugar_transforms,
-    normalize_transform_constituents,
     attached_operand_keys,
     explicit_ranking_key,
     is_ranked_over_cells,
@@ -46,6 +46,8 @@ from slayer.core.keys import (
     rewrite_rank_partition_keys,
     operand_constituents,
     settle_ranked_grains,
+    unmark_written_grains,
+    written_grained_aggregates,
     source_anchor_path,
     substitute_value_keys,
     transform_operand_grain,
@@ -84,6 +86,7 @@ from slayer.engine.elaborate_env import (
     check_computed_dimension,
     check_conditional_branches,
     check_date_operands,
+    check_time_of_day_operands,
     canonical_list_dimension,
     canonical_list_reads,
     check_list_dimension,
@@ -110,6 +113,7 @@ from slayer.engine.elaborate_env import (
     time_dimension_type,
     check_transform_inputs,
     check_transform_partition_keys_in_operand_grain,
+    check_window_keys_in_operand_grain,
     check_time_transforms_resolved,
     check_ranking_key_determined,
     grain_display,
@@ -671,14 +675,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
-    check_conditional_branches(
-        roots=[
-            *(dm.bound.value_key for dm in declared_metrics),
-            *(bf.value_key for bf in bound_filters),
-            *(spec.bound.value_key for spec in order_specs),
-        ],
-        field_type=field_type,
-    )
+    typed_roots = [
+        *(dm.bound.value_key for dm in declared_metrics),
+        *(bf.value_key for bf in bound_filters),
+        *(spec.bound.value_key for spec in order_specs),
+    ]
+    check_conditional_branches(roots=typed_roots, field_type=field_type)
+    check_time_of_day_operands(roots=typed_roots, field_type=field_type)
     declared_metrics, bound_filters, order_specs = _map_bound_keys(
         lambda vk: canonical_list_reads(vk, typing=lists),
         declared_metrics=declared_metrics,
@@ -796,20 +799,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         _td_key_set.add(vk)
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
-    # Normalise transform constituents (D4b, Axiom 11.1): an ungrained, non-windowed,
-    # local inner aggregate inside a transform constituent (metric/filter/order, not
-    # dimensions) is explicitly grained at the query grain — BEFORE partition-key
-    # validation, so the synthesized keys face the same attributability / resolution
-    # checks as a user-written partition_by=. Every dependent set below (dim-agg,
-    # combined-consumer, reagg-operand) is computed AFTER, over the normalised keys.
     _query_grain = Grain.of([*_dim_key_set, *_td_key_set])
-    declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lambda vk: normalize_transform_constituents(vk, query_grain=_query_grain),
-        declared_metrics=declared_metrics,
-        bound_filters=bound_filters,
-        order_specs=order_specs,
-        skip_dimensions=True,
-    )
 
     # An aggregate's "must be a query dimension" rule is positional — judged by the
     # checker after typing. A transform nested in an attached operand declares an
@@ -865,8 +855,28 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     settled_dims = [_settle(dm.bound.value_key) for dm in declared_metrics[:n_grain]]
     renamed = {dm.bound.value_key: s for dm, s in zip(declared_metrics, settled_dims) if s != dm.bound.value_key}
     _query_grain = Grain.of(settled_dims)
+    if renamed:
+        declared_metrics, bound_filters, order_specs = _map_bound_keys(
+            lambda vk: substitute_value_keys(key=vk, mapping=renamed),
+            declared_metrics=declared_metrics,
+            bound_filters=bound_filters,
+            order_specs=order_specs,
+            skip_dimensions=True,
+        )
     declared_metrics, bound_filters, order_specs = _map_bound_keys(
-        lambda vk: _settle(substitute_value_keys(key=vk, mapping=renamed) if renamed else vk),
+        lambda vk: default_nested_grains(vk, query_grain=_query_grain, active_bucket=active_td_key),
+        declared_metrics=declared_metrics,
+        bound_filters=bound_filters,
+        order_specs=order_specs,
+        skip_dimensions=True,
+    )
+    # collected after the defaulting, so a written aggregate compares with its nested grains defaulted too
+    _written = written_grained_aggregates([
+        *settled_dims, *(dm.bound.value_key for dm in declared_metrics[n_grain:]),
+        *(bf.value_key for bf in bound_filters), *(sp.bound.value_key for sp in order_specs),
+    ])
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
+        lambda vk: _settle(unmark_written_grains(vk, written=_written)),
         declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
@@ -883,6 +893,15 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             *(spec.bound.value_key for spec in order_specs),
         ],
         query_grain=_query_grain, active_bucket=active_td_key,
+    )
+    check_window_keys_in_operand_grain(
+        roots=[
+            *(dm.bound.value_key for dm in declared_metrics),
+            *(bf.value_key for bf in bound_filters),
+            *(spec.bound.value_key for spec in order_specs),
+        ],
+        query_grain=_query_grain, active_bucket=active_td_key,
+        root=scope.population.name if scope.population is not None else None,
     )
 
     check_temporal_axis(

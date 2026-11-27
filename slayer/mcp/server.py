@@ -29,8 +29,10 @@ from slayer.core.enums import Conformance
 from slayer.demo.jaffle_shop import DemoSetupError
 from slayer.core.errors import (
     AmbiguousDatasetError,
+    HiddenContentConflictError,
     MemoryNotFoundError,
     SlayerError,
+    StoredDependentBreakError,
 )
 from slayer.core.models import (
     Aggregation,
@@ -952,8 +954,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             description=(
                 'Field definitions: {"name", "expression", "datatype"}; expression is SQL over the source '
                 "columns (a bare name reads a source column, dataset.field a field; unset reads the column "
-                "named like the field); datatype TEXT, INT, DOUBLE, BOOLEAN, "
-                "DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); optional "
+                "named like the field); datatype String, Integer, Decimal, Float, Boolean, Date, Time, "
+                "DateTime, DateTimeTz, Opaque, or Array with element_type (one of the others); optional "
                 "primary_key, unique (single-field uniqueness other than the primary key), "
                 "allowed_aggregations, filter (a condition masking the field's value "
                 "inside aggregates), granularity (only for a field truly bucketed at that grain), "
@@ -1178,8 +1180,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             description=(
                 'Fields to upsert by name; only the given keys change. {"name", "datatype", "element_type", "expression", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
-                '"label", "granularity"}; datatype TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or '
-                'ARRAY with element_type (one of the others); unique marks '
+                '"label", "granularity"}; datatype String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, '
+                'DateTimeTz, Opaque, or Array with element_type (one of the others); unique marks '
                 "single-field uniqueness other than the primary key (used for relationship cardinality); set "
                 "granularity only for a field truly bucketed at that grain (null clears it)."
             ),
@@ -1275,6 +1277,10 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
                     f"the existing target first, or move to a different "
                     f"datasource."
                 )
+            try:
+                await storage.guard_dataset_deletion(name=dataset.name, data_source=original_data_source)
+            except (StoredDependentBreakError, HiddenContentConflictError) as exc:
+                return _refusal(f"moving dataset '{dataset.name}'", exc)
             dataset.data_source = new_data_source
             dataset.enforced_keys = []
             changes.append(
@@ -1767,6 +1773,8 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             deleted = await storage.delete_dataset(name, data_source=data_source)
         except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
+        except (StoredDependentBreakError, HiddenContentConflictError) as exc:
+            return _refusal(f"deleting dataset '{name}'", exc)
         if deleted:
             return f"Dataset '{name}' deleted."
         return f"Dataset '{name}' not found."
@@ -1791,11 +1799,14 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         )] = None,
     ) -> str:
         """Create a semantic model: an Ossie document holding datasets, their relationships and model-scoped metrics (metrics a query names bare). Give its Ossie content, or the standalone datasets it takes over (they keep their names)."""
+        notes: list[SlayerWarning] = []
         try:
-            await storage.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets)
+            await storage.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets,
+                                                warnings_out=notes)
         except Exception as exc:
             return f"Error creating semantic model '{name}': {type(exc).__name__}: {exc}"
-        return f"Semantic model '{name}' created." + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source))
+        return (f"Semantic model '{name}' created." + _warning_lines(notes)
+                + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source)))
 
     @tool()
     async def edit_semantic_model(
@@ -1822,15 +1833,17 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     ) -> str:
         """Edit a semantic model in place: its description and AI context, its model-scoped metrics and relationships, and standalone datasets moved into it. Edit its datasets with edit_dataset."""
         edits = {k: v for k, v in {"description": description, "ai_context": ai_context}.items() if v is not None}
+        notes: list[SlayerWarning] = []
         try:
             await storage.edit_semantic_model(
                 name, data_source=data_source, metrics=metrics, remove_metrics=remove_metrics,
                 relationships=relationships, remove_relationships=remove_relationships, add_datasets=add_datasets,
-                **edits,
+                warnings_out=notes, **edits,
             )
         except Exception as exc:
             return f"Error editing semantic model '{name}': {type(exc).__name__}: {exc}"
-        return f"Semantic model '{name}' edited." + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source))
+        return (f"Semantic model '{name}' edited." + _warning_lines(notes)
+                + "".join(f"\nWarning: {w}" for w in await _refreshed_documents(data_source)))
 
     @tool()
     async def delete_semantic_model(
@@ -1844,10 +1857,16 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             deleted = await storage.delete_semantic_model(name, data_source=data_source)
         except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
+        except (StoredDependentBreakError, HiddenContentConflictError) as exc:
+            return _refusal(f"deleting semantic model '{name}'", exc)
         return f"Semantic model '{name}' deleted." if deleted else f"Semantic model '{name}' not found."
 
     def _refusal(action: str, exc: Exception) -> str:
         return f"Error {action}: {type(exc).__name__}: {exc}"
+
+    async def _refreshed_concepts(data_source: str | None = None) -> str:
+        """Best-effort search refresh of the datasets whose concepts a mapping or ontology change touches."""
+        return "".join(f"\nWarning: {w}" for w in await search_service.refresh_after_concept_change(data_source))
 
     @tool()
     async def create_ontology(
@@ -1855,14 +1874,15 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             description="A whole Ossie 0.3.0.dev0 ontology document, as YAML/JSON text or an object.",
         )],
     ) -> str:
-        """Store an Ossie ontology (concepts, relationships, identifiers, rules) under its own name, replacing one of that name. Stored and checked only: SLayer does not use ontologies in queries yet."""
+        """Store an Ossie ontology (concepts, relationships, identifiers, rules) under its own name, replacing one of that name. Its mappings annotate inspect and search; validate_datasets checks the model and data against it."""
+        notes: list[SlayerWarning] = []
         try:
             text = content_text(content)
             name = document_name(text)
-            await storage.save_ontology_text(name=name, text=text)
+            await storage.save_ontology_text(name=name, text=text, warnings_out=notes)
         except Exception as exc:
             return _refusal("creating ontology", exc)
-        return f"Ontology '{name}' stored."
+        return f"Ontology '{name}' stored." + _warning_lines(notes) + await _refreshed_concepts()
 
     @tool()
     async def edit_ontology(
@@ -1885,12 +1905,14 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         """Edit an ontology in place; the rest of its text stays as written. Refused when the result is invalid or breaks a stored mapping."""
         edits = {k: v for k, v in {"description": description, "ai_context": ai_context, "prefixes": prefixes,
                                    "requires": requires}.items() if v is not None}
+        notes: list[SlayerWarning] = []
         try:
             await storage.edit_ontology(name, concepts=concepts, remove_concepts=remove_concepts,
-                                        relationships=relationships, remove_relationships=remove_relationships, **edits)
+                                        relationships=relationships, remove_relationships=remove_relationships,
+                                        warnings_out=notes, **edits)
         except Exception as exc:
             return _refusal(f"editing ontology '{name}'", exc)
-        return f"Ontology '{name}' edited."
+        return f"Ontology '{name}' edited." + _warning_lines(notes) + await _refreshed_concepts()
 
     @tool()
     async def delete_ontology(
@@ -1901,7 +1923,7 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             deleted = await storage.delete_ontology(name)
         except Exception as exc:
             return _refusal(f"deleting ontology '{name}'", exc)
-        return f"Ontology '{name}' deleted." if deleted else f"Ontology '{name}' not found."
+        return f"Ontology '{name}' deleted." + await _refreshed_concepts() if deleted else f"Ontology '{name}' not found."
 
     @tool()
     async def create_ontology_mapping(
@@ -1911,13 +1933,16 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         )],
     ) -> str:
         """Store an Ossie mapping of a datasource under its own name: it populates a stored ontology's concepts from one semantic model of the datasource (or the datasource itself). Refused unless it resolves."""
+        warnings_out: list[SlayerWarning] = []
         try:
             text = content_text(content)
             name = document_name(text)
-            notes = await storage.save_ontology_mapping_text(data_source=data_source, name=name, text=text)
+            notes = await storage.save_ontology_mapping_text(data_source=data_source, name=name, text=text,
+                                                             warnings_out=warnings_out)
         except Exception as exc:
             return _refusal("creating mapping", exc)
-        return f"Mapping '{name}' stored in datasource '{data_source}'." + "".join(f"\nNote: {n}" for n in notes)
+        return (f"Mapping '{name}' stored in datasource '{data_source}'." + "".join(f"\nNote: {n}" for n in notes)
+                + _warning_lines(warnings_out) + await _refreshed_concepts(data_source))
 
     @tool()
     async def edit_ontology_mapping(
@@ -1940,13 +1965,16 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
         """Edit a mapping in place; the rest of its text stays as written. Refused unless the result resolves."""
         edits = {k: v for k, v in {"description": description, "ontology_ref": ontology_ref,
                                    "semantic_model_ref": semantic_model_ref}.items() if v is not None}
+        warnings_out: list[SlayerWarning] = []
         try:
             notes = await storage.edit_ontology_mapping(name, data_source=data_source,
                                                         concept_mappings=concept_mappings,
-                                                        remove_concept_mappings=remove_concept_mappings, **edits)
+                                                        remove_concept_mappings=remove_concept_mappings,
+                                                        warnings_out=warnings_out, **edits)
         except Exception as exc:
             return _refusal(f"editing mapping '{name}'", exc)
-        return f"Mapping '{name}' edited." + "".join(f"\nNote: {n}" for n in notes)
+        return (f"Mapping '{name}' edited." + "".join(f"\nNote: {n}" for n in notes) + _warning_lines(warnings_out)
+                + await _refreshed_concepts(data_source))
 
     @tool()
     async def delete_ontology_mapping(
@@ -1958,15 +1986,17 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
             deleted = await storage.delete_ontology_mapping(name, data_source)
         except Exception as exc:
             return _refusal(f"deleting mapping '{name}'", exc)
-        return f"Mapping '{name}' deleted." if deleted else f"Mapping '{name}' not found."
+        if not deleted:
+            return f"Mapping '{name}' not found."
+        return f"Mapping '{name}' deleted." + await _refreshed_concepts(data_source)
 
     @tool()
     async def validate_datasets(
         data_source: Annotated[str | None, Field(description="Datasource to validate; omit for all.")] = None,
     ) -> str:
-        """Diff stored datasets against the live database schemas.
+        """Diff stored datasets against the live database schemas, and check them and their data against the stored ontologies.
 
-        Returns, as JSON, the deletes (fields, metrics, relationships, filters, whole datasets) needed to keep the stored datasets valid. Read-only.
+        Returns, as JSON, the deletes (fields, metrics, relationships, filters, whole datasets) needed to keep the stored datasets valid, and report-only ontology findings: identifier (a concept's identifier vs the dataset's keys), multiplicity (vs a relationship's cardinality), constraint and required_link (rows of data violating a requires rule, with samples), and what is not checked (not_checked: each rule, position or mapping SLayer cannot check, with the reason). Read-only.
         """
         if data_source is not None:
             # Fail loudly on an unknown name — an empty result is otherwise
@@ -2176,7 +2206,9 @@ def create_mcp_server(  # NOSONAR(S3776) — MCPServer tool-registration factory
     @tool()
     async def search(
         entities: Annotated[list[str] | None, Field(
-            description="Entity references; ranks memories tagged with overlapping entities.",
+            description=("Entity references; ranks memories tagged with overlapping entities. concept:<Concept> or "
+                         "concept:<Ontology>.<Concept> selects every field and dataset mapped to that ontology concept "
+                         "or a subtype."),
         )] = None,
         query: Annotated[Any, Field(
             description="A query object whose entities are extracted and searched like entities.",

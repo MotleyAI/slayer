@@ -39,6 +39,24 @@ class Relationship(BaseModel):
     def last_role(self) -> str | None:
         return self.roles[-1] if self.roles else None
 
+    @property
+    def multiplicity(self) -> str | None:
+        value = self.raw.get("multiplicity")
+        return value if isinstance(value, str) else None
+
+    @property
+    def verbalizes(self) -> list[str]:
+        return [v for v in _items(self.raw.get("verbalizes")) if isinstance(v, str)]
+
+    @property
+    def requires(self) -> list[str]:
+        return [r for r in _items(self.raw.get("requires")) if isinstance(r, str)]
+
+    @property
+    def role_names(self) -> list[str | None]:
+        """The name of each further role, ``None`` where unnamed."""
+        return [r.get("name") if isinstance(r.get("name"), str) else None for r in _dicts(self.raw.get("roles"))]
+
 
 def _items(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
@@ -46,6 +64,10 @@ def _items(value: Any) -> list[Any]:
 
 def _dicts(value: Any) -> Iterator[dict[str, Any]]:
     return (v for v in _items(value) if isinstance(v, dict))
+
+
+def _strings(value: Any) -> list[str]:
+    return [v for v in _items(value) if isinstance(v, str)]
 
 
 class Ontology(BaseModel):
@@ -56,14 +78,20 @@ class Ontology(BaseModel):
     supertypes: dict[str, list[str]] = {}
     relationships: dict[str, dict[str, Relationship]] = {}
     identifiers: dict[str, list[str]] = {}
+    descriptions: dict[str, str] = {}
+    requires: dict[str, list[str]] = {}
+    document_requires: list[str] = []
 
     @classmethod
     def of(cls, data: dict[str, Any]) -> Ontology:
-        out = cls(name=str(data.get("name")))
+        out = cls(name=str(data.get("name")), document_requires=_strings(data.get("requires")))
         for component in _dicts(data.get("ontology")):
             concept = component.get("concept")
             if not isinstance(concept, str):
                 continue
+            if concept not in out.kinds and isinstance(component.get("description"), str):
+                out.descriptions[concept] = component["description"]
+            out.requires.setdefault(concept, _strings(component.get("requires")))
             out.kinds.setdefault(concept, str(component.get("type")))
             out.supertypes.setdefault(concept, []).extend(s for s in _items(component.get("extends"))
                                                           if isinstance(s, str))
@@ -98,8 +126,33 @@ class Ontology(BaseModel):
                 return found
         return None
 
+    def resolve(self, concept: str, name: str) -> Relationship | None:
+        """Relationship ``name`` of ``concept``, qualified ``Base.name`` (``Base`` ``concept`` or an ancestor)
+        included."""
+        if "." in name:
+            prefix, name = name.split(".", 1)
+            if prefix not in self.ancestors(concept):
+                return None
+            concept = prefix
+        return self.find(concept, name)
+
     def is_entity(self, concept: str) -> bool:
         return self.kinds.get(concept) == ENTITY_TYPE
+
+    def is_value(self, concept: str) -> bool:
+        return concept in BUILT_INS or self.kinds.get(concept) == VALUE_TYPE
+
+    def related(self, concept: str, other: str) -> bool:
+        """``concept`` and ``other`` share their objects: one extends the other."""
+        return self.subtype_of(concept, other) or self.subtype_of(other, concept)
+
+    def description(self, concept: str) -> str | None:
+        """The description of ``concept``, else of its nearest supertype declaring one."""
+        return next((self.descriptions[c] for c in self.ancestors(concept) if c in self.descriptions), None)
+
+    def inherited_requires(self, concept: str) -> list[tuple[str, str]]:
+        """Every ``requires`` of ``concept`` and the concepts it extends, as ``(declaring concept, text)``."""
+        return [(c, r) for c in self.ancestors(concept) for r in self.requires.get(c, [])]
 
     def subtype_of(self, concept: str, other: str) -> bool:
         return other in self.ancestors(concept)

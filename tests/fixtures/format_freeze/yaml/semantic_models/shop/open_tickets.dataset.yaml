@@ -12,11 +12,11 @@ dataset:
     data:
       version: 4
       entity: open_tickets
-      fingerprint: 00bc6a2bb145ef559a9b1f49325ea92214f7a6e4437f4a86221ef6a1fe9072d7
+      fingerprint: 7f4587016ef6514a2ba2d495bc5cbd565b309ded9454666b7f7b0a638221d398
       kind: dataset
       source:
         source_queries:
-        - version: 19
+        - version: 20
           population: tickets
           dimensions:
           - tickets.status

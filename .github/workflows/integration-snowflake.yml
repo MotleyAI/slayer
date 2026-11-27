@@ -19,6 +19,11 @@ on:
   push:
     branches: [main]
 
+# A new push to a PR cancels that PR's run still in progress; other runs never cancel or queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   snowflake-gate:
     permissions:
@@ -27,7 +32,7 @@ jobs:
     uses: ./.github/workflows/expensive-job-gate.yml
     with:
       workflow: integration-snowflake.yml
-      job: snowflake-integration
+      jobs: snowflake-integration
 
   snowflake-integration:
     needs: snowflake-gate

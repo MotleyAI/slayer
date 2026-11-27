@@ -72,19 +72,21 @@ TransformToken = Literal[
 ]
 
 AggregationToken = Literal[
-    "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
-    "first", "last", "weighted_avg", "median", "percentile", "stddev_samp", "stddev_pop",
+    "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx", "sum_distinct", "avg_distinct",
+    "first", "last", "weighted_avg", "median", "percentile", "percentile_disc", "percentile_approx",
+    "stddev_samp", "stddev_pop",
     "var_samp", "var_pop", "corr", "covar_samp", "covar_pop", "collect", "custom",
 ]
 
 FunctionToken = Literal[
     "abs", "acos", "ascii", "asin", "atan", "atan2", "cbrt", "ceil", "ceiling", "chr", "coalesce", "concat",
-    "concat_ws", "contains", "contains_all", "contains_any", "cos", "current_date", "date_add", "date_diff",
-    "date_part", "div", "ends_with", "exp", "floor", "greatest", "ifnull", "iif", "ilike", "instr", "interval",
-    "json_value", "least", "left", "length", "like", "ln", "log", "log10", "log2", "lower", "lpad", "ltrim", "mod",
-    "now", "nullif", "pi", "pow", "power", "regexp_extract", "regexp_like", "regexp_replace", "repeat", "replace",
+    "concat_ws", "contains", "contains_all", "contains_any", "cos", "current_date", "current_time", "date_add", "date_diff",
+    "date_part", "degrees", "div", "ends_with", "exp", "floor", "greatest", "ifnull", "iif", "ilike", "instr",
+    "interval", "json_value", "least", "left", "length", "like", "ln", "log", "log10", "log2", "lower", "lpad", "ltrim",
+    "mod", "now", "nullif", "nullifzero", "pi", "pow", "power", "radians", "regexp_count", "regexp_extract",
+    "regexp_like", "regexp_replace", "repeat", "replace",
     "reverse", "right", "round", "rpad", "rtrim", "sign", "sin", "split_part", "sqrt", "starts_with", "substr",
-    "substring", "tan", "trim", "trunc", "upper",
+    "substring", "tan", "trim", "trunc", "upper", "zeroifnull",
 ]
 
 DialectToken = Literal[

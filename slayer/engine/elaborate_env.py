@@ -19,7 +19,9 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import (
     DataType,
+    DatePart,
     NUMERIC_DATATYPES,
+    OBSERVED_VALUE_AGGREGATIONS,
     RANK_FAMILY_TRANSFORMS,
     TEMPORAL_DATATYPES,
     TIME_TRANSFORMS,
@@ -54,10 +56,16 @@ from slayer.core.errors import (
     UnknownGranularityError,
     UnrelatedDatasetError,
     UnsafeRelationshipInputError,
+    WindowFunctionError,
 )
 from slayer.core.granularity import CustomGranularity, Granularity, nests_into, unknown_granularity_message
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.keys import (
+    Phase,
+    WindowKey,
+    window_operand_grain,
+    is_transform,
+    transform_operands,
     display_token,
     DATE_ADD_COUNT_ARG,
     DATE_OPERAND_ARGS,
@@ -106,6 +114,7 @@ from slayer.core.keys import (
     field_leaf,
     field_path,
     value_arg_positions,
+    unit_word,
     value_type,
     source_anchor_path,
     transform_operand_grain,
@@ -117,13 +126,13 @@ from slayer.core.deprecation import scheduled_notice
 from slayer.core.models import SlayerDataset
 from slayer.core.relationship_walker import walk_terminal
 from slayer.core.names import folded_collisions, match_name, match_path
-from slayer.core.refs import bucket_remedy, dotted_key_display, key_display
+from slayer.core.refs import bucket_remedy, dotted_key_display, field_display, key_display
 from slayer.core.scope import peek_dataset_field
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.core.time_zones import check_bucketed_zones
 from slayer.core.time_points import (
-    TIME_POINT_FORMS, Instant, Period, TimePoint, ceil_to, floor_to, is_date_only, is_relative_token, is_time_point,
-    resolve_time_point, units_after,
+    TIME_OF_DAY_FORMS, TIME_POINT_FORMS, Instant, Period, TimePoint, ceil_to, floor_to, is_date_only,
+    is_relative_token, is_time_point, parse_time_of_day, resolve_time_point, units_after,
 )
 from slayer.ir.planned import MaskTyping
 from slayer.ir.elaborated import (
@@ -156,7 +165,7 @@ def _field_blockers(cj: ValueKey, row_agg_set: frozenset) -> Tuple[List[ValueKey
 
     def _walk(k: ValueKey) -> None:
         nonlocal attached
-        if isinstance(k, (AggregateKey, TransformKey)):
+        if isinstance(k, (AggregateKey, TransformKey)) or is_transform(k):
             # A row-attach root (partitioned aggregate or transform root of a
             # computed dimension) resolves row-side; its subtree is its own scope.
             if k in row_agg_set:
@@ -186,6 +195,8 @@ def row_refs_off_grain(cj: ValueKey, dim_keys: frozenset) -> List[ValueKey]:
         if isinstance(k, TransformKey):
             _walk(k.input)  # partition/time keys are transform machinery, not refs
             return
+        if is_transform(k):
+            return  # its keys and operands are judged against its operand grain
         for c in k.children():
             _walk(c)
 
@@ -198,13 +209,15 @@ def _key_display(k: ValueKey) -> str:
         leaf = getattr(k.source, "leaf", None) or getattr(k.source, "field_name", None) or "*"
         path = source_anchor_path(k.source)
         name = f"{k.agg}({'.'.join((*map(display_token, path), leaf))})"
-        return f"{name} (partition_by)" if k.partition_keys is not None else name
+        return f"{name} (partition_by)" if k.written_grain is not None else name
     if isinstance(k, TransformKey):
         return f"{k.op}(...)"
+    if isinstance(k, WindowKey):
+        return key_display(k)
     if isinstance(k, TimeTruncKey):
         return _key_display(k.source) if isinstance(k.source, (FieldKey, FieldSqlKey)) else key_display(k.source)
     if isinstance(k, (FieldKey, FieldSqlKey)):
-        return ".".join((*map(display_token, k.path), field_leaf(k)))
+        return field_display(k.path, field_leaf(k))
     return type(k).__name__
 
 
@@ -244,6 +257,16 @@ def type_position_conjunct(
         f"field, and metric typing is unavailable because the query has no "
         f"metric position (distinct_dimension_values=False).",
     )
+
+
+def check_row_window(key: WindowKey) -> None:
+    """A row-level window names a dataset: a reference other than the time spine's (semantics Axiom 1)."""
+    if key.anchor is None:
+        raise WindowFunctionError(
+            summary=f"The window `{key_display(key)}` names no dataset, so no rows to run over: it reads no field, "
+            f"or only the time spine's.",
+            suggestion="Read a field of the dataset whose rows it numbers or aggregates, e.g. ORDER BY orders.id.",
+        )
 
 
 def check_metrics_at_query_grain(prebound: PreboundQuery) -> None:
@@ -320,8 +343,8 @@ def is_partitioned_consumer(k: ValueKey) -> TypeGuard[AggregateKey]:
 
 def is_dimension_transform_root(k: ValueKey) -> bool:
     """A transform over a grained aggregate — in a dimension, it owns its input."""
-    return isinstance(k, TransformKey) and any(
-        is_grained_aggregate(g) for g in opaque_keys(k.input)
+    return is_transform(k) and any(
+        is_grained_aggregate(g) for o in transform_operands(k) for g in opaque_keys(o)
     )
 
 
@@ -1048,7 +1071,7 @@ def check_time_dimension_field(
 
 def check_time_dimension_row_level(*, name: str, source: ValueKey) -> None:
     """A time dimension's expression is row-level: no aggregate, transform or attached value."""
-    if any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(source)):
+    if any(isinstance(k, (AggregateKey, TransformKey)) or is_transform(k) for k in walk_value_keys(source)):
         raise TimeDimensionFieldError(
             summary="A time dimension is row-level; its expression reads an aggregate or transform.",
             location=f"time dimension {name!r}",
@@ -1095,7 +1118,7 @@ def check_raw_row_determined(
 
 
 _NON_NUMERIC_TYPES = frozenset(t for t in DataType if t.kind in (
-    TypeKind.TEXT, TypeKind.BOOLEAN, TypeKind.DATE, TypeKind.TIMESTAMP, TypeKind.UNKNOWN))
+    TypeKind.TEXT, TypeKind.BOOLEAN, TypeKind.DATE, TypeKind.TIMESTAMP, TypeKind.TIME, TypeKind.UNKNOWN))
 
 
 def _operand_display(k: object) -> str:
@@ -1111,7 +1134,7 @@ def _operand_display(k: object) -> str:
         if len(k.operands) == 1:
             return f"{k.op}{_operand_display(k.operands[0])}"
         return f" {k.op} ".join(_operand_display(o) for o in k.operands)
-    if isinstance(k, (AggregateKey, TransformKey, FieldKey, FieldSqlKey, TimeTruncKey)):
+    if isinstance(k, (AggregateKey, TransformKey, WindowKey, FieldKey, FieldSqlKey, TimeTruncKey)):
         return _key_display(k)
     if isinstance(k, ArrayLiteralKey):
         return f"[{', '.join(_operand_display(v) for v in k.values)}]"
@@ -1142,7 +1165,7 @@ def _leaf_count_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataTy
 
 def _count_type_operands(key: object) -> Sequence[object]:
     if isinstance(key, AggregateKey):
-        return [key.source] if key.agg.lower() in ("min", "max", "first", "last") else []
+        return [key.source] if key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS else []
     if isinstance(key, ArithmeticKey):
         return key.operands
     if isinstance(key, ScalarCallKey):
@@ -1162,9 +1185,23 @@ def _count_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     return None
 
 
+#: The parts a time of day has.
+_TIME_OF_DAY_PARTS = frozenset({DatePart.HOUR.value, DatePart.MINUTE.value, DatePart.SECOND.value})
+
+
+def _is_time_of_day(key: object, *, field_type: FieldTypeFn) -> bool:
+    return value_type(key, field_type=field_type) is DataType.TIME
+
+
 def _require_temporal(fn: str, operand: object, *, field_type: FieldTypeFn) -> None:
     if temporal_type(operand, field_type=field_type) is not None:
         return
+    if _is_time_of_day(operand, field_type=field_type):
+        raise DateOperandTypeError(
+            summary=f"{fn}() does not take `{_operand_display(operand)}`: it is a time of day (Time), which only "
+            f"hour, minute and second read.",
+            suggestion="Read a part with date_part('hour' | 'minute' | 'second', x), or pass a DATE / TIMESTAMP value.",
+        )
     conflict = (
         conditional_branch_conflict(operand, field_type=field_type) if isinstance(operand, ScalarCallKey) else None
     )
@@ -1185,6 +1222,9 @@ def _require_temporal(fn: str, operand: object, *, field_type: FieldTypeFn) -> N
 
 
 def _check_date_call(key: ScalarCallKey, *, field_type: FieldTypeFn) -> None:
+    if (key.name == "date_part" and unit_word(key.args[0]) in _TIME_OF_DAY_PARTS
+            and _is_time_of_day(key.args[1], field_type=field_type)):
+        return
     for pos in DATE_OPERAND_ARGS[key.name]:
         _require_temporal(key.name, key.args[pos], field_type=field_type)
     if key.name != "date_add":
@@ -1239,6 +1279,7 @@ def resolve_time_points(
     rebuilt = cast(ValueKey, key.map_children(
         lambda c: resolve_time_points(c, field_type=field_type, now=now, units=units),
     ))
+    rebuilt = _type_time_of_day_strings(rebuilt, field_type=field_type)
     if isinstance(rebuilt, TimePointCmpKey):
         return _lower_time_point(rebuilt, field_type=field_type, now=now, units=units)
     if isinstance(rebuilt, ArithmeticKey):
@@ -1247,6 +1288,123 @@ def resolve_time_points(
 
 
 _ANNOUNCED_OPS = frozenset({"<=", ">", "=", "!="})
+#: Comparisons whose string operand, facing a time of day, is its ``TIME`` literal.
+_COMPARISON_OPS = frozenset({*_PLAIN_COMPARISON_OPS, "=", "<>", *NULL_SAFE_COMPARISON_OPS})
+_COMPUTING_OPS = frozenset({"+", "-", "*", "/", "%"})
+
+
+def _is_text_literal(key: object) -> TypeGuard[LiteralKey]:
+    return isinstance(key, LiteralKey) and isinstance(key.value, str)
+
+
+def _time_literal(text: object, *, beside: object) -> LiteralKey:
+    moment = parse_time_of_day(text) if isinstance(text, str) else None
+    if moment is None:
+        raise TimeLiteralError(
+            summary=f"'{text}' is not a time of day.",
+            location=f"comparison with `{_operand_display(beside)}`",
+            suggestion=f"Write {TIME_OF_DAY_FORMS}.",
+        )
+    return LiteralKey(value=moment)
+
+
+def _timed_point_cmp(key: TimePointCmpKey) -> ValueKey:
+    literal = _time_literal(key.point, beside=key.operand)
+    if key.op in _MEMBERSHIP_SQL:
+        return InKey(field=key.operand, values=(literal,), negated=key.op == _NOT_IN)
+    op = _arith_op(key.op)
+    if key.literal_on_left:
+        return ArithmeticKey(op=_MIRRORED[op], operands=(literal, key.operand))
+    return ArithmeticKey(op=op, operands=(key.operand, literal))
+
+
+def _timed_comparison(key: ArithmeticKey, *, timed: Callable[[object], bool]) -> ValueKey:
+    if key.op.lower() not in _COMPARISON_OPS or len(key.operands) != 2:
+        return key
+    left, right = key.operands
+    if _is_text_literal(right) and timed(left):
+        return key.model_copy(update={"operands": (left, _time_literal(right.value, beside=left))})
+    if _is_text_literal(left) and timed(right):
+        return key.model_copy(update={"operands": (_time_literal(left.value, beside=right), right)})
+    return key
+
+
+def _timed_in(key: InKey, *, timed: Callable[[object], bool]) -> ValueKey:
+    if not timed(key.field) or not any(_is_text_literal(v) for v in key.values):
+        return key
+    values = tuple(_time_literal(v.value, beside=key.field) if _is_text_literal(v) else v for v in key.values)
+    return key.model_copy(update={"values": values})
+
+
+def _timed_nullif(key: ScalarCallKey, *, timed: Callable[[object], bool]) -> ValueKey:
+    if key.name != "nullif" or len(key.args) != 2 or not _is_text_literal(key.args[1]) or not timed(key.args[0]):
+        return key
+    return key.model_copy(update={"args": (key.args[0], _time_literal(key.args[1].value, beside=key.args[0]))})
+
+
+def _type_time_of_day_strings(key: ValueKey, *, field_type: FieldTypeFn) -> ValueKey:
+    """``key`` with a string in a comparison slot facing a time of day read as its ``TIME`` literal."""
+    def timed(k: object) -> bool:
+        return _is_time_of_day(k, field_type=field_type)
+
+    if isinstance(key, TimePointCmpKey):
+        return _timed_point_cmp(key) if timed(key.operand) else key
+    if isinstance(key, ArithmeticKey):
+        return _timed_comparison(key, timed=timed)
+    if isinstance(key, InKey):
+        return _timed_in(key, timed=timed)
+    if isinstance(key, ScalarCallKey):
+        return _timed_nullif(key, timed=timed)
+    return key
+
+
+def _refuse_time_of_day(key: object, operand: object, *, why: str) -> NoReturn:
+    raise ScalarOperandTypeError(
+        summary=f"`{_operand_display(key)}` {why}: `{_operand_display(operand)}` is a time of day (Time).",
+        suggestion="A time of day compares with another time of day (or a 'HH:MM:SS' string) and takes no "
+        "arithmetic; read its parts with hour(), minute() and second().",
+    )
+
+
+def _other_typed(operands: Sequence[object], *, field_type: FieldTypeFn) -> Optional[DataType]:
+    """The first known type among ``operands`` that is no time of day."""
+    for operand in operands:
+        t = None if _is_null_literal(operand) else value_type(operand, field_type=field_type)
+        if t is not None and t is not DataType.TIME and not t.is_opaque:
+            return t
+    return None
+
+
+def _checked_operands(key: object) -> Sequence[object]:
+    if isinstance(key, ArithmeticKey):
+        return key.operands
+    if isinstance(key, InKey):
+        return (key.field, *key.values)
+    if isinstance(key, ScalarCallKey) and key.name == "nullif":
+        return key.args
+    return ()
+
+
+def _check_time_of_day_key(key: object, *, field_type: FieldTypeFn) -> None:
+    operands = _checked_operands(key)
+    timed = next((o for o in operands if _is_time_of_day(o, field_type=field_type)), None)
+    if timed is None:
+        return
+    if isinstance(key, ArithmeticKey):
+        if key.op in _COMPUTING_OPS:
+            _refuse_time_of_day(key, timed, why="computes with a time of day")
+        if key.op.lower() not in _COMPARISON_OPS:
+            return
+    other = _other_typed(operands, field_type=field_type)
+    if other is not None:
+        _refuse_time_of_day(key, timed, why=f"compares a time of day with a {other.value} value")
+
+
+def check_time_of_day_operands(*, roots: Sequence[ValueKey], field_type: FieldTypeFn) -> None:
+    """A time of day takes no arithmetic and compares only with another time of day."""
+    for root in roots:
+        for key in walk_value_keys(root):
+            _check_time_of_day_key(key, field_type=field_type)
 
 
 def _field_parts(key: object) -> Optional[Tuple[str, ...]]:
@@ -1503,7 +1661,6 @@ def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, Custom
 
 # Positions where TEXT beside a number reads as a number (spec: queries/mixed-type-coercion).
 _COERCED_OPS = frozenset({"==", "!=", "<", "<=", ">", ">=", *NULL_SAFE_COMPARISON_OPS, "+", "-", "*", "/", "%"})
-_TEXT_PRESERVING_AGGS = frozenset({"min", "max", "first", "last"})
 
 
 def _text_valued(key: object, *, field_type: FieldTypeFn) -> bool:
@@ -1515,7 +1672,7 @@ def _text_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     if isinstance(key, CastKey):
         return key.data_type is DataType.STRING
     if isinstance(key, AggregateKey):
-        return key.agg.lower() in _TEXT_PRESERVING_AGGS and _text_valued(key.source, field_type=field_type)
+        return key.agg.lower() in OBSERVED_VALUE_AGGREGATIONS and _text_valued(key.source, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         spec = SCALAR_SPECS.get(key.name)
         if spec is not None and spec.result is not None:
@@ -1633,6 +1790,14 @@ def _coerce_in(key: InKey, *, text: Callable[[object], bool], number: Callable[[
     return key
 
 
+def _raise_numeric_text(key: ScalarCallKey, arg: object) -> NoReturn:
+    display = _operand_display(arg)
+    raise ScalarOperandTypeError(
+        summary=f"{key.name}() reads numbers, but `{display}` is TEXT.",
+        suggestion=f"Convert numbers stored as text: {key.name}(TRY_CAST({display} AS DOUBLE)).",
+    )
+
+
 def _numeric_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool]) -> list:
     """A number function's arguments: TEXT literals converted, any other TEXT refused."""
     args = list(key.args)
@@ -1640,12 +1805,18 @@ def _numeric_scalar_args(key: ScalarCallKey, *, text: Callable[[object], bool]) 
         if isinstance(arg, LiteralKey) and isinstance(arg.value, str):
             args[i] = LiteralKey(value=_number_literal(arg.value, beside=key))
         elif text(arg):
-            display = _operand_display(arg)
-            raise ScalarOperandTypeError(
-                summary=f"{key.name}() reads numbers, but `{display}` is TEXT.",
-                suggestion=f"Convert numbers stored as text: {key.name}(TRY_CAST({display} AS DOUBLE)).",
-            )
+            _raise_numeric_text(key, arg)
     return args
+
+
+def check_numeric_arguments(key: ValueKey, *, field_type: FieldTypeFn) -> None:
+    """Refuse a number function over a TEXT value (a TEXT literal aside), as a query's binding does."""
+    for k in walk_value_keys(key):
+        if isinstance(k, ScalarCallKey) and k.name in NUMERIC_ARG_SCALARS:
+            bad = next((a for a in k.args if not isinstance(a, LiteralKey) and _text_valued(a, field_type=field_type)),
+                       None)
+            if bad is not None:
+                _raise_numeric_text(k, bad)
 
 
 def _text_concat_args(
@@ -2045,19 +2216,21 @@ def _time_search_children(key: ValueKey) -> List[ValueKey]:
         return [
             key.source,
             *[a for a in key.args if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
+                a, (AggregateKey, TransformKey, WindowKey, ArithmeticKey, ScalarCallKey, CastKey))],
             *[v for _, v in key.kwargs if isinstance(
-                v, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, CastKey))],
+                v, (AggregateKey, TransformKey, WindowKey, ArithmeticKey, ScalarCallKey, CastKey))],
         ]
     if isinstance(key, TransformKey):
         return [key.input]
+    if isinstance(key, WindowKey):
+        return list(key.children())
     if isinstance(key, ArithmeticKey):
         return list(key.operands)
     if isinstance(key, ScalarCallKey):
         return [
             a for a in key.args
             if isinstance(
-                a, (AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
+                a, (AggregateKey, TransformKey, WindowKey, ArithmeticKey, ScalarCallKey, TimePointCmpKey, InKey, CastKey),
             )
         ]
     if isinstance(key, (CastKey, ListSetKey)):
@@ -2231,6 +2404,38 @@ def check_transform_partition_keys_in_operand_grain(
                     suggestion=f"Add it to the inner aggregate's partition_by=, or "
                     f"partition by one of: {members or '(none)'}.",
                 )
+
+
+def check_window_keys_in_operand_grain(
+    *, roots, query_grain: Grain, active_bucket: Optional[ValueKey], root: Optional[str],
+) -> None:
+    """Each row-level operand of a measure-level window is a member of its operand grain (semantics Axiom 11.7)."""
+    for top in roots:
+        for k in walk_value_keys(top):
+            if isinstance(k, WindowKey) and not k.row_level:
+                _check_window_operands(k, grain=window_operand_grain(
+                    k, query_grain=query_grain, active_bucket=active_bucket), root=root)
+
+
+def _check_window_operands(k: WindowKey, *, grain: Grain, root: Optional[str]) -> None:
+    for c in k.children():
+        if c.phase is not Phase.ROW or c in grain or isinstance(c, (LiteralKey, StarKey)):
+            continue
+        shown = _window_operand_display(c, root=root)
+        raise WindowFunctionError(
+            summary=f"The window `{key_display(k)}` reads `{shown}` per cell, but it is neither "
+            f"aggregate-valued nor a member of the window's operand grain.",
+            suggestion=f"Add `{shown}` as a dimension, or aggregate it.",
+        )
+
+
+def _window_operand_display(c: ValueKey, *, root: Optional[str]) -> str:
+    """``c`` spelled from its anchor, else qualified by the query root."""
+    if isinstance(c, (FieldKey, FieldSqlKey)) and c.anchor is not None:
+        return ".".join((*c.anchor, field_leaf(c)))
+    if root is not None and isinstance(c, (FieldKey, FieldSqlKey)) and not c.path:
+        return f"{root}.{dotted_key_display(c)}"
+    return dotted_key_display(c)
 
 
 def check_partition_key_analysable(*, label: str, pk: ValueKey, analysable: bool) -> None:

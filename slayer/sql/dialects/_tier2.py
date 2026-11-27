@@ -69,7 +69,7 @@ class PrestoDialect(PrestoFamilyDialect):
     enforces_unique_keys: ClassVar[bool] = False
     sqlglot_name: str = "presto"
     database_name: ClassVar[str] = "Presto"
-    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY - {"regexp_count"}
     # Athena uses the Presto dialect via this alias.
     ds_type_aliases: frozenset[str] = frozenset({"presto", "athena"})
 

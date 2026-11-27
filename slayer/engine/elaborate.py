@@ -32,6 +32,7 @@ from slayer.engine.elaborate_env import (
 from slayer.engine.population.home import population_crossing, resolve_aggregate_homes, row_expression_home
 from slayer.engine.cardinality.relationship_safety import crossing_local_root_predicate
 from slayer.engine.dataset_reads import datasets_read_closure
+from slayer.engine.window_columns import lift_row_windows
 from slayer.engine.cardinality.unrelated import ProductSides
 from slayer.ir.elaborated import ConjunctTyping, ElaboratedProducer, ElaboratedQuery, ElaboratedStage
 from slayer.ir.planned import MaskTyping
@@ -59,6 +60,7 @@ def elaborate_query(
         scope = resolve_scope(bundle=bundle)
     if prebound is None:
         prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
+    prebound, bundle, scope = lift_row_windows(prebound, bundle=bundle, scope=scope)
     if scope.population is not None:
         datasets = bundle.datasets_by_name
         with unobserved():

@@ -33,26 +33,25 @@ def test_clickhouse_log_native_flags() -> None:
 # Median / percentile — ClickHouse native forms
 
 
-def test_clickhouse_build_median_emits_quantile_05_form() -> None:
-    """``median(x)`` transpiles to ClickHouse's parametric ``quantile(0.5)(x)``."""
+def test_clickhouse_build_median_emits_quantile_exact_inclusive_05_form() -> None:
+    """``median(x)`` is ClickHouse's exact ``quantileExactInclusive(0.5)(x)``."""
     d = ClickhouseDialect()
     inner = sqlglot.parse_one("amount", dialect="clickhouse")
     out = d.build_median(inner)
     sql = out.sql(dialect="clickhouse")
-    assert "quantile(0.5)" in sql.lower()
+    assert "quantileexactinclusive(0.5)" in sql.lower()
     assert "PERCENTILE_CONT" not in sql.upper()
     assert "WITHIN GROUP" not in sql.upper()
 
 
-def test_clickhouse_build_percentile_uses_parametric_quantile() -> None:
-    """ClickHouse uses ``quantile(p)(x)`` — parametric aggregate syntax."""
+def test_clickhouse_build_percentile_uses_parametric_quantile_exact_inclusive() -> None:
+    """ClickHouse uses the exact ``quantileExactInclusive(p)(x)`` — parametric aggregate syntax."""
     d = ClickhouseDialect()
     out = d.build_percentile(p=exp.Literal.number("0.9"), col_expr=exp.column("amount"))
     sql = out.sql(dialect="clickhouse")
-    assert "quantile(" in sql.lower()
     assert "0.9" in sql
-    # The parametric form is quantile(p)(x), not quantile(x, p)
-    assert "quantile(0.9)" in sql.lower()
+    # The parametric form is quantileExactInclusive(p)(x), not (x, p)
+    assert "quantileexactinclusive(0.9)" in sql.lower()
 
 
 def test_clickhouse_build_percentile_preserves_literal() -> None:
@@ -148,12 +147,11 @@ def test_clickhouse_windowed_projection_keeps_its_alias() -> None:
 # Layer 1 meanings on ClickHouse
 
 
-@pytest.mark.parametrize("author", ["TIME", "TIME WITH TIME ZONE"])
-def test_clickhouse_refuses_a_time_of_day_cast(author: str) -> None:
-    """No time-of-day type: the cast would read NULL."""
+def test_clickhouse_refuses_a_time_of_day_cast() -> None:
+    """No zoned time-of-day type: the cast would read NULL."""
     dialect = ClickhouseDialect()
     with pytest.raises(ValueError, match="cannot be expressed on clickhouse"):
-        cast_target(author, dialect=dialect)
+        cast_target("TIME WITH TIME ZONE", dialect=dialect)
 
 
 def _parsed(sql: str) -> Expression:

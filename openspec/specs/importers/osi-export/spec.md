@@ -130,7 +130,7 @@ Each join SHALL export as one relationship whose `from` is the many side and `to
 
 ### Requirement: Metrics
 
-A measure SHALL export as an Ossie metric when every aggregate in it reads exactly one model and, for a measure reading several models, each of them is reachable from the measure's model by exactly one join route. Each aggregate SHALL be evaluated over the rows of the one model it reads, which is Ossie's component semantics. A measure whose aggregates all read one model SHALL export as a dataset-scoped metric on that model's dataset, with unqualified field names, and its references to other measures SHALL be expanded; any other exportable measure SHALL export as a model-scoped metric with `dataset.field` references, and its references to measures SHALL be written as `AGG(dataset.metric)` of the referenced measure's exported dataset metric. A stored model-scoped metric SHALL export as a top-level metric unchanged; one that Ossie does not define (it refers to another model-scoped metric) SHALL travel only in the `SLAYER` extension. Metric expressions SHALL be standard portable SQL (`OSSIE_SQL_2026` in `sql`); an approximate distinct count, which has no portable form, SHALL be written only as a datasource-dialect entry, and so SHALL a measure containing a bucket of a datasource granularity, under "Time buckets in metrics export as standard SQL". A datasource-dialect entry SHALL be written only when it binds as a SLayer expression and calls no function SLayer registers on its own database connections; otherwise the measure SHALL be SLayer-only and reported as such. Generated metric names SHALL be unique in their scope. An identifier that would be ambiguous under case-insensitive matching SHALL be double-quoted.
+A measure SHALL export as an Ossie metric when every aggregate in it reads exactly one model and, for a measure reading several models, each of them is reachable from the measure's model by exactly one join route. Each aggregate SHALL be evaluated over the rows of the one model it reads, which is Ossie's component semantics. A measure whose aggregates all read one model SHALL export as a dataset-scoped metric on that model's dataset, with unqualified field names, and its references to other measures SHALL be expanded; any other exportable measure SHALL export as a model-scoped metric with `dataset.field` references, and its references to measures SHALL be written as `AGG(dataset.metric)` of the referenced measure's exported dataset metric. A stored model-scoped metric SHALL export as a top-level metric unchanged; one that Ossie does not define (it refers to another model-scoped metric) SHALL travel only in the `SLAYER` extension. Metric expressions SHALL be standard portable SQL (`OSSIE_SQL_2026` in `sql`); `sum_distinct` SHALL be written `SUM(DISTINCT …)` and `percentile_disc` `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY …)`; an approximate distinct count and an approximate percentile, which have no portable value, and a DISTINCT average, which Ossie does not define, SHALL be written only as a datasource-dialect entry, and so SHALL a measure containing a bucket of a datasource granularity, under "Time buckets in metrics export as standard SQL". A datasource-dialect entry SHALL be written only when it binds as a SLayer expression and calls no function SLayer registers on its own database connections; otherwise the measure SHALL be SLayer-only and reported as such. Generated metric names SHALL be unique in their scope. An identifier that would be ambiguous under case-insensitive matching SHALL be double-quoted.
 
 #### Scenario: Dataset-scoped metric
 - **WHEN** `orders` has the measure `revenue: sum(amount)`
@@ -155,6 +155,14 @@ A measure SHALL export as an Ossie metric when every aggregate in it reads exact
 #### Scenario: Percentile on SQLite
 - **WHEN** a SQLite datasource's model has the measure `p90: percentile(amount, 0.9)`
 - **THEN** the metric's `sql` is `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)`
+
+#### Scenario: DISTINCT sum and discrete percentile are portable
+- **WHEN** a model has the measures `q: sum_distinct(qty)` and `p25: percentile_disc(amount, 0.25)`
+- **THEN** metric `q` has `sql: SUM(DISTINCT qty)` and metric `p25` has `sql: PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY amount)`, and both re-import with their original values on DuckDB and SQLite
+
+#### Scenario: DISTINCT average and approximate percentile are dialect entries
+- **WHEN** a DuckDB datasource's model has the measures `a: avg_distinct(qty)` and `m: percentile_approx(amount, 0.5)`
+- **THEN** neither metric has portable `sql`, each has a datasource-dialect entry, and both re-import
 
 #### Scenario: Boolean sum
 - **WHEN** a measure is `sum(is_paid)` over a BOOLEAN column
@@ -335,3 +343,19 @@ Every portable `sql` the exporter emits, for fields, dataset-scoped metrics and 
 #### Scenario: Unknown ontology
 - **WHEN** `export-osi --ontology Nope` runs
 - **THEN** it fails naming `Nope`
+
+### Requirement: Window functions export as written
+
+A field whose portable `sql` holds a window function SHALL export under "Each expression form exports as itself". A measure whose expression is a window function over aggregates (`queries/window-functions`) SHALL export as a metric under "Metrics", its window written as `OSSIE_SQL_2026`. A windowed measure holding a SLayer-only operand — a transform, a ranked `first` / `last`, an aggregate with `partition_by=` or `window=` — and a field or measure whose exported text would hold a window function directly inside another SHALL travel only in the `SLAYER` extension and be reported as SLayer-only. An exported window SHALL be valid for upstream's expression validator.
+
+#### Scenario: A windowed measure exports as a metric
+- **WHEN** `orders` has the measure `revenue_rank: RANK() OVER (ORDER BY SUM(amount) DESC)` and the portable field `rn: ROW_NUMBER() OVER (PARTITION BY region ORDER BY ordered_at)`
+- **THEN** dataset `orders` has the metric `revenue_rank` with `sql: RANK() OVER (ORDER BY SUM(amount) DESC)` and the field `rn` with that `sql`, and re-importing the document returns the same values for both
+
+#### Scenario: A SLayer-only operand keeps the measure in the extension
+- **WHEN** `orders` has the measure `r30: RANK() OVER (ORDER BY sum(amount, window='30d') DESC)`
+- **THEN** no metric `r30` is exported, `orders`' extension carries it, and the report lists it as SLayer-only
+
+#### Scenario: A window inside a window stays in the extension
+- **WHEN** `orders` has the portable fields `rn: ROW_NUMBER() OVER (ORDER BY id)` and `top: MAX(orders.rn) OVER ()`
+- **THEN** field `rn` is exported with its `sql`, field `top` is carried only in the extension, and the document validates against upstream's validator

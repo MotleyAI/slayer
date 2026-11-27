@@ -95,7 +95,7 @@ Its expression reads like a query:
 - a bare name is another model-scoped metric;
 - `AGG(d.m)` is the dataset metric `m` of `d`.
 
-Saving a model-scoped metric through SLayer refuses an unqualified field, a source column, a dataset of another document, a dataset metric without `AGG`, a window function, a circular definition, and a name equal to a reserved word, a library function or a dataset of the datasource.
+Saving a model-scoped metric through SLayer refuses an unqualified field, a source column, a dataset of another document, a dataset metric without `AGG`, a circular definition, and a name equal to a reserved word, a library function or a dataset of the datasource.
 
 Ossie does not define a metric that reads another model-scoped metric, or an aggregate that reads several datasets. SLayer evaluates both, and stores them in the document's `SLAYER` entry rather than in its core `metrics`.
 
@@ -136,7 +136,6 @@ Settings Ossie has no place for travel in a `nonportable_extensions` entry with 
 
 A valid document can hold entities SLayer cannot evaluate yet:
 
-- a window function (`OVER`);
 - an expression SLayer's expression reader cannot parse, such as the subquery `(SELECT 1)`;
 - a model-scoped metric reading a field unqualified or outside an aggregate;
 - a model-scoped aggregate naming no dataset, such as `COUNT(*)`;
@@ -160,11 +159,13 @@ A query without a population whose metrics read no dataset (`NOW()`) fails with 
 
 **The document itself.** Create, edit and delete documents through MCP (`create_semantic_model`, `edit_semantic_model`, `delete_semantic_model`), REST (`/semantic-models`), the [Python client](../reference/python-client.md#semantic-models) or the [CLI](../reference/cli.md#slayer-semantic-models). `create_semantic_model(datasets=[...])` and `edit_semantic_model(add_datasets=[...])` move datasets of any model of the datasource (the datasource model included) into a model by their reference: a dataset document's text stays as it is, and each relationship it takes part in moves to the model holding its `from` dataset. A dataset a save adds to a flat model is written inline; one added to a split model (the datasource model always is) gets its own dataset document.
 
-**Deleting.** Deleting a document dataset runs the usual dataset cascade (embeddings, memory links, relationships into it) and removes its relationships from the document; model-scoped metrics reading it get the broken-dependent warning. Deleting a document deletes all its datasets and model-scoped metrics.
+**Deleting.** Deleting a document dataset runs the usual dataset cascade (embeddings, memory links, relationships into it) and removes its relationships from the document. Deleting a document deletes all its datasets and model-scoped metrics.
+
+**Changes never break a model-scoped metric.** A model-scoped metric reads datasets, their fields, dataset metrics through `AGG(d.m)`, and other model-scoped metrics by name. Saving, editing, deleting or moving a dataset, saving a dataset's SLayer extensions, and saving, editing or deleting a document are refused with `StoredDependentBreakError` when they would leave a stored metric reading something that is not there, directly or through other model-scoped metrics. The error lists every metric with the reference or chain that breaks, together with any [ontology mapping](ontologies.md) the change breaks. Remove or edit the metric first. A reference that was already unresolved never blocks a change. Changes that follow the database (ingest, applying schema drift) apply anyway with a `StoredDependentUnresolvedWarning` naming each metric, and each broken metric written in the document's Ossie core moves to its `SLAYER` entry, so the document stays Ossie-valid. A model-scoped metric reading something that is not there does not load: the load error names the reference or the chain, and every other entity still loads.
 
 A save judges only what it adds or changes, plus whatever depends on that, so a stored metric SLayer cannot evaluate never blocks an unrelated edit.
 
-**Access tags.** Through an [access-filtered store](../configuration/storage.md#access-filtered-storage), a document dataset the caller cannot access reads as deleted, relationships into it are pruned, and every model-scoped metric reading it, directly or through other model-scoped metrics, is unknown. The document's text reads without those entities; a replace or edit keeps them, and a write that names one, or deleting a document that holds one, raises `HiddenContentConflictError`.
+**Access tags.** Through an [access-filtered store](../configuration/storage.md#access-filtered-storage), a document dataset the caller cannot access reads as deleted, relationships into it are pruned, and every model-scoped metric reading it, directly or through other model-scoped metrics, is unknown. The document's text reads without those entities; a replace or edit keeps them, and a write that names one, deleting a document that holds one, or a change that would break one raises `HiddenContentConflictError`.
 
 ## Import and export
 

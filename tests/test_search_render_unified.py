@@ -23,6 +23,7 @@ output.
 from __future__ import annotations
 
 import tempfile
+from typing import Any
 from collections.abc import AsyncIterator
 
 import pytest
@@ -304,7 +305,7 @@ def test_index_corpus_path_actually_calls_collect_model_entity_pairs(
         canonical_id="SENTINEL.x", kind="dataset", text="SENTINEL_TEXT",
     )
 
-    def stub(*, dataset: SlayerDataset) -> list[RenderedEntity]:  # noqa: ARG001
+    def stub(*, dataset: SlayerDataset, concepts: Any = None) -> list[RenderedEntity]:  # noqa: ARG001
         return [sentinel]
 
     monkeypatch.setattr(index_mod, "collect_dataset_entity_pairs", stub)
@@ -333,7 +334,7 @@ async def test_embedding_path_actually_calls_collect_model_entity_pairs(
         canonical_id="SENTINEL.x", kind="dataset", text=sentinel_text,
     )
 
-    def stub(*, dataset: SlayerDataset) -> list[RenderedEntity]:  # noqa: ARG001
+    def stub(*, dataset: SlayerDataset, concepts: Any = None) -> list[RenderedEntity]:  # noqa: ARG001
         return [sentinel]
 
     monkeypatch.setattr(emb_mod, "collect_dataset_entity_pairs", stub)

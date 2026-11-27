@@ -22,7 +22,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import IllegalWindowInFilterError, UnknownFunctionError
+from slayer.core.errors import UnknownFunctionError
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -47,6 +47,7 @@ from slayer.core.syntax import (
     StarSource,
     TransformCall,
     UnaryOp,
+    WindowCall,
     parse_expr,
 )
 from slayer.engine.binding import bind_expr, bind_filter
@@ -562,14 +563,12 @@ class TestRejection:
         with pytest.raises(UnknownFunctionError):
             _bound("random_func(p=1)")
 
-    def test_raw_over_clause_raises(self):
-        # `SUM(x) OVER (...)` is a window expression — DSL rejects.
-        with pytest.raises(IllegalWindowInFilterError):
-            parse_expr("sum(x) OVER (PARTITION BY region)")
+    def test_raw_over_clause_parses_as_a_window(self):
+        assert parse_expr("sum(x) OVER (PARTITION BY region)") == WindowCall(
+            function=AggCall(source=Ref(name="x"), agg="sum"), partition=(Ref(name="region"),))
 
-    def test_raw_over_case_insensitive(self):
-        with pytest.raises(IllegalWindowInFilterError):
-            parse_expr("count(*) over ()")
+    def test_raw_over_case_insensitive_parses_as_a_window(self):
+        assert parse_expr("count(*) over ()") == WindowCall(function=AggCall(source=StarSource(), agg="count"))
 
     def test_empty_input_raises(self):
         with pytest.raises(ValueError):

@@ -16,12 +16,13 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, TypeKind
 from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastKey, ScalarCallKey
-from slayer.core.regex_pattern import RegexPattern, RegexReplacement
+from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
 from slayer.sql.dialects.base import (
     LIST_ELEMENT,
     CONSTANT_INPUT,
     PORTABLE_LIBRARY,
     SET_TRANSACTION_READ_ONLY,
+    TIME_OF_DAY_TEXT,
     IdentifierFolding,
     ReadOnlyEngineArgs,
     TransactionMode,
@@ -106,6 +107,10 @@ def describe_pg_cursor_column(description_row: Sequence[Any]) -> ResultColumnTyp
 _PG_INPUT_IS_VALID_SINCE = (16, 0, 0)
 #: The first Postgres major version with ``ANY_VALUE``.
 _PG_ANY_VALUE_SINCE = (16, 0, 0)
+#: The first Postgres major version with ``regexp_count``.
+_PG_REGEXP_COUNT_SINCE = (15, 0, 0)
+#: Functions whose rendering reads the server version.
+_PROFILED_FUNCTIONS = frozenset({"json_value", "regexp_count"})
 #: The array type both lists of ``contains_any`` / ``contains_all`` are read as, by element type.
 #: The element-set subquery's one relation: a fixed name, so every copy of the expression reads alike.
 _SET_RELATION = "__slayer_s"
@@ -149,15 +154,15 @@ def _cast_log_arg_to_numeric(node: Expression) -> Expression:
 
 
 def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
-    """Wrap the first arg of a 2-arg ``ROUND`` in ``CAST(... AS DECIMAL)``.
+    """Wrap the first arg of a 2-arg ``ROUND`` / ``TRUNC`` in ``CAST(... AS DECIMAL)``.
 
     Postgres has no ``round(double precision, integer)`` overload — only
-    ``round(numeric, integer)`` — so a 2-arg round over a DOUBLE expression
+    ``round(numeric, integer)``, and likewise ``trunc`` — so a 2-arg round over a DOUBLE expression
     fails without an explicit numeric cast. 1-arg round (``round(double)``)
     is fine and left alone. Idempotent: skips when the arg is already cast to
     a numeric/decimal type.
     """
-    if not isinstance(node, exp.Round):
+    if not isinstance(node, (exp.Round, exp.Trunc)):
         return node
     decimals = node.args.get("decimals")
     if decimals is None:  # 1-arg round — no overload problem.
@@ -215,6 +220,7 @@ class PostgresDialect(SqlDialect):
     database_name: ClassVar[str] = "Postgres"
     native_lists: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REVERSE", "CONCAT_WS", "CHR", "ASCII", "SPLIT_PART", "PI", "CBRT", "GREATEST", "LEAST",
     })
@@ -269,9 +275,10 @@ class PostgresDialect(SqlDialect):
             dbapi_connection.autocommit = False
 
     def profile_needed(self, keys: Iterable[object]) -> bool:
-        """``TRY_CAST`` and ``json_value`` check their input with ``pg_input_is_valid`` on 16+."""
+        """``TRY_CAST`` and ``json_value`` check their input with ``pg_input_is_valid`` on 16+; ``regexp_count``
+        needs 15."""
         return any(
-            (isinstance(k, CastKey) and k.try_) or (isinstance(k, ScalarCallKey) and k.name == "json_value")
+            (isinstance(k, CastKey) and k.try_) or (isinstance(k, ScalarCallKey) and k.name in _PROFILED_FUNCTIONS)
             for k in keys
         )
 
@@ -294,6 +301,7 @@ class PostgresDialect(SqlDialect):
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+        time_row: Sequence[Any] | None = None,
     ) -> ServerProfile:
         number = base_row[0] if base_row else None
         try:
@@ -325,6 +333,15 @@ class PostgresDialect(SqlDialect):
         read = exp.Subquery(this=exp.select(value.copy())) if _constant(value) else value.copy()
         return exp.Case(ifs=[exp.If(this=check, true=exp.Cast(this=read, to=to))])
 
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """Postgres 16+ also yields NULL for ``24:00:00``, which its ``time`` accepts and the clock day does not."""
+        cast = super().build_time_cast(value, to, source=source, try_=try_)
+        if source is not None or not try_ or not self.validates_input():
+            return cast
+        return case((self.build_regexp_like(as_text(value), parse_regex(TIME_OF_DAY_TEXT), False), cast))
+
     def build_integer_text_try_cast(self, text: Expression, to: exp.DataType) -> Expression:
         """``pg_input_is_valid`` already accepts only integer text in range."""
         return self.build_try_cast(text, to)
@@ -346,6 +363,12 @@ class PostgresDialect(SqlDialect):
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern), self.replacement_text(replacement),
                     lit("gi" if case_insensitive else "g"))
+
+    regexp_count_empty_match: ClassVar[bool] = True
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        self.require_version(minimum=_PG_REGEXP_COUNT_SINCE, what="regexp_count()", release="PostgreSQL 15")
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern), *([lit(1), lit("i")] if case_insensitive else []))
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         doc, keys = _jsonb_parts(value, path)

@@ -97,6 +97,9 @@ flowchart TD
   storage --> ontology
   importers --> ontology
   surfaces --> ontology
+  engine --> ontology
+  live_schema --> ontology
+  search --> ontology
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:landscape -->

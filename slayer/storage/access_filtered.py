@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Hashable, Iterable
+from collections.abc import Awaitable, Callable, Hashable, Iterable
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
     AccessTagsEditError,
+    BrokenDependent,
     HiddenContentConflictError,
     MemoryNotFoundError,
-    OntologyMappingBreakError,
+    StoredDependentBreakError,
     OssieDocumentInvalidError,
     StoredDocumentLoadError,
     UnknownRelationshipTargetError,
@@ -24,12 +25,15 @@ from slayer.core.field_expression import Expression
 from slayer.core.semantic_model import ModelScopedMetric
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import OntologyMismatchWarning, SlayerWarning
 from slayer.embeddings.models import Embedding
 from slayer.engine.dataset_reads import Identity, datasets_read_by, placeholder
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX, Memory
 from slayer.ontology.mapping import entry_reads
 from slayer.ontology.names import identifier_key
-from slayer.storage.base import StorageBackend, _find_case_colliding_id, check_relationship_target_spellings
+from slayer.storage.base import (
+    StorageBackend, _find_case_colliding_id, check_relationship_target_spellings, report_save_warnings,
+)
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
 from slayer.storage.document_mapping import as_expression, document_payload, with_document_payload
 from slayer.storage.model_metric_rules import metric_references, visible_model_metrics
@@ -328,17 +332,32 @@ class AccessFilteredStorage(StorageBackend):
         held = hidden.held_by(text, name=stored_name)
         return edit_text(text, lambda doc: _without_hidden(doc, hidden=hidden)) if held else text
 
-    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str) -> None:
+    async def _visible_mismatches(self, call: Callable[[list[SlayerWarning]], Awaitable[_T]], *,
+                                  warnings_out: list[SlayerWarning] | None, **filters: Any) -> _T:
+        """``call`` into a scratch list; the caller gets its other warnings and the ontology mismatches it can see."""
+        scratch: list[SlayerWarning] = []
+        result = await call(scratch)
+        found = [w for w in scratch if self._bypass or not isinstance(w, OntologyMismatchWarning)]
+        if not self._bypass:
+            found += await self.ontology_mismatches(**filters)
+        report_save_warnings(warnings_out, found)
+        return result
+
+    async def save_semantic_model_text(self, *, data_source: str, name: str, text: str,
+                                       warnings_out: list[SlayerWarning] | None = None) -> None:
+        datasets: list[Any] = []
         if not self._bypass:
             entities = _entities(text, name=name)
+            datasets = [d.get("name") for d in entities.get("datasets") or [] if isinstance(d, dict)]
             await self._refuse_hidden_in_document(data_source=data_source, document=name, entities=entities)
             stored = await self._stored_document(name, data_source)
             hidden = await self._hidden_entities(data_source)
             if stored is not None and hidden.held_by(stored[2], name=stored[1]):
                 full = _entities(stored[2], name=stored[1])
                 text = edit_text(stored[2], lambda _doc: _with_hidden(entities, full=full, hidden=hidden))
-        await self._unbroken(self._inner.save_semantic_model_text(data_source=data_source, name=name, text=text),
-                             kind=_SEMANTIC_MODEL, name=name)
+        await self._visible_mismatches(lambda out: self._unbroken(self._inner.save_semantic_model_text(
+            data_source=data_source, name=name, text=text, warnings_out=out), kind=_SEMANTIC_MODEL, name=name),
+            warnings_out=warnings_out, data_source=data_source, datasets=[str(d) for d in datasets])
 
     async def delete_semantic_model(self, name: str, data_source: str | None = None) -> bool:
         if not self._bypass:
@@ -358,13 +377,19 @@ class AccessFilteredStorage(StorageBackend):
     async def save_dataset_extensions(self, dataset: SlayerDataset) -> None:
         if not self._bypass and dataset.name.casefold() in (await self._hidden_entities(dataset.data_source)).datasets:
             raise HiddenContentConflictError(kind="dataset", name=dataset.name)
-        await self._inner.save_dataset_extensions(dataset)
+        await self._unbroken(self._inner.save_dataset_extensions(dataset), kind="dataset", name=dataset.name)
 
-    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str]) -> None:
+    async def adopt_semantic_model(self, *, data_source: str, name: str, text: str, replacing: list[str],
+                                   warnings_out: list[SlayerWarning] | None = None) -> None:
+        entities = _entities(text, name=name)
         if not self._bypass:
-            await self._refuse_hidden_in_document(data_source=data_source, document=name,
-                                                  entities=_entities(text, name=name), datasets=replacing)
-        await self._inner.adopt_semantic_model(data_source=data_source, name=name, text=text, replacing=replacing)
+            await self._refuse_hidden_in_document(data_source=data_source, document=name, entities=entities,
+                                                  datasets=replacing)
+        members = [*(str(d.get("name")) for d in entities.get("datasets") or [] if isinstance(d, dict)), *replacing]
+        await self._visible_mismatches(lambda out: self._unbroken(self._inner.adopt_semantic_model(
+            data_source=data_source, name=name, text=text, replacing=replacing, warnings_out=out),
+            kind=_SEMANTIC_MODEL, name=name),
+            warnings_out=warnings_out, data_source=data_source, datasets=members)
 
     async def store_split_model(self, *, data_source: str, document: dict[str, Any], merge: bool = False) -> None:
         if not self._bypass:
@@ -391,14 +416,22 @@ class AccessFilteredStorage(StorageBackend):
         return await self._inner.ignored_entities(data_source)
 
     async def create_semantic_model(self, *, data_source: str, name: str | None = None, content: str | dict[str, Any] | None = None,
-                                    datasets: list[str] | None = None) -> None:
+                                    datasets: list[str] | None = None,
+                                    warnings_out: list[SlayerWarning] | None = None) -> None:
+        members: list[str] = []
         if not self._bypass:
             entities = _entities(content, name=name)
             await self._refuse_hidden_in_document(data_source=data_source, document=str(name or entities.get("name")),
                                                   entities=entities, datasets=datasets or [])
-        await self._inner.create_semantic_model(data_source=data_source, name=name, content=content, datasets=datasets)
+            members = [*(str(d.get("name")) for d in entities.get("datasets") or [] if isinstance(d, dict)),
+                       *(datasets or [])]
+        await self._visible_mismatches(lambda out: self._unbroken(self._inner.create_semantic_model(
+            data_source=data_source, name=name, content=content, datasets=datasets, warnings_out=out),
+            kind=_SEMANTIC_MODEL, name=str(name or _entities(content, name=name).get("name"))),
+            warnings_out=warnings_out, data_source=data_source, datasets=members)
 
-    async def edit_semantic_model(self, name: str, *, data_source: str, **edits: Any) -> None:
+    async def edit_semantic_model(self, name: str, *, data_source: str,
+                                  warnings_out: list[SlayerWarning] | None = None, **edits: Any) -> None:
         if not self._bypass:
             stored = await self._stored_document(name, data_source)
             hidden = await self._hidden_entities(data_source)
@@ -412,7 +445,13 @@ class AccessFilteredStorage(StorageBackend):
             await self._refuse_hidden_names(data_source=data_source, document=name, relationships=relationships,
                                             datasets=edits.get("add_datasets") or [], metrics=edits.get("metrics") or [],
                                             names=edits.get("remove_metrics") or [])
-        await self._inner.edit_semantic_model(name, data_source=data_source, **edits)
+        await self._visible_mismatches(
+            lambda out: self._unbroken(
+                self._inner.edit_semantic_model(name, data_source=data_source, warnings_out=out, **edits),
+                kind=_SEMANTIC_MODEL, name=name),
+            warnings_out=warnings_out, data_source=data_source,
+            datasets=[*(d.name for d in (await self.load_datasets(data_source=data_source))[0]
+                        if d.semantic_model == name), *(edits.get("add_datasets") or [])])
 
     # ---- ontologies (visible to every caller) and mappings (entries reading hidden datasets redacted) --------
 
@@ -429,15 +468,24 @@ class AccessFilteredStorage(StorageBackend):
                 if (reads := entry_reads(e)) is None or reads & hidden}
 
     async def _unbroken(self, call: Awaitable[_T], *, kind: str, name: str) -> _T:
-        """``call``; a break of a mapping entry the caller cannot see is a hidden-content conflict."""
+        """``call``; a break of a mapping entry or model-scoped metric the caller cannot see is a hidden-content
+        conflict."""
         try:
             return await call
-        except OntologyMappingBreakError as exc:
+        except StoredDependentBreakError as exc:
             for broken in exc.broken:
-                data = stored_data(await self._inner.get_ontology_mapping_text(broken.name, broken.data_source))
-                if set(broken.entries) & await self._hidden_entries(data, data_source=broken.data_source):
+                if await self._hidden_break(broken):
                     raise HiddenContentConflictError(kind=kind, name=name) from None
             raise
+
+    async def _hidden_break(self, broken: BrokenDependent) -> bool:
+        if self._bypass:
+            return False
+        if broken.kind == "metric":
+            hidden = await self._hidden_entities(broken.data_source)
+            return bool({broken.name.casefold(), *broken.reads} & (hidden.datasets | hidden.metrics))
+        data = stored_data(await self._inner.get_ontology_mapping_text(broken.name, broken.data_source))
+        return bool(set(broken.entries) & await self._hidden_entries(data, data_source=broken.data_source))
 
     async def list_ontologies(self) -> list[str]:
         return await self._inner.list_ontologies()
@@ -445,8 +493,11 @@ class AccessFilteredStorage(StorageBackend):
     async def get_ontology_text(self, name: str) -> str | None:
         return await self._inner.get_ontology_text(name)
 
-    async def save_ontology_text(self, *, name: str, text: str) -> None:
-        await self._unbroken(self._inner.save_ontology_text(name=name, text=text), kind=_ONTOLOGY, name=name)
+    async def save_ontology_text(self, *, name: str, text: str,
+                                 warnings_out: list[SlayerWarning] | None = None) -> None:
+        await self._visible_mismatches(lambda out: self._unbroken(
+            self._inner.save_ontology_text(name=name, text=text, warnings_out=out), kind=_ONTOLOGY, name=name),
+            warnings_out=warnings_out, ontology=name)
 
     async def delete_ontology(self, name: str) -> bool:
         return await self._unbroken(self._inner.delete_ontology(name), kind=_ONTOLOGY, name=name)
@@ -462,10 +513,13 @@ class AccessFilteredStorage(StorageBackend):
         return edit_text(text, lambda doc: {**doc, "concept_mappings": [
             e for i, e in enumerate(doc["concept_mappings"]) if i not in hidden]})
 
-    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str) -> list[str]:
+    async def save_ontology_mapping_text(self, *, data_source: str, name: str, text: str,
+                                         warnings_out: list[SlayerWarning] | None = None) -> list[str]:
         if not self._bypass:
             text = await self._with_hidden_entries(data_source=data_source, name=name, text=text)
-        return await self._inner.save_ontology_mapping_text(data_source=data_source, name=name, text=text)
+        return await self._visible_mismatches(lambda out: self._inner.save_ontology_mapping_text(
+            data_source=data_source, name=name, text=text, warnings_out=out),
+            warnings_out=warnings_out, data_source=data_source, mapping=name)
 
     async def _with_hidden_entries(self, *, data_source: str, name: str, text: str) -> str:
         """``text`` with the stored mapping's hidden entries back in place; refused when it touches one."""
@@ -562,7 +616,7 @@ class AccessFilteredStorage(StorageBackend):
             # Peers the full store cannot load lie outside the view: skipped unreported.
             await self._unbroken(self._inner.save_dataset(
                 merged, _validate=_validate, failures=DocumentLoadFailures(report=False)), kind="dataset", name=dataset.name)
-        except (HiddenContentConflictError, OntologyMappingBreakError):
+        except (HiddenContentConflictError, StoredDependentBreakError):
             raise
         except ValueError:  # valid in the view, so a full-store rejection stems from hidden parts
             raise HiddenContentConflictError(kind="dataset", name=dataset.name) from None
@@ -596,6 +650,10 @@ class AccessFilteredStorage(StorageBackend):
             return False
         return await self._unbroken(self._inner.delete_dataset(target[1], data_source=target[0]), kind="dataset",
                                     name=target[1])
+
+    async def guard_dataset_deletion(self, *, name: str, data_source: str) -> list[BrokenDependent]:
+        return await self._unbroken(self._inner.guard_dataset_deletion(name=name, data_source=data_source),
+                                    kind="dataset", name=name)
 
     async def _delete_dataset_row(self, *, data_source: str, name: str) -> bool:
         if not self._bypass and not await self._visible(data_source=data_source, name=name):

@@ -16,15 +16,16 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import (
-    AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, Conformance, normalize_aggregation_name,
+    AMBIGUOUS_WEEKDAY_NAMES, BUILTIN_AGGREGATIONS, DATE_PART_ALIASES, PART_ONLY_WORDS, Conformance,
+    normalize_aggregation_name,
 )
 from slayer.core.errors import UnknownConformanceError
-from slayer.core.keys import SCALAR_SPECS, SCALAR_SPELLINGS
+from slayer.core.keys import SCALAR_SPECS, SCALAR_SPELLING_REGISTRY, SCALAR_SPELLINGS
 from slayer.core.syntax import (
-    WINDOW_FUNCTION_ARITIES, AggCall, ArrayLit, Arith, BoolOp, BoundVariable, Cast, Cmp, DateTrunc, DottedRef, Literal,
+    WINDOW_FUNCTION_ARITIES, AggCall, ArrayLit, Arith, BoolOp, BoundVariable, CallSpan, Cast, Cmp, DateTrunc, DottedRef, Literal,
     NamedArg, Placeholder, Ref, ScalarCall, StarSource, TemporalLiteral, TransformCall, TupleLit, UnaryOp, WindowCall,
-    WindowFrame, call_spans, legacy_spans, nonossie_spellings, parse_bound_expr, parse_template, variable_names,
-    walk_parsed,
+    WindowFrame, call_spans, legacy_spans, nonossie_spellings, parse_bound_expr, parse_template, unwindowable_function,
+    variable_names, walk_parsed,
 )
 
 __all__ = ["FilterReading", "is_iso_temporal", "parse_conformance", "read_filter"]
@@ -35,25 +36,27 @@ OSSIE_COMPARISONS = frozenset({"==", "!=", "<", "<=", ">", ">=", "in", "not in",
 OSSIE_ARITHMETIC = frozenset({"+", "-", "*", "/", "%"})
 OSSIE_BOOLEAN = frozenset({"and", "or"})
 OSSIE_UNARY = frozenset({"-", "not"})
+#: Date-part functions Ossie defines, as the date-part aliases read them.
+OSSIE_PART_FUNCTIONS = frozenset({"year", "quarter", "month", "day", "dayofyear", "hour", "minute", "second"})
 #: Rewritten callee spellings Ossie defines with the meaning the rewrite gives them.
-OSSIE_CALL_SPELLINGS = frozenset({"iff", "datediff", "dateadd", "current_timestamp", "date_trunc", "year", "quarter",
-                                  "month", "day", "dayofyear", "hour", "minute", "second"})
+OSSIE_CALL_SPELLINGS = frozenset(
+    n for n, s in SCALAR_SPELLING_REGISTRY.items() if s.ossie_arg_counts) | OSSIE_PART_FUNCTIONS
 #: ``DATE_TRUNC`` units Ossie defines.
 OSSIE_DATE_TRUNC_UNITS = frozenset({"year", "quarter", "month", "week", "day", "hour", "minute", "second"})
 #: Aggregate functions Ossie defines, as written.
 OSSIE_AGGREGATE_SPELLINGS = frozenset({"sum", "count", "avg", "min", "max", "stddev", "stddev_pop", "stddev_samp",
                                        "variance", "var_pop", "var_samp", "median", "approx_count_distinct",
                                        "approx_percentile", "percentile_cont", "percentile_disc"})
-#: The names the parser gives Ossie's ``COUNT(DISTINCT …)`` and ``PERCENTILE_CONT(…) WITHIN GROUP (…)``; SLayer's own
-#: calls of these names are refused by their written callee.
-REWRITTEN_AGGREGATES = frozenset({"count_distinct", "percentile"})
+#: The names the parser gives Ossie's ``COUNT|SUM(DISTINCT …)`` and ``PERCENTILE_CONT|DISC(…) WITHIN GROUP (…)``;
+#: SLayer's own calls of these names are refused by their written callee.
+REWRITTEN_AGGREGATES = frozenset({"count_distinct", "sum_distinct", "percentile", "percentile_disc"})
 #: Ossie aggregates SLayer reads in no plain-call form, and why.
 OSSIE_UNREAD_CALLS = {
     "percentile_cont": "PERCENTILE_CONT is read only as PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)",
-    "percentile_disc": "PERCENTILE_DISC is an Ossie aggregate SLayer does not support yet",
+    "percentile_disc": "PERCENTILE_DISC is read only as PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY x)",
 }
 #: The named arguments the parser gives each rewritten aggregate; any other argument was written.
-REWRITTEN_ARGUMENTS = {"count_distinct": (), "percentile": ("p",)}
+REWRITTEN_ARGUMENTS = {"count_distinct": (), "sum_distinct": (), "percentile": ("p",), "percentile_disc": ("p",)}
 #: Arguments an Ossie aggregate takes after its value (one value otherwise).
 OSSIE_AGGREGATE_EXTRA_ARGS = {"approx_percentile": 1}
 #: ANSI order of a frame's bound kinds.
@@ -61,9 +64,7 @@ FRAME_BOUND_ORDER = {"unbounded preceding": 0, "preceding": 1, "current row": 2,
                      "unbounded following": 4}
 #: ``CAST`` target types Ossie defines (the first word of the written type).
 OSSIE_CAST_TYPES = frozenset({"VARCHAR", "STRING", "INTEGER", "INT", "BIGINT", "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE",
-                              "BOOLEAN", "DATE", "TIMESTAMP", "TIMESTAMP_NTZ"})
-#: Bare Ossie keywords SLayer cannot evaluate yet (the time-of-day type comes with DEV-2282).
-UNSUPPORTED_OSSIE_KEYWORDS = frozenset({"current_time"})
+                              "BOOLEAN", "DATE", "TIME", "TIMESTAMP", "TIMESTAMP_NTZ"})
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _ISO_TIME = re.compile(r"[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?")
 _ISO_ZONE = re.compile(r"Z|[+-]\d{2}:?\d{2}")
@@ -136,7 +137,7 @@ def read_filter(text: str, *, variables: Mapping[str, Any] | None = None) -> Fil
         out.problem = f"the variables {unbound} are not bound; pass them as the run's variables"
         return out
     try:
-        tree = parse_bound_expr(text, variables, windows=True) if variables else parse_template(text, windows=True)
+        tree = parse_bound_expr(text, variables) if variables else parse_template(text)
     except ValueError as exc:
         out.problem = f"the filter does not parse: {exc}"
         return out
@@ -147,24 +148,35 @@ def read_filter(text: str, *, variables: Mapping[str, Any] | None = None) -> Fil
 
 
 def _text_problem(text: str) -> Optional[str]:
-    legacy = legacy_spans(text, windows=True)
+    legacy = legacy_spans(text)
     if legacy:
         return f"{legacy[0].written!r} is a deprecated SLayer spelling; write {legacy[0].twin!r}"
-    spellings = nonossie_spellings(text, windows=True)
+    spellings = nonossie_spellings(text)
     if spellings:
         return f"{spellings[0]} is SLayer syntax, not an Ossie expression"
-    for call in call_spans(text, windows=True):
-        name = call.name.lower()
-        if name in REWRITTEN_AGGREGATES:
-            return f"{call.callee}() is a SLayer function Ossie does not define"
-        spec = SCALAR_SPECS.get(name)
-        if spec is not None and not spec.ossie_arg_counts:
-            return f"{call.callee}() is a SLayer function Ossie does not define"
-        if spec is not None and not spec.ossie_admits(call.arguments):
-            return f"{call.callee}() with {call.arguments} arguments is not an Ossie call"
-        if spec is None and name in (SCALAR_SPELLINGS | set(DATE_PART_ALIASES) | AMBIGUOUS_WEEKDAY_NAMES) \
-                and name not in OSSIE_CALL_SPELLINGS:
-            return f"{call.callee}() is a SLayer function Ossie does not define"
+    return next(filter(None, map(_call_problem, call_spans(text))), None)
+
+
+def _call_problem(call: CallSpan) -> Optional[str]:
+    name = call.name.lower()
+    if name in OSSIE_UNREAD_CALLS:
+        return OSSIE_UNREAD_CALLS[name]
+    not_ossie = f"{call.callee}() is a SLayer function Ossie does not define"
+    bad_arity = f"{call.callee}() with {call.arguments} arguments is not an Ossie call"
+    if name in REWRITTEN_AGGREGATES:
+        return not_ossie
+    spec = SCALAR_SPECS.get(name)
+    if spec is not None:
+        if not spec.ossie_arg_counts:
+            return not_ossie
+        if not spec.ossie_admits(call.arguments):
+            return bad_arity
+    spelling = SCALAR_SPELLING_REGISTRY.get(name)
+    if spelling is not None and spelling.ossie_arg_counts and call.arguments not in spelling.ossie_arg_counts:
+        return bad_arity
+    if spec is None and name in (SCALAR_SPELLINGS | set(DATE_PART_ALIASES) | AMBIGUOUS_WEEKDAY_NAMES
+                                 | set(PART_ONLY_WORDS)) and name not in OSSIE_CALL_SPELLINGS:
+        return not_ossie
     return None
 
 
@@ -197,8 +209,6 @@ def _operator(node: Any, out: FilterReading, allowed: frozenset[str], operands: 
 def _reference_node(node: Any, out: FilterReading) -> None:
     if node.evaluated:
         _refuse(out, "AGG(…) is reserved to model-scoped metrics")
-    if isinstance(node, Ref) and not node.quoted and node.name.lower() in UNSUPPORTED_OSSIE_KEYWORDS:
-        _refuse(out, f"{node.name} is not supported yet")
     out.references.append(node)
 
 
@@ -222,8 +232,6 @@ def _aggregate(node: AggCall, out: FilterReading) -> None:
 def _aggregate_call(node: AggCall, out: FilterReading) -> None:
     """An aggregate judged as Ossie writes it, windowed or not: an Ossie spelling of a SLayer built-in."""
     name = node.agg.lower()
-    if name in OSSIE_UNREAD_CALLS:
-        _refuse(out, OSSIE_UNREAD_CALLS[name])
     if name not in OSSIE_AGGREGATE_SPELLINGS | REWRITTEN_AGGREGATES:
         _refuse(out, f"{node.agg}() is not an Ossie function")
     elif normalize_aggregation_name(name) not in BUILTIN_AGGREGATIONS:
@@ -257,6 +265,9 @@ def _window(node: WindowCall, out: FilterReading) -> None:
         _refuse(out, "a window function cannot sit inside a window")
     if isinstance(function, AggCall):
         _aggregate_call(function, out)
+        # Wide-table §8: a part the engine does not support (row 1) precedes a window in the filter (row 7).
+        if unwindowable_function(node) is not None:
+            _refuse(out, f"{function.agg}() cannot run under OVER")
     elif isinstance(function, ScalarCall) and function.name in WINDOW_FUNCTION_ARITIES:
         low, high = WINDOW_FUNCTION_ARITIES[function.name]
         if not low <= len(function.args) <= high:
@@ -312,7 +323,7 @@ def _string_literals(node: Any) -> List[str]:
     if isinstance(node, Literal) and isinstance(node.value, str):
         return [node.value]
     if isinstance(node, TupleLit):
-        return [e.value for e in node.elements if isinstance(e.value, str)]
+        return [e.value for e in node.elements if isinstance(e, Literal) and isinstance(e.value, str)]
     if isinstance(node, BoundVariable):
         return [v for v in node.values if isinstance(v, str)]
     return []

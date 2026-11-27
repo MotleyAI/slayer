@@ -182,7 +182,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          message="'…' is not a number, so it cannot meet the number `…`."
          + SUGGEST + "Compare with a number (e.g. 100), or compare text with text.",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
-    _row(module=_EE, function="_numeric_scalar_args", exc="ScalarOperandTypeError",
+    _row(module=_EE, function="_raise_numeric_text", exc="ScalarOperandTypeError",
          message="…() reads numbers, but `…` is TEXT."
          + SUGGEST + "Convert numbers stored as text: …(TRY_CAST(… AS DOUBLE)).",
          category="checker", family="mixed-type-coercion", user=True, owner="checker"),
@@ -552,4 +552,24 @@ ROWS: Tuple[LedgerRow, ...] = (
          message='Order key … is a list, which has no sort order.'
          + SUGGEST + 'Order by a scalar field, or by length(...) of the list.',
          category='checker', family='lists', user=True, owner='checker'),
+    _row(module=_EE, function="check_row_window", exc="WindowFunctionError",
+         message="The window `…` names no dataset, so no rows to run over: it reads no field, or only the time "
+         "spine's." + SUGGEST + "Read a field of the dataset whose rows it numbers or aggregates, e.g. ORDER BY "
+         "orders.id.",
+         category="checker", family="windows", user=True, owner="checker"),
+    _row(module=_EE, function="_check_window_operands", exc="WindowFunctionError",
+         message="The window `…` reads `…` per cell, but it is neither aggregate-valued nor a member of the "
+         "window's operand grain." + SUGGEST + "Add `…` as a dimension, or aggregate it.",
+         category="checker", family="windows", user=True, owner="checker"),
+    _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
+         message="…() does not take `…`: it is a time of day (Time), which only hour, minute and second read."
+         + SUGGEST + "Read a part with date_part('hour' | 'minute' | 'second', x), or pass a DATE / TIMESTAMP value.",
+         category="checker", family="time-of-day", user=True, owner="checker"),
+    _row(module=_EE, function="_refuse_time_of_day", exc="ScalarOperandTypeError",
+         message="`…` …: `…` is a time of day (Time)." + SUGGEST + "A time of day compares with another time of day "
+         "(or a 'HH:MM:SS' string) and takes no arithmetic; read its parts with hour(), minute() and second().",
+         category="checker", family="time-of-day", user=True, owner="checker"),
+    _row(module=_EE, function="_time_literal", exc="TimeLiteralError",
+         message="'…' is not a time of day." + AT + "comparison with `…`" + SUGGEST + "Write ….",
+         category="checker", family="time-of-day", user=True, owner="checker"),
 )

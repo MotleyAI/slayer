@@ -56,7 +56,7 @@ Pass `client_factory=` to run every database access through your own client — 
 
 - A **dict** — a single query.
 - A **`SlayerQuery`** instance.
-- A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/queries.md#query-lists).
+- A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/saved-and-multistage-queries.md#query-lists).
 - A **string** — runs the backing query of a query-backed dataset by name.
 
 Each also takes `variables=` — runtime values for `{placeholders}`, overriding saved defaults.
@@ -135,7 +135,7 @@ await client.delete_ontology_mapping("flights_mapping", data_source="flights")
 await client.delete_ontology("Flights")                         # refused while a mapping resolves against it
 ```
 
-A refused document raises a `ValueError` listing every problem.
+A refused document raises a `ValueError` listing every problem. `create_ontology`, `replace_ontology`, `create_ontology_mapping`, `replace_ontology_mapping`, `create_semantic_model` and `replace_semantic_model` take `warnings_out`, a list receiving the identifier and multiplicity mismatches the save touches (without it they are Python warnings).
 
 ### Inspect
 

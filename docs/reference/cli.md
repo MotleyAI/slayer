@@ -268,7 +268,7 @@ obvious rather than silent.
 
 ### `slayer validate-datasets`
 
-Diff persisted datasets against the live database schemas (read-only) and, optionally, profile each relationship's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Relationship cardinality](../concepts/datasets.md#relationship-cardinality).
+Diff persisted datasets against the live database schemas (read-only), check them and their data against the stored [ontologies](../concepts/ontologies.md) (`ONTOLOGY …` lines), and, optionally, profile each relationship's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Relationship cardinality](../concepts/datasets.md#relationship-cardinality).
 
 ```bash
 slayer validate-datasets                                   # every datasource
@@ -286,7 +286,7 @@ slayer validate-datasets --datasource jaffle_shop --force-clean --yes
 | `--cardinality` | off | Also profile each relationship's arity from the data. Full-scans both sides of every relationship, so it is opt-in. |
 | `--persist-cardinality` | off | Write the detected `cardinality` back onto each matching relationship (identified by target dataset + key pairs). Implies `--cardinality`. |
 | `--format` | `text` | `text`, or `json` for one `{"drift": [...], "join_safety": [...], "cardinality": {...}}` document. Cannot be combined with `--force-clean`. |
-| `--force-clean` | off | After printing the diff, prompt to apply each delete and write each [untyped](../concepts/schema-drift.md#untyped-findings) semantic-model field's live type into its document. Destructive; opt-in only. |
+| `--force-clean` | off | After printing the diff, prompt to apply each delete and write each [untyped](../concepts/schema-drift.md#untyped-findings) semantic-model field's live type into its document. Never acts on an [ontology finding](../concepts/ontologies.md). Destructive; opt-in only. |
 | `-y` / `--yes` | off | With `--force-clean`, skip the confirmation prompt. |
 
 Without a cardinality flag the output is the drift diff, plus a `Join safety` section whenever unproven-relationship findings exist. With one, the report gains labelled `Schema drift` and `Join cardinality` sections (with `Join safety` between them), and any `--force-clean` apply happens *before* profiling, so it reads the repaired datasets.
@@ -312,7 +312,7 @@ Detection is a strong guess, not a guarantee: a duplicate disproves uniqueness w
 
 ### `slayer recommend-population`
 
-Recommend the query root (population) for a set of `dataset.field` / `dataset.metric` items, with each item's reference path from it. See [Choosing a root dataset](../concepts/queries.md#choosing-a-root-dataset).
+Recommend the query root (population) for a set of `dataset.field` / `dataset.metric` items, with each item's reference path from it. See [Choosing a root dataset](../concepts/cross-dataset-queries.md#choosing-a-root-dataset).
 
 ```bash
 slayer recommend-population customers.name products.category
@@ -456,7 +456,7 @@ slayer ontology-mappings list --datasource flights
 |------|-------------|
 | `list` | One name per line; a mapping that no longer resolves is listed with its problems |
 | `show <name>` | Print the stored text |
-| `create <file>` | Store the document under its own `name` |
+| `create <file>` | Store the document under its own `name`; prints the identifier and multiplicity mismatches it touches as `Warning:` lines |
 | `replace <name> <file>` | Replace the stored document |
 | `delete <name> [--yes]` | Delete it, after a confirmation prompt that `--yes` skips |
 
@@ -531,7 +531,7 @@ references to inspect several entities of the **same kind** in one call:
 the output is one `## <canonical>` block per reference, in input
 order (a JSON array under `--format json`), with per-reference error isolation.
 **Omit the reference entirely** to list the whole **collection** at
-`--type` — supported for `dataset` and `datasource` only. `--type dataset` lists all
+`--type` — supported for `dataset` and `datasource` only. `--type` also takes `semantic_model`, `ontology` (its concept graph) and `ontology_mapping`; datasets and fields show their [ontology concepts](../concepts/ontologies.md). `--type dataset` lists all
 datasets grouped by datasource (a terse one line per dataset by default; `--no-compact`
 gives the full per-dataset tables); `--type datasource` lists all datasources.
 
@@ -549,7 +549,7 @@ slayer inspect --type datasource    # collection: all datasources
 | Flag | Required | Description |
 |------|----------|-------------|
 | `reference` | No | Zero or more entity references: canonical id, bare name, relationship path (resolved to the owning dataset), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`dataset` or `datasource` only). |
-| `--type` | Yes | Entity kind: `datasource`, `dataset`, `field`, `metric`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
+| `--type` | Yes | Entity kind: `datasource`, `dataset`, `field`, `metric`, `aggregation`, `memory`, `semantic_model`, `ontology`, or `ontology_mapping`. Disambiguates same-named entities and asserts the kind. |
 | `--no-compact` | No | Return the full render. The compact default is description-only for field/metric/aggregation/datasource/memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does), and a cheap **schema skeleton** (field/metric/aggregation names + relationship targets, zero DB calls) for `--type dataset`; `--no-compact` on a datasource renders a per-dataset skeleton for each visible dataset. |
 | `--format` | No | `markdown` (default) or `json`. |
 | `--num-rows` | No | (dataset only) Sample-data rows. Ignored with a warning for other kinds. |

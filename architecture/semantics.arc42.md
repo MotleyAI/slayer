@@ -30,10 +30,12 @@ principles every layer obeys.
    judged alone; composing a definition onto a path is never a revisit (from root
    `a`, `b.d` with `d ≔ a.x` reads a second `a`).
    A **windowed column** — one whose definition is a window function — is a function of its declaring dataset's rows (Axiom 3.3), evaluated over them before any join, query filter or aggregation reads it, and is then read as a column in every position; a dataset filter reading one reads that dataset (3.3).
+   A window with no aggregate-valued argument or key written anywhere else is the windowed column of one dataset — in a definition its declaring dataset, in a query the one its references are anchored at (Principle 1; anchors apart meet as in 2.6) — and is illegal with none.
    [enforced: test:tests/test_dev1836_producer_execution.py]
    [enforced: test:tests/test_dev1930_save_time_arity.py]
    [enforced: test:tests/test_dev1952_derived_revisit.py]
    [enforced: test:tests/test_dev2074_frame_local_revisit.py]
+   [enforced: test:tests/test_dev2457_window_functions.py]
    [enforced: test:tests/test_dev2432_windowed_columns.py]
 2. **Home dataset**: every row-level expression, and every aggregation, has at most
    one home dataset — the dataset over whose rows it is evaluated with exactly one
@@ -217,12 +219,15 @@ principles every layer obeys.
     - **11.5 Recursion.** A nested transform is an inner of the enclosing one; its
       result grain joins the enclosing operand's union like any grained inner.
     - **11.6 Domain.** A transform evaluates over its operand's **domain**: its inner aggregates' cells at the operand grain (Axiom 6), `A`'s cells when it has none, never the query's rows; over the spine, the domain's non-time tuples × every in-frame bucket. A cell outside the domain takes NULL (Axiom 10).
+    - **11.7 Windows.** A window function with an aggregate-valued argument or key is a preserving transform that means what SQL means over the cells of its domain (11.6): each key is aggregate-valued or an operand-grain member, and a step is a cell, never a calendar step (11.3).
     [enforced: test:tests/test_dev1871_terms.py]
     [enforced: test:tests/test_dev1832_transform_source.py]
     [enforced: test:tests/test_dev1946_transform_parameter.py]
     [enforced: test:tests/test_dev1953_partition_membership.py]
     [enforced: test:tests/test_consecutive_periods_calendar.py]
     [enforced: test:tests/test_dev2218_transform_domain.py]
+    [enforced: test:tests/test_dev2457_measure_windows.py]
+    [enforced: test:tests/test_transform_operand_grain.py]
 12. **Population**: the population is the query's quantifier — exactly one
     result row per combination of dimension values among its row-filtered rows
     (raw rows are 12.5; spec: `queries/semantics` › Grain guarantee)
@@ -246,10 +251,11 @@ principles every layer obeys.
       supplies the union of its full-grain operands' cells, through combinations
       and transforms; with none, the union of its operands' extended cells.
     - **12.4 Inferred.** An omitted population is the **row supply**: the union
-      of every top-level measure's supply — `A`'s cells with no measures, the
-      unit with no dimensions. Field filters restrict each supply before it is
-      taken (Axiom 14) and never choose one; a query needing an undefined `A`
-      fails closed.
+      of the query's metrics' supplies — `A`'s cells with no metrics, the unit
+      with no dimensions; an aggregate in a filter, order key or computed
+      dimension reads those cells and supplies none. Field filters restrict each
+      supply before it is taken (Axiom 14) and never choose one; a query needing
+      an undefined `A` fails closed.
       [enforced: test:tests/test_dev2212_row_supply.py]
     - **12.5 Raw rows.** Raw-row mode lists one row per row of the population,
       else of `A` (never 12.4); every dimension must be provably determined — no

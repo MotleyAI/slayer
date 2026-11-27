@@ -28,7 +28,7 @@ import uuid
 from typing import Any
 import warnings
 from collections.abc import Generator
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -96,6 +96,8 @@ from tests._dev2120_fixtures import (
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
+from tests._dev2457_fixtures import server_statements as window_statements, window_datasets
+from tests._dev2457_matrix import CASE_IDS as WINDOW_CASE_IDS, CASES as WINDOW_CASES, WindowCase, check_case
 from tests._cast_fixtures import check_author_casts, check_boolean_casts, check_try_cast_targets
 from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 from tests._dev2000_fixtures import (
@@ -115,6 +117,7 @@ from tests._dev2000_fixtures import (
 from tests._engine_helpers import disposable_engine
 from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
+from tests.integration import _dev2458_matrix as dev2458
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 pytest.importorskip("testcontainers.clickhouse")
@@ -790,30 +793,26 @@ class TestNullableCastsClickHouse:
 @pytest.mark.integration
 class TestClickHouseMedianPercentile:
     async def test_median(self, clickhouse_env: SlayerQueryEngine) -> None:
-        # amounts = [100, 200, 50, 150, 75, 300]; native ClickHouse median()
-        # is a quantile(0.5) approximation — accept a tolerance, not equality.
+        # amounts = [100, 200, 50, 150, 75, 300] -> exact median 125
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
         result = await clickhouse_env.execute(query=query)
-        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0, abs=50.0)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
     async def test_median_emits_native_aggregate(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """ClickhouseDialect.build_median routes through sqlglot's ClickHouse
-        dialect which emits ``quantile(0.5)(x)`` natively. Pin the SQL shape
-        via dry_run so a regression to ``percentile_cont`` is caught."""
+        """``median`` is the exact ``quantileExactInclusive(0.5)(x)``, never ``percentile_cont``."""
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(orders.total)"}]})
         dry = await clickhouse_env.execute(query=query, dry_run=True)
         assert dry.sql is not None
         sql_lower = dry.sql.lower()
-        assert "quantile(0.5)(" in sql_lower or "median(" in sql_lower, (
-            f"ClickHouse median must emit native quantile(0.5)(x) or median(x). Got:\n{dry.sql}"
+        assert "quantileexactinclusive(0.5)(" in sql_lower, (
+            f"ClickHouse median must emit quantileExactInclusive(0.5)(x). Got:\n{dry.sql}"
         )
         assert "percentile_cont" not in sql_lower, (
             f"ClickHouse median must not fall through to PERCENTILE_CONT. Got:\n{dry.sql}"
         )
 
-    async def test_percentile_uses_parametric_quantile(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """ClickhouseDialect.build_percentile emits the parametric
-        ``quantile(p)(x)`` form, not ``PERCENTILE_CONT``. Pin via dry_run."""
+    async def test_percentile_uses_quantile_exact_inclusive(self, clickhouse_env: SlayerQueryEngine) -> None:
+        """``percentile`` is the exact ``quantileExactInclusive(p)(x)``, not ``PERCENTILE_CONT``."""
         query = SlayerQuery(
             population="orders",
             metrics=[
@@ -824,12 +823,11 @@ class TestClickHouseMedianPercentile:
         dry = await clickhouse_env.execute(query=query, dry_run=True)
         assert dry.sql is not None
         sql_lower = dry.sql.lower()
-        # Pattern: quantile(<p>)(<col>)
-        assert "quantile(0.25)(" in sql_lower, (
-            f"ClickHouse must use parametric quantile(p)(x) syntax. Got:\n{dry.sql}"
+        assert "quantileexactinclusive(0.25)(" in sql_lower, (
+            f"ClickHouse must use quantileExactInclusive(p)(x). Got:\n{dry.sql}"
         )
-        assert "quantile(0.75)(" in sql_lower, (
-            f"ClickHouse must use parametric quantile(p)(x) syntax. Got:\n{dry.sql}"
+        assert "quantileexactinclusive(0.75)(" in sql_lower, (
+            f"ClickHouse must use quantileExactInclusive(p)(x). Got:\n{dry.sql}"
         )
         # And NOT the standard PERCENTILE_CONT (which would mean sqlglot's
         # transpilation didn't get overridden).
@@ -876,6 +874,36 @@ class TestClickHouseMedianPercentile:
         assert by_status["completed"] == pytest.approx(150, abs=50.0)
         assert by_status["pending"] == pytest.approx(175, abs=125.0)
         assert by_status["cancelled"] == pytest.approx(75, abs=0.01)
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_dev2458_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in [*dev2458.statements(dialect="clickhouse"), *dev2458.clickhouse_statements()]:
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dev2458")))
+        ds = _ds_config(clickhouse_container, db_name)
+        run_sync(storage.save_datasource(ds))
+        for model in [*dev2458.datasets(data_source=ds.name), *dev2458.clickhouse_datasets(data_source=ds.name)]:
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.mark.integration
+class TestClickHouseDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles — exact percentiles past the reservoir, NULL never NaN."""
+
+    @pytest.mark.parametrize("check", [
+        *dev2458.COMMON_CHECKS, dev2458.check_approx_types, dev2458.check_clickhouse_large_group,
+        dev2458.check_clickhouse_null_groups, dev2458.check_clickhouse_wide_integers,
+    ], ids=lambda c: c.__name__)
+    async def test_matrix(self, _clickhouse_dev2458_storage, check) -> None:
+        await dev2458.run_check(check, storage=_clickhouse_dev2458_storage)
 
 
 # ---------------------------------------------------------------------------
@@ -2113,10 +2141,46 @@ def _clickhouse_dev2120_storage(clickhouse_container, tmp_path_factory):
 @pytest.mark.integration
 class TestClickHousePortableLibrary:
     async def test_library(self, _clickhouse_dev2120_storage) -> None:
-        await check_library(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+        # The container's 24.10 server has no time of day: the clock is refused, naming the version it needs.
+        await check_library(SlayerQueryEngine(storage=_clickhouse_dev2120_storage),
+                            gated=frozenset({"current_time"}), refusal="ClickHouse 25.6")
 
     async def test_native_json_column(self, _clickhouse_dev2120_storage) -> None:
         await check_native_json(SlayerQueryEngine(storage=_clickhouse_dev2120_storage))
+
+
+# ---------------------------------------------------------------------------
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _clickhouse_windows_storage(clickhouse_container, tmp_path_factory):
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
+            with engine.begin() as conn:
+                for stmt in window_statements("clickhouse"):
+                    conn.execute(sa.text(stmt))
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_windows")))
+        run_sync(storage.save_datasource(_ds_config(clickhouse_container, db_name)))
+        for model in window_datasets(data_source="testclickhouse"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.fixture
+def clickhouse_windows(_clickhouse_windows_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_clickhouse_windows_storage)
+
+
+@pytest.mark.integration
+class TestClickHouseWindows:
+    @pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+    async def test_the_matrix(self, clickhouse_windows: SlayerQueryEngine, case: WindowCase) -> None:
+        await check_case(clickhouse_windows, case)
 
 
 # ---------------------------------------------------------------------------
@@ -2463,3 +2527,145 @@ class TestClickHouseTimeZones:
         for zoned, naive in zip(instant_typing_queries("orders"), instant_typing_queries("orders_naive")):
             got, want = await clickhouse_tz_env.execute(zoned), await clickhouse_tz_env.execute(naive)
             assert row_values(got) == row_values(want), got.sql
+
+
+# ---------------------------------------------------------------------------
+# Time of day (spec: queries/time-of-day › ClickHouse answers from server 25.6)
+# ---------------------------------------------------------------------------
+
+_TIME_SETTING = "enable_time_time64_type"
+_TIME_CONSTRUCTS = ["CAST('10:30:00' AS TIME)", "'10:30:00'::TIME", "TRY_CAST('10:30:00' AS TIME)", "TIME '10:30:00'"]
+
+
+def _shifts_engine(datasource: DatasourceConfig) -> SlayerQueryEngine:
+    storage = YAMLStorage(base_dir=tempfile.mkdtemp(prefix="tod_ch_"))
+    run_sync(storage.save_datasource(datasource))
+    for name in ("shifts", "long_shifts"):
+        run_sync(storage.save_dataset(SlayerDataset(name=name, sql_table=name, data_source=datasource.name, fields=[
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="starts_at", datatype=DataType.TIME),
+            DatasetField(name="label", datatype=DataType.STRING)]), _validate=False))
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.fixture(scope="module")
+def clickhouse_shifts(versioned_clickhouse):
+    """``shifts`` and ``long_shifts`` (holding ``25:00:00``): ``Time`` columns from 25.6, text on 25.4."""
+    version, container, db_name = versioned_clickhouse
+    settings = {} if version == "25.4" else {_TIME_SETTING: "1"}
+    column = "String" if version == "25.4" else "Time"
+    for table, rows in (("shifts", "(1, '09:30:00', 'a'), (2, '17:00:00', 'b')"), ("long_shifts", "(1, '25:00:00', 'x')")):
+        _http(container, db_name,
+              f"CREATE TABLE {table} (id Int32, starts_at {column}, label String) ENGINE = MergeTree ORDER BY id", **settings)
+        _http(container, db_name, f"INSERT INTO {table} VALUES {rows}", **settings)
+    return version, container, db_name
+
+
+def _shift_query(**fields: Any) -> SlayerQuery:
+    return SlayerQuery.model_validate({"population": "shifts", **fields})
+
+
+def _from_25_6(version: str) -> None:
+    if version == "25.4":
+        pytest.skip("no time-of-day type before server 25.6")
+
+
+@pytest.mark.integration
+class TestVersionedTimeOfDay:
+    @pytest.mark.parametrize("expression", _TIME_CONSTRUCTS)
+    async def test_a_construct_runs_from_25_6_and_is_refused_below(self, clickhouse_shifts, expression: str) -> None:
+        version, container, db_name = clickhouse_shifts
+        query = _shift_query(dimensions=[{"field": expression, "alias": "v"}], filter=["shifts.id = 1"])
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            engine = _shifts_engine(ds)
+            if version == "25.4":
+                with pytest.raises(SlayerError) as ei:
+                    await engine.execute(query)
+                assert "25.6" in str(ei.value)
+                assert _user_queries_touching(container, user=ds.username or "", table="shifts") == 0
+                return
+            resp = await engine.execute(query)
+        assert resp.data == [{"v": time(10, 30)}], resp.sql
+        assert _TIME_SETTING in (resp.sql or ""), resp.sql
+
+    async def test_the_clock(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            resp = await _shifts_engine(ds).execute(_shift_query(
+                dimensions=[{"field": "CURRENT_TIME", "alias": "ct"}, {"field": "current_time()", "alias": "fn"}]))
+        [row] = resp.data
+        assert type(row["ct"]) is time, row
+        assert row["ct"] == row["fn"], row
+
+    async def test_a_time_column(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            engine = _shifts_engine(ds)
+            rows = await engine.execute(_shift_query(dimensions=["shifts.id", "shifts.starts_at", {
+                "field": "date_part('hour', shifts.starts_at)", "alias": "h"}]))
+            ends = await engine.execute(_shift_query(metrics=[{"metric": "min(shifts.starts_at)", "alias": "lo"},
+                                                               {"metric": "max(shifts.starts_at)", "alias": "hi"}]))
+            late = await engine.execute(_shift_query(dimensions=["shifts.id"], filter=["shifts.starts_at >= '12:00'"]))
+        assert {int(r["shifts.id"]): (r["shifts.starts_at"], int(r["h"])) for r in rows.data} == {
+            1: (time(9, 30), 9), 2: (time(17, 0), 17)}
+        assert ends.data == [{"lo": time(9, 30), "hi": time(17, 0)}], ends.sql
+        assert [int(r["shifts.id"]) for r in late.data] == [2]
+
+    @pytest.mark.parametrize("text", ["bogus", "25:00:00", "-01:00:00"])
+    async def test_try_cast_of_text_naming_no_time_is_null(self, clickhouse_shifts, text: str) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            resp = await _shifts_engine(ds).execute(_shift_query(
+                dimensions=[{"field": f"TRY_CAST('{text}' AS TIME)", "alias": "v"}], filter=["shifts.id = 1"]))
+        assert resp.data == [{"v": None}], resp.sql
+
+    async def test_a_stored_duration_fails_the_query(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        query = SlayerQuery.model_validate({"population": "long_shifts", "dimensions": ["long_shifts.starts_at"]})
+        with _user_datasource(container, db_name, settings="readonly = 0") as ds:
+            engine = _shifts_engine(ds)
+            with pytest.raises(SlayerError) as ei:
+                await engine.execute(query)
+        assert "long_shifts.starts_at" in str(ei.value)
+        assert "25:00:00" in str(ei.value)
+
+    async def test_a_readonly_user_is_refused_naming_the_setting(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        query = _shift_query(dimensions=["shifts.starts_at"])
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            engine = _shifts_engine(ds)
+            with pytest.raises(SlayerError) as ei:
+                await engine.execute(query)
+            assert _TIME_SETTING in str(ei.value)
+            assert _user_queries_touching(container, user=ds.username or "", table="shifts") == 0
+
+    @pytest.mark.parametrize("settings", ["readonly = 2", f"readonly = 1, {_TIME_SETTING} = 1"])
+    async def test_a_user_who_may_run_it_runs_it(self, clickhouse_shifts, settings: str) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        with _user_datasource(container, db_name, settings=settings) as ds:
+            resp = await _shifts_engine(ds).execute(_shift_query(dimensions=["shifts.starts_at"],
+                                                                 order=[{"field": "shifts.starts_at"}]))
+        assert [r["shifts.starts_at"] for r in resp.data] == [time(9, 30), time(17, 0)]
+
+    async def test_a_query_without_a_time_of_day_is_unaffected(self, clickhouse_shifts) -> None:
+        _, container, db_name = clickhouse_shifts
+        with _user_datasource(container, db_name, settings="readonly = 1") as ds:
+            resp = await _shifts_engine(ds).execute(_shift_query(dimensions=["shifts.label"],
+                                                                 order=[{"field": "shifts.label"}]))
+        assert [r["shifts.label"] for r in resp.data] == ["a", "b"]
+        assert _TIME_SETTING not in (resp.sql or "")
+
+    async def test_time_columns_ingest_as_time(self, clickhouse_shifts) -> None:
+        version, container, db_name = clickhouse_shifts
+        _from_25_6(version)
+        _http(container, db_name, "CREATE TABLE IF NOT EXISTS clocks (id Int32, t Time, t6 Time64(6), n Nullable(Time)) "
+                                  "ENGINE = MergeTree ORDER BY id", **{_TIME_SETTING: "1"})
+        datasets = await _ingest(_ds_config(container, db_name), include_tables=["clocks"])
+        assert {f.name: f.datatype for f in datasets[0].fields} == {
+            "id": DataType.INTEGER, "t": DataType.TIME, "t6": DataType.TIME, "n": DataType.TIME}

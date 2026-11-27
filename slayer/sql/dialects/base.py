@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time
+from decimal import Decimal
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, Optional, Self, TypeGuard, get_args
@@ -19,21 +20,25 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 from sqlglot.errors import SqlglotError
+from sqlglot.generator import Generator as _SqlglotGenerator
 
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.errors import (
+    CastTypeError,
     ExplainUnsupportedError,
     IdentifierCollisionError,
     IdentifierLengthError,
     ServerVersionError,
     TimeZoneError,
     UnsupportedServerFunctionError,
+    WindowFunctionError,
 )
 from slayer.core.granularity import CustomGranularity, Granularity, bucket_type, granularity_parts, nests_into
 from slayer.core.json_path import JsonPath
-from slayer.core.keys import CastTypeParts, cast_type_parts
+from slayer.core.keys import CastTypeParts, ValueKey, WindowKey, cast_type_parts
 from slayer.core.like_pattern import LikePattern
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement, parse_regex
+from slayer.sql.column_sources import ColumnSource
 from slayer.sql.dialects.patterns import RegexFlavour, emit_regex, emit_replacement, like_expression, like_text
 from slayer.sql._identifier_fit import (
     SqlLexis,
@@ -58,6 +63,7 @@ from slayer.sql.dialects.reflection import (
     unwrap_clickhouse_wrapper_str,
     fetch,
     inspector_column_names,
+    is_untyped_sa_type,
     inspector_foreign_keys,
     inspector_unique_constraints,
     inspector_unique_indexes,
@@ -92,7 +98,7 @@ _INTERVAL_UNITS: dict[TimeGranularity, tuple[str, int]] = {
     TimeGranularity.YEAR: ("YEAR", 1),
 }
 _UNIT_SECONDS = {TimeGranularity.MINUTE: 60, TimeGranularity.HOUR: 3600}
-SUB_DAY_PARTS = frozenset({DatePart.HOUR, DatePart.MINUTE, DatePart.SECOND})
+SUB_DAY_PARTS = frozenset({DatePart.HOUR, DatePart.MINUTE, DatePart.SECOND, DatePart.MILLISECOND})
 
 
 def literal_int(node: Expression) -> Optional[int]:
@@ -124,8 +130,9 @@ TextFn = Literal[
     "chr", "ascii", "trim", "ltrim", "rtrim", "strpos", "instr", "replace",
 ]
 TrimFn = Literal["trim", "ltrim", "rtrim"]
-MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt"]
+MathFn = Literal["div", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "cbrt", "radians", "degrees"]
 ExtremumFn = Literal["greatest", "least"]
+AngleFn = Literal["radians", "degrees"]
 
 
 #: Functions a database may declare native (``native_functions``), spelled as named.
@@ -150,9 +157,9 @@ def is_extremum_fn(name: str) -> TypeGuard[ExtremumFn]:
 #: Scalars rendered through a dialect hook.
 LIBRARY_FUNCTIONS = frozenset({
     *get_args(TextFn), *get_args(MathFn), *get_args(ExtremumFn), "split_part", "like", "ilike", "json_value",
-    "regexp_like", "regexp_extract", "regexp_replace",
+    "regexp_like", "regexp_extract", "regexp_replace", "regexp_count", "current_time",
 })
-REGEX_LIBRARY = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
+REGEX_LIBRARY = frozenset({"regexp_like", "regexp_extract", "regexp_replace", "regexp_count"})
 #: Every library function plus ``TRY_CAST``: what a dialect translating the whole library declares.
 PORTABLE_LIBRARY = LIBRARY_FUNCTIONS | {"try_cast"}
 
@@ -481,6 +488,7 @@ _SLAYER_TYPES: tuple[tuple[frozenset[DType], DataType], ...] = (
     (frozenset({exp.DataType.Type.BOOLEAN}), DataType.BOOLEAN),
     (_DATE_TYPES, DataType.DATE),
     (_TIMESTAMP_TYPES, DataType.DATETIME),
+    (frozenset({exp.DataType.Type.TIME}), DataType.TIME),
 )
 
 
@@ -541,7 +549,7 @@ def _renders_losslessly(built: exp.DataType, *, dialect: "SqlDialect") -> bool:
     cast applies itself may go."""
     rendered = _read_type(built.sql(dialect=dialect.sqlglot_name), readers=(dialect.sqlglot_name,))
     signature = _cast_signature(built)
-    if text_length(built) is not None:
+    if text_length(built) is not None or (built.this is exp.DataType.Type.TIME and dialect.rounds_time_precision):
         signature = signature.model_copy(update={"sizes": ()})
     return rendered is not None and signature.kept_by(_cast_signature(rendered))
 
@@ -588,6 +596,22 @@ def _keeps_author_parts(parts: CastTypeParts, built: exp.DataType) -> bool:
 VENDOR_ONLY_CAST_TYPES: frozenset[DType] = frozenset({
     exp.DataType.Type.MONEY, exp.DataType.Type.SMALLMONEY, exp.DataType.Type.INT128, exp.DataType.Type.INT256,
 })
+
+
+#: Text naming a time of day: ``HH:MM[:SS[.f]]`` inside the day.
+TIME_OF_DAY_TEXT = r"^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\.[0-9]{1,6})?)?$"
+
+
+def trimmed_fraction(text: Expression) -> Expression:
+    """Fixed six-digit fraction text without its trailing zeros (and the point, when none is left)."""
+    zeros = exp.Trim(this=text, expression=lit("0"), position="TRAILING")
+    return exp.Trim(this=zeros, expression=lit("."), position="TRAILING")
+
+
+def time_precision(to: exp.DataType) -> Optional[int]:
+    """The fractional digits a ``TIME(p)`` cast type names, else ``None``."""
+    params = _type_params(to)
+    return int(params[0]) if len(params) == 1 and params[0].isdigit() else None
 
 
 def temporal_type_of(value: date) -> DataType:
@@ -772,6 +796,8 @@ class ServerProfile(BaseModel):
     version: tuple[int, ...] | None = None
     readonly: int | None = None
     correlated_subqueries: bool | None = None
+    #: The time-type setting is on for this user (unknown reads as off).
+    time_types: bool = False
 
     @field_validator("version", mode="before")
     @classmethod
@@ -868,6 +894,63 @@ class DriverFacts(BaseModel):
         return parsed.set(drivername=f"{backend}+{self.default_driver}").render_as_string(hide_password=False)
 
 
+#: Meta flag on an ``exp.Ordered`` whose ``NULLS FIRST`` / ``NULLS LAST`` is always written, whatever the dialect's
+#: assumed default: a session can change that default.
+EXPLICIT_NULLS = "slayer_explicit_nulls"
+_ordered_sql = _SqlglotGenerator.ordered_sql
+
+
+def _explicit_ordered_sql(self: _SqlglotGenerator, expression: exp.Ordered) -> str:
+    if not expression.meta.get(EXPLICIT_NULLS) or self.NULL_ORDERING_SUPPORTED is None:
+        return _ordered_sql(self, expression)
+    desc = " DESC" if expression.args.get("desc") else " ASC"
+    return f"{self.sql(expression, 'this')}{desc} NULLS {'FIRST' if expression.args.get('nulls_first') else 'LAST'}"
+
+
+# sqlglot writes a placement only where it differs from its assumed default; a flagged item always states it.
+_SqlglotGenerator.ordered_sql = _explicit_ordered_sql  # type: ignore[method-assign]
+
+
+def stating_nulls(tree: Expression) -> Expression:
+    """``tree`` with every window order item flagged to write its NULL placement."""
+    for window in tree.find_all(exp.Window):
+        order = window.args.get("order")
+        for item in order.expressions if order is not None else ():
+            if isinstance(item, exp.Ordered):
+                item.meta[EXPLICIT_NULLS] = True
+    return tree
+
+
+#: The call a window applies, by its function (statistics through ``build_stat_agg_1arg``).
+_WINDOW_CALLS: dict[str, Callable[[list[Expression]], Expression]] = {
+    "row_number": lambda a: exp.RowNumber(),
+    "rank": lambda a: exp.Rank(),
+    "dense_rank": lambda a: exp.DenseRank(),
+    "percent_rank": lambda a: exp.PercentRank(),
+    "cume_dist": lambda a: exp.CumeDist(),
+    "ntile": lambda a: exp.Ntile(this=a[0]),
+    "lag": lambda a: exp.Lag(this=a[0], offset=a[1] if len(a) > 1 else None, default=a[2] if len(a) > 2 else None),
+    "lead": lambda a: exp.Lead(this=a[0], offset=a[1] if len(a) > 1 else None, default=a[2] if len(a) > 2 else None),
+    "first_value": lambda a: exp.FirstValue(this=a[0]),
+    "last_value": lambda a: exp.LastValue(this=a[0]),
+    "nth_value": lambda a: exp.NthValue(this=a[0], offset=a[1]),
+    "sum": lambda a: exp.Sum(this=a[0]),
+    "count": lambda a: exp.Count(this=a[0]),
+    "count_distinct": lambda a: exp.Count(this=exp.Distinct(expressions=[a[0]])),
+    "avg": lambda a: exp.Avg(this=a[0]),
+    "min": lambda a: exp.Min(this=a[0]),
+    "max": lambda a: exp.Max(this=a[0]),
+    "median": lambda a: exp.Median(this=a[0]),
+    "percentile_cont": lambda a: exp.WithinGroup(
+        this=exp.PercentileCont(this=a[1]), expression=exp.Order(expressions=[exp.Ordered(this=a[0])])),
+}
+#: Statistical aggregates, by the name the dialect's stat builder spells.
+_WINDOW_STATS: dict[str, StatAgg1Name] = {"stddev": "stddev_samp", "stddev_samp": "stddev_samp", "stddev_pop": "stddev_pop", "variance": "var_samp",
+          "var_samp": "var_samp", "var_pop": "var_pop"}
+#: Holistic aggregates a database may not window, by how a refusal names them.
+_HOLISTIC_WINDOWS = {"count_distinct": "COUNT(DISTINCT …)", "median": "MEDIAN", "percentile_cont": "PERCENTILE_CONT"}
+
+
 class SqlDialect(BaseModel):
     """One database's quirks: neutral AST defaults, a typed refusal where a database's own SQL is needed."""
 
@@ -879,19 +962,28 @@ class SqlDialect(BaseModel):
     log10_native: bool = False
     log2_native: bool = False
 
+    #: An ORDER BY item can state ``NULLS FIRST`` / ``NULLS LAST`` (else NULL sorts lowest).
+    nulls_clause: bool = True
+    #: The holistic aggregates the database evaluates under ``OVER`` (``count_distinct``, ``median``,
+    #: ``percentile_cont``).
+    windowed_holistic: ClassVar[frozenset[str]] = frozenset()
+
     # Whether NUMERIC/DECIMAL is stored exactly (False: SQLite's numeric affinity).
     exact_decimal_native: bool = True
     #: The database enforces primary-key and unique constraints (every dialect states it).
     enforces_unique_keys: ClassVar[bool]
 
-    # ``AVG`` over integers returns a truncated integer, so a non-DOUBLE input is read as a float.
+    # ``AVG`` over integers is not a full-precision fraction, so a non-DOUBLE input is read as ``avg_input_type``.
     integer_avg: bool = False
+    avg_input_type: str = "FLOAT"
 
     # Identifier budget in bytes (``None`` = unbounded); defaults to Postgres, the tightest.
     max_identifier_bytes: int | None = 63
 
     # Oracle/T-SQL name the call: sqlglot mis-spells theirs.
     approx_count_distinct_native: bool = False
+    # A native approximate percentile taking any fraction (``APPROX_PERCENTILE`` / ``APPROX_QUANTILE``).
+    approx_percentile_native: bool = False
     approx_count_distinct_anonymous_name: str | None = None
 
     # A rejected ``statement_timeout_sql`` is rolled back and reported instead of raised.
@@ -1130,6 +1222,48 @@ class SqlDialect(BaseModel):
     def build_round(self, value: Expression, digits: Expression) -> Optional[Expression]:  # NOSONAR(S1172) — hook signature
         """Two-argument ``round``; ``None``: the database's own ``ROUND`` has the reference meaning."""
         return None
+
+    def build_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:  # NOSONAR(S1172) — hook signature
+        """``value`` truncated toward zero to ``digits`` fractional digits (negative: left of the point);
+        ``integer``: ``value`` is certainly an integer."""
+        return self.rewrite_target_ast(exp.Trunc(this=value.copy(), decimals=digits.copy()))
+
+    def rounded_trunc(self, value: Expression, digits: Expression, *, integer: bool) -> Expression:
+        """``trunc(value, digits)`` from ``ROUND``: a rounding away from zero steps one unit back toward it. An
+        integer takes exact remainder arithmetic instead: ``ROUND`` and ``ABS`` overflow at its type's limits."""
+        if integer:
+            return self.integer_trunc(value, digits)
+        rounded = exp.Round(this=value.copy(), decimals=digits.copy())
+        known = literal_int(digits)
+        # An exact literal within DECIMAL's 38 digits; past them the unit is 0 or infinite and ROUND alone answers.
+        unit = (exp.Literal.number(format(Decimal(1).scaleb(-known), "f")) if known is not None and -37 <= known <= 38
+                else exp.Pow(this=lit(10), expression=exp.Neg(this=operand_copy(digits))))
+        back = exp.Sub(this=rounded.copy(), expression=exp.Mul(this=exp.Sign(this=value.copy()), expression=unit))
+        away = exp.GT(this=exp.Abs(this=rounded.copy()), expression=exp.Abs(this=value.copy()))
+        return case((away, exp.Round(this=back, decimals=digits.copy())), default=rounded)
+
+    #: The widest integer type, and the most places ``10^places`` it holds: a wider power exceeds every integer.
+    _WIDEST_INTEGER: ClassVar[tuple[str, int]] = ("BIGINT", 18)
+
+    def integer_trunc(self, value: Expression, digits: Expression) -> Expression:
+        """An integer truncated toward zero: itself for ``digits`` ≥ 0, else less its remainder by ``10^-digits``
+        (``%`` keeps the dividend's sign); 0 past the widest integer's places."""
+        widest, places = self._WIDEST_INTEGER
+
+        def less_remainder(unit: Expression) -> Expression:
+            return exp.Sub(this=operand_copy(value), expression=self.build_modulo(operand_copy(value), unit, True))
+
+        zero = exp.Mul(this=operand_copy(value), expression=lit(0))
+        known = literal_int(digits)
+        if known is not None:
+            if known >= 0:
+                return value.copy()
+            return zero if -known > places else less_remainder(lit(10 ** -known))
+        # Exact as text ('1' and -digits zeros): a floating POWER is not, past 10^22.
+        text = self.char_substring(lit("1" + "0" * places), lit(1), exp.Sub(this=lit(1), expression=digits.copy()))
+        unit = exp.Cast(this=text, to=exp.DataType.build(widest))
+        return case((exp.GTE(this=digits.copy(), expression=lit(0)), value.copy()),
+                    (exp.LT(this=digits.copy(), expression=lit(-places)), zero), default=less_remainder(unit))
 
     def round_half_away(self, value: Expression, digits: int) -> Expression:
         """``value`` rounded to ``digits`` fractional digits, an exact tie away from zero."""
@@ -1399,7 +1533,13 @@ class SqlDialect(BaseModel):
             return case((inside, self.rewrite_target_ast(func(fn.upper(), args[0]))))
         if fn == "cbrt":
             return self.cube_root(args[0])
+        if fn in ("radians", "degrees"):
+            return self.angle(fn, args[0])
         return self.rewrite_target_ast(func(fn.upper(), *args))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """Degrees to radians, or radians to degrees, as a DOUBLE."""
+        return self.rewrite_target_ast(func(fn.upper(), value))
 
     def cube_root(self, value: Expression) -> Expression:
         return self.native("CBRT", value)
@@ -1473,6 +1613,15 @@ class SqlDialect(BaseModel):
     ) -> Expression:
         """``value`` with every match replaced."""
         self.refuse("regexp_replace")
+
+    #: Whether ``regexp_count`` counts a pattern that can match the empty string as PostgreSQL does.
+    regexp_count_empty_match: ClassVar[bool] = False
+
+    def build_regexp_count(
+        self, value: Expression, pattern: RegexPattern, case_insensitive: bool,  # NOSONAR(S1172) — hook signature
+    ) -> Expression:
+        """The number of non-overlapping matches of ``pattern`` in ``value``, scanning left to right."""
+        self.refuse("regexp_count")
 
     # LIKE
 
@@ -1591,6 +1740,71 @@ class SqlDialect(BaseModel):
 
     def list_contains_all(self, values: Expression, other: Expression) -> Expression:  # NOSONAR(S1172) — hook signature
         self.refuse("contains_all")
+
+    def window_order_item(
+        self, value: Expression, *, descending: bool, nulls_first: bool, range_offset: bool, label: str,
+    ) -> list[Expression]:
+        """One window order item with its NULL placement stated: the ``NULLS`` clause, or, with no clause (NULL sorting
+        lowest), a ``CASE`` key on the item's NULL-ness before it where the placement differs; a ``RANGE`` offset
+        frame cannot take that key."""
+        if self.nulls_clause:
+            stated = exp.Ordered(this=value, desc=descending, nulls_first=nulls_first)
+            stated.meta[EXPLICIT_NULLS] = True
+            return [stated]
+        item = exp.Ordered(this=value, desc=descending, nulls_first=not descending)
+        if nulls_first is not descending:
+            return [item]
+        if range_offset:
+            raise WindowFunctionError(
+                summary=f"The window order item `{label}` needs NULL sorted "
+                f"{'first' if nulls_first else 'last'}, which {self.database_name} gives only through a second order "
+                f"key, and a RANGE frame with an offset orders by exactly one.",
+                suggestion=f"State NULLS {'LAST' if nulls_first else 'FIRST'} on the item, or use a ROWS frame.",
+            )
+        null_key = exp.Case(ifs=[exp.If(this=exp.Is(this=value.copy(), expression=exp.Null()),
+                                        true=exp.Literal.number(1))], default=exp.Literal.number(0))
+        return [exp.Ordered(this=null_key, desc=nulls_first, nulls_first=not nulls_first), item]
+
+    def rewrite_window_key(self, key: WindowKey) -> ValueKey:
+        """A row-level window the database lacks, as an exact composite of windows it has (nested windows each become
+        a column of their own); ``key`` itself where it has the window."""
+        return key
+
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:  # NOSONAR(S1172) — hook; overrides read key
+        """``window`` as the database computes ``key`` exactly (a rewrite where it lacks the native form)."""
+        return window
+
+    def true_division(self, quotient: Expression) -> Expression:
+        """A Mode B ``/`` (true division), as the database divides exactly."""
+        return quotient
+
+    def window_call(self, key: WindowKey, args: list[Expression], *, input_type: Optional[DataType] = None) -> Expression:
+        """The call under ``OVER`` over ``args`` (the first typed ``input_type``); a holistic aggregate the database does
+        not window is refused."""
+        function = key.function
+        if function in _HOLISTIC_WINDOWS and function not in self.windowed_holistic:
+            raise WindowFunctionError(
+                summary=f"{_HOLISTIC_WINDOWS[function]} cannot run under OVER on {self.database_name}, which does not "
+                f"evaluate it as a window function.",
+                suggestion="Compute it in an earlier stage and read the result, or run the query on a database that "
+                "windows it.",
+            )
+        if function in _WINDOW_STATS:
+            return self.build_stat_agg_1arg(_WINDOW_STATS[function], args[0])
+        if function == "avg":
+            args = [self.avg_input(args[0], input_type=input_type), *args[1:]]
+        return _WINDOW_CALLS[function](args)
+
+    def fractional_avg(self, input_type: Optional[DataType]) -> bool:
+        """Whether ``AVG`` over ``input_type`` needs its input cast to be a full-precision fraction; a DOUBLE input
+        already is one (an exact decimal keeps its precision)."""
+        return self.integer_avg and kind_of(input_type) is not TypeKind.DOUBLE
+
+    def avg_input(self, value: Expression, *, input_type: Optional[DataType]) -> Expression:
+        """``value`` as ``AVG``'s input."""
+        if not self.fractional_avg(input_type):
+            return value
+        return exp.Cast(this=value, to=exp.DataType.build(self.avg_input_type))
 
     def row_number(self) -> Expression:
         """An arbitrary distinct number per row of the enclosing relation."""
@@ -1851,8 +2065,68 @@ class SqlDialect(BaseModel):
     def build_current_timestamp(self) -> Expression:
         return exp.Cast(this=exp.CurrentTimestamp(), to=self.naive_timestamp_type())
 
+    # -- Time of day (spec: queries/time-of-day) ---------------------------------------------------
+
+    #: Whether this database reads the hour, minute and second of a time of day.
+    time_of_day_parts: ClassVar[bool] = False
+    #: The fractional digits to name for microseconds where a bare ``TIME`` holds fewer.
+    time_of_day_precision: ClassVar[Optional[int]] = None
+    #: Whether a text ``TRY_CAST`` to a time of day checks the clock range itself: the type also holds durations.
+    time_of_day_range_check: ClassVar[bool] = False
+    #: Whether a ``TIME(p)`` cast is rounded here because the type takes no precision.
+    rounds_time_precision: ClassVar[bool] = False
+
+    def time_of_day_type(self) -> exp.DataType:
+        """This database's microsecond time-of-day type; refused where it has none."""
+        try:
+            to = cast_target("TIME", dialect=self)
+        except ValueError as e:
+            raise CastTypeError(summary=str(e), suggestion="cast to a type this database has.") from None
+        if self.time_of_day_precision is not None:
+            to.set("expressions", [exp.DataTypeParam(this=lit(self.time_of_day_precision))])
+        return to
+
+    def build_time_literal(self, value: time) -> Expression:
+        return exp.Cast(this=lit(value.isoformat()), to=self.time_of_day_type())
+
+    def build_current_time(self) -> Expression:
+        """The time of day of ``now()``."""
+        return exp.Cast(this=self.build_current_timestamp(), to=self.time_of_day_type())
+
+    def build_time_cast(
+        self, value: Expression, to: exp.DataType, *, source: Optional[DataType], try_: bool,
+    ) -> Expression:
+        """A cast to a time of day; ``source``: the value's type when a timestamp or a time of day, else text."""
+        if not to.expressions:
+            to = self.time_of_day_type()
+        if source is not None or not try_:
+            return self.build_cast(value, to)
+        if not self.time_of_day_range_check:
+            return self.build_try_cast(value, to)
+        text = as_text(value)
+        return case((self.build_regexp_like(text, parse_regex(TIME_OF_DAY_TEXT), False), exp.Cast(this=text.copy(), to=to)))
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """A time of day as ``HH:MM:SS``, followed by its fraction only when not zero."""
+        return as_text(value)
+
+    def build_time_part(self, part: DatePart, expr: Expression) -> Expression:
+        """The hour, minute or second of a time of day."""
+        if not self.time_of_day_parts:
+            raise UnsupportedServerFunctionError(
+                summary=f"The {part.value} of a time of day is not supported on {self.database_name} yet.",
+                suggestion="Run the query on a database that translates it.",
+            )
+        return self._date_part(part, expr.copy())
+
+    def read_time_of_day(self, column: Expression) -> Expression:
+        """A stored time-of-day column as SLayer reads it; default: as stored."""
+        return column
+
     def build_date_part(self, *, part: DatePart, expr: Expression, operand: DataType) -> Expression:
         """``date_part``: an integer; sub-day parts of a DATE are 0."""
+        if operand is DataType.TIME:
+            return self.build_time_part(part, expr)
         if part in SUB_DAY_PARTS and operand is DataType.DATE:
             return self._date_part(part, self.promote_to_timestamp(expr))
         return self._date_part(part, expr.copy())
@@ -1864,8 +2138,21 @@ class SqlDialect(BaseModel):
         DatePart.HOUR: "HOUR", DatePart.MINUTE: "MINUTE", DatePart.SECOND: "SECOND",
     }
 
+    #: The ``EXTRACT`` field the ``millisecond`` part reads, and its units per millisecond.
+    _SUBSECOND_FIELD: ClassVar[tuple[str, int]] = ("MICROSECOND", 1000)
+
+    def millisecond_part(self, expr: Expression) -> Expression:
+        """The millisecond component of a timestamp, truncated: 0 … 999 (the field may include the whole seconds)."""
+        field, per_millisecond = self._SUBSECOND_FIELD
+        units = exp.Extract(this=exp.var(field), expression=expr)
+        whole = exp.Cast(this=exp.Floor(this=exp.Div(this=units, expression=lit(per_millisecond))),
+                         to=exp.DataType.build("BIGINT"))
+        return exp.Cast(this=exp.Mod(this=whole, expression=lit(1000)), to=exp.DataType.build("INT"))
+
     def _date_part(self, part: DatePart, expr: Expression) -> Expression:
         """``part`` of ``expr`` (owned by the caller); timestamp parts only for a timestamp."""
+        if part is DatePart.MILLISECOND:
+            return self.millisecond_part(expr)
         node: Expression = exp.Extract(this=exp.var(self._EXTRACT_FIELDS[part]), expression=expr)
         if part is DatePart.SECOND:
             node = exp.Floor(this=node)
@@ -1962,12 +2249,12 @@ class SqlDialect(BaseModel):
         """The source time column as compared in a trailing-window frame."""
         return expr
 
-    def build_median(self, inner: Expression) -> Expression:
+    def build_median(self, inner: Expression, *, input_type: Optional[DataType] = None) -> Expression:
         """``PERCENTILE_CONT(0.5)``."""
-        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner)
+        return self.build_percentile(p=exp.Literal.number("0.5"), col_expr=inner, input_type=input_type)
 
     def build_percentile(
-        self, p: Expression, col_expr: Expression,
+        self, p: Expression, col_expr: Expression, *, input_type: Optional[DataType] = None,  # NOSONAR(S1172) — hook parameter dialect overrides read
     ) -> Expression:
         """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)``."""
         return exp.WithinGroup(
@@ -1977,6 +2264,26 @@ class SqlDialect(BaseModel):
                 nulls_first=self.native_nulls_first(descending=False),
             )]),
         )
+
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],  # NOSONAR(S1172) — hook parameter dialect overrides read
+    ) -> Expression:
+        """``PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)``."""
+        return exp.WithinGroup(
+            this=exp.PercentileDisc(this=p.copy()),
+            expression=exp.Order(expressions=[exp.Ordered(
+                this=col_expr.copy(),
+                nulls_first=self.native_nulls_first(descending=False),
+            )]),
+        )
+
+    def build_percentile_approx(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType] = None,
+    ) -> Expression:
+        """The native approximate percentile, else the exact one."""
+        if self.approx_percentile_native:
+            return exp.ApproxQuantile(this=col_expr.copy(), quantile=p.copy())
+        return self.build_percentile(p=p, col_expr=col_expr, input_type=input_type)
 
     def build_approx_count_distinct(self, col_expr: Expression) -> Expression:
         """Approximate distinct; the exact ``COUNT(DISTINCT col)`` unless the dialect has a native one."""
@@ -2357,6 +2664,27 @@ class SqlDialect(BaseModel):
         """Hook: follow-up probe for the correlated-subquery setting (its row is ``correlated_row``), or ``None``."""
         return None
 
+    def time_setting_probe(self, profile: ServerProfile) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: follow-up probe for the time-type setting (its row is ``time_row``), or ``None``."""
+        return None
+
+    #: Whether a time of day needs a server version or setting here (``time_of_day_refusal``).
+    time_of_day_gated: ClassVar[bool] = False
+    #: This statement's time of day needs the server's time-type setting sent with it.
+    sends_time_setting: bool = False
+
+    def time_of_day_refusal(self, profile: ServerProfile, *, construct: str) -> Optional[ServerVersionError]:  # NOSONAR(S1172) — no-op hook default
+        """Hook: why this server or user cannot run ``construct``, a time of day, or ``None``."""
+        return None
+
+    def time_setting_needed(self, profile: ServerProfile) -> bool:  # NOSONAR(S1172) — no-op hook default
+        """Hook: whether a time-of-day statement must enable the time-type setting on this server."""
+        return False
+
+    def attach_time_setting(self, statement: Expression) -> None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: enable the time-type setting on ``statement`` in place, where ``sends_time_setting``."""
+        return None
+
     def type_probe(self, query: Expr) -> exp.Select:
         """Hook: ``query`` bounded to ``type_probe_rows`` rows, for typing its columns."""
         source = exp.Subquery(this=query.copy(), alias=exp.TableAlias(this=exp.to_identifier("_types")))
@@ -2367,6 +2695,7 @@ class SqlDialect(BaseModel):
         *,
         base_row: Sequence[Any] | None,  # NOSONAR(S1172) — no-op hook default; overrides use it
         correlated_row: Sequence[Any] | None = None,  # NOSONAR(S1172) — no-op hook default
+        time_row: Sequence[Any] | None = None,  # NOSONAR(S1172) — no-op hook default
     ) -> ServerProfile:
         """Hook: probe rows → profile; tolerant, never raises."""
         return ServerProfile()
@@ -2408,6 +2737,15 @@ class SqlDialect(BaseModel):
     def result_census_select(self, columns: Sequence[str]) -> list[Expression] | None:  # NOSONAR(S1172) — no-op hook default
         """Hook: a select-list counting ``columns``' stored value kinds over a sample, or ``None`` when the cursor types them."""
         return None
+
+    def declared_types_select(self, sources: Sequence[ColumnSource]) -> Expression | None:  # NOSONAR(S1172) — no-op hook default
+        """Hook: a query of ``(result column, declared type)`` for ``sources``, where the census cannot type a
+        declared type's values; ``None``: nothing to read."""
+        return None
+
+    def declared_result_types(self, rows: Sequence[Sequence[Any]]) -> dict[str, ResultColumnType]:  # NOSONAR(S1172) — no-op hook default
+        """Hook: ``declared_types_select``'s rows → the result columns their declaration types."""
+        return {}
 
     def result_census_types(  # NOSONAR(S1172) — no-op hook default
         self, *, columns: Sequence[str], row: Sequence[Any] | None,
@@ -2453,7 +2791,7 @@ class SqlDialect(BaseModel):
             )
             for c in raw
         ]
-        untyped = {c["name"] for c in raw if isinstance(c["type"], sa.types.NullType)}
+        untyped = {c["name"] for c in raw if is_untyped_sa_type(c["type"])}
         catalog = self.catalog_types_query(location) if untyped else None
         if catalog is None:
             return columns

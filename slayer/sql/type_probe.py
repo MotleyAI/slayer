@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
+from slayer.sql.column_sources import column_sources
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.parse import is_read_only_query
 
@@ -43,6 +44,13 @@ class TypeProbe(str):
         if select is None or self._sample is None or self._render is None:
             return None
         return self._render(exp.select(*select).from_(self._sample.subquery("_types")))
+
+    def declared_sql(self, *, dialect: SqlDialect) -> str | None:
+        """The dialect's read of the declared types of the probed columns its census cannot type; ``None``: none."""
+        if self._sample is None or self._render is None:
+            return None
+        select = dialect.declared_types_select(column_sources(self._sample))
+        return None if select is None else self._render(select)
 
 
 def _row_bound(statement: Expr) -> Expr | None:

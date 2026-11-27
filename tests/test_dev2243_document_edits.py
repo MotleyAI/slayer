@@ -174,6 +174,11 @@ def shop(model: SlayerDataset) -> SlayerDataset:
     return model.model_copy(update={"data_source": DS})
 
 
+async def without_rpc(storage: StorageBackend) -> None:
+    """Remove ``revenue_per_customer``, so ``orders`` and ``customers`` can be deleted."""
+    await storage.edit_semantic_model("sales", data_source=DS, remove_metrics=["revenue_per_customer"])
+
+
 async def must_get(storage: StorageBackend, name: str) -> SlayerDataset:
     found = await storage.get_dataset(name, data_source=DS)
     assert found is not None, name
@@ -427,6 +432,7 @@ async def test_create_dataset_without_a_semantic_model_joins_the_datasource_mode
 async def test_delete_dataset_removes_it_from_the_document(tmp_path: Path, kind: str) -> None:
     storage = make_storage(kind, tmp_path)
     await store_document(storage, SALES)
+    await without_rpc(storage)
     await mcp_text(storage, "delete_dataset", name="orders", data_source=DS)
     assert [d["name"] for d in (await doc_of(storage))["datasets"]] == ["customers"]
     assert await storage.get_dataset("orders", data_source=DS) is None
@@ -676,6 +682,7 @@ async def test_every_document_write_changes_the_graph_fingerprint(tmp_path: Path
     await store_document(storage, SALES)
     seen.append(await storage.graph_fingerprint())
     await _describe(storage, "orders", "Orders.")
+    await without_rpc(storage)
     seen.append(await storage.graph_fingerprint())
     await storage.delete_dataset("customers", data_source=DS)
     seen.append(await storage.graph_fingerprint())
@@ -906,6 +913,7 @@ async def test_deleting_a_document_dataset_strips_memory_entities(tmp_path: Path
     storage = make_storage(kind, tmp_path)
     await store_document(storage, SALES)
     await storage.save_memory(id="m1", learning="Orders by region", entities=[f"{DS}.orders", f"{DS}.customers"])
+    await without_rpc(storage)
     assert await storage.delete_dataset("orders", data_source=DS) is True
     assert (await storage.get_memory("m1")).entities == [f"{DS}.customers"]
     doc = await doc_of(storage)
@@ -917,6 +925,7 @@ async def test_deleting_a_document_dataset_strips_memory_entities(tmp_path: Path
 async def test_deleting_a_document_dataset_removes_its_embeddings(tmp_path: Path, kind: str) -> None:
     storage = make_storage(kind, tmp_path)
     await store_document(storage, SALES)
+    await without_rpc(storage)
     await _save_embeddings(storage)
     await storage.delete_dataset("orders", data_source=DS)
     assert await _embedded(storage) == {f"{DS}.customers", f"{DS}.revenue_per_customer"}
@@ -927,8 +936,8 @@ async def test_deleting_a_document_dataset_drops_inbound_relationships(tmp_path:
     storage = make_storage(kind, tmp_path)
     await store_document(storage, SALES)
     await storage.save_dataset(shop(returns_dataset()), _validate=False)
-    with pytest.warns(UserWarning, match="revenue_per_customer"):
-        await storage.delete_dataset("customers", data_source=DS)
+    await without_rpc(storage)
+    await storage.delete_dataset("customers", data_source=DS)
     assert (await must_get(storage, "returns")).relationships == []
     assert (await must_get(storage, "orders")).relationships == []
     assert not (await doc_of(storage)).get("relationships")
@@ -947,6 +956,8 @@ async def test_deleting_a_dataset_a_stage_reads_cascades_alike_for_document_memb
         if owner == "standalone":
             await storage.save_dataset(shop(customers_dataset()))
             await storage.save_dataset(shop(orders_dataset()))
+        else:
+            await without_rpc(storage)
         await engine.save_dataset(BY_STATUS)
         resp = await engine.execute({"population": "by_status", "dimensions": ["by_status.status"]})
         assert {r["by_status.status"] for r in resp.data} == {"completed", "open"}

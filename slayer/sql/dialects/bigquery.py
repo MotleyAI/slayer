@@ -25,6 +25,7 @@ from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
 from slayer.sql.dialects.base import (
+    AngleFn,
     DEFAULT_DECIMAL_PRECISION,
     NativeFn,
     COMPARISON_NODES,
@@ -53,7 +54,9 @@ from slayer.sql.dialects.base import (
     text_try_cast,
     zone_name,
 )
-from slayer.sql.dialects._ordered_set_split import split_percentile_selects
+from slayer.sql.dialects._ordered_set_split import (
+    Columns, PercentileColumns, complement_fraction, discrete_percentile, split_percentile_selects,
+)
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.drivers import import_driver
 from slayer.sql.dialects.reflection import TableLocation, clean_comment, col, eq_literal, relation
@@ -140,11 +143,24 @@ def _durable_oauth_material(raw: str) -> str:
     return json.dumps(durable, sort_keys=True, default=str)
 
 
-def _analytic_percentile(p: Expr, value: Expr, partition: Sequence[Expr]):
-    """``PERCENTILE_CONT(v, p) OVER (PARTITION BY <keys>)`` per row, its MAX per group."""
-    window = exp.Window(this=exp.PercentileCont(this=value.copy(), expression=p.copy()),
-                        partition_by=[k.copy() for k in partition])
-    return [window], lambda reads: exp.Max(this=reads[0])
+def _analytic(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
+    """``F(v, p) OVER (PARTITION BY <keys>)`` per row, its MAX per group; a descending ``PERCENTILE_DISC`` is ranked
+    (no ascending fraction picks its value)."""
+
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+        if descending and function is exp.PercentileDisc:
+            return discrete_percentile(p, value, partition, descending=True)
+        fraction = complement_fraction(p) if descending else p
+        window = exp.Window(this=function(this=value.copy(), expression=fraction.copy()),
+                            partition_by=[k.copy() for k in partition])
+        return [window], lambda reads: exp.Max(this=reads[0])
+
+    return columns
+
+
+def _percentile_columns(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    kind = type(node.this)
+    return _analytic(kind) if kind in (exp.PercentileCont, exp.PercentileDisc) else None
 
 
 class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
@@ -179,6 +195,11 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     database_name: ClassVar[str] = "BigQuery"
     native_lists: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """``%E*S``: the seconds with only the fraction digits they need."""
+        return anon("FORMAT_TIME", lit("%H:%M:%E*S"), value)
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({
         "REPEAT", "LPAD", "RPAD", "REVERSE", "CHR", "CBRT", "GREATEST", "LEAST",
     })
@@ -196,8 +217,8 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
         return text_try_cast(value, to)
 
     def rewrite_statement(self, statement: Expression) -> Expression:
-        """``PERCENTILE_CONT`` is analytic only."""
-        return split_percentile_selects(statement.copy(), columns=_analytic_percentile)
+        """``PERCENTILE_CONT`` and ``PERCENTILE_DISC`` are analytic only."""
+        return split_percentile_selects(statement.copy(), columns=_percentile_columns)
 
     def cast_type_supported(self, data_type: exp.DataType) -> bool:
         """``BIGNUMERIC`` holds 38 integer and 38 fractional digits; a wider ``DECIMAL`` cannot be expressed."""
@@ -331,6 +352,21 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
     ) -> Expression:
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement))
+
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        """``REGEXP_EXTRACT_ALL`` takes at most one capturing group: every group becomes non-capturing."""
+        matches = anon("REGEXP_EXTRACT_ALL", value, self.regex_text(pattern, case_insensitive=case_insensitive,
+                                                                     capture=0))
+        return case((exp.Not(this=any_null(value)), anon("ARRAY_LENGTH", matches)))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """No ``RADIANS`` / ``DEGREES``: scaled by π (``ACOS(-1)``)."""
+        pi = anon("ACOS", lit(-1))
+        if fn == "radians":
+            return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=pi)), expression=lit(180))
+        # A FLOAT64 factor: INT64 * 180 can overflow.
+        factor = exp.Literal.number("180.0")
+        return exp.Div(this=exp.Paren(this=exp.Mul(this=operand_copy(value), expression=factor)), expression=pi)
 
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         return anon("JSON_VALUE", _json_document(value, native=native), lit(path.text))

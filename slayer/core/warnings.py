@@ -671,6 +671,26 @@ class TimeZoneUndeclaredWarning(SlayerWarning):
         )
 
 
+class OntologyMismatchWarning(SlayerWarning):
+    """Mapping ``mapping`` of ontology ``ontology`` disagrees with the semantic model of ``data_source``: an
+    ``identifier`` against a dataset's keys, or a ``multiplicity`` against a relationship's cardinality."""
+
+    kind: Literal["ontology_mismatch"] = "ontology_mismatch"
+    check: Literal["identifier", "multiplicity"]
+    data_source: str
+    mapping: str
+    ontology: str
+    concept: Optional[str] = None
+    dataset: Optional[str] = None
+    fields: List[str] = Field(default_factory=list)
+    relationship: Optional[str] = None
+    suggestion: Optional[str] = None
+    message: str
+
+    def human_message(self) -> str:
+        return _single_line(self.message)
+
+
 # Discriminated union, not the bare base: a ``List[SlayerWarning]`` would validate
 # down to the base type and drop subclass fields. Keyed on ``kind``, each round-trips.
 AnySlayerWarning = Annotated[
@@ -700,6 +720,7 @@ AnySlayerWarning = Annotated[
         StoredUpgradeNeededWarning,
         IgnoredStoredEntityWarning,
         TimeZoneUndeclaredWarning,
+        OntologyMismatchWarning,
     ],
     Field(discriminator="kind"),
 ]
@@ -885,6 +906,17 @@ class SlayerTimeZoneUndeclaredWarning(UserWarning):
     """Carrier ``UserWarning`` for a ``TimeZoneUndeclaredWarning`` payload — one wording on both channels."""
 
     def __init__(self, payload: TimeZoneUndeclaredWarning) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return self.payload.human_message()
+
+
+class SlayerOntologyMismatchWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``OntologyMismatchWarning`` payload — one wording on both channels."""
+
+    def __init__(self, payload: OntologyMismatchWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

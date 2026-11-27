@@ -758,6 +758,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.delete(
         "/datasets/{name}",
         responses={
+            400: {"description": "The delete would break a stored dependent, or touches hidden content."},
             404: {"description": "Dataset not found."},
             409: {
                 "description": (
@@ -782,6 +783,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     f"or PUT /datasources/priority to disambiguate."
                 ),
             )
+        except ValueError as exc:  # a refusal: the delete would break a stored dependent
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
         return {"status": "deleted", "name": name}
@@ -801,29 +804,37 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def create_semantic_model(body: SemanticModelRequest) -> dict[str, Any]:
         if body.data_source is None:
             raise HTTPException(status_code=400, detail="data_source is required")
+        notes: list[SlayerWarning] = []
         try:
             await storage.create_semantic_model(data_source=body.data_source, name=body.name, content=body.content,
-                                                datasets=body.datasets)
+                                                datasets=body.datasets, warnings_out=notes)
         except ValueError as e:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "created"}
+        return {"status": "created", "warnings": _dumped(notes)}
 
     @app.put("/semantic-models/{data_source}/{name}", responses={400: {"description": "The document was refused."}})
     async def replace_semantic_model(data_source: str, name: str, body: SemanticModelRequest) -> dict[str, Any]:
         if body.content is None:
             raise HTTPException(status_code=400, detail="content is required")
         text = body.content if isinstance(body.content, str) else yaml.safe_dump(body.content, sort_keys=False)
+        notes: list[SlayerWarning] = []
         try:
-            await storage.save_semantic_model_text(data_source=data_source, name=name, text=text)
+            await storage.save_semantic_model_text(data_source=data_source, name=name, text=text, warnings_out=notes)
         except ValueError as e:  # SlayerError is a ValueError subclass
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "replaced", "name": name}
+        return {"status": "replaced", "name": name, "warnings": _dumped(notes)}
 
-    @app.delete("/semantic-models/{data_source}/{name}", responses={404: {"description": "Semantic model not found."}})
+    @app.delete("/semantic-models/{data_source}/{name}", responses={
+        404: {"description": "Semantic model not found."},
+        400: {"description": "The delete would break a stored dependent."}})
     async def delete_semantic_model(data_source: str, name: str) -> dict[str, Any]:
-        if not await storage.delete_semantic_model(name, data_source=data_source):
+        if not await _refused_as_400(storage.delete_semantic_model(name, data_source=data_source)):
             raise HTTPException(status_code=404, detail=f"Semantic model '{data_source}.{name}' not found")
         return {"status": "deleted", "name": name}
+
+    # Pass the engine so the search service's post-fusion
+    # field-hit hook can auto-refresh stale categorical fields.
+    search_service = SearchService(storage=storage, engine=engine)
 
     @app.get("/ontologies")
     async def list_ontologies() -> list[dict[str, str]]:
@@ -841,20 +852,25 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def create_ontology(body: DocumentRequest) -> dict[str, Any]:
         text = content_text(body.content)
         name = _named(text)
-        await _refused_as_400(storage.save_ontology_text(name=name, text=text))
-        return {"status": "created", "name": name}
+        notes: list[SlayerWarning] = []
+        await _refused_as_400(storage.save_ontology_text(name=name, text=text, warnings_out=notes))
+        return {"status": "created", "name": name, "warnings": _dumped(notes),
+                "notes": await search_service.refresh_after_concept_change()}
 
     @app.put("/ontologies/{name}", responses={400: {"description": "The document was refused."}})
     async def replace_ontology(name: str, body: DocumentRequest) -> dict[str, Any]:
-        await _refused_as_400(storage.save_ontology_text(name=name, text=content_text(body.content)))
-        return {"status": "replaced", "name": name}
+        notes: list[SlayerWarning] = []
+        await _refused_as_400(storage.save_ontology_text(name=name, text=content_text(body.content),
+                                                         warnings_out=notes))
+        return {"status": "replaced", "name": name, "warnings": _dumped(notes),
+                "notes": await search_service.refresh_after_concept_change()}
 
     @app.delete("/ontologies/{name}", responses={404: {"description": "Ontology not found."},
                                                 400: {"description": "A stored mapping resolves against it."}})
     async def delete_ontology(name: str) -> dict[str, Any]:
         if not await _refused_as_400(storage.delete_ontology(name)):
             raise HTTPException(status_code=404, detail=f"Ontology '{name}' not found")
-        return {"status": "deleted", "name": name}
+        return {"status": "deleted", "name": name, "notes": await search_service.refresh_after_concept_change()}
 
     @app.get("/ontology-mappings")
     async def list_ontology_mappings(data_source: str | None = None) -> list[dict[str, str]]:
@@ -872,22 +888,27 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def create_ontology_mapping(body: MappingRequest) -> dict[str, Any]:
         text = content_text(body.content)
         name = _named(text)
+        warnings_out: list[SlayerWarning] = []
         notes = await _refused_as_400(storage.save_ontology_mapping_text(data_source=body.data_source, name=name,
-                                                                         text=text))
-        return {"status": "created", "name": name, "notes": notes}
+                                                                         text=text, warnings_out=warnings_out))
+        notes += await search_service.refresh_after_concept_change(body.data_source)
+        return {"status": "created", "name": name, "notes": notes, "warnings": _dumped(warnings_out)}
 
     @app.put("/ontology-mappings/{data_source}/{name}", responses={400: {"description": "The document was refused."}})
     async def replace_ontology_mapping(data_source: str, name: str, body: DocumentRequest) -> dict[str, Any]:
+        warnings_out: list[SlayerWarning] = []
         notes = await _refused_as_400(storage.save_ontology_mapping_text(data_source=data_source, name=name,
-                                                                         text=content_text(body.content)))
-        return {"status": "replaced", "name": name, "notes": notes}
+                                                                         text=content_text(body.content),
+                                                                         warnings_out=warnings_out))
+        notes += await search_service.refresh_after_concept_change(data_source)
+        return {"status": "replaced", "name": name, "notes": notes, "warnings": _dumped(warnings_out)}
 
     @app.delete("/ontology-mappings/{data_source}/{name}", responses={
         404: {"description": "Mapping not found."}, 400: {"description": "The deletion was refused."}})
     async def delete_ontology_mapping(data_source: str, name: str) -> dict[str, Any]:
         if not await _refused_as_400(storage.delete_ontology_mapping(name, data_source)):
             raise HTTPException(status_code=404, detail=f"Mapping '{data_source}.{name}' not found")
-        return {"status": "deleted", "name": name}
+        return {"status": "deleted", "name": name, "notes": await search_service.refresh_after_concept_change(data_source)}
 
     @app.get("/datasources/priority")
     async def get_datasource_priority() -> dict[str, list[str]]:
@@ -1149,9 +1170,6 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     # ---------- Semantic search -----------------------------
 
-    # Pass the engine so the search service's post-fusion
-    # field-hit hook can auto-refresh stale categorical fields.
-    search_service = SearchService(storage=storage, engine=engine)
 
     @app.post(
         "/search",

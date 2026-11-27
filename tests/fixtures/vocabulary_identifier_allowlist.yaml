@@ -310,6 +310,7 @@ carve_outs:
   - {name: columns, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
   - {name: create_model_from_query, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
   - {name: create_model_from_query_sync, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: time_columns, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
   - {name: delete_model_by_name, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
   - {name: detect_join_cardinality, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
   - {name: edit_model_remove, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
@@ -325,6 +326,8 @@ carve_outs:
   - {name: column, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
   - {name: expected_columns, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
   - {name: measures, file: slayer/engine/response_meta.py, reason: "deprecated twin until 3.0"}
+  - {name: columns, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
+  - {name: time_of_day_columns, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
   - {name: from_columns, file: slayer/engine/stage_edges.py, reason: "Ossie's own wire name"}
   - {name: column_pairs, file: slayer/facade/catalog.py, reason: "Ossie's own wire name"}
   - {name: join_type, file: slayer/facade/catalog.py, reason: "SQL JOIN as an operation"}
@@ -415,6 +418,14 @@ carve_outs:
   - {name: collect_model_entity_pairs, file: slayer/search/render.py, reason: "deprecated twin until 3.0"}
   - {name: _model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
   - {name: model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
+  - {name: ColumnSource, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _every_column, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _listed_column, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _one_column, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column_sources, file: slayer/sql/column_sources.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: Columns, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: ColumnsFor, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: PercentileColumns, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: _COLUMN, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/dialects/_ordered_set_split.py, reason: "SQL column in a SQL AST, statement or wire surface"}
@@ -430,7 +441,9 @@ carve_outs:
   - {name: join_kind, file: slayer/sql/dialects/base.py, reason: "SQL JOIN as an operation"}
   - {name: read_column, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
   - {name: reflect_columns, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: _percentile_columns, file: slayer/sql/dialects/bigquery.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: column, file: slayer/sql/dialects/bigquery.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/dialects/bigquery.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: columns_query, file: slayer/sql/dialects/bigquery.py, reason: "physical database or result-set column"}
   - {name: read_column, file: slayer/sql/dialects/bigquery.py, reason: "physical database or result-set column"}
   - {name: _exists_beside_array_join, file: slayer/sql/dialects/clickhouse.py, reason: "SQL JOIN as an operation"}
@@ -463,7 +476,9 @@ carve_outs:
   - {name: referred_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: reflect_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
   - {name: _group_by_columns_only, file: slayer/sql/dialects/tsql.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _percentile_columns, file: slayer/sql/dialects/tsql.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: _reads_no_column, file: slayer/sql/dialects/tsql.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: columns, file: slayer/sql/dialects/tsql.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: describe_cursor_column, file: slayer/sql/dialects/tsql.py, reason: "physical database or result-set column"}
   - {name: reads_source_column, file: slayer/sql/field_expansion.py, reason: "physical database or result-set column"}
   - {name: windowed_column_ast, file: slayer/sql/field_expansion.py, reason: "SQL column in a SQL AST, statement or wire surface"}
@@ -554,6 +569,7 @@ carve_outs:
   - {name: _list_semantic_model_identities, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: _patch_semantic_model_text, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: _save_semantic_model_text_impl, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
+  - {name: _store_semantic_model_text, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: _supports_semantic_models, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: delete_semantic_model, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
   - {name: get_semantic_model_text, file: slayer/storage/base.py, reason: "Ossie's semantic model (the document)"}
@@ -614,6 +630,7 @@ carve_outs:
   - {name: UnqualifiedModelMetricReferenceError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: ModelResolutionError, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: model, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
+  - {name: semantic_model, file: slayer/core/errors.py, reason: "Ossie's semantic model (the document)"}
   - {name: _AggregatedMeasureRef, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
   - {name: _parse_formula, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
   - {name: formula, file: slayer/core/formula.py, reason: "deprecated twin until 3.0"}
@@ -650,7 +667,10 @@ carve_outs:
   - {name: model, file: slayer/ontology/mapping.py, reason: "Ossie's semantic model (the document)"}
   - {name: model, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_name, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
-  - {name: model_of, file: slayer/ontology/scope.py, reason: "Ossie's semantic model (the document)"}
+  - {name: model_of, file: slayer/core/datasource_scope.py, reason: "Ossie's semantic model (the document)"}
+  - {name: from_columns, file: slayer/ontology/use.py, reason: "Ossie's own wire name"}
+  - {name: model_findings, file: slayer/ontology/use.py, reason: "Ossie's semantic model (the document)"}
+  - {name: to_columns, file: slayer/ontology/use.py, reason: "Ossie's own wire name"}
   - {name: _declare_columns, file: slayer/osi/importer.py, reason: "physical database or result-set column"}
   - {name: column, file: slayer/osi/importer.py, reason: "physical database or result-set column"}
   - {name: model, file: slayer/osi/importer.py, reason: "Ossie's semantic model (the document)"}
@@ -702,12 +722,12 @@ carve_outs:
   - {name: check_model_metric, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: visible_model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
-  - {name: warn_broken_model_metrics, file: slayer/storage/model_metric_rules.py, reason: "Ossie's semantic model (the document)"}
   - {name: column, file: slayer/storage/ossie_render.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: from_columns, file: slayer/storage/ossie_render.py, reason: "Ossie's own wire name"}
   - {name: model_metrics, file: slayer/storage/ossie_render.py, reason: "OSI's own word (foreign format)"}
   - {name: to_columns, file: slayer/storage/ossie_render.py, reason: "Ossie's own wire name"}
   - {name: model_scoped, file: slayer/storage/ossie_render.py, reason: "OSI's own word (foreign format)"}
+  - {name: broken_model_metrics, file: slayer/storage/dependents.py, reason: "Ossie's semantic model (the document)"}
   - {name: column, file: slayer/storage/semantic_models.py, reason: "SQL column in a SQL AST, statement or wire surface"}
   - {name: analyse_model_scoped, file: slayer/storage/semantic_models.py, reason: "Ossie's semantic model (the document)"}
   - {name: MODEL_SUFFIX, file: slayer/storage/stored_layout.py, reason: "Ossie's semantic model (the document)"}

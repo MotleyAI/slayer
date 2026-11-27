@@ -12,6 +12,11 @@ on:
     # same lint + test gate as PRs to main.
     branches: ['**']
 
+# A new push to a PR cancels that PR's run still in progress; other runs never cancel or queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Full basedpyright check against the committed ratchet baseline; parallel, as it needs ~3 GB.
   type-check:
@@ -54,14 +59,17 @@ jobs:
           git fetch --no-tags origin +refs/heads/1.x:refs/remotes/origin/1.x
           poetry run python -m scripts.forward_merge_specs --base "$BASE_SHA" --head "$HEAD_SHA" --one-x origin/1.x
 
+  # The 3.11 jobs run on every push; their 3.14 twins (steps shared by YAML alias) only when py314-gate allows.
   unit-tests:
     runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.11"
     strategy:
       matrix:
-        python-version: ["3.11", "3.14"]
+        python-version: ["3.11"]
         shard: [1, 2, 3, 4]
 
-    steps:
+    steps: &unit-test-steps
       - uses: actions/checkout@v4
 
       - name: Set up JDK 17 (for the Flight SQL JDBC tests)
@@ -72,7 +80,7 @@ jobs:
 
       - uses: ./.github/actions/poetry-env
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ env.PYTHON_VERSION }}
 
       # The Ossie corpus tests run upstream's validator and portability grader through `uv run`.
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
@@ -80,10 +88,11 @@ jobs:
       - name: Run unit tests (shard ${{ matrix.shard }}/4)
         timeout-minutes: 25
         # One of four duration-balanced module groups (tests/_sharding.py); -n logical
-        # uses every vCPU (-n auto only the physical cores). The hang watchdog
-        # (tests/_hang_watchdog.py) dumps every process's stacks at 22 minutes.
+        # uses every vCPU (-n auto only the physical cores); worksteal spreads a shard's
+        # heaviest modules across workers. The hang watchdog (tests/_hang_watchdog.py)
+        # dumps every process's stacks at 22 minutes.
         run: >-
-          poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --durations=25
+          poetry run pytest tests/ -m "not integration" --timeout=120 -n logical --dist worksteal --durations=25
           --shard ${{ matrix.shard }}/4 --store-shard-durations "$RUNNER_TEMP/shard-durations.json"
           --stall-report-after 120 --stack-dump-after 1320 --hang-report-dir "$RUNNER_TEMP/hang-reports"
           --hard-timeout-grace 30
@@ -101,7 +110,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: hang-reports-${{ matrix.python-version }}-${{ matrix.shard }}
+          name: hang-reports-${{ env.PYTHON_VERSION }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/hang-reports
           if-no-files-found: ignore
           retention-days: 14
@@ -111,9 +120,34 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: shard-durations-${{ matrix.python-version }}-${{ matrix.shard }}
+          name: shard-durations-${{ env.PYTHON_VERSION }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/shard-durations.json
           retention-days: 14
+
+  py314-gate:
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/expensive-job-gate.yml
+    with:
+      workflow: ci.yml
+      jobs: |
+        unit-tests-py314 (1)
+        unit-tests-py314 (2)
+        unit-tests-py314 (3)
+        unit-tests-py314 (4)
+        integration-tests-py314
+
+  unit-tests-py314:
+    needs: py314-gate
+    if: needs.py314-gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.14"
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps: *unit-test-steps
 
   # The lock pins a sqlglot that parses AGG(...) as a generic call; the newest parses it as exp.Agg.
   sqlglot-latest:
@@ -139,11 +173,13 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.11"
     strategy:
       matrix:
-        python-version: ["3.11", "3.14"]
+        python-version: ["3.11"]
 
-    steps:
+    steps: &integration-test-steps
       - uses: actions/checkout@v4
 
       - name: Set up JDK 17 (for the Flight SQL JDBC tests)
@@ -154,7 +190,7 @@ jobs:
 
       - uses: ./.github/actions/poetry-env
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ env.PYTHON_VERSION }}
 
       # Install a pinned, checksum-verified DuckDB CLI into ~/.duckdb/cli/latest
       # (the layout the installer uses and the 15_duckdb notebook expects on
@@ -240,6 +276,14 @@ jobs:
             --ignore=tests/integration/test_integration_trino.py \
             --ignore=tests/integration/test_integration_ossie_gate.py
 
+  integration-tests-py314:
+    needs: py314-gate
+    if: needs.py314-gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.14"
+    steps: *integration-test-steps
+
   # The Docker examples' verify.py checks run in examples.yml.
 
   bigquery-gate:
@@ -249,7 +293,7 @@ jobs:
     uses: ./.github/workflows/expensive-job-gate.yml
     with:
       workflow: ci.yml
-      job: bigquery-example
+      jobs: bigquery-example
 
   bigquery-example:
     needs: bigquery-gate

@@ -19,6 +19,7 @@ import yaml
 
 from slayer.core.query import SlayerQuery
 from slayer.core.vocabulary import stored_query
+from slayer.storage import granularity_rename
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_keys import CURRENT_KEYS, dataset_in
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -245,7 +246,7 @@ class TestGate:
     async def test_a_nested_stage_is_judged_by_its_own_version(self, tmp_path: Path, backend: str) -> None:
         stage = {**stored_query(stage_doc(time_dimensions=["date_trunc('left', events.created_at)"],
                                           measures=[QUALIFIED_SUM])),
-                 "version": CURRENT_VERSIONS["SlayerQuery"] - 1}
+                 "version": granularity_rename.RENAME_GATES["left"]["SlayerQuery"] - 1}
         backed = _current(query_backed_doc(name="bucketed", stage=stage), "SlayerModel")
         storage, _ = await _store(tmp_path, backend=backend, granularities=[_recorded("left_granularity", "left")],
                                   datasets=[backed])
@@ -256,7 +257,7 @@ class TestGate:
     async def test_a_memorys_query_is_judged_by_its_own_version(self, tmp_path: Path, backend: str) -> None:
         query = {**stored_query(stage_doc(time_dimensions=["date_trunc('left', events.created_at)"],
                                           measures=[QUALIFIED_SUM])),
-                 "version": CURRENT_VERSIONS["SlayerQuery"] - 1}
+                 "version": granularity_rename.RENAME_GATES["left"]["SlayerQuery"] - 1}
         current = {"version": CURRENT_VERSIONS["Memory"], "id": "m", "learning": "by bucket", "entities": [],
                    "query": query}
         storage, _ = await _store(tmp_path, backend=backend, granularities=[_recorded("left_granularity", "left")],

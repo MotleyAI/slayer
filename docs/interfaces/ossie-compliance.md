@@ -5,7 +5,7 @@ claim is measured against the Ossie specification vendored in SLayer's test suit
 (26 November 2026), and names the tests that back it. The Tier-1 databases are SQLite, DuckDB, PostgreSQL, MySQL,
 ClickHouse, SQL Server, Trino, Snowflake and BigQuery. The compliance gate runs on SQLite and DuckDB on every pull
 request (`tests/test_ossie_gate.py`), on the others nightly (`tests/integration/test_integration_ossie_gate.py`), and on
-all nine weekly against upstream's `main`.
+all nine weekly against upstream's `main`. ClickHouse is measured on server 25.12.
 
 | Layer | Claim | Certified on |
 |---|---|---|
@@ -31,75 +31,31 @@ cases are:
 
 | Database | Pass | Refused | Gap |
 |---|---|---|---|
-| SQLite | 155 | 4 | 45 |
-| DuckDB | 157 | 4 | 43 |
-| PostgreSQL | 157 | 4 | 43 |
-| MySQL | 157 | 4 | 43 |
-| ClickHouse | 155 | 4 | 45 |
-| SQL Server | 154 | 7 | 43 |
-| Trino | 157 | 4 | 43 |
-| Snowflake | 157 | 4 | 43 |
-| BigQuery | 157 | 4 | 43 |
+| SQLite | 206 | 0 | 0 |
+| DuckDB | 206 | 0 | 0 |
+| PostgreSQL | 206 | 0 | 0 |
+| MySQL | 205 | 1 | 0 |
+| ClickHouse | 206 | 0 | 0 |
+| SQL Server | 202 | 4 | 0 |
+| Trino | 206 | 0 | 0 |
+| Snowflake | 206 | 0 | 0 |
+| BigQuery | 206 | 0 | 0 |
 
 | Construct | Example | Status |
 |---|---|---|
-| `APPROX_PERCENTILE` | `APPROX_PERCENTILE(orders.amount, 0.5)` (RECOMMENDED) | refused |
-| `RADIANS` | `RADIANS(180)` (RECOMMENDED) | refused |
-| `DEGREES` | `DEGREES(0)` (RECOMMENDED) | refused |
-| `REGEXP_COUNT` | `REGEXP_COUNT(orders.status, 'n')` (RECOMMENDED) | refused |
+| `REGEXP_COUNT` | `REGEXP_COUNT(orders.status, 'n')` (RECOMMENDED), on MySQL and on SQL Server before 2025 | refused |
 | `REGEXP_LIKE` | `REGEXP_LIKE(orders.status, '^pe')`, on SQL Server before 2025 | refused |
 | `REGEXP_EXTRACT` | `REGEXP_EXTRACT(orders.status, 'e.d')`, on SQL Server before 2025 | refused |
 | `REGEXP_REPLACE` | `REGEXP_REPLACE(orders.status, 'n', 'N')`, on SQL Server before 2025 | refused |
-| `PERCENTILE_DISC` | `PERCENTILE_DISC(0.25) WITHIN GROUP (ORDER BY orders.amount)` | planned |
-| `DISTINCT MODIFIER` | `SUM(DISTINCT orders.qty)` (only `COUNT(DISTINCT …)` is supported) | planned |
-| `CURRENT_TIME` | `CURRENT_TIME`, `CURRENT_TIME()` | planned |
-| `EXTRACT(DAYOFWEEK)` | `EXTRACT(DAYOFWEEK FROM orders.created_at)` | planned |
-| `DATE_PART(DAYOFWEEK)` | `DATE_PART('dayofweek', orders.created_at)` | planned |
-| `EXTRACT(MILLISECOND)` | `EXTRACT(MILLISECOND FROM orders.created_at)` | planned |
-| `DATE_PART(MILLISECOND)` | `DATE_PART('millisecond', orders.created_at)` | planned |
-| `TIMESTAMP_NTZ '2024-01-15 10:30:00'` | a `TIMESTAMP_NTZ` literal | planned |
-| `TIME '10:30:00'` | a time-of-day literal | planned |
-| `CAST('10:30:00' AS TIME)` | a cast to a time of day (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
-| `CAST AS TIME` | `CAST('10:30:00' AS TIME)` (answers outside strict on DuckDB, PostgreSQL, MySQL, SQL Server, Trino, Snowflake and BigQuery) | planned |
-| `TO_DATE` | `TO_DATE('2024-01-15')` | planned |
-| `TO_TIMESTAMP` | `TO_TIMESTAMP('2024-01-15 10:30:00')` | planned |
-| `CHARINDEX` | `CHARINDEX('d', orders.status)` | planned |
-| `STARTSWITH` | `STARTSWITH(orders.status, 'pe')` | planned |
-| `ENDSWITH` | `ENDSWITH(orders.status, 'ing')` | planned |
-| `TRUNC` | `TRUNC(2.789, 1)` (the one-argument form is SLayer's) | planned |
-| `TRUNCATE` | `TRUNCATE(2.789, 1)` | planned |
-| `IF` | `IF(orders.amount > 20, 1, 0)` (`IFF` is supported) | planned |
-| `NVL` | `NVL(orders.note, 'x')` (`COALESCE` and `IFNULL` are supported) | planned |
-| `NVL2` | `NVL2(orders.status, 'y', 'n')` | planned |
-| `ZEROIFNULL` | `ZEROIFNULL(orders.amount)` | planned |
-| `NULLIFZERO` | `NULLIFZERO(orders.amount)` | planned |
-| `ROW_NUMBER` | `ROW_NUMBER() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `RANK` | `RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `DENSE_RANK` | `DENSE_RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `NTILE` | `NTILE(2) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `PERCENT_RANK` | `PERCENT_RANK() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `CUME_DIST` | `CUME_DIST() OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `LAG` | `LAG(orders.amount, 1, 0) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `LEAD` | `LEAD(orders.amount, 1, 0) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `FIRST_VALUE` | `FIRST_VALUE(orders.amount) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `LAST_VALUE` | `LAST_VALUE(orders.amount) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `NTH_VALUE` | `NTH_VALUE(orders.amount, 2) OVER (ORDER BY orders.amount)` in a query dimension | planned |
-| `RUNNING TOTAL` | `SUM(orders.amount) OVER (ORDER BY orders.order_date)` in a query dimension | planned |
-| `RUNNING AVERAGE` | `AVG(…) OVER (ORDER BY … ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)` in a query dimension | planned |
-| `PARTITION TOTALS` | `SUM(orders.amount) OVER (PARTITION BY orders.region)` in a query dimension | planned |
-| `PERCENT OF TOTAL` | `orders.amount / SUM(orders.amount) OVER () * 100` in a query dimension | planned |
-| `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | a window frame in a query dimension | planned |
-| `ROWS BETWEEN N PRECEDING AND N FOLLOWING` | a window frame in a query dimension | planned |
-| `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | a window frame in a query dimension | planned |
-| `NULLS FIRST` | `NULLS FIRST` in a window's `ORDER BY` in a query dimension | planned |
-| `NULLS LAST` | `NULLS LAST` in a window's `ORDER BY` in a query dimension | planned |
-| `DEFAULT NULL PLACEMENT` | Ossie's default NULL placement in a window's `ORDER BY` | planned |
 
-Ossie's window functions are refused in a query's dimensions; a dataset field's expression may hold one (see
-[Datasets](../concepts/datasets.md#window-functions-in-a-fields-expression)), and SLayer's own query language
-computes ranks, offsets and running totals with its transforms (see
-[Expressions](../concepts/expressions.md#transform-functions)). Ossie does not fix `DAYOFWEEK`'s numbering or
-`MILLISECOND`'s meaning; SLayer's own `date_part('day_of_week', x)` is ISO (Monday 1, Sunday 7).
+Ossie's window functions run in every position (see
+[SQL window functions](../concepts/expressions.md#sql-window-functions-over)); `COUNT(DISTINCT …)`, `MEDIAN` and
+`PERCENTILE_CONT` under `OVER` run only where the database windows them (see
+[Database support](../database-support.md#window-functions)). Ossie does not fix `DAYOFWEEK`'s numbering or
+`MILLISECOND`'s meaning, so SLayer rules them: `EXTRACT(DAYOFWEEK FROM x)` is ISO (Monday 1, Sunday 7), as
+`date_part('day_of_week', x)` is, and `EXTRACT(MILLISECOND FROM x)` is the millisecond component (0 to 999, truncated).
+Both are parts only: `DAYOFWEEK(x)` and `MILLISECOND(x)` are refused, as those function names mean other numberings
+on several databases.
 
 ## Layer 2: SQL queries
 
@@ -144,7 +100,5 @@ known not to follow Ossie yet:
 | `format-delimited-dataset-name` | a delimited dataset name (`"Order Lines"`) cannot be referenced | planned |
 | `format-quoted-column-expression` | a field expression naming a quoted column (`"Order Amount"`) is refused | planned |
 | `format-decimal-exact` | `Decimal` aggregates are not exact | planned |
-| `format-time-dimension` | a `Time` field cannot be a dimension | planned |
-| `format-time-aggregate` | a `Time` field cannot be aggregated (`MIN`, `MAX`) | planned |
 | `format-datetimetz-truncation` | truncating a `DateTimeTz` field drops its time zone | planned |
 | `format-datetimetz-offset-literal` | a timestamp literal with a UTC offset cannot be compared with a `DateTimeTz` field | planned |

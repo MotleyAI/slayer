@@ -32,7 +32,7 @@ from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.time_points import host_clock
 from slayer.core.vocabulary import ENTITY_KINDS, respelled_token
-from slayer.core.warnings import DeprecatedInputWarning
+from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.parser import parse_cube_project
 from slayer.cube.report import CubeConversionIssue, CubeConversionResult, CubeIssueCategory
@@ -75,6 +75,7 @@ from slayer.memories.service import MemoryService
 from slayer.osi.exporter import OsiExportError, export_ontology, export_ontology_mapping, export_osi
 from slayer.osi.importer import import_osi
 from slayer.ontology.documents import document_name
+from slayer.ontology.findings import OntologyFinding
 from slayer.osi.yaml_writer import dump_yaml
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.pg_facade.cli import add_pg_serve_subparser
@@ -1369,7 +1370,7 @@ examples:
         dest="entity_type",
         choices=[
             "datasource", "dataset", "field", "metric", "aggregation",
-            "memory",
+            "memory", "semantic_model", "ontology", "ontology_mapping",
         ],
         help="Required. The entity kind to inspect.",
     )
@@ -2215,6 +2216,9 @@ def _format_validate_datasets_output(entries: Sequence[DriftReportEntry]) -> str
         if isinstance(entry, UntypedFinding):
             lines.append(f"UNTYPED: {entry.summary}")
             continue
+        if isinstance(entry, OntologyFinding):
+            lines.append(f"ONTOLOGY {entry.check.upper().replace('_', ' ')}: {entry.summary}")
+            continue
         if entry.tool == "delete_dataset":
             lines.append(
                 f"DELETE DATASET: {entry.dataset_name} (datasource: {entry.data_source})"
@@ -2893,8 +2897,11 @@ def _ontologies_show(storage: StorageBackend, args) -> None:
 def _ontologies_save(storage: StorageBackend, args) -> None:
     text = _read_document(args.file)
     name = args.name if getattr(args, "name", None) else _own_name(text)
-    _refused(storage.save_ontology_text(name=name, text=text))
+    notes: list[SlayerWarning] = []
+    _refused(storage.save_ontology_text(name=name, text=text, warnings_out=notes))
     print(f"Stored ontology '{name}'.")
+    _print_save_warnings(notes)
+    _refresh_concepts(storage)
 
 
 def _ontologies_delete(storage: StorageBackend, args) -> None:
@@ -2904,6 +2911,7 @@ def _ontologies_delete(storage: StorageBackend, args) -> None:
     if not _refused(storage.delete_ontology(args.name)):
         _fail(f"Ontology '{args.name}' not found.")
     print(f"Deleted ontology '{args.name}'.")
+    _refresh_concepts(storage)
 
 
 def _mappings_list(storage: StorageBackend, args) -> None:
@@ -2925,10 +2933,24 @@ def _mappings_show(storage: StorageBackend, args) -> None:
 def _mappings_save(storage: StorageBackend, args) -> None:
     text = _read_document(args.file)
     name = args.name if getattr(args, "name", None) else _own_name(text)
-    notes = _refused(storage.save_ontology_mapping_text(data_source=args.datasource, name=name, text=text))
+    warnings_out: list[SlayerWarning] = []
+    notes = _refused(storage.save_ontology_mapping_text(data_source=args.datasource, name=name, text=text,
+                                                        warnings_out=warnings_out))
     print(f"Stored mapping '{name}' in datasource '{args.datasource}'.")
     for note in notes:
         print(note)
+    _print_save_warnings(warnings_out)
+    _refresh_concepts(storage, data_source=args.datasource)
+
+
+def _refresh_concepts(storage: StorageBackend, *, data_source: str | None = None) -> None:
+    for warning in run_sync(SearchService(storage=storage).refresh_after_concept_change(data_source)):
+        print(f"Warning: {warning}")
+
+
+def _print_save_warnings(notes: list[SlayerWarning]) -> None:
+    for note in notes:
+        print(f"Warning: {note.human_message()}")
 
 
 def _mappings_delete(storage: StorageBackend, args) -> None:
@@ -2938,6 +2960,7 @@ def _mappings_delete(storage: StorageBackend, args) -> None:
     if not _refused(storage.delete_ontology_mapping(args.name, args.datasource)):
         _fail(f"Mapping '{args.name}' not found in datasource '{args.datasource}'.")
     print(f"Deleted mapping '{args.name}'.")
+    _refresh_concepts(storage, data_source=args.datasource)
 
 
 _DOCUMENT_COMMANDS = {

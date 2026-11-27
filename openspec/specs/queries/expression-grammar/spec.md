@@ -169,12 +169,12 @@ A string literal SHALL be single-quoted, with `''` standing for one `'`; a backs
 
 ### Requirement: Keyword arguments versus comparison
 
-Inside an aggregation call (built-in or model-defined) or a transform call, an unparenthesised argument `name = value` whose left side is an unquoted bare name SHALL be a keyword argument exactly when `name` case-insensitively names a declared parameter of that callee: `window` and `partition_by` for every aggregation, `weight` for `weighted_avg`, `other` for `corr` / `covar_samp` / `covar_pop`, `p` for `percentile`, a model aggregation's declared parameters and formula placeholders, and a transform's parameters (`periods`, `granularity`, `n`, `direction`, `partition_by`). Otherwise it SHALL be a comparison, in any argument position. A parenthesised `(name = value)` or one with a quoted left side SHALL always be a comparison, so `sum((weight = 1))` compares a column `weight`. Duplicate keyword arguments and a positional argument after a keyword argument SHALL be judged after this classification. Inside a scalar function call and everywhere else, `=` SHALL be a comparison.
+Inside an aggregation call (built-in or model-defined) or a transform call, an unparenthesised argument `name = value` whose left side is an unquoted bare name SHALL be a keyword argument exactly when `name` case-insensitively names a declared parameter of that callee: `window` and `partition_by` for every aggregation, `weight` for `weighted_avg`, `other` for `corr` / `covar_samp` / `covar_pop`, `p` for `percentile`, `percentile_disc` and `percentile_approx`, a model aggregation's declared parameters and formula placeholders, and a transform's parameters (`periods`, `granularity`, `n`, `direction`, `partition_by`). Otherwise it SHALL be a comparison, in any argument position. A parenthesised `(name = value)` or one with a quoted left side SHALL always be a comparison, so `sum((weight = 1))` compares a column `weight`. Duplicate keyword arguments and a positional argument after a keyword argument SHALL be judged after this classification. Inside a scalar function call and everywhere else, `=` SHALL be a comparison.
 
 #### Scenario: Keyword argument
 
-- **WHEN** a measure is `percentile(amount, p=0.9)`
-- **THEN** `p` is a keyword argument
+- **WHEN** a measure is `percentile(amount, p=0.9)`, `percentile_disc(amount, p=0.9)` or `percentile_approx(amount, P=0.9)`
+- **THEN** `p` is a keyword argument in each
 
 #### Scenario: Comparison inside a scalar call
 
@@ -203,7 +203,7 @@ Inside an aggregation call (built-in or model-defined) or a transform call, an u
 
 ### Requirement: Forms rejected with a hint
 
-The following SHALL fail at parse time with an error naming the form and the remedy: `a | b` (use `||`); `a // b` (use `div(a, b)` or `floor(a / b)`); `TRIM(BOTH | LEADING | TRAILING …)`; a scalar `min(a, b)` / `max(a, b)` with two positional values (use `greatest` / `least`); `TIME '…'` literals; `SIMILAR TO`; `REGEXP` / `RLIKE` operators; raw `OVER (…)`. A syntax error SHALL report the character position where parsing failed.
+The following SHALL fail at parse time with an error naming the form and the remedy: `a | b` (use `||`); `a // b` (use `div(a, b)` or `floor(a / b)`); `TRIM(BOTH | LEADING | TRAILING …)`; a scalar `min(a, b)` / `max(a, b)` with two positional values (use `greatest` / `least`); `SIMILAR TO`; `REGEXP` / `RLIKE` operators. A syntax error SHALL report the character position where parsing failed. A `TIME '…'` literal SHALL parse (`queries/time-of-day`).
 
 #### Scenario: Bitwise-or spelling
 
@@ -224,6 +224,16 @@ The following SHALL fail at parse time with an error naming the form and the rem
 
 - **WHEN** a filter is `amount > > 5`
 - **THEN** the error names the position of the second `>`
+
+#### Scenario: OVER is not a rejected form
+
+- **WHEN** a dimension is `ROW_NUMBER() OVER (ORDER BY orders.amount)`
+- **THEN** it parses as a window function (`queries/window-functions`), with no hint to use a transform
+
+#### Scenario: TIME literal parses
+
+- **WHEN** a filter is `opened_at > TIME '10:00'`
+- **THEN** it parses
 
 ### Requirement: SQL comments
 

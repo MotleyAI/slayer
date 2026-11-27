@@ -22,7 +22,6 @@ flowchart TD
   subgraph sql["SQL generation"]
     sql__dialects["Dialects"]
     sql__sql_predicate["SQL predicate"]
-    sql__window_detect["Window detect"]
   end
   subgraph engine["Query engine"]
     engine__binding["Binding"]
@@ -46,8 +45,6 @@ flowchart TD
   surfaces("User-facing surfaces")
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
-  core__models -.-> sql__window_detect
-  core__query -.-> sql__window_detect
   core__models -.-> storage__migrations
   core__query -.-> storage__migrations
   core__models -.-> core__query
@@ -70,7 +67,7 @@ flowchart TD
   otel --> core__probes
   ontology --> core
   classDef leaf fill:none;
-  class core__query,core__models,core__syntax,core__probes,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,database,live_schema,ir,storage__migrations,ontology,importers,search,memories,protocols,usage_reporting__features,otel,surfaces leaf;
+  class core__query,core__models,core__syntax,core__probes,sql__dialects,sql__sql_predicate,engine__binding,engine__bind_inputs,database,live_schema,ir,storage__migrations,ontology,importers,search,memories,protocols,usage_reporting__features,otel,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:core_focus -->

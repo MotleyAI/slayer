@@ -557,9 +557,10 @@ async def test_a_document_dataset_metric_using_agg_is_kept_in_its_slayer_entry(s
     assert table(agg, REGION, "v") == table(ref, REGION, "v")
     doc = yaml.safe_load(await stored_text(shop))
     orders = _ds(doc, "orders")
-    assert [m["name"] for m in orders["metrics"]] == ["total_revenue"]
-    assert "rev_agg" not in yaml.safe_dump(without_extensions(orders))
-    assert any("rev_agg" in yaml.safe_dump(data) for data in slayer_entries(orders))
+    # Core holds the export's rendering; the metric's SLAYER entry restores the formula as written.
+    [rev_agg] = [m for m in orders["metrics"] if m["name"] == "rev_agg"]
+    assert rev_agg["expression"] == {"sql": "SUM(amount)"}
+    assert any("AGG(total_revenue)" in yaml.safe_dump(data) for data in slayer_entries(rev_agg))
     assert "rev_agg" not in yaml.safe_dump(slayer_entries(doc))
 
 
@@ -654,7 +655,7 @@ async def test_inspect_shows_a_model_scoped_metric_load_warning(tmp_path: Path) 
         place_document(tmp_path, sales_with(_add_windowed_metric), name="sales")
         out = await mcp_ok(engine.storage, "inspect", reference="running_rev", entity_type="metric", compact=False)
     assert "running_rev" in out
-    assert "window" in out.lower()
+    assert "outside an aggregate" in out
 
 
 async def test_datasets_summary_lists_model_scoped_metrics(shop: SlayerQueryEngine) -> None:

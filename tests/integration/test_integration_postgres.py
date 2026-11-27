@@ -19,6 +19,16 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import owned_query_engine
+from tests._dev2457_fixtures import server_statements as window_statements, window_datasets
+from tests._dev2457_matrix import (
+    CASE_IDS as WINDOW_CASE_IDS,
+    CASES as WINDOW_CASES,
+    HOLISTIC,
+    HOLISTIC_IDS,
+    WindowCase,
+    assert_typed_refusal,
+    check_case,
+)
 from tests._pg_helpers import pg_query_engine
 from tests._reserved_alias_probe import keyword_universe, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
@@ -27,6 +37,7 @@ from tests.integration._consecutive_periods_calendar import (
     seed_statements,
     streak_dataset,
 )
+from tests.integration import _dev2458_matrix as dev2458
 
 pytest.importorskip("pytest_postgresql")
 
@@ -863,6 +874,37 @@ class TestPostgresMedianPercentile:
         assert by_status["cancelled"] == pytest.approx(75)
 
 
+@pytest.fixture(scope="module")
+def _pg_dev2458_storage(postgresql_proc, tmp_path_factory):
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        with conn.cursor() as cur:
+            for stmt in dev2458.statements(dialect="postgres"):
+                cur.execute(cast(LiteralString, stmt))
+        conn.commit()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("pg_dev2458")))
+        info = postgresql_proc
+        run_sync(storage.save_datasource(DatasourceConfig(
+            name="testpg", type="postgres", host=info.host, port=info.port, database=db_name, username=info.user,
+            password="")))
+        for model in dev2458.datasets(data_source="testpg"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
+
+
+@pytest.mark.integration
+class TestPostgresDistinctAndPercentiles:
+    """Spec: aggregations/distinct-and-percentiles."""
+
+    @pytest.mark.parametrize("check", [*dev2458.COMMON_CHECKS, dev2458.check_approx_exact],
+                             ids=lambda c: c.__name__)
+    async def test_matrix(self, _pg_dev2458_storage, check) -> None:
+        await dev2458.run_check(check, storage=_pg_dev2458_storage)
+
+
 @pytest.mark.integration
 class TestPostgresStatAggregations:
     """Cross-dialect smoke: the new statistical aggregations
@@ -1612,3 +1654,49 @@ def test_every_postgres_alias_failure_is_quoted(postgresql_proc) -> None:
     finally:
         conn.close()
         _drop_module_db(postgresql_proc, db_name)
+
+
+# ---------------------------------------------------------------------------
+# Window functions (spec: queries/window-functions › Every database runs the required windows or refuses
+# with a typed error)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _pg_windows_storage(postgresql_proc, tmp_path_factory):
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        cur = conn.cursor()
+        for stmt in window_statements("postgres"):
+            cur.execute(cast(LiteralString, stmt))
+        conn.commit()
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("pg_windows")))
+        info = postgresql_proc
+        run_sync(storage.save_datasource(DatasourceConfig(
+            name="testpg", type="postgres", host=info.host, port=info.port,
+            database=db_name, username=info.user, password="",
+        )))
+        for model in window_datasets(data_source="testpg"):
+            run_sync(storage.save_dataset(model))
+        yield storage
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
+
+
+@pytest.fixture
+async def pg_windows(_pg_windows_storage) -> AsyncIterator[SlayerQueryEngine]:
+    async with owned_query_engine(storage=_pg_windows_storage) as engine:
+        yield engine
+
+
+@pytest.mark.integration
+class TestPostgresWindows:
+    @pytest.mark.parametrize("case", WINDOW_CASES, ids=WINDOW_CASE_IDS)
+    async def test_the_matrix(self, pg_windows: SlayerQueryEngine, case: WindowCase) -> None:
+        await check_case(pg_windows, case)
+
+    @pytest.mark.parametrize(("expression", "function"), HOLISTIC, ids=HOLISTIC_IDS)
+    async def test_a_holistic_aggregate_where_the_database_does_not(
+        self, pg_windows: SlayerQueryEngine, expression: str, function: str,
+    ) -> None:
+        await assert_typed_refusal(pg_windows, "orders", expression, function, "(?i)postgre")

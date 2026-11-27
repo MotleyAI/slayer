@@ -21,11 +21,15 @@ from sqlglot.expressions.core import Expr, Expression
 from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind
 from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
-from slayer.core.keys import ScalarCallKey
+from slayer.core.keys import (
+    ArithmeticKey, LiteralKey, ScalarCallKey, StarKey, ValueKey, WindowFrameSpec, WindowKey,
+)
+from slayer.core.refs import key_display
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
-from slayer.core.errors import TimeZoneError
+from slayer.core.errors import TimeZoneError, WindowFunctionError
 from slayer.sql.dialects._windows_zones import WINDOWS_ZONES
 from slayer.sql.dialects.base import (
+    AngleFn,
     PORTABLE_LIBRARY,
     NativeFn,
     TransactionMode,
@@ -50,7 +54,14 @@ from slayer.sql.dialects.base import (
     _build_covar_decomposition,
     iso_text,
 )
-from slayer.sql.dialects._ordered_set_split import split_percentile_selects
+from slayer.sql.dialects._ordered_set_split import (
+    Columns,
+    PercentileColumns,
+    complement_fraction,
+    marked_ranked,
+    ranked_unless_numeric,
+    split_percentile_selects,
+)
 from slayer.sql.dialects.patterns import RE2, RegexFlavour
 from slayer.sql.dialects.reflection import ResultColumnType, info_schema_type, result_column_type_of_name
 
@@ -200,13 +211,32 @@ def _bit_value(predicate: Expr) -> Expression:
     return exp.Cast(this=case, to=exp.DataType.build("BIT", dialect="tsql"))
 
 
-def _windowed_percentile(p: Expr, value: Expr, partition: Sequence[Expr]):
-    """``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs
-    are skipped, so they sort natively (one ORDER BY key is all it takes)."""
-    key = exp.Ordered(this=value.copy(), nulls_first=True)
-    window = exp.Window(this=exp.WithinGroup(this=exp.PercentileCont(this=p.copy()), expression=exp.Order(expressions=[key])),
-                        partition_by=[k.copy() for k in partition])
-    return [window], lambda reads: exp.Max(this=reads[0])
+def _windowed(function: type[exp.PercentileCont] | type[exp.PercentileDisc]) -> PercentileColumns:
+    """``F(p) WITHIN GROUP (ORDER BY v) OVER (PARTITION BY <keys>)`` per row, its MAX per group; NULLs are skipped,
+    so they sort natively (one ORDER BY key is all it takes). A descending ``PERCENTILE_CONT`` reads ``1 − p``
+    ascending; a descending ``PERCENTILE_DISC`` keeps its direction (no ascending fraction picks its value)."""
+
+    def columns(p: Expr, value: Expr, partition: Sequence[Expr], *, descending: bool) -> Columns:
+        flip = descending and function is exp.PercentileCont
+        reversed_key = descending and not flip
+        key = exp.Ordered(this=value.copy(), nulls_first=not reversed_key)  # T-SQL's own NULL placement either way
+        if reversed_key:
+            key.set("desc", True)
+        fraction = complement_fraction(p) if flip else p.copy()
+        window = exp.Window(this=exp.WithinGroup(this=function(this=fraction), expression=exp.Order(expressions=[key])),
+                            partition_by=[k.copy() for k in partition])
+        return [window], lambda reads: exp.Max(this=reads[0])
+
+    return columns
+
+
+def _percentile_columns(node: exp.WithinGroup) -> Optional[PercentileColumns]:
+    """The native windowed percentiles; a ``PERCENTILE_DISC`` over a non-numeric value from ranks."""
+    if isinstance(node.this, exp.PercentileCont):
+        return _windowed(exp.PercentileCont)
+    if isinstance(node.this, exp.PercentileDisc):
+        return marked_ranked(node) or _windowed(exp.PercentileDisc)
+    return None
 
 
 #: Column-free yet per-row: such a GROUP BY key still splits groups.
@@ -250,12 +280,71 @@ def _windows_zone(zone: ZoneInfo) -> exp.Literal:
     return exp.Literal.string(windows)
 
 
+_RUNNING = ("unbounded preceding", None), ("current row", None)
+
+
+class _NthValueParts:
+    """The window calls ``_nth_value`` composes over ``key``'s partition: those reading row positions all order by one
+    ``ROW_NUMBER()`` of ``key``'s order, so tied rows sit in the same order in each (SQL Server orders ties freely)."""
+
+    def __init__(self, key: WindowKey) -> None:
+        self.x = key.args[0]
+        self.bare = key.model_copy(update={"frame": None, "args": ()})
+        self.rn = self.bare.model_copy(update={"function": "row_number"})
+        # ASC with NULLS FIRST is SQL Server's own placement, so no NULL key is added; ``rn`` is never NULL.
+        self.by_rn = self.bare.model_copy(update={"order": (self.rn,), "descending": (False,), "nulls_first": (True,)})
+
+    def window(self, function: str, *args: ValueKey, frame: WindowFrameSpec | None = None,
+               by_position: bool = True) -> WindowKey:
+        base = self.by_rn if by_position else self.bare
+        return base.model_copy(update={"function": function, "args": args, "frame": frame})
+
+    def lead(self, offset: int) -> ValueKey:
+        return self.x if offset == 0 else self.window("lead", self.x, LiteralKey(value=Decimal(offset)))
+
+    def later(self, position: int) -> ValueKey:
+        """The ``position``-th row of a one-row-each-side frame, past the partition's first row."""
+        if position == 1:
+            return self.window("lag", self.x, LiteralKey(value=Decimal(1)))
+        return self.lead(position - 2) if position <= 3 else LiteralKey(value=None)
+
+
+def _nth_value(key: WindowKey) -> ValueKey:
+    """``NTH_VALUE(x, n)``: the partition's ``n``-th row, read once the frame holds ``n`` rows (running frames); within a
+    one-row-each-side frame, the ``n``-th row of the rows around the current one."""
+    n = key.args[1]
+    position = int(n.value) if isinstance(n, LiteralKey) and isinstance(n.value, Decimal) else 0
+    parts = _NthValueParts(key)
+    frame = key.frame
+    if frame is None or (frame.start, frame.end) == _RUNNING:
+        unit = "range" if frame is None else frame.unit
+        # A RANGE count holds whole peer groups, whatever their inner order.
+        held = parts.window("count", StarKey(), frame=WindowFrameSpec(unit=unit, start=_RUNNING[0], end=_RUNNING[1]),
+                            by_position=unit == "rows")
+        nth = parts.window("first_value", parts.lead(position - 1),
+                           frame=WindowFrameSpec(unit="rows", start=_RUNNING[0], end=_RUNNING[1]))
+        return ScalarCallKey(name="iif", args=(
+            ArithmeticKey(op=">=", operands=(held, LiteralKey(value=Decimal(position)))), nth, LiteralKey(value=None)))
+    if frame.unit == "rows" and frame.start == ("preceding", Decimal(1)) and frame.end == ("following", Decimal(1)):
+        at_start = parts.lead(position - 1) if position <= 2 else LiteralKey(value=None)
+        return ScalarCallKey(name="iif", args=(
+            ArithmeticKey(op="=", operands=(parts.rn, LiteralKey(value=Decimal(1)))),
+            at_start, parts.later(position)))
+    raise WindowFunctionError(
+        summary=f"`{key_display(key)}` cannot run on SQL Server: it lacks NTH_VALUE, which SLayer rewrites only over "
+        f"the default frame, ROWS or RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, and ROWS BETWEEN 1 PRECEDING "
+        f"AND 1 FOLLOWING.",
+        suggestion="Use one of those frames, or run the query on another database.",
+    )
+
+
 class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     enforces_unique_keys: ClassVar[bool] = True
     sqlglot_name: str = "tsql"
     decimal_text_exponent: ClassVar[bool] = False
     native_lists: ClassVar[bool] = False
     database_name: ClassVar[str] = "SQL Server"
+    nulls_clause: bool = False
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
     transaction_mode: ClassVar[TransactionMode] = "driver_autocommit"
     vendor_cast_types: ClassVar[frozenset[DType]] = frozenset({
@@ -279,7 +368,31 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
     json_db_types: ClassVar[frozenset[str]] = frozenset()
     like_brackets: ClassVar[bool] = True
     library_functions: ClassVar[frozenset[str]] = PORTABLE_LIBRARY
+    time_of_day_parts: ClassVar[bool] = True
+    # A bare ``TIME`` is ``TIME(7)`` here.
+    time_of_day_precision: ClassVar[Optional[int]] = 6
+
+    def build_time_text(self, value: Expression) -> Expression:
+        """Trailing zeros leave through spaces: ``TRIM(TRAILING …)`` needs SQL Server 2022."""
+        text = exp.Cast(this=exp.Cast(this=value, to=self.time_of_day_type()), to=exp.DataType.build("VARCHAR(15)"))
+        spaced = anon("RTRIM", anon("REPLACE", text, lit("0"), lit(" ")))
+        kept = anon("REPLACE", spaced, lit(" "), lit("0"))
+        whole = anon("LEFT", kept, exp.Sub(this=anon("LEN", kept), expression=lit(1)))
+        return case((exp.EQ(this=anon("RIGHT", kept, lit(1)), expression=lit(".")), whole), default=kept.copy())
     native_functions: ClassVar[frozenset[NativeFn]] = frozenset({"CONCAT_WS", "PI", "GREATEST", "LEAST"})
+
+    def rewrite_window_key(self, key: WindowKey) -> ValueKey:
+        """``NTH_VALUE``, which SQL Server lacks, over Ossie's frame forms."""
+        if key.function != "nth_value":
+            return key
+        return _nth_value(key)
+
+    def finish_window(self, key: WindowKey, window: exp.Window) -> Expression:
+        """NTH_VALUE over aggregates, which SQL Server lacks, is refused."""
+        if key.function == "nth_value":
+            raise WindowFunctionError(summary="NTH_VALUE over aggregates cannot run on SQL Server, which lacks it.",
+                                      suggestion="Read it from a row-level window, or run on another database.")
+        return window
 
     def convert_zone(self, value: Expression, *, source: Optional[ZoneInfo], target: ZoneInfo) -> Expression:
         """``CAST((v AT TIME ZONE S) AT TIME ZONE Q AS datetime2)`` in Windows zone ids; an instant (a
@@ -301,6 +414,7 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
 
     def parse_server_profile(
         self, *, base_row: Sequence[Any] | None, correlated_row: Sequence[Any] | None = None,
+        time_row: Sequence[Any] | None = None,
     ) -> ServerProfile:
         major = base_row[0] if base_row else None
         try:
@@ -457,6 +571,15 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         return anon("REGEXP_REPLACE", value, self.regex_text(pattern, case_insensitive=case_insensitive),
                     self.replacement_text(replacement), lit(1), lit(0), lit("c"))
 
+    def build_regexp_count(self, value: Expression, pattern: RegexPattern, case_insensitive: bool) -> Expression:
+        self._require_regex("regexp_count")
+        return anon("REGEXP_COUNT", value, self.regex_text(pattern, case_insensitive=case_insensitive), lit(1),
+                    lit("c"))
+
+    def angle(self, fn: AngleFn, value: Expression) -> Expression:
+        """``RADIANS`` / ``DEGREES`` keep an integer argument's type: read it as a FLOAT."""
+        return super().angle(fn, exp.Cast(this=value.copy(), to=exp.DataType.build("FLOAT")))
+
     def build_json_value(self, value: Expression, path: JsonPath, native: bool) -> Expression:
         """On 2022+ (and an unknown version) a scalar the lax read leaves NULL is re-read strictly, so one over
         4,000 characters raises instead of reading NULL; ``ISJSON(…, VALUE)`` takes a scalar document, which
@@ -599,7 +722,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if isinstance(node, exp.Substring) and node.args.get("length") is None:
                 node.set("length", exp.Anonymous(this="DATALENGTH", expressions=[node.this.copy()]))
             if isinstance(node, exp.Length):
-                text = exp.Cast(this=node.this.copy(), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
+                # ``transform`` skips a replaced node's children, so they are rewritten here.
+                text = exp.Cast(this=node.this.transform(_fix), to=exp.DataType.build("NVARCHAR(MAX)", dialect="tsql"))
                 padded = exp.Add(this=text, expression=exp.Literal.string("x"))
                 return exp.Paren(this=exp.Sub(
                     this=exp.Anonymous(this="LEN", expressions=[padded]), expression=exp.Literal.number(1),
@@ -621,15 +745,30 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
             if isinstance(node, exp.Round) and node.args.get("decimals") is None:
                 node.set("decimals", exp.Literal.number(0))
             if isinstance(node, exp.Pow):
-                return anon("POWER", exp.Cast(this=node.this.copy(), to=exp.DataType.build("FLOAT")),
-                            node.expression.copy())
+                return anon("POWER", exp.Cast(this=node.this.transform(_fix), to=exp.DataType.build("FLOAT")),
+                            node.expression.transform(_fix))
             return node
         return tree.transform(_fix)
+
+    def build_percentile_disc(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType],
+    ) -> Expression:
+        """Native over a number; ranked otherwise (SQL Server's ``PERCENTILE_DISC`` orders numbers only)."""
+        node = super().build_percentile_disc(p=p, col_expr=col_expr, input_type=input_type)
+        return ranked_unless_numeric(node, input_type=input_type) if isinstance(node, exp.WithinGroup) else node
+
+    def build_percentile_approx(
+        self, *, p: Expression, col_expr: Expression, input_type: Optional[DataType] = None,
+    ) -> Expression:
+        """``APPROX_PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` (SQL Server 2022)."""
+        key = exp.Ordered(this=col_expr.copy(), nulls_first=True)
+        return exp.WithinGroup(this=exp.Anonymous(this="APPROX_PERCENTILE_CONT", expressions=[p.copy()]),
+                               expression=exp.Order(expressions=[key]))
 
     def rewrite_statement(self, statement: Expression) -> Expression:
         """T-SQL predicates are conditions only (one in a value position becomes its BIT value); ``PERCENTILE_CONT``
         is a window function only; GROUP BY keys read a column."""
-        statement = split_percentile_selects(statement.copy(), columns=_windowed_percentile)
+        statement = split_percentile_selects(statement.copy(), columns=_percentile_columns)
         for node in reversed(list(statement.dfs())):
             if _in_condition_position(node):
                 continue
@@ -670,6 +809,8 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
                 this=exp.Literal.number(3), expression=exp.Paren(this=_days_since_monday(expr)),
             ), expr.copy())
             return _datepart("YEAR", thursday)
+        if part is DatePart.MILLISECOND:
+            return exp.Floor(this=exp.Div(this=_datepart("MICROSECOND", expr), expression=lit(1000)))
         return _datepart(_DATEPART_UNITS[part], expr)
 
     def build_date_diff(
